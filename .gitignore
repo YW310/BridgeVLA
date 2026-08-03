@@ -1,0 +1,74 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Packaging artifacts
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+.conda/
+
+# Editors and operating systems
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Experiment tracking and logs
+wandb/
+runs/
+logs/
+log/
+outputs/
+output/
+checkpoints/
+checkpoint/
+tensorboard/
+events.out.tfevents.*
+*.log
+
+# Model weights and generated replay buffers
+*.ckpt
+*.pth
+*.pt
+*.safetensors
+*.replay
+
+# Local datasets and evaluation artifacts
+/data/
+/datasets/
+/dataset/
+/results/
+/replay_buffer/
+/replay_buffers/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.bak
+*.orig
