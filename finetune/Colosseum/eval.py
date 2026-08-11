@@ -25,7 +25,7 @@ import shutil
 import numpy as np
 from omegaconf import OmegaConf
 from multiprocessing import Value
-from tensorflow.python.summary.summary_iterator import summary_iterator
+# from tensorflow.python.summary.summary_iterator import summary_iterator
 from copy import deepcopy
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"

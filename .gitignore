@@ -72,3 +72,10 @@ temp/
 *.tmp
 *.bak
 *.orig
+
+finetune/bridgevla/libs/RLBench
+finetune/CoppeliaSim_Edu_V4_1_0_Ubuntu20_04
+LPY
+*exp*
+exp/RLBench
+checkpoints

@@ -79,9 +79,9 @@ cd finetune/RLBench
 bash train.sh --exp_cfg_path  configs/rlbench_config.yaml \
               --exp_note debug \
               --freeze_vision_tower \
-              --log_dir PATH_TO_LOG_DIR \
+              --log_dir exp/RLBench \
               --load_pretrain \
-              --pretrain_path  PATH_TO_PRETRAINED_MODEL 
+              --pretrain_path  LPY/BridgeVLA/checkpoints/RLBench/model_80.pth 
 ```
 3. **COLOSSEUM Fine-tuning:** For COLOSSEUM, we fine-tune the model with the training dataset provided by the [COLOSSEUM challenge](https://huggingface.co/datasets/colosseum/colosseum-challenge/tree/main). Similarly, our training code will first convert the raw data into replay buffer. You can also directly download the replay buffer we preprocess [here](https://huggingface.co/datasets/LPY/BridgeVLA_COLOSSEUM_TRAIN_BUFFER/tree/main). Then, you can use the `finetune/Colosseum/train.sh` file to finetune the model. Please run the following code:
 ```bash

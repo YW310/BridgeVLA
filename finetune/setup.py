@@ -10,7 +10,7 @@ requirements = [
     "natsort",
     "cffi",
     "pandas",
-    "tensorflow",
+    # "tensorflow",
     "pyquaternion",
     "matplotlib",
     "bitsandbytes",
