@@ -91,13 +91,41 @@ def save_agent(agent, path, epoch):
     else:
         model_state = model.state_dict()
 
-    torch.save(
-        {
-            "epoch": epoch,
-            "model_state": model_state,
-        },
-        path,
-    )
+    checkpoint = {
+        "epoch": epoch,
+        "model_state": model_state,
+        "optimizer_state": agent._optimizer.state_dict(),
+    }
+
+    # Keep the previous checkpoint intact if the process is interrupted while
+    # writing the new one.
+    tmp_path = f"{path}.tmp"
+    torch.save(checkpoint, tmp_path)
+    os.replace(tmp_path, path)
+
+
+def load_training_checkpoint(agent, path):
+    checkpoint = torch.load(path, map_location="cpu")
+    model = agent._network
+
+    if isinstance(model, DDP):
+        model = model.module
+
+    model.load_state_dict(checkpoint["model_state"])
+
+    optimizer_state = checkpoint.get("optimizer_state")
+    if optimizer_state is None:
+        print(
+            "WARNING: the checkpoint has no optimizer state; "
+            "model weights were restored but Adam starts fresh.",
+            flush=True,
+        )
+    else:
+        agent._optimizer.load_state_dict(optimizer_state)
+
+    checkpoint_epoch = int(checkpoint["epoch"])
+    print(f"Resumed training from {path} (completed epoch {checkpoint_epoch}).", flush=True)
+    return checkpoint_epoch + 1
 
 
 
@@ -124,6 +152,12 @@ def get_time():
 
 
 def get_logdir(cmd_args, exp_cfg,dist):
+    if cmd_args.resume_checkpoint:
+        log_dir = os.path.dirname(os.path.abspath(cmd_args.resume_checkpoint))
+        if dist.get_rank() == 0:
+            os.makedirs(log_dir, exist_ok=True)
+        return log_dir
+
     log_dir = os.path.join(cmd_args.log_dir,"train" ,exp_cfg.exp_id,cmd_args.exp_note)
     if cmd_args.debug==True:
         log_dir = os.path.join(log_dir,"debug")
@@ -316,6 +350,12 @@ def experiment(cmd_args):
 
     agent.build(training=True, device=device_id)
     start_epoch = 0
+    if cmd_args.resume_checkpoint:
+        if not os.path.isfile(cmd_args.resume_checkpoint):
+            raise FileNotFoundError(
+                f"Resume checkpoint does not exist: {cmd_args.resume_checkpoint}"
+            )
+        start_epoch = load_training_checkpoint(agent, cmd_args.resume_checkpoint)
     end_epoch = EPOCHS
 
     if dist.get_rank() == 0:
@@ -339,9 +379,7 @@ def experiment(cmd_args):
 
     print("Start training ...", flush=True)
     i = start_epoch
-    while True:
-        if i == end_epoch:
-            break
+    while i < end_epoch:
 
         print(f"Rank [{dist.get_rank()}], Epoch [{i}]: Training on train dataset")
 
@@ -376,5 +414,16 @@ if __name__ == "__main__":
     parser.add_argument("--freeze_vision_tower", action="store_true")
     parser.add_argument("--load_pretrain", action="store_true")
     parser.add_argument("--pretrain_path", type=str, default=None)
+    parser.add_argument(
+        "--resume",
+        "--resume_checkpoint",
+        dest="resume_checkpoint",
+        type=str,
+        default=None,
+        help=(
+            "Resume from a training checkpoint. --epochs remains the total target "
+            "epoch count, not the number of additional epochs."
+        ),
+    )
     cmd_args = parser.parse_args()
     experiment(cmd_args)
