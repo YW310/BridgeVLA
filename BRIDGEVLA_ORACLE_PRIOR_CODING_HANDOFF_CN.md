@@ -245,3 +245,7 @@ SimulatorOracleProvider
 ```
 
 结果解释：O1 提升说明相关实体选择有价值；只有 O3 提升说明应重点做 interaction-site；O3-F 显著高于 O3-V 说明需要持久世界记忆；translation 改善但 success 不变，则瓶颈已转移到 rotation/gripper/collision。
+
+## 12. 后续可学习融合方案
+
+Oracle logit fusion 只用于验证信息上限。若 O1/O3-V 达到 Go 标准，后续不再重复注入 object-center，而采用 `target/reference/site` 三角色热图、末端关系 token 和 zero-init gated adapter；训练时混合 truth、noisy、predicted prior，并使用 `30%~50%` prior dropout。具体设计见 [`BRIDGEVLA_ROLE_RELATION_PRIOR_DESIGN_CN.md`](BRIDGEVLA_ROLE_RELATION_PRIOR_DESIGN_CN.md)。

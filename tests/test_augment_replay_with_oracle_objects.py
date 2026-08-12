@@ -1,0 +1,145 @@
+import pickle
+import tempfile
+import unittest
+from pathlib import Path
+
+import numpy as np
+from PIL import Image
+
+from tools.augment_replay_with_oracle_objects import (
+    ORACLE_KEYS,
+    atomic_write_replay,
+    augment_transition,
+    extract_oracle_objects,
+)
+
+
+CAMERAS = ('front', 'left_shoulder', 'right_shoulder', 'wrist')
+
+
+def point_cloud(offset):
+    rows, columns = np.meshgrid(
+        np.arange(2, dtype=np.float32),
+        np.arange(3, dtype=np.float32),
+        indexing='ij',
+    )
+    cloud = np.stack(
+        (columns + offset, rows, np.ones_like(rows)), axis=-1
+    )
+    return np.moveaxis(cloud, -1, 0)
+
+
+class OracleReplayAugmentationTest(unittest.TestCase):
+    def test_extract_merges_views_filters_invalid_and_pads(self):
+        transition = {
+            f'{camera}_point_cloud': point_cloud(index)
+            for index, camera in enumerate(CAMERAS)
+        }
+        transition['front_point_cloud'][:, 0, 1] = np.nan
+        masks = {
+            'front': np.array([[0, 5, 5], [7, 7, 0]], dtype=np.int32),
+            'left_shoulder': np.array(
+                [[0, 5, 0], [0, 0, 0]], dtype=np.int32
+            ),
+            'right_shoulder': np.zeros((2, 3), dtype=np.int32),
+            'wrist': np.zeros((2, 3), dtype=np.int32),
+        }
+
+        oracle = extract_oracle_objects(
+            transition,
+            masks,
+            cameras=CAMERAS,
+            max_objects=4,
+            num_points=5,
+            rng=np.random.default_rng(3),
+        )
+
+        self.assertEqual(oracle.points.shape, (4, 5, 3))
+        self.assertEqual(oracle.centers.shape, (4, 3))
+        self.assertEqual(oracle.ids.tolist(), [5, 7, -1, -1])
+        self.assertEqual(oracle.valid.tolist(), [True, True, False, False])
+        self.assertEqual(oracle.raw_point_counts, (2, 2))
+        self.assertTrue(np.isfinite(oracle.points).all())
+
+    def test_alignment_and_atomic_round_trip_preserve_original_fields(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            episode = (
+                root
+                / 'raw'
+                / 'stack_blocks'
+                / 'all_variations'
+                / 'episodes'
+                / 'episode2'
+            )
+            mask = np.array([[0, 11, 11], [0, 0, 0]], dtype=np.uint8)
+            for camera in CAMERAS:
+                folder = episode / f'{camera}_mask'
+                folder.mkdir(parents=True, exist_ok=True)
+                Image.fromarray(mask).save(folder / '4.png')
+
+            original = {
+                'terminal': np.int8(0),
+                'episode_idx': 2,
+                'sample_frame': 4,
+                'keypoint_frame': 1,
+                'lang_goal': np.array(['stack the blocks'], dtype=object),
+            }
+            original.update(
+                {
+                    f'{camera}_point_cloud': point_cloud(index)
+                    for index, camera in enumerate(CAMERAS)
+                }
+            )
+
+            migrated, oracle, episode_dir = augment_transition(
+                original,
+                root / 'raw',
+                'stack_blocks',
+                replay_index=9,
+                cameras=CAMERAS,
+                max_objects=3,
+                num_points=4,
+                excluded_ids=(0,),
+                seed=8,
+            )
+            output = root / 'output' / '9.replay'
+            atomic_write_replay(output, original, migrated, oracle)
+
+            self.assertEqual(episode_dir, episode)
+            with output.open('rb') as stream:
+                reloaded = pickle.load(stream)
+            self.assertTrue(set(original).issubset(reloaded))
+            self.assertTrue(set(ORACLE_KEYS).issubset(reloaded))
+            np.testing.assert_array_equal(
+                reloaded['lang_goal'], original['lang_goal']
+            )
+            self.assertEqual(
+                reloaded['oracle_object_ids'].tolist(), [11, -1, -1]
+            )
+            self.assertFalse(Path(f'{output}.tmp').exists())
+
+    def test_final_sentinel_skips_uninitialized_alignment_metadata(self):
+        original = {
+            'terminal': np.int8(-1),
+            'episode_idx': np.empty((), dtype=int),
+            'sample_frame': np.empty((), dtype=int),
+        }
+        migrated, oracle, episode_dir = augment_transition(
+            original,
+            Path('does-not-exist'),
+            'stack_blocks',
+            replay_index=10,
+            cameras=CAMERAS,
+            max_objects=2,
+            num_points=3,
+            excluded_ids=(0,),
+            seed=0,
+        )
+        self.assertIsNone(episode_dir)
+        self.assertFalse(oracle.valid.any())
+        self.assertTrue(set(ORACLE_KEYS).issubset(migrated))
+
+
+if __name__ == '__main__':
+    unittest.main()

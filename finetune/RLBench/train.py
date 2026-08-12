@@ -289,6 +289,9 @@ def experiment(cmd_args):
         num_workers=exp_cfg.num_workers,
         only_train=True,
         sample_distribution_mode=exp_cfg.sample_distribution_mode,
+        use_oracle_objects=exp_cfg.use_oracle_objects,
+        oracle_max_objects=exp_cfg.oracle_max_objects,
+        oracle_num_points=exp_cfg.oracle_num_points,
     )
     train_dataset, _ = get_dataset_func()
     t_end = time.time()

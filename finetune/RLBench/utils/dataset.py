@@ -29,6 +29,9 @@ def create_replay(
     cameras: list,
     voxel_sizes,
     replay_size=3e5,
+    use_oracle_objects: bool = False,
+    oracle_max_objects: int = 16,
+    oracle_num_points: int = 512,
 ):
     trans_indicies_size = 3 * len(voxel_sizes)
     rot_and_grip_indicies_size = 3 + 1
@@ -131,6 +134,24 @@ def create_replay(
         ReplayElement("next_keypoint_frame", (), int),
         ReplayElement("sample_frame", (), int),
     ]
+
+    # Oracle object experiment: replay elements avoid unnecessary *_tp1 fields.
+    # Existing non-Oracle buffers retain their original schema by default.
+    if use_oracle_objects:
+        extra_replay_elements.extend(
+            [
+                ReplayElement(
+                    'oracle_object_points',
+                    (oracle_max_objects, oracle_num_points, 3),
+                    np.float32,
+                ),
+                ReplayElement(
+                    'oracle_object_centers', (oracle_max_objects, 3), np.float32
+                ),
+                ReplayElement('oracle_object_ids', (oracle_max_objects,), np.int32),
+                ReplayElement('oracle_object_valid', (oracle_max_objects,), bool),
+            ]
+        )
 
     replay_buffer = (
         UniformReplayBuffer(  # all tuples in the buffer have equal sample weighting
