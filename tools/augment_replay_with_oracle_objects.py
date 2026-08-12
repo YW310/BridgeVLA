@@ -12,9 +12,11 @@ import hashlib
 import os
 import pickle
 import shutil
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from collections import OrderedDict
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Lock
 from typing import Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
@@ -24,7 +26,7 @@ from tqdm import tqdm
 
 # Oracle object experiment
 DEFAULT_CAMERAS = ('front', 'left_shoulder', 'right_shoulder', 'wrist')
-DEFAULT_MAX_OBJECTS = 16
+DEFAULT_MAX_OBJECTS = 32
 DEFAULT_NUM_POINTS = 512
 ORACLE_KEYS = (
     'oracle_object_points',
@@ -50,6 +52,79 @@ class OracleObjects:
             'oracle_object_ids': self.ids,
             'oracle_object_valid': self.valid,
         }
+
+
+class OracleFrameCache:
+    '''Thread-safe LRU cache with single-flight computation per raw frame.'''
+
+    def __init__(self, capacity: int):
+        if capacity < 0:
+            raise ValueError('cache capacity must be non-negative')
+        self.capacity = capacity
+        self._entries: OrderedDict[Tuple[str, int, int], Future] = OrderedDict()
+        self._lock = Lock()
+        self._hits = 0
+        self._misses = 0
+
+    def get_or_compute(
+        self,
+        key: Tuple[str, int, int],
+        compute: Callable[[], OracleObjects],
+    ) -> OracleObjects:
+        if self.capacity == 0:
+            with self._lock:
+                self._misses += 1
+            return compute()
+
+        with self._lock:
+            future = self._entries.get(key)
+            if future is None:
+                future = Future()
+                self._entries[key] = future
+                self._misses += 1
+                owner = True
+            else:
+                self._entries.move_to_end(key)
+                self._hits += 1
+                owner = False
+
+        if not owner:
+            # A concurrent request for the same frame waits for the first
+            # worker instead of decoding the four masks a second time.
+            return future.result()
+
+        try:
+            value = compute()
+        except BaseException as exc:
+            future.set_exception(exc)
+            with self._lock:
+                if self._entries.get(key) is future:
+                    del self._entries[key]
+            raise
+
+        future.set_result(value)
+        with self._lock:
+            if self._entries.get(key) is future:
+                self._entries.move_to_end(key)
+            self._evict_locked(protected_key=key)
+        return value
+
+    def _evict_locked(self, protected_key: Tuple[str, int, int]) -> None:
+        while len(self._entries) > self.capacity:
+            evicted = False
+            for candidate, future in list(self._entries.items()):
+                if candidate != protected_key and future.done():
+                    del self._entries[candidate]
+                    evicted = True
+                    break
+            if not evicted:
+                # Pending computations are never evicted. The cache may exceed
+                # its capacity briefly until one of them completes.
+                break
+
+    def stats(self) -> Tuple[int, int, int]:
+        with self._lock:
+            return self._hits, self._misses, len(self._entries)
 
 
 def empty_oracle_objects(max_objects: int, num_points: int) -> OracleObjects:
@@ -267,11 +342,18 @@ def validate_migrated_transition(
             raise ValueError(f'Oracle replay field failed validation: {key}')
 
 
-def _stable_rng(seed: int, task: str, replay_index: int) -> np.random.Generator:
+def _stable_frame_rng(
+    seed: int,
+    task: str,
+    episode_idx: int,
+    sample_frame: int,
+) -> np.random.Generator:
     digest = hashlib.sha256(task.encode('utf-8')).digest()
     task_seed = int.from_bytes(digest[:8], 'little')
     return np.random.default_rng(
-        np.random.SeedSequence([seed, task_seed, replay_index])
+        np.random.SeedSequence(
+            [seed, task_seed, episode_idx, sample_frame]
+        )
     )
 
 
@@ -301,6 +383,7 @@ def augment_transition(
     num_points: int,
     excluded_ids: Iterable[int],
     seed: int,
+    frame_cache: Optional[OracleFrameCache] = None,
 ) -> Tuple[Dict[str, object], OracleObjects, Optional[Path]]:
     existing_oracle_keys = set(ORACLE_KEYS).intersection(original)
     if existing_oracle_keys:
@@ -326,15 +409,26 @@ def augment_transition(
                 f'episode_idx={episode_idx}, sample_frame={sample_frame}'
             )
         episode_dir = resolve_episode_dir(raw_data_dir, task, episode_idx)
-        masks = load_frame_masks(episode_dir, sample_frame, cameras)
-        oracle = extract_oracle_objects(
-            original,
-            masks,
-            cameras=cameras,
-            max_objects=max_objects,
-            num_points=num_points,
-            excluded_ids=excluded_ids,
-            rng=_stable_rng(seed, task, replay_index),
+
+        def build_oracle() -> OracleObjects:
+            masks = load_frame_masks(episode_dir, sample_frame, cameras)
+            return extract_oracle_objects(
+                original,
+                masks,
+                cameras=cameras,
+                max_objects=max_objects,
+                num_points=num_points,
+                excluded_ids=excluded_ids,
+                rng=_stable_frame_rng(
+                    seed, task, episode_idx, sample_frame
+                ),
+            )
+
+        cache_key = (task, episode_idx, sample_frame)
+        oracle = (
+            frame_cache.get_or_compute(cache_key, build_oracle)
+            if frame_cache is not None
+            else build_oracle()
         )
 
     migrated = dict(original)
@@ -574,6 +668,7 @@ def process_task(
     durable_write: bool,
     show_progress: bool,
     workers: int,
+    cache_frames: int,
 ) -> int:
     files = _numeric_replay_files(source_dir)
     if not files:
@@ -585,6 +680,7 @@ def process_task(
 
     cameras = tuple(cameras)
     excluded_ids = tuple(excluded_ids)
+    frame_cache = OracleFrameCache(cache_frames)
 
     def process_one(source: Path):
         replay_index = int(source.stem)
@@ -601,6 +697,7 @@ def process_task(
                 num_points,
                 excluded_ids,
                 seed,
+                frame_cache=frame_cache,
             )
             if not dry_run:
                 assert destination_dir is not None
@@ -635,10 +732,13 @@ def process_task(
             process_one, files, workers
         ):
             truncated += int(oracle.discovered_objects > max_objects)
+            cache_hits, cache_misses, _ = frame_cache.stats()
             progress.set_postfix(
                 objects=int(oracle.valid.sum()),
                 truncated=truncated,
                 workers=workers,
+                cache_hits=cache_hits,
+                cache_misses=cache_misses,
                 refresh=False,
             )
             progress.update(1)
@@ -653,7 +753,12 @@ def process_task(
         assert destination_dir is not None
         _copy_metadata(source_dir, destination_dir, overwrite)
     mode = 'validated' if dry_run else 'migrated'
-    print(f'{task}: {mode} {len(files)} replay files; truncated={truncated}')
+    cache_hits, cache_misses, cache_entries = frame_cache.stats()
+    print(
+        f'{task}: {mode} {len(files)} replay files; truncated={truncated}; '
+        f'cache_hits={cache_hits}; cache_misses={cache_misses}; '
+        f'cache_entries={cache_entries}'
+    )
     return len(files)
 
 
@@ -714,6 +819,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=1,
         help='number of replay files to process concurrently with threads',
     )
+    parser.add_argument(
+        '--cache-frames',
+        type=int,
+        default=128,
+        help='number of completed raw-frame Oracle results kept in LRU cache; 0 disables',
+    )
     parser.add_argument('--dry-run', action='store_true')
     parser.add_argument('--dry-run-samples', type=int, default=5)
     parser.add_argument('--visualize-index', type=int)
@@ -745,6 +856,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         raise ValueError('--dry-run-samples must be positive')
     if args.workers <= 0:
         raise ValueError('--workers must be positive')
+    if args.cache_frames < 0:
+        raise ValueError('--cache-frames must be non-negative')
     if not args.dry_run and not args.in_place and args.output_dir is None:
         raise ValueError('Choose --output-dir or explicit --in-place')
 
@@ -789,6 +902,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             durable_write=args.durable_write,
             show_progress=not args.no_progress,
             workers=args.workers,
+            cache_frames=args.cache_frames,
         )
     print(f'Done: {total} replay files')
     return 0

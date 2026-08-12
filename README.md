@@ -120,7 +120,8 @@ sentinel，其 episode/frame 元数据未定义，因此脚本只为它写入全
         --output-dir LPY/BridgeVLA_RLBench_ORACLE_Buffer \
         --max-objects 16 \
         --num-points 512 \
-        --workers 8
+        --workers 8 \
+        --cache-frames 128
 
 处理 replay 根目录下的全部任务：
 
@@ -159,6 +160,14 @@ N.replay.tmp，重新加载并验证原字段及 Oracle 字段后，再原子重
 --no-progress 关闭进度条。可通过 --workers N 使用线程池并行处理不同 replay
 文件，例如 --workers 8。线程数过高会增加内存占用和网络盘 I/O 竞争，建议从
 4 或 8 开始测试；默认值 1 保持原来的串行行为。
+
+脚本默认使用 --cache-frames 128 缓存最近完成的原始帧 Oracle 结果。缓存键为
+task、episode_idx 和 sample_frame；多个 replay transition 指向同一帧时，会
+复用 mask 解码、跨视角融合和点采样结果。多线程同时请求同一帧时也只计算一次。
+进度条中的 cache_hits 和 cache_misses 可用于确认缓存效果。可根据可用内存调整
+容量，或使用 --cache-frames 0 禁用缓存。同一原始帧的随机采样由 task、
+episode_idx、sample_frame 和 --seed 决定，不受 replay index 或线程完成顺序
+影响。
 
 RLBench mask 是 RGB 编码的 simulator handle，不能直接把 RGB 像素值当作实例
 ID。脚本调用 RLBench 自带的 rgb_handles_to_mask 解码，仅默认移除已确认的背景

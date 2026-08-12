@@ -9,6 +9,7 @@ from PIL import Image
 
 from tools.augment_replay_with_oracle_objects import (
     ORACLE_KEYS,
+    OracleFrameCache,
     atomic_write_replay,
     augment_transition,
     decode_mask_image,
@@ -34,6 +35,28 @@ def point_cloud(offset):
 
 
 class OracleReplayAugmentationTest(unittest.TestCase):
+    def test_frame_cache_single_flight_reuses_one_result(self):
+        cache = OracleFrameCache(capacity=2)
+        calls = []
+        expected = object()
+
+        def compute():
+            calls.append(True)
+            return expected
+
+        results = list(
+            _bounded_thread_map(
+                lambda _: cache.get_or_compute(
+                    ('stack_blocks', 2, 4), compute
+                ),
+                [Path(str(index)) for index in range(20)],
+                workers=4,
+            )
+        )
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(all(result is expected for result in results))
+        self.assertEqual(cache.stats(), (19, 1, 1))
+
     def test_bounded_thread_map_processes_every_item(self):
         items = [Path(str(index)) for index in range(20)]
         results = list(
@@ -156,10 +179,24 @@ class OracleReplayAugmentationTest(unittest.TestCase):
                 excluded_ids=(0,),
                 seed=8,
             )
+            _, repeated_oracle, _ = augment_transition(
+                original,
+                root / 'raw',
+                'stack_blocks',
+                replay_index=999,
+                cameras=CAMERAS,
+                max_objects=3,
+                num_points=4,
+                excluded_ids=(0,),
+                seed=8,
+            )
             output = root / 'output' / '9.replay'
             atomic_write_replay(output, original, migrated, oracle)
 
             self.assertEqual(episode_dir, episode)
+            np.testing.assert_array_equal(
+                repeated_oracle.points, oracle.points
+            )
             with output.open('rb') as stream:
                 reloaded = pickle.load(stream)
             self.assertTrue(set(original).issubset(reloaded))
