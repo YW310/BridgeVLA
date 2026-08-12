@@ -114,28 +114,28 @@ sentinel，其 episode/frame 元数据未定义，因此脚本只为它写入全
 处理 stack_blocks：
 
     python tools/augment_replay_with_oracle_objects.py \
-        --replay-dir /path/to/BridgeVLA_RLBench_TRAIN_Buffer \
-        --raw-data-dir /path/to/BridgeVLA_RLBench_TRAIN_DATA/train \
+        --replay-dir LPY/BridgeVLA_RLBench_TRAIN_Buffer \
+        --raw-data-dir LPY/BridgeVLA_RLBench_TRAIN_DATA/train \
         --task stack_blocks \
-        --output-dir /path/to/BridgeVLA_RLBench_ORACLE_Buffer \
+        --output-dir LPY/BridgeVLA_RLBench_ORACLE_Buffer \
         --max-objects 16 \
         --num-points 512
 
 处理 replay 根目录下的全部任务：
 
     python tools/augment_replay_with_oracle_objects.py \
-        --replay-dir /path/to/BridgeVLA_RLBench_TRAIN_Buffer \
-        --raw-data-dir /path/to/BridgeVLA_RLBench_TRAIN_DATA/train \
+        --replay-dir LPY/BridgeVLA_RLBench_TRAIN_Buffer \
+        --raw-data-dir LPY/BridgeVLA_RLBench_TRAIN_DATA/train \
         --task all \
-        --output-dir /path/to/BridgeVLA_RLBench_ORACLE_Buffer
+        --output-dir LPY/BridgeVLA_RLBench_ORACLE_Buffer
 
 建议首先执行 dry-run。该模式会随机选择若干 transition，打印 task、replay
 index、episode_idx、sample_frame、实例 ID、物体中心、点数、张量形状及有限值
 检查结果，但不会写入文件：
 
     python tools/augment_replay_with_oracle_objects.py \
-        --replay-dir /path/to/BridgeVLA_RLBench_TRAIN_Buffer \
-        --raw-data-dir /path/to/BridgeVLA_RLBench_TRAIN_DATA/train \
+        --replay-dir LPY/BridgeVLA_RLBench_TRAIN_Buffer \
+        --raw-data-dir LPY/BridgeVLA_RLBench_TRAIN_DATA/train \
         --task stack_blocks \
         --dry-run \
         --dry-run-samples 5
@@ -143,8 +143,8 @@ index、episode_idx、sample_frame、实例 ID、物体中心、点数、张量�
 可视化指定 transition：
 
     python tools/augment_replay_with_oracle_objects.py \
-        --replay-dir /path/to/BridgeVLA_RLBench_TRAIN_Buffer \
-        --raw-data-dir /path/to/BridgeVLA_RLBench_TRAIN_DATA/train \
+        --replay-dir LPY/BridgeVLA_RLBench_TRAIN_Buffer \
+        --raw-data-dir LPY/BridgeVLA_RLBench_TRAIN_DATA/train \
         --task stack_blocks \
         --dry-run \
         --visualize-index 100
@@ -206,7 +206,7 @@ bash eval.sh # Please modify the evaluated tasks and the checkpoint path in the 
 2. **COLOSSEUM Evaluation:** To evaluate on COLOSSEUM, you should first preprocess the eval data as the original format is not suitable for our data loading. Run the following code to preprocess them. Or you can directly download the cleaned data we have tided from [here](https://huggingface.co/datasets/LPY/BridgeVLA_COLOSSUM_EVAL_DATA/tree/main).
 ```bash
 cd finetune/Colosseum
-python3   cleanup_script.py   /PATH/TO/COLOSSEUM_EVAL_DATA/
+python3   cleanup_script.py   LPY/COLOSSEUM_EVAL_DATA/
 ```
 After cleaning the eval dataset, you can run the following code to evaluate the model:
 ```bash
