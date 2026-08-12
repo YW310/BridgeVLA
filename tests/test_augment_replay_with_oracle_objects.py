@@ -11,6 +11,7 @@ from tools.augment_replay_with_oracle_objects import (
     ORACLE_KEYS,
     atomic_write_replay,
     augment_transition,
+    decode_mask_image,
     extract_oracle_objects,
     _select_dry_run_files,
 )
@@ -32,6 +33,25 @@ def point_cloud(offset):
 
 
 class OracleReplayAugmentationTest(unittest.TestCase):
+    def test_rgb_mask_decoder_receives_writable_normalized_input(self):
+        encoded = np.array([[[0, 0, 0], [1, 0, 0]]], dtype=np.uint8)
+
+        def decoder(rgb):
+            self.assertTrue(rgb.flags.writeable)
+            self.assertEqual(rgb.dtype, np.float32)
+            self.assertGreaterEqual(float(rgb.min()), 0.0)
+            self.assertLessEqual(float(rgb.max()), 1.0)
+            rgb *= 255
+            rgb = rgb.astype(np.int64)
+            return (
+                rgb[..., 0]
+                + rgb[..., 1] * 256
+                + rgb[..., 2] * 256 * 256
+            )
+
+        decoded = decode_mask_image(encoded, decoder=decoder)
+        self.assertEqual(decoded.tolist(), [[0, 1]])
+
     def test_dry_run_stops_after_enough_regular_transitions(self):
         with tempfile.TemporaryDirectory() as temporary:
             files = []

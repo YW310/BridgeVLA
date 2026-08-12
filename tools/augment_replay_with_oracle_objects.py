@@ -97,7 +97,16 @@ def decode_mask_image(
     elif image.ndim == 3 and image.shape[-1] in (3, 4):
         # Oracle object experiment: RLBench masks are coded RGB handle PNGs.
         decoder = decoder or _rlbench_mask_decoder()
-        mask = decoder(image[..., :3])
+        # PIL-backed np.asarray values are read-only, while RLBench's decoder
+        # multiplies its input in place. The decoder also expects RGB in [0, 1],
+        # whereas PNG pixels loaded by PIL are uint8 in [0, 255].
+        encoded_rgb = image[..., :3]
+        rgb = np.array(encoded_rgb, dtype=np.float32, copy=True)
+        if np.issubdtype(encoded_rgb.dtype, np.integer):
+            rgb /= 255.0
+        elif rgb.size and np.max(rgb) > 1.0:
+            rgb /= 255.0
+        mask = decoder(rgb)
     else:
         raise ValueError(f'Unsupported RLBench mask image shape: {image.shape}')
     mask = np.asarray(mask)
