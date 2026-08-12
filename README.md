@@ -83,6 +83,99 @@ bash train.sh --exp_cfg_path  configs/rlbench_config.yaml \
               --load_pretrain \
               --pretrain_path  LPY/BridgeVLA/checkpoints/RLBench/model_80.pth 
 ```
+### RLBench Oracle 3D 物体 Replay 数据准备
+
+为了进行 BridgeVLA + Oracle 3D Object Tokens 实验，可以在不重新生成原始
+BridgeVLA replay buffer 的前提下，为已有的逐 transition replay 文件追加 GT
+物体点云。工具位于 tools/augment_replay_with_oracle_objects.py。
+
+每个 N.replay 都是一个独立的 pickle transition 字典。脚本使用其中的
+episode_idx 和 sample_frame 定位当前观测对应的原始 RLBench 帧：
+
+    N.replay[episode_idx] + N.replay[sample_frame]
+        -> episode{episode_idx}/{camera}_mask/{sample_frame}.png
+        -> RLBench rgb_handles_to_mask 解码实例 ID
+        -> 与 N.replay[{camera}_point_cloud] 按像素对齐
+        -> 跨 front、left_shoulder、right_shoulder、wrist 相机合并同一实例
+        -> 固定尺寸 Oracle 物体点云
+
+追加的字段为：
+
+    oracle_object_points   # [MAX_OBJECTS, NUM_POINTS, 3], float32
+    oracle_object_centers  # [MAX_OBJECTS, 3], float32
+    oracle_object_ids      # [MAX_OBJECTS], int32
+    oracle_object_valid    # [MAX_OBJECTS], bool
+
+sample_frame 表示当前 replay observation 的原始帧。keypoint_frame 表示前一个
+关键帧，Oracle 对齐不会使用它。terminal == -1 的文件是 YARR 的最终观测
+sentinel，其 episode/frame 元数据未定义，因此脚本只为它写入全 invalid 的填充
+张量。
+
+处理 stack_blocks：
+
+    python tools/augment_replay_with_oracle_objects.py \
+        --replay-dir /path/to/BridgeVLA_RLBench_TRAIN_Buffer \
+        --raw-data-dir /path/to/BridgeVLA_RLBench_TRAIN_DATA/train \
+        --task stack_blocks \
+        --output-dir /path/to/BridgeVLA_RLBench_ORACLE_Buffer \
+        --max-objects 16 \
+        --num-points 512
+
+处理 replay 根目录下的全部任务：
+
+    python tools/augment_replay_with_oracle_objects.py \
+        --replay-dir /path/to/BridgeVLA_RLBench_TRAIN_Buffer \
+        --raw-data-dir /path/to/BridgeVLA_RLBench_TRAIN_DATA/train \
+        --task all \
+        --output-dir /path/to/BridgeVLA_RLBench_ORACLE_Buffer
+
+建议首先执行 dry-run。该模式会随机选择若干 transition，打印 task、replay
+index、episode_idx、sample_frame、实例 ID、物体中心、点数、张量形状及有限值
+检查结果，但不会写入文件：
+
+    python tools/augment_replay_with_oracle_objects.py \
+        --replay-dir /path/to/BridgeVLA_RLBench_TRAIN_Buffer \
+        --raw-data-dir /path/to/BridgeVLA_RLBench_TRAIN_DATA/train \
+        --task stack_blocks \
+        --dry-run \
+        --dry-run-samples 5
+
+可视化指定 transition：
+
+    python tools/augment_replay_with_oracle_objects.py \
+        --replay-dir /path/to/BridgeVLA_RLBench_TRAIN_Buffer \
+        --raw-data-dir /path/to/BridgeVLA_RLBench_TRAIN_DATA/train \
+        --task stack_blocks \
+        --dry-run \
+        --visualize-index 100
+
+默认行为会生成新的 Oracle replay 副本，不会覆盖原始文件。每个 replay 先写入
+N.replay.tmp，重新加载并验证原字段及 Oracle 字段后，再原子重命名。已有输出
+默认会被拒绝；只有显式传入 --overwrite 才会替换输出。若确实需要修改原目录，
+必须显式使用 --in-place。
+
+RLBench mask 是 RGB 编码的 simulator handle，不能直接把 RGB 像素值当作实例
+ID。脚本调用 RLBench 自带的 rgb_handles_to_mask 解码，仅默认移除已确认的背景
+ID 0。离线数据没有提供 handle 到物体名称的映射，因此不会自动移除机器人；
+如已知某个 handle，可重复传入 --exclude-object-id。
+
+如果场景中的有效实例多于 max-objects，脚本优先保留点数最多的实例；少于
+num-points 的实例会有放回采样，多于该数量时无放回采样。所有 NaN 和 Inf 点均
+会在采样前移除。
+
+训练加载 Oracle replay 时，需要将
+finetune/RLBench/utils/peract_utils_rlbench.py 中的
+TRAIN_REPLAY_STORAGE_DIR 指向 Oracle 输出目录，并启用与数据准备阶段一致的张量
+尺寸：
+
+    bash train.sh \
+        --exp_cfg_opts 'use_oracle_objects True oracle_max_objects 16 oracle_num_points 512' \
+        [其他训练参数]
+
+use_oracle_objects 默认为 False，因此原始非 Oracle replay 的加载行为保持不变。
+当前改动负责准备和加载 Oracle 字段，不包含将这些字段转换为 object tokens 的
+策略网络结构。
+
 3. **COLOSSEUM Fine-tuning:** For COLOSSEUM, we fine-tune the model with the training dataset provided by the [COLOSSEUM challenge](https://huggingface.co/datasets/colosseum/colosseum-challenge/tree/main). Similarly, our training code will first convert the raw data into replay buffer. You can also directly download the replay buffer we preprocess [here](https://huggingface.co/datasets/LPY/BridgeVLA_COLOSSEUM_TRAIN_BUFFER/tree/main). Then, you can use the `finetune/Colosseum/train.sh` file to finetune the model. Please run the following code:
 ```bash
 cd finetune/Colosseum

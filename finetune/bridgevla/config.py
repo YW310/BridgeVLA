@@ -15,6 +15,10 @@ _C.num_workers = 0
 _C.sample_distribution_mode = 'transition_uniform'
 _C.train_iter = 16 * 10000
 _C.use_scheduler = True
+# Oracle object experiment: opt in only when loading an augmented replay copy.
+_C.use_oracle_objects = False
+_C.oracle_max_objects = 16
+_C.oracle_num_points = 512
 # arguments present in both peract and rvt
 # some of them donot support every possible combination in peract
 _C.peract = CN()

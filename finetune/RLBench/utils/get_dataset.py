@@ -31,6 +31,9 @@ def get_dataset(
     device,
     num_workers,
     only_train,
+    use_oracle_objects=False,
+    oracle_max_objects=16,
+    oracle_num_points=512,
     sample_distribution_mode="transition_uniform",
 ):
 
@@ -40,6 +43,9 @@ def get_dataset(
         disk_saving=True,
         cameras=CAMERAS,
         voxel_sizes=VOXEL_SIZES,
+        use_oracle_objects=use_oracle_objects,
+        oracle_max_objects=oracle_max_objects,
+        oracle_num_points=oracle_num_points,
     )
     if not only_train:
         test_replay_buffer = create_replay(
@@ -48,6 +54,9 @@ def get_dataset(
             disk_saving=True,
             cameras=CAMERAS,
             voxel_sizes=VOXEL_SIZES,
+            use_oracle_objects=use_oracle_objects,
+            oracle_max_objects=oracle_max_objects,
+            oracle_num_points=oracle_num_points,
         )
 
     # load pre-trained language model
@@ -152,5 +161,4 @@ def get_dataset(
         )
         test_dataset = test_wrapped_replay.dataset()
     return train_dataset, test_dataset
-
 
