@@ -13,6 +13,7 @@ from tools.augment_replay_with_oracle_objects import (
     augment_transition,
     decode_mask_image,
     extract_oracle_objects,
+    _bounded_thread_map,
     _select_dry_run_files,
 )
 
@@ -33,6 +34,19 @@ def point_cloud(offset):
 
 
 class OracleReplayAugmentationTest(unittest.TestCase):
+    def test_bounded_thread_map_processes_every_item(self):
+        items = [Path(str(index)) for index in range(20)]
+        results = list(
+            _bounded_thread_map(
+                lambda item: int(item.name) ** 2,
+                items,
+                workers=4,
+            )
+        )
+        self.assertEqual(
+            sorted(results), [index ** 2 for index in range(20)]
+        )
+
     def test_rgb_mask_decoder_receives_writable_normalized_input(self):
         encoded = np.array([[[0, 0, 0], [1, 0, 0]]], dtype=np.uint8)
 

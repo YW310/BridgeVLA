@@ -12,12 +12,14 @@ import hashlib
 import os
 import pickle
 import shutil
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 from PIL import Image
+from tqdm import tqdm
 
 
 # Oracle object experiment
@@ -522,6 +524,39 @@ def _select_dry_run_files(
     return selected
 
 
+def _bounded_thread_map(function, items: Sequence[Path], workers: int):
+    '''Yield completed results while keeping only 2 * workers tasks in flight.'''
+    if workers == 1:
+        for item in items:
+            yield function(item)
+        return
+
+    item_iterator = iter(items)
+    executor = ThreadPoolExecutor(
+        max_workers=workers, thread_name_prefix='oracle-replay'
+    )
+    pending = set()
+    try:
+        for _ in range(min(len(items), workers * 2)):
+            pending.add(executor.submit(function, next(item_iterator)))
+
+        while pending:
+            completed, pending = wait(
+                pending, return_when=FIRST_COMPLETED
+            )
+            for future in completed:
+                yield future.result()
+                try:
+                    item = next(item_iterator)
+                except StopIteration:
+                    continue
+                pending.add(executor.submit(function, item))
+    finally:
+        for future in pending:
+            future.cancel()
+        executor.shutdown(wait=True, cancel_futures=True)
+
+
 def process_task(
     task: str,
     source_dir: Path,
@@ -537,6 +572,8 @@ def process_task(
     visualize_index: Optional[int],
     overwrite: bool,
     durable_write: bool,
+    show_progress: bool,
+    workers: int,
 ) -> int:
     files = _numeric_replay_files(source_dir)
     if not files:
@@ -546,36 +583,71 @@ def process_task(
             files, seed, dry_run_samples, visualize_index
         )
 
-    truncated = 0
-    for source in files:
+    cameras = tuple(cameras)
+    excluded_ids = tuple(excluded_ids)
+
+    def process_one(source: Path):
         replay_index = int(source.stem)
-        with source.open('rb') as stream:
-            original = pickle.load(stream)
-        migrated, oracle, _ = augment_transition(
-            original,
-            raw_data_dir,
-            task,
-            replay_index,
-            cameras,
-            max_objects,
-            num_points,
-            excluded_ids,
-            seed,
-        )
-        truncated += int(oracle.discovered_objects > max_objects)
-        if dry_run:
-            _describe(task, replay_index, original, oracle)
-        else:
-            assert destination_dir is not None
-            atomic_write_replay(
-                destination_dir / source.name,
+        try:
+            with source.open('rb') as stream:
+                original = pickle.load(stream)
+            migrated, oracle, _ = augment_transition(
                 original,
-                migrated,
-                oracle,
-                durable_write=durable_write,
+                raw_data_dir,
+                task,
+                replay_index,
+                cameras,
+                max_objects,
+                num_points,
+                excluded_ids,
+                seed,
             )
-        if visualize_index == replay_index:
-            visualize_oracle_objects(oracle, task, replay_index)
+            if not dry_run:
+                assert destination_dir is not None
+                atomic_write_replay(
+                    destination_dir / source.name,
+                    original,
+                    migrated,
+                    oracle,
+                    durable_write=durable_write,
+                )
+            alignment = {
+                key: original[key]
+                for key in ('terminal', 'episode_idx', 'sample_frame')
+                if key in original
+            }
+            return replay_index, alignment, oracle
+        except Exception as exc:
+            raise RuntimeError(
+                f'Failed to process replay {source}'
+            ) from exc
+
+    truncated = 0
+    progress = tqdm(
+        total=len(files),
+        desc=f'{task}: Oracle replay',
+        unit='replay',
+        dynamic_ncols=True,
+        disable=not show_progress,
+    )
+    try:
+        for replay_index, alignment, oracle in _bounded_thread_map(
+            process_one, files, workers
+        ):
+            truncated += int(oracle.discovered_objects > max_objects)
+            progress.set_postfix(
+                objects=int(oracle.valid.sum()),
+                truncated=truncated,
+                workers=workers,
+                refresh=False,
+            )
+            progress.update(1)
+            if dry_run:
+                _describe(task, replay_index, alignment, oracle)
+            if visualize_index == replay_index:
+                visualize_oracle_objects(oracle, task, replay_index)
+    finally:
+        progress.close()
 
     if not dry_run:
         assert destination_dir is not None
@@ -636,6 +708,12 @@ def build_parser() -> argparse.ArgumentParser:
         help='Decoded handle to exclude; repeat as needed',
     )
     parser.add_argument('--seed', type=int, default=0)
+    parser.add_argument(
+        '--workers',
+        type=int,
+        default=1,
+        help='number of replay files to process concurrently with threads',
+    )
     parser.add_argument('--dry-run', action='store_true')
     parser.add_argument('--dry-run-samples', type=int, default=5)
     parser.add_argument('--visualize-index', type=int)
@@ -644,6 +722,11 @@ def build_parser() -> argparse.ArgumentParser:
         '--durable-write',
         action='store_true',
         help='fsync every temporary replay before rename (safer but slower)',
+    )
+    parser.add_argument(
+        '--no-progress',
+        action='store_true',
+        help='disable the per-task tqdm progress bar',
     )
     return parser
 
@@ -660,6 +743,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         raise ValueError('--max-objects and --num-points must be positive')
     if args.dry_run_samples <= 0:
         raise ValueError('--dry-run-samples must be positive')
+    if args.workers <= 0:
+        raise ValueError('--workers must be positive')
     if not args.dry_run and not args.in_place and args.output_dir is None:
         raise ValueError('Choose --output-dir or explicit --in-place')
 
@@ -702,6 +787,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             visualize_index=args.visualize_index,
             overwrite=args.overwrite,
             durable_write=args.durable_write,
+            show_progress=not args.no_progress,
+            workers=args.workers,
         )
     print(f'Done: {total} replay files')
     return 0

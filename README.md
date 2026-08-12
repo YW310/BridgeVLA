@@ -119,7 +119,8 @@ sentinel，其 episode/frame 元数据未定义，因此脚本只为它写入全
         --task stack_blocks \
         --output-dir LPY/BridgeVLA_RLBench_ORACLE_Buffer \
         --max-objects 16 \
-        --num-points 512
+        --num-points 512 \
+        --workers 8
 
 处理 replay 根目录下的全部任务：
 
@@ -154,6 +155,10 @@ N.replay.tmp，重新加载并验证原字段及 Oracle 字段后，再原子重
 默认会被拒绝；只有显式传入 --overwrite 才会替换输出。若确实需要修改原目录，
 必须显式使用 --in-place。默认不对每个文件调用 fsync，以避免网络盘上的严重
 性能损失；如需要每个临时文件在重命名前强制落盘，可显式添加 --durable-write。
+处理过程中默认显示每个任务的 tqdm 进度、速度和预计剩余时间；后台运行时可用
+--no-progress 关闭进度条。可通过 --workers N 使用线程池并行处理不同 replay
+文件，例如 --workers 8。线程数过高会增加内存占用和网络盘 I/O 竞争，建议从
+4 或 8 开始测试；默认值 1 保持原来的串行行为。
 
 RLBench mask 是 RGB 编码的 simulator handle，不能直接把 RGB 像素值当作实例
 ID。脚本调用 RLBench 自带的 rgb_handles_to_mask 解码，仅默认移除已确认的背景
