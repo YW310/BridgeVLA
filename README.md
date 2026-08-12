@@ -152,7 +152,8 @@ index、episode_idx、sample_frame、实例 ID、物体中心、点数、张量�
 默认行为会生成新的 Oracle replay 副本，不会覆盖原始文件。每个 replay 先写入
 N.replay.tmp，重新加载并验证原字段及 Oracle 字段后，再原子重命名。已有输出
 默认会被拒绝；只有显式传入 --overwrite 才会替换输出。若确实需要修改原目录，
-必须显式使用 --in-place。
+必须显式使用 --in-place。默认不对每个文件调用 fsync，以避免网络盘上的严重
+性能损失；如需要每个临时文件在重命名前强制落盘，可显式添加 --durable-write。
 
 RLBench mask 是 RGB 编码的 simulator handle，不能直接把 RGB 像素值当作实例
 ID。脚本调用 RLBench 自带的 rgb_handles_to_mask 解码，仅默认移除已确认的背景

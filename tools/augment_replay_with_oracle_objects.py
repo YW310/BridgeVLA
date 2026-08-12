@@ -337,14 +337,19 @@ def atomic_write_replay(
     original: Mapping[str, object],
     migrated: Mapping[str, object],
     oracle: OracleObjects,
+    durable_write: bool = False,
 ) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = Path(f'{destination}.tmp')
     try:
         with temporary.open('wb') as stream:
             pickle.dump(migrated, stream, protocol=pickle.HIGHEST_PROTOCOL)
-            stream.flush()
-            os.fsync(stream.fileno())
+            if durable_write:
+                # Oracle object experiment: forcing every file to stable storage
+                # is useful for maximum durability, but is very slow on NFS and
+                # network-mounted dataset directories.
+                stream.flush()
+                os.fsync(stream.fileno())
         with temporary.open('rb') as stream:
             reloaded = pickle.load(stream)
         validate_migrated_transition(original, reloaded, oracle)
@@ -487,20 +492,18 @@ def _select_dry_run_files(
     sample_count: int,
     visualize_index: Optional[int],
 ) -> List[Path]:
-    regular: List[Path] = []
-    for source in files:
+    rng = np.random.default_rng(seed)
+    selected: List[Path] = []
+    for index in rng.permutation(len(files)):
+        source = files[int(index)]
         with source.open('rb') as stream:
             transition = pickle.load(stream)
         if int(np.asarray(transition.get('terminal', -1)).item()) != -1:
-            regular.append(source)
-    count = min(sample_count, len(regular))
-    rng = np.random.default_rng(seed)
-    chosen = (
-        set(rng.choice(len(regular), size=count, replace=False).tolist())
-        if count
-        else set()
-    )
-    selected = [path for index, path in enumerate(regular) if index in chosen]
+            selected.append(source)
+            # Stop as soon as enough ordinary transitions have been found.
+            # This avoids opening every replay merely to run a small dry-run.
+            if len(selected) == sample_count:
+                break
     if visualize_index is not None:
         visual = files[0].parent / f'{visualize_index}.replay'
         if not visual.is_file():
@@ -524,6 +527,7 @@ def process_task(
     dry_run_samples: int,
     visualize_index: Optional[int],
     overwrite: bool,
+    durable_write: bool,
 ) -> int:
     files = _numeric_replay_files(source_dir)
     if not files:
@@ -555,7 +559,11 @@ def process_task(
         else:
             assert destination_dir is not None
             atomic_write_replay(
-                destination_dir / source.name, original, migrated, oracle
+                destination_dir / source.name,
+                original,
+                migrated,
+                oracle,
+                durable_write=durable_write,
             )
         if visualize_index == replay_index:
             visualize_oracle_objects(oracle, task, replay_index)
@@ -623,6 +631,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--dry-run-samples', type=int, default=5)
     parser.add_argument('--visualize-index', type=int)
     parser.add_argument('--overwrite', action='store_true')
+    parser.add_argument(
+        '--durable-write',
+        action='store_true',
+        help='fsync every temporary replay before rename (safer but slower)',
+    )
     return parser
 
 
@@ -679,6 +692,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             dry_run_samples=args.dry_run_samples,
             visualize_index=args.visualize_index,
             overwrite=args.overwrite,
+            durable_write=args.durable_write,
         )
     print(f'Done: {total} replay files')
     return 0

@@ -2,6 +2,7 @@ import pickle
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 from PIL import Image
@@ -11,6 +12,7 @@ from tools.augment_replay_with_oracle_objects import (
     atomic_write_replay,
     augment_transition,
     extract_oracle_objects,
+    _select_dry_run_files,
 )
 
 
@@ -30,6 +32,23 @@ def point_cloud(offset):
 
 
 class OracleReplayAugmentationTest(unittest.TestCase):
+    def test_dry_run_stops_after_enough_regular_transitions(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            files = []
+            for index in range(100):
+                replay = Path(temporary) / f'{index}.replay'
+                replay.touch()
+                files.append(replay)
+            with patch(
+                'tools.augment_replay_with_oracle_objects.pickle.load',
+                return_value={'terminal': np.int8(0)},
+            ) as load:
+                selected = _select_dry_run_files(
+                    files, seed=4, sample_count=5, visualize_index=None
+                )
+            self.assertEqual(len(selected), 5)
+            self.assertEqual(load.call_count, 5)
+
     def test_extract_merges_views_filters_invalid_and_pads(self):
         transition = {
             f'{camera}_point_cloud': point_cloud(index)
