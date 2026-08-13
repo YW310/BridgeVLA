@@ -208,9 +208,11 @@ ID 0。离线数据没有提供 handle 到物体名称的映射，因此不会�
 
 无需重新运行 RLBench 或重新生成原始 replay。添加 `--task-prior-filter` 后，脚本会在
 GT mask 与点云融合完成、写入 `oracle_object_*` 之前，根据当前 transition 中监督的
-下一关键动作 `gripper_pose[:3]` 筛选实例。18 个 BridgeVLA 任务的默认动作类型、
+下一关键动作 `gripper_pose[:3]` 对实例排序。18 个 BridgeVLA 任务的默认动作类型、
 交互半径和最大 handle 数定义在 `tools/rlbench_task_object_priors.py`。明显覆盖两个大
 坐标轴的桌面/地面会作为背景移除；其余实例按点云包围盒到动作位置的距离排序。
+默认采用高召回模式，距离超过交互半径的实例不会仅因此被删除，避免多物体任务中
+只保留下一步动作附近的一个物体。
 
     python tools/augment_replay_with_oracle_objects.py \
         --replay-dir LPY/BridgeVLA_RLBench_TRAIN_Buffer \
@@ -225,10 +227,33 @@ GT mask 与点云融合完成、写入 `oracle_object_*` 之前，根据当前 t
         --visualize-objects-only \
         --cache-frames 256
 
+    python tools/augment_replay_with_oracle_objects.py \
+        --replay-dir LPY/BridgeVLA_RLBench_TRAIN_Buffer \
+        --raw-data-dir LPY/BridgeVLA_RLBench_TRAIN_DATA/train \
+        --task stack_blocks \
+        --detect-robot-handles \
+        --refresh-robot-handle-cache \
+        --robot-detection-frames 8 \
+        --robot-handle-cache-dir robot_handle_maps \
+        --task-prior-filter \
+        --min-object-points 1 \
+        --max-objects 32 \
+        --visualize-index 100 \
+        --visualize-objects-only \
+        --dry-run
+
 建议先配合 `--dry-run --visualize-every N` 检查结果。可使用
 `--task-prior-radius`、`--task-prior-max-instances` 和
 `--task-prior-background-extent` 覆盖默认值。进度条和 dry-run 输出中的
-`prior_filtered` 表示被任务先验删除的 handle 数。
+`prior_filtered` 表示被任务先验删除的 handle 数。如确实需要旧式的激进空间筛选，
+显式添加 `--task-prior-strict`；此时才会删除交互半径之外的 handle，并使用任务默认
+的最大 handle 数。也可以只传 `--task-prior-max-instances N` 主动限制高召回结果。
+
+dry-run 会同时打印 `excluded_object_ids`、`no_finite_point_object_ids`、
+`small_object_ids`、`task_prior_filtered_object_ids` 和 `truncated_object_ids`，分别对应
+ID/机械臂排除、mask 可见但点云全为 NaN/Inf、点数阈值、任务先验以及
+`--max-objects` 截断。若某个 handle 不在这些列表，也不在当前帧保留 ID 中，说明它
+在所选相机的当前帧 GT mask 中不可见，而不是过滤器删除。
 
 若只想查看筛选后保留的彩色 object，不显示灰色完整场景点云，可添加：
 
@@ -266,10 +291,11 @@ Oracle 点云。
 
 不需要重新运行或重新采集 RLBench。添加 `--detect-robot-handles` 后，脚本会在生成
 Oracle 前对每个 episode 最多抽取若干个时间上均匀分布的 replay 帧，并读取原始
-`low_dim_obs.pkl[sample_frame].gripper_pose` 中的**当前**夹爪位置。检测器首先寻找
-wrist mask 中长期处于固定图像位置、同时靠近夹爪的 handles，再通过跨帧持久相邻
-关系扩展到随机械臂运动的 links。只在抓取后才靠近夹爪的任务物体不会作为机械臂
-扩展节点。
+`low_dim_obs.pkl[sample_frame].gripper_pose` 中的**当前**夹爪位置。检测器只把首个
+采样帧就在 wrist mask 中可见、靠近夹爪，并且跨帧保持稳定“物体中心－夹爪位置”
+偏移的 handle 作为夹爪种子；机械臂 link 除了需要持续运动和相邻，还必须在 episode
+早期就已和夹爪/机械臂链连接。因此只在抓取后才靠近或随机械臂运动的任务物体，
+不会被误加入 `robot_handles`。
 
     python tools/augment_replay_with_oracle_objects.py \
         --replay-dir LPY/BridgeVLA_RLBench_TRAIN_Buffer \
@@ -292,6 +318,8 @@ JSON 中保存 `gripper_handles`、`arm_handles`、合并后的 `robot_handles`�
 参与检测的 `sampled_frames`。后续运行默认直接复用缓存；需要重新检测时添加
 `--refresh-robot-handle-cache`。dry-run 可以读取已有缓存，但不会新建或覆盖缓存。
 自动结果仍可与重复传入的 `--exclude-robot-id ID` 精确黑名单同时使用。
+检测缓存带有算法版本；旧版 `wrist_pose_temporal_adjacency_v1` JSON 会自动失效，
+对应 episode 将按新版规则重新检测并在非 dry-run 时覆盖为 v2，不需要手动删除。
 
 检测启动阶段会优先读取 replay 目录中的轻量 `replay_info.npy` 划分 episode，不再
 为分组而打开全部大型 `.replay`；每个未缓存 episode 只读取最多

@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -58,6 +59,69 @@ class RLBenchRobotHandleDetectorTest(unittest.TestCase):
         self.assertNotIn(20, detection.robot_handles)
         self.assertNotIn(30, detection.robot_handles)
 
+    def test_late_grasped_object_cannot_become_gripper_seed(self):
+        frames = []
+        for frame_index in range(8):
+            gripper = np.array(
+                [frame_index * 0.04, 0.0, 0.8], dtype=np.float32
+            )
+            manipulated = (
+                np.array([0.55, 0.0, 0.8], dtype=np.float32)
+                if frame_index < 2
+                else gripper + np.array([0.03, 0.0, 0.0])
+            )
+            centers = {10: gripper, 20: manipulated}
+            frames.append(
+                RobotFrameEvidence(
+                    sample_frame=frame_index,
+                    gripper_position=gripper,
+                    bounds_by_id={
+                        object_id: bounds(center, 0.015)
+                        for object_id, center in centers.items()
+                    },
+                    centers_by_id=centers,
+                    wrist_centroids_by_id={
+                        10: np.array([0.5, 0.5]),
+                        # It looks wrist-stable after being grasped, but was
+                        # not physically beside the gripper at the start.
+                        20: np.array([0.2, 0.2]),
+                    },
+                )
+            )
+
+        detection = detect_robot_handles(4, frames)
+        self.assertEqual(detection.gripper_handles, (10,))
+        self.assertNotIn(20, detection.robot_handles)
+
+    def test_late_adjacency_cannot_expand_robot_chain(self):
+        frames = []
+        for frame_index in range(8):
+            gripper = np.array(
+                [frame_index * 0.04, 0.0, 0.8], dtype=np.float32
+            )
+            manipulated = (
+                np.array([0.55, 0.0, 0.8], dtype=np.float32)
+                if frame_index < 2
+                else gripper + np.array([0.03, 0.0, 0.0])
+            )
+            centers = {10: gripper, 20: manipulated}
+            frames.append(
+                RobotFrameEvidence(
+                    sample_frame=frame_index,
+                    gripper_position=gripper,
+                    bounds_by_id={
+                        object_id: bounds(center, 0.015)
+                        for object_id, center in centers.items()
+                    },
+                    centers_by_id=centers,
+                    wrist_centroids_by_id={10: np.array([0.5, 0.5])},
+                )
+            )
+
+        detection = detect_robot_handles(5, frames)
+        self.assertEqual(detection.gripper_handles, (10,))
+        self.assertNotIn(20, detection.arm_handles)
+
     def test_json_cache_round_trip(self):
         frames = [
             RobotFrameEvidence(
@@ -75,6 +139,22 @@ class RLBenchRobotHandleDetectorTest(unittest.TestCase):
             save_robot_handle_detection(path, detection)
             loaded = load_robot_handle_detection(path)
         self.assertEqual(loaded, detection)
+
+    def test_old_cache_method_is_rejected(self):
+        payload = {
+            'episode_idx': 7,
+            'gripper_handles': [5],
+            'arm_handles': [],
+            'robot_handles': [5],
+            'confidence': {'5': 0.9},
+            'sampled_frames': [0, 1],
+            'method': 'wrist_pose_temporal_adjacency_v1',
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'episode_0007.json'
+            path.write_text(json.dumps(payload), encoding='utf-8')
+            with self.assertRaisesRegex(ValueError, 'Stale robot-handle cache'):
+                load_robot_handle_detection(path)
 
 
 if __name__ == '__main__':

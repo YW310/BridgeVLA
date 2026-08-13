@@ -62,6 +62,9 @@ class OracleReplayAugmentationTest(unittest.TestCase):
         )
         args = parser.parse_args(base + ['--visualize-objects-only'])
         self.assertTrue(args.visualize_objects_only)
+        self.assertFalse(args.task_prior_strict)
+        args = parser.parse_args(base + ['--task-prior-strict'])
+        self.assertTrue(args.task_prior_strict)
         args = parser.parse_args(
             base
             + [
@@ -256,6 +259,7 @@ class OracleReplayAugmentationTest(unittest.TestCase):
         self.assertEqual(oracle.ids.tolist(), [5, 7, -1, -1])
         self.assertEqual(oracle.valid.tolist(), [True, True, False, False])
         self.assertEqual(oracle.raw_point_counts, (2, 2))
+        self.assertEqual(oracle.excluded_object_ids, (0,))
         np.testing.assert_array_equal(
             oracle.sizes[2:], np.zeros((2, 3), dtype=np.float32)
         )
@@ -283,7 +287,23 @@ class OracleReplayAugmentationTest(unittest.TestCase):
         )
         self.assertEqual(oracle.ids.tolist(), [5, -1, -1, -1])
         self.assertEqual(oracle.filtered_objects, 1)
+        self.assertEqual(oracle.small_object_ids, (7,))
         self.assertEqual(oracle.discovered_objects, 1)
+
+    def test_reports_mask_instance_with_no_finite_point_cloud(self):
+        cloud = point_cloud(0)
+        cloud[:, 0, 1] = np.nan
+        oracle = extract_oracle_objects(
+            {'front_point_cloud': cloud},
+            {'front': np.array([[0, 9, 0], [0, 0, 0]], dtype=np.int32)},
+            cameras=('front',),
+            max_objects=4,
+            num_points=3,
+            min_object_points=1,
+            rng=np.random.default_rng(0),
+        )
+        self.assertEqual(oracle.no_finite_point_object_ids, (9,))
+        self.assertFalse(oracle.valid.any())
 
     def test_task_prior_filter_runs_during_oracle_extraction(self):
         transition = {'front_point_cloud': point_cloud(0)}
@@ -301,10 +321,12 @@ class OracleReplayAugmentationTest(unittest.TestCase):
             task_prior_filter=True,
             action_position=np.array([1.5, 0.0, 1.0]),
             task_prior_radius=0.2,
+            task_prior_strict=True,
             rng=np.random.default_rng(0),
         )
         self.assertEqual(oracle.ids.tolist(), [5, -1, -1, -1])
         self.assertEqual(oracle.prior_filtered_objects, 1)
+        self.assertEqual(oracle.prior_filtered_object_ids, (7,))
 
     def test_alignment_and_atomic_round_trip_preserve_original_fields(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -11,6 +11,7 @@ import numpy as np
 
 
 Bounds = Tuple[np.ndarray, np.ndarray]
+ROBOT_DETECTOR_METHOD = 'wrist_pose_temporal_adjacency_v2'
 
 
 @dataclass(frozen=True)
@@ -45,7 +46,7 @@ class RobotHandleDetection:
                 for handle, value in sorted(self.confidence.items())
             },
             'sampled_frames': list(self.sampled_frames),
-            'method': 'wrist_pose_temporal_adjacency_v1',
+            'method': ROBOT_DETECTOR_METHOD,
         }
 
 
@@ -131,7 +132,8 @@ def detect_robot_handles(
     *,
     gripper_radius: float = 0.14,
     wrist_centroid_std: float = 0.08,
-    min_visibility_ratio: float = 0.50,
+    relative_offset_std: float = 0.06,
+    min_visibility_ratio: float = 0.75,
     adjacency_distance: float = 0.05,
     adjacency_ratio: float = 0.70,
     min_link_motion: float = 0.008,
@@ -144,6 +146,7 @@ def detect_robot_handles(
     if min(
         gripper_radius,
         wrist_centroid_std,
+        relative_offset_std,
         adjacency_distance,
         min_link_motion,
     ) <= 0:
@@ -160,6 +163,9 @@ def detect_robot_handles(
         object_id: [] for object_id in all_ids
     }
     centers: Dict[int, List[np.ndarray]] = {object_id: [] for object_id in all_ids}
+    relative_offsets: Dict[int, List[np.ndarray]] = {
+        object_id: [] for object_id in all_ids
+    }
     first_seen: Dict[int, int] = {}
 
     for frame_number, frame in enumerate(frames):
@@ -170,6 +176,9 @@ def detect_robot_handles(
                 _point_to_bounds_distance(frame.gripper_position, bounds)
             )
             centers[object_id].append(frame.centers_by_id[object_id])
+            relative_offsets[object_id].append(
+                frame.centers_by_id[object_id] - frame.gripper_position
+            )
         for object_id, centroid in frame.wrist_centroids_by_id.items():
             wrist_centroids.setdefault(object_id, []).append(centroid)
 
@@ -179,23 +188,54 @@ def detect_robot_handles(
         frame_count,
         max(2, int(np.ceil(frame_count * min_visibility_ratio))),
     )
+    first_frame = frames[0]
     for object_id in all_ids:
         wrist_values = wrist_centroids.get(object_id, [])
-        if visibility[object_id] < minimum_visible or len(wrist_values) < minimum_visible:
+        # A gripper link must already be visible beside the gripper at the
+        # beginning. A manipulated object may follow the wrist later, but must
+        # never become a gripper seed for that reason.
+        if (
+            object_id not in first_frame.bounds_by_id
+            or object_id not in first_frame.wrist_centroids_by_id
+            or first_seen.get(object_id) != 0
+            or visibility[object_id] < minimum_visible
+            or len(wrist_values) < minimum_visible
+            or _point_to_bounds_distance(
+                first_frame.gripper_position,
+                first_frame.bounds_by_id[object_id],
+            ) > gripper_radius
+        ):
             continue
         wrist_array = np.stack(wrist_values)
         centroid_spread = float(
             np.sqrt(np.mean(np.sum((wrist_array - wrist_array.mean(0)) ** 2, axis=1)))
         )
+        offset_array = np.stack(relative_offsets[object_id])
+        offset_spread = float(
+            np.sqrt(
+                np.mean(
+                    np.sum(
+                        (offset_array - offset_array.mean(0)) ** 2,
+                        axis=1,
+                    )
+                )
+            )
+        )
         median_distance = float(np.median(distances[object_id]))
-        if centroid_spread <= wrist_centroid_std and median_distance <= gripper_radius:
+        if (
+            centroid_spread <= wrist_centroid_std
+            and offset_spread <= relative_offset_std
+            and median_distance <= gripper_radius
+        ):
             visibility_score = visibility[object_id] / frame_count
             position_score = max(0.0, 1.0 - centroid_spread / wrist_centroid_std)
+            offset_score = max(0.0, 1.0 - offset_spread / relative_offset_std)
             distance_score = max(0.0, 1.0 - median_distance / gripper_radius)
             confidence[object_id] = float(
-                0.4 * visibility_score
-                + 0.3 * position_score
-                + 0.3 * distance_score
+                0.30 * visibility_score
+                + 0.25 * position_score
+                + 0.25 * offset_score
+                + 0.20 * distance_score
             )
             gripper_handles.append(object_id)
 
@@ -205,9 +245,35 @@ def detect_robot_handles(
         candidates = []
         for object_id in all_ids:
             wrist_values = wrist_centroids.get(object_id, [])
-            if len(wrist_values) < minimum_visible:
+            if (
+                first_seen.get(object_id) != 0
+                or object_id not in first_frame.bounds_by_id
+                or object_id not in first_frame.wrist_centroids_by_id
+                or len(wrist_values) < minimum_visible
+            ):
                 continue
-            candidates.append((float(np.median(distances[object_id])), object_id))
+            first_distance = _point_to_bounds_distance(
+                first_frame.gripper_position,
+                first_frame.bounds_by_id[object_id],
+            )
+            offset_array = np.stack(relative_offsets[object_id])
+            offset_spread = float(
+                np.sqrt(
+                    np.mean(
+                        np.sum(
+                            (offset_array - offset_array.mean(0)) ** 2,
+                            axis=1,
+                        )
+                    )
+                )
+            )
+            if (
+                first_distance <= gripper_radius * 1.5
+                and offset_spread <= relative_offset_std * 1.5
+            ):
+                candidates.append(
+                    (float(np.median(distances[object_id])), object_id)
+                )
         for median_distance, object_id in sorted(candidates)[:2]:
             if median_distance <= gripper_radius * 1.5:
                 gripper_handles.append(object_id)
@@ -222,6 +288,12 @@ def detect_robot_handles(
         motion[object_id] = float(np.linalg.norm(np.max(array, 0) - np.min(array, 0)))
 
     adjacency: Dict[int, set] = {object_id: set() for object_id in all_ids}
+    early_frame_count = min(
+        frame_count,
+        max(2, int(np.ceil(frame_count * 0.35))),
+    )
+    early_frames = frames[:early_frame_count]
+    minimum_early_co_visible = min(2, early_frame_count)
     for left_index, left_id in enumerate(all_ids):
         for right_id in all_ids[left_index + 1:]:
             co_visible = 0
@@ -234,7 +306,22 @@ def detect_robot_handles(
                     frame.bounds_by_id[left_id], frame.bounds_by_id[right_id]
                 ) <= adjacency_distance:
                     adjacent += 1
-            if co_visible >= 2 and adjacent / co_visible >= adjacency_ratio:
+            early_co_visible = 0
+            early_adjacent = 0
+            for frame in early_frames:
+                if left_id not in frame.bounds_by_id or right_id not in frame.bounds_by_id:
+                    continue
+                early_co_visible += 1
+                if _bounds_distance(
+                    frame.bounds_by_id[left_id], frame.bounds_by_id[right_id]
+                ) <= adjacency_distance:
+                    early_adjacent += 1
+            if (
+                co_visible >= 2
+                and adjacent / co_visible >= adjacency_ratio
+                and early_co_visible >= minimum_early_co_visible
+                and early_adjacent / early_co_visible >= adjacency_ratio
+            ):
                 adjacency[left_id].add(right_id)
                 adjacency[right_id].add(left_id)
 
@@ -286,6 +373,12 @@ def save_robot_handle_detection(
 
 def load_robot_handle_detection(path: Path) -> RobotHandleDetection:
     payload = json.loads(path.read_text(encoding='utf-8'))
+    method = payload.get('method')
+    if method != ROBOT_DETECTOR_METHOD:
+        raise ValueError(
+            f'Stale robot-handle cache method {method!r}; '
+            f'expected {ROBOT_DETECTOR_METHOD!r}'
+        )
     return RobotHandleDetection(
         episode_idx=int(payload['episode_idx']),
         gripper_handles=tuple(int(value) for value in payload['gripper_handles']),

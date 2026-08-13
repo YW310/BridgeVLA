@@ -75,6 +75,12 @@ class OracleObjects:
     discovered_objects: int
     filtered_objects: int
     prior_filtered_objects: int = 0
+    excluded_objects: int = 0
+    excluded_object_ids: Tuple[int, ...] = ()
+    no_finite_point_object_ids: Tuple[int, ...] = ()
+    small_object_ids: Tuple[int, ...] = ()
+    prior_filtered_object_ids: Tuple[int, ...] = ()
+    truncated_object_ids: Tuple[int, ...] = ()
 
     def as_replay_fields(self) -> Dict[str, np.ndarray]:
         return {
@@ -171,6 +177,7 @@ def empty_oracle_objects(max_objects: int, num_points: int) -> OracleObjects:
         discovered_objects=0,
         filtered_objects=0,
         prior_filtered_objects=0,
+        excluded_objects=0,
     )
 
 
@@ -262,6 +269,7 @@ def extract_oracle_objects(
     task_prior_radius: Optional[float] = None,
     task_prior_max_instances: Optional[int] = None,
     task_prior_background_extent: float = 0.60,
+    task_prior_strict: bool = False,
 ) -> OracleObjects:
     '''Fuse decoded instance masks with the existing replay point clouds.'''
     if max_objects <= 0 or num_points <= 0 or min_object_points <= 0:
@@ -271,6 +279,7 @@ def extract_oracle_objects(
     rng = rng or np.random.default_rng()
     excluded = {int(value) for value in excluded_ids}
     points_by_id: Dict[int, List[np.ndarray]] = {}
+    observed_ids = set()
 
     for camera in cameras:
         point_key = f'{camera}_point_cloud'
@@ -288,6 +297,8 @@ def extract_oracle_objects(
 
         for object_id_value in np.unique(mask):
             object_id = int(object_id_value)
+            if object_id >= 0:
+                observed_ids.add(object_id)
             if object_id in excluded or object_id < 0:
                 continue
             object_points = point_cloud[mask == object_id]
@@ -299,6 +310,14 @@ def extract_oracle_objects(
         (object_id, np.concatenate(camera_points, axis=0))
         for object_id, camera_points in points_by_id.items()
     ]
+    no_finite_point_object_ids = tuple(sorted(
+        observed_ids - excluded - set(points_by_id)
+    ))
+    small_object_ids = tuple(sorted(
+        object_id
+        for object_id, object_points in merged
+        if len(object_points) < min_object_points
+    ))
     filtered_objects = sum(
         len(object_points) < min_object_points
         for _, object_points in merged
@@ -309,6 +328,7 @@ def extract_oracle_objects(
         if len(object_points) >= min_object_points
     ]
     prior_filtered_objects = 0
+    prior_filtered_object_ids: Tuple[int, ...] = ()
     if task_prior_filter:
         if task_name is None:
             raise ValueError('task_name is required with task-prior filtering')
@@ -316,7 +336,7 @@ def extract_oracle_objects(
             raise ValueError(
                 'action_position is required with task-prior filtering'
             )
-        before_prior = len(merged)
+        before_prior_ids = {object_id for object_id, _ in merged}
         merged = select_task_relevant_instances(
             task_name,
             merged,
@@ -324,14 +344,22 @@ def extract_oracle_objects(
             interaction_radius=task_prior_radius,
             max_instances=task_prior_max_instances,
             background_extent=task_prior_background_extent,
+            strict_action_filter=task_prior_strict,
         )
-        prior_filtered_objects = before_prior - len(merged)
+        after_prior_ids = {object_id for object_id, _ in merged}
+        prior_filtered_object_ids = tuple(sorted(
+            before_prior_ids - after_prior_ids
+        ))
+        prior_filtered_objects = len(prior_filtered_object_ids)
     # Fixed storage requires truncation. Prefer the strongest point support,
     # then use handle ID as a deterministic tie breaker. Task-prior results
     # are already ordered by action proximity and must retain that ordering.
     if not task_prior_filter:
         merged.sort(key=lambda item: (-len(item[1]), item[0]))
     discovered_objects = len(merged)
+    truncated_object_ids = tuple(
+        object_id for object_id, _ in merged[max_objects:]
+    )
     merged = merged[:max_objects]
 
     padded = empty_oracle_objects(max_objects, num_points)
@@ -361,6 +389,12 @@ def extract_oracle_objects(
         discovered_objects,
         filtered_objects,
         prior_filtered_objects,
+        len(observed_ids.intersection(excluded)),
+        tuple(sorted(observed_ids.intersection(excluded))),
+        no_finite_point_object_ids,
+        small_object_ids,
+        prior_filtered_object_ids,
+        truncated_object_ids,
     )
     validate_oracle_objects(oracle, max_objects, num_points)
     return oracle
@@ -476,6 +510,7 @@ def augment_transition(
     task_prior_radius: Optional[float] = None,
     task_prior_max_instances: Optional[int] = None,
     task_prior_background_extent: float = 0.60,
+    task_prior_strict: bool = False,
 ) -> Tuple[Dict[str, object], OracleObjects, Optional[Path]]:
     existing_oracle_keys = set(ORACLE_KEYS).intersection(original)
     if existing_oracle_keys:
@@ -528,6 +563,7 @@ def augment_transition(
                 task_prior_radius=task_prior_radius,
                 task_prior_max_instances=task_prior_max_instances,
                 task_prior_background_extent=task_prior_background_extent,
+                task_prior_strict=task_prior_strict,
             )
 
         cache_key: Tuple[object, ...] = (task, episode_idx, sample_frame)
@@ -539,6 +575,7 @@ def augment_transition(
                 task_prior_radius,
                 task_prior_max_instances,
                 task_prior_background_extent,
+                task_prior_strict,
             )
         oracle = (
             frame_cache.get_or_compute(cache_key, build_oracle)
@@ -567,6 +604,7 @@ def _final_observation_oracle_for_visualization(
     task_prior_radius: Optional[float] = None,
     task_prior_max_instances: Optional[int] = None,
     task_prior_background_extent: float = 0.60,
+    task_prior_strict: bool = False,
     robot_handles_by_episode: Optional[Mapping[int, Sequence[int]]] = None,
 ) -> Optional[Tuple[OracleObjects, int, int]]:
     '''Recover a final observation's GT instances from prior alignment data.'''
@@ -610,6 +648,7 @@ def _final_observation_oracle_for_visualization(
         task_prior_radius=task_prior_radius,
         task_prior_max_instances=task_prior_max_instances,
         task_prior_background_extent=task_prior_background_extent,
+        task_prior_strict=task_prior_strict,
     )
     return oracle, episode_idx, sample_frame
 
@@ -716,6 +755,18 @@ def _describe(
     print(f'  sizes={oracle.sizes[oracle.valid].tolist()}')
     print(f'  filtered_small_objects={oracle.filtered_objects}')
     print(f'  filtered_by_task_prior={oracle.prior_filtered_objects}')
+    print(f'  excluded_by_id={oracle.excluded_objects}')
+    print(f'  excluded_object_ids={list(oracle.excluded_object_ids)}')
+    print(
+        '  no_finite_point_object_ids='
+        f'{list(oracle.no_finite_point_object_ids)}'
+    )
+    print(f'  small_object_ids={list(oracle.small_object_ids)}')
+    print(
+        '  task_prior_filtered_object_ids='
+        f'{list(oracle.prior_filtered_object_ids)}'
+    )
+    print(f'  truncated_object_ids={list(oracle.truncated_object_ids)}')
     print(
         f'  shapes=points{oracle.points.shape}, '
         f'centers{oracle.centers.shape}, sizes{oracle.sizes.shape}, '
@@ -1203,18 +1254,45 @@ def _detect_task_robot_handles(
         raise ValueError(
             '--detect-robot-handles requires wrist in the selected cameras'
         )
-    cached_episode_ids = set()
+    requested_episode_set = (
+        None
+        if requested_episode_ids is None
+        else {int(value) for value in requested_episode_ids}
+    )
+    cached_detections: Dict[int, RobotHandleDetection] = {}
+    stale_cache_count = 0
     if not refresh_cache:
         for path in (cache_dir / task).glob('episode_*.json'):
             try:
-                cached_episode_ids.add(int(path.stem.rsplit('_', 1)[1]))
+                episode_idx = int(path.stem.rsplit('_', 1)[1])
             except (IndexError, ValueError):
                 continue
+            if (
+                requested_episode_set is not None
+                and episode_idx not in requested_episode_set
+            ):
+                continue
+            try:
+                detection = load_robot_handle_detection(path)
+                if detection.episode_idx != episode_idx:
+                    raise ValueError(
+                        f'cache episode {detection.episode_idx} does not '
+                        f'match filename episode {episode_idx}'
+                    )
+            except (OSError, KeyError, TypeError, ValueError):
+                stale_cache_count += 1
+                continue
+            cached_detections[episode_idx] = detection
+    if stale_cache_count:
+        tqdm.write(
+            f'{task}: ignoring {stale_cache_count} stale robot-handle '
+            'cache file(s); affected episodes will be detected again'
+        )
     selected = _episode_detection_sources(
         files,
         frames_per_episode,
-        requested_episode_ids=requested_episode_ids,
-        cached_episode_ids=cached_episode_ids,
+        requested_episode_ids=requested_episode_set,
+        cached_episode_ids=cached_detections,
         show_progress=show_progress,
     )
     handles_by_episode: Dict[int, Tuple[int, ...]] = {}
@@ -1227,9 +1305,7 @@ def _detect_task_robot_handles(
     )
     for episode_idx, frame_sources in progress:
         cache_path = cache_dir / task / f'episode_{episode_idx:04d}.json'
-        detection: Optional[RobotHandleDetection] = None
-        if cache_path.is_file() and not refresh_cache:
-            detection = load_robot_handle_detection(cache_path)
+        detection = cached_detections.get(episode_idx)
         if detection is None:
             if not frame_sources:
                 raise RuntimeError(
@@ -1300,6 +1376,7 @@ def process_task(
     task_prior_radius: Optional[float],
     task_prior_max_instances: Optional[int],
     task_prior_background_extent: float,
+    task_prior_strict: bool,
     auto_detect_robot_handles: bool,
     robot_handle_cache_dir: Path,
     robot_detection_frames: int,
@@ -1387,6 +1464,7 @@ def process_task(
                 task_prior_radius=task_prior_radius,
                 task_prior_max_instances=task_prior_max_instances,
                 task_prior_background_extent=task_prior_background_extent,
+                task_prior_strict=task_prior_strict,
             )
             if not dry_run:
                 assert destination_dir is not None
@@ -1437,6 +1515,7 @@ def process_task(
                         task_prior_background_extent=(
                             task_prior_background_extent
                         ),
+                        task_prior_strict=task_prior_strict,
                         robot_handles_by_episode=robot_handles_by_episode,
                     )
                     if recovered is not None:
@@ -1462,6 +1541,7 @@ def process_task(
     truncated = 0
     filtered = 0
     prior_filtered = 0
+    excluded = 0
     visualized = 0
     progress = tqdm(
         total=len(files),
@@ -1483,12 +1563,14 @@ def process_task(
             truncated += int(oracle.discovered_objects > max_objects)
             filtered += oracle.filtered_objects
             prior_filtered += oracle.prior_filtered_objects
+            excluded += oracle.excluded_objects
             cache_hits, cache_misses, _ = frame_cache.stats()
             progress.set_postfix(
                 objects=int(oracle.valid.sum()),
                 truncated=truncated,
                 filtered=filtered,
                 prior_filtered=prior_filtered,
+                excluded=excluded,
                 workers=workers,
                 cache_hits=cache_hits,
                 cache_misses=cache_misses,
@@ -1523,6 +1605,7 @@ def process_task(
         f'{task}: {mode} {len(files)} replay files; truncated={truncated}; '
         f'filtered={filtered}; '
         f'prior_filtered={prior_filtered}; '
+        f'excluded={excluded}; '
         f'visualized={visualized}; '
         f'cache_hits={cache_hits}; cache_misses={cache_misses}; '
         f'cache_entries={cache_entries}'
@@ -1594,8 +1677,16 @@ def build_parser() -> argparse.ArgumentParser:
         '--task-prior-filter',
         action='store_true',
         help=(
-            'filter GT handles during Oracle generation using the task-specific '
-            'next-action spatial prior (action-conditioned Oracle only)'
+            'rank GT handles by the task-specific next-action spatial prior '
+            'and remove obvious planar background'
+        ),
+    )
+    parser.add_argument(
+        '--task-prior-strict',
+        action='store_true',
+        help=(
+            'also discard handles outside the task interaction radius; '
+            'lower recall and intended only for explicit strict filtering'
         ),
     )
     parser.add_argument(
@@ -1790,6 +1881,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             task_prior_background_extent=(
                 args.task_prior_background_extent
             ),
+            task_prior_strict=args.task_prior_strict,
             auto_detect_robot_handles=args.detect_robot_handles,
             robot_handle_cache_dir=robot_handle_cache_dir,
             robot_detection_frames=args.robot_detection_frames,

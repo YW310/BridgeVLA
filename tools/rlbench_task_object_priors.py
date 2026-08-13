@@ -84,6 +84,7 @@ def select_task_relevant_instances(
     interaction_radius: Optional[float] = None,
     max_instances: Optional[int] = None,
     background_extent: float = 0.60,
+    strict_action_filter: bool = False,
 ) -> List[InstancePoints]:
     '''Rank GT handles using a task-specific next-action spatial prior.
 
@@ -97,8 +98,16 @@ def select_task_relevant_instances(
         if interaction_radius is None
         else float(interaction_radius)
     )
-    limit = prior.max_instances if max_instances is None else int(max_instances)
-    if radius <= 0 or limit <= 0 or background_extent <= 0:
+    limit = (
+        prior.max_instances
+        if strict_action_filter and max_instances is None
+        else (None if max_instances is None else int(max_instances))
+    )
+    if (
+        radius <= 0
+        or (limit is not None and limit <= 0)
+        or background_extent <= 0
+    ):
         raise ValueError(
             'task-prior radius, max instances, and background extent '
             'must be positive'
@@ -124,13 +133,22 @@ def select_task_relevant_instances(
         ranked.append((distance, -len(points), int(object_id), object_points))
 
     ranked.sort(key=lambda item: item[:3])
-    nearby = [item for item in ranked if item[0] <= radius]
-    if not nearby:
-        # Keep a small diagnostic fallback instead of silently producing an
-        # empty Oracle tensor when calibration is slightly outside the radius.
-        nearby = ranked[: min(2, limit)]
+    if strict_action_filter:
+        selected = [item for item in ranked if item[0] <= radius]
+        if not selected:
+            # Keep a small diagnostic fallback instead of silently producing
+            # an empty tensor when calibration is slightly outside the radius.
+            assert limit is not None
+            selected = ranked[: min(2, limit)]
+    else:
+        # High-recall default: distance is a ranking signal, not a deletion
+        # rule. In multi-object tasks the supervised next action is commonly
+        # close to only one object even though the other objects remain
+        # task-relevant and must not disappear from the Oracle tensor.
+        selected = ranked
+    if limit is not None:
+        selected = selected[:limit]
     return [
         (object_id, points)
-        for _, _, object_id, points in nearby[:limit]
+        for _, _, object_id, points in selected
     ]
-

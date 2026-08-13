@@ -24,8 +24,21 @@ class RLBenchTaskObjectPriorsTest(unittest.TestCase):
             'stack_blocks',
             [(10, table), (11, far), (12, near)],
             np.array([0.02, 0.02, 0.82]),
+            strict_action_filter=True,
         )
         self.assertEqual([object_id for object_id, _ in selected], [12])
+
+    def test_default_keeps_far_objects_and_uses_distance_only_for_ranking(self):
+        near = np.array(
+            [[0.00, 0.00, 0.80], [0.04, 0.04, 0.84]], dtype=np.float32
+        )
+        far = near + np.array([0.50, 0.0, 0.0], dtype=np.float32)
+        selected = select_task_relevant_instances(
+            'stack_blocks',
+            [(11, far), (12, near)],
+            np.array([0.02, 0.02, 0.82]),
+        )
+        self.assertEqual([object_id for object_id, _ in selected], [12, 11])
 
     def test_nearest_fallback_avoids_empty_result(self):
         points = np.array(
