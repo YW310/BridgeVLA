@@ -235,6 +235,9 @@ GT mask 与点云融合完成、写入 `oracle_object_*` 之前，根据当前 t
     --visualize-objects-only
 
 该参数只影响保存的 PNG，不修改 `oracle_object_*` 或其他 replay 字段。
+可视化颜色由解码后的 handle ID 确定，因此同一 episode 中相同 handle ID 在所有
+帧里始终使用相同颜色，不再随 slot 或绘制顺序变化。图片标题同时显示
+`episode_idx` 和 `sample_frame`，用于避免误将不同 episode 的颜色或 ID 作比较。
 
 离线 GT mask 只保存数字 handle，没有 `handle -> object name` 语义映射，因此不能
 仅凭任务名称严格证明某个 handle 是机械臂。确认机器人 ID 后，可重复使用

@@ -20,6 +20,7 @@ from tools.augment_replay_with_oracle_objects import (
     _select_visualization_files,
     _scene_points_for_visualization,
     _final_observation_oracle_for_visualization,
+    _instance_color,
 )
 
 
@@ -84,6 +85,10 @@ class OracleReplayAugmentationTest(unittest.TestCase):
         self.assertEqual(points.shape, (3, 3))
         self.assertTrue(np.isfinite(points).all())
         self.assertTrue(np.any(points != 0, axis=1).all())
+
+    def test_instance_color_is_stable_by_handle_id(self):
+        self.assertEqual(_instance_color(42), _instance_color(42))
+        self.assertNotEqual(_instance_color(42), _instance_color(43))
 
     def test_frame_cache_single_flight_reuses_one_result(self):
         cache = OracleFrameCache(capacity=2)
@@ -369,7 +374,7 @@ class OracleReplayAugmentationTest(unittest.TestCase):
                     for index, camera in enumerate(CAMERAS)
                 },
             }
-            oracle = _final_observation_oracle_for_visualization(
+            recovered = _final_observation_oracle_for_visualization(
                 final_transition,
                 previous_source,
                 root / 'raw',
@@ -381,8 +386,11 @@ class OracleReplayAugmentationTest(unittest.TestCase):
                 seed=8,
                 min_object_points=1,
             )
-            self.assertIsNotNone(oracle)
+            self.assertIsNotNone(recovered)
+            oracle, episode_idx, sample_frame = recovered
             self.assertEqual(oracle.ids.tolist(), [11, -1, -1])
+            self.assertEqual(episode_idx, 2)
+            self.assertEqual(sample_frame, 5)
 
 
 if __name__ == '__main__':

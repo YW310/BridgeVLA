@@ -8,6 +8,7 @@ does not call ReplayBuffer.add() and does not regenerate BridgeVLA features.
 from __future__ import annotations
 
 import argparse
+import colorsys
 import hashlib
 import os
 import pickle
@@ -546,7 +547,7 @@ def _final_observation_oracle_for_visualization(
     task_prior_radius: Optional[float] = None,
     task_prior_max_instances: Optional[int] = None,
     task_prior_background_extent: float = 0.60,
-) -> Optional[OracleObjects]:
+) -> Optional[Tuple[OracleObjects, int, int]]:
     '''Recover a final observation's GT instances from prior alignment data.'''
     if previous_source is None or not previous_source.is_file():
         return None
@@ -564,7 +565,7 @@ def _final_observation_oracle_for_visualization(
         return None
     episode_dir = resolve_episode_dir(raw_data_dir, task, episode_idx)
     masks = load_frame_masks(episode_dir, sample_frame, cameras)
-    return extract_oracle_objects(
+    oracle = extract_oracle_objects(
         final_transition,
         masks,
         cameras=cameras,
@@ -584,6 +585,7 @@ def _final_observation_oracle_for_visualization(
         task_prior_max_instances=task_prior_max_instances,
         task_prior_background_extent=task_prior_background_extent,
     )
+    return oracle, episode_idx, sample_frame
 
 
 def atomic_write_replay(
@@ -732,6 +734,13 @@ def _scene_points_for_visualization(
     return scene_points.astype(np.float32, copy=False)
 
 
+def _instance_color(object_id: int) -> Tuple[float, float, float]:
+    '''Return a deterministic categorical color for a decoded handle ID.'''
+    # Golden-ratio hue spacing keeps adjacent simulator handles visually apart.
+    hue = (int(object_id) * 0.618033988749895) % 1.0
+    return colorsys.hsv_to_rgb(hue, 0.72, 0.92)
+
+
 def visualize_oracle_objects(
     oracle: OracleObjects,
     task: str,
@@ -739,6 +748,8 @@ def visualize_oracle_objects(
     output_dir: Path,
     scene_points: Optional[np.ndarray] = None,
     terminal: Optional[int] = None,
+    episode_idx: Optional[int] = None,
+    sample_frame: Optional[int] = None,
 ) -> Path:
     try:
         import matplotlib
@@ -768,16 +779,21 @@ def visualize_oracle_objects(
         )
     for slot in np.flatnonzero(oracle.valid):
         points = oracle.points[slot]
+        object_id = int(oracle.ids[slot])
         axes.scatter(
             points[:, 0],
             points[:, 1],
             points[:, 2],
+            c=[_instance_color(object_id)],
             s=2,
-            label=str(oracle.ids[slot]),
+            label=str(object_id),
         )
     sentinel = terminal == -1
+    alignment = ''
+    if episode_idx is not None and sample_frame is not None:
+        alignment = f' ep={episode_idx} frame={sample_frame}'
     axes.set_title(
-        f'{task} replay {replay_index}: Oracle GT instances '
+        f'{task} replay {replay_index}{alignment}: Oracle GT instances '
         f'(valid={int(oracle.valid.sum())}'
         + (', final sentinel' if sentinel else '')
         + ')'
@@ -1001,16 +1017,26 @@ def process_task(
                 for key in ('terminal', 'episode_idx', 'sample_frame')
                 if key in original
             }
+            terminal = int(
+                np.asarray(original.get('terminal', -1)).item()
+            )
             scene_points = None
             visualization_oracle = oracle
+            visualization_episode_idx = (
+                int(np.asarray(original['episode_idx']).item())
+                if 'episode_idx' in original and terminal != -1
+                else None
+            )
+            visualization_sample_frame = (
+                int(np.asarray(original['sample_frame']).item())
+                if 'sample_frame' in original and terminal != -1
+                else None
+            )
             if replay_index in visualization_indices:
                 if not visualize_objects_only:
                     scene_points = _scene_points_for_visualization(
                         original, cameras
                     )
-                terminal = int(
-                    np.asarray(original.get('terminal', -1)).item()
-                )
                 if terminal == -1:
                     recovered = _final_observation_oracle_for_visualization(
                         original,
@@ -1031,13 +1057,19 @@ def process_task(
                         ),
                     )
                     if recovered is not None:
-                        visualization_oracle = recovered
+                        (
+                            visualization_oracle,
+                            visualization_episode_idx,
+                            visualization_sample_frame,
+                        ) = recovered
             return (
                 replay_index,
                 alignment,
                 oracle,
                 visualization_oracle,
                 scene_points,
+                visualization_episode_idx,
+                visualization_sample_frame,
             )
         except Exception as exc:
             raise RuntimeError(
@@ -1062,6 +1094,8 @@ def process_task(
             oracle,
             visualization_oracle,
             scene_points,
+            visualization_episode_idx,
+            visualization_sample_frame,
         ) in _bounded_thread_map(process_one, files, workers):
             truncated += int(oracle.discovered_objects > max_objects)
             filtered += oracle.filtered_objects
@@ -1090,6 +1124,8 @@ def process_task(
                     terminal=int(
                         np.asarray(alignment.get('terminal', -1)).item()
                     ),
+                    episode_idx=visualization_episode_idx,
+                    sample_frame=visualization_sample_frame,
                 )
                 visualized += 1
     finally:
