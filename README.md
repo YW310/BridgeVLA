@@ -205,6 +205,48 @@ use_oracle_objects 默认为 False，因此原始非 Oracle replay 的加载行�
 传给 RLBench `eval.py`；使用轻量 checkpoint 执行 `--resume` 时只恢复模型
 权重，优化器会重新初始化。
 
+### RLBench 训练日志与实时 Loss
+
+训练日志可通过 `--log_backend` 在 TensorBoard、W&B 和关闭指标记录之间切换。
+默认使用 TensorBoard，不需要账号或网络连接；无论选择哪种后端，主进程都会在
+tqdm 进度条中实时显示 total、translation、rotation、gripper 和 collision loss。
+
+默认 TensorBoard 模式等价于：
+
+    bash train.sh [其他参数] --log_backend tensorboard
+
+全部标量 loss 和 learning rate 会写入当前实验目录下的 `tensorboard` 子目录。
+
+启动训练后，在另一个终端执行：
+
+    tensorboard --logdir /path/to/experiment/tensorboard --port 6006
+
+然后在浏览器打开 `http://localhost:6006`。如果训练运行在远程服务器，可使用
+SSH 端口转发：
+
+    ssh -L 6006:localhost:6006 user@server
+
+默认每 10 个 iteration 额外输出一行纯文本 loss，便于保存 shell 日志。可以
+调整为每 50 步输出：
+
+    bash train.sh [其他参数] --loss_print_interval 50
+
+使用 `--loss_print_interval 0` 可关闭纯文本 loss，但 tqdm 和选定的日志后端
+仍会继续工作。TensorBoard 默认每 10 秒刷新一次，可通过
+`--tensorboard_flush_secs` 调整。
+
+需要切换回 W&B 在线记录时：
+
+    bash train.sh [其他参数] --log_backend wandb --wandb_project BridgeVLA
+
+可选使用 `--wandb_entity ENTITY` 指定团队或用户。服务器无法联网时，可以先写入
+本地 W&B 离线目录，之后再执行 `wandb sync`：
+
+    bash train.sh [其他参数] --log_backend wandb --wandb_mode offline
+
+完全关闭 TensorBoard/W&B 指标记录可使用 `--log_backend none`；tqdm 实时 loss
+和由 `--loss_print_interval` 控制的纯文本 loss 不受影响。
+
 3. **COLOSSEUM Fine-tuning:** For COLOSSEUM, we fine-tune the model with the training dataset provided by the [COLOSSEUM challenge](https://huggingface.co/datasets/colosseum/colosseum-challenge/tree/main). Similarly, our training code will first convert the raw data into replay buffer. You can also directly download the replay buffer we preprocess [here](https://huggingface.co/datasets/LPY/BridgeVLA_COLOSSEUM_TRAIN_BUFFER/tree/main). Then, you can use the `finetune/Colosseum/train.sh` file to finetune the model. Please run the following code:
 ```bash
 cd finetune/Colosseum

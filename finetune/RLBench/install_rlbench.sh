@@ -34,7 +34,7 @@ sudo apt install libxcb-cursor0
 sudo apt install libxcb-xinerama0
 pip install pyqt6
 pip3 install yacs
-pip3 install wandb
+pip3 install tensorboard wandb
 pip install 'git+https://github.com/facebookresearch/pytorch3d.git@stable'
 
 sudo apt-get update
@@ -54,4 +54,3 @@ pip install -e bridgevla/libs/RLBench
 pip install -e bridgevla/libs/YARR 
 pip install -e bridgevla/libs/peract_colab
 pip install -e bridgevla/libs/point-renderer    
-

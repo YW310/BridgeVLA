@@ -28,7 +28,6 @@ from contextlib import redirect_stdout
 import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
-import wandb
 os.environ["BITSANDBYTES_NOWELCOME"] = "1"
 import bridgevla.config as exp_cfg_mod
 import bridgevla.models.bridgevla_agent as bridgevla_agent
@@ -48,16 +47,38 @@ from utils.peract_utils_rlbench import (
     TRAIN_REPLAY_STORAGE_DIR,
 )
 
-def train(agent, dataset, training_iterations,epoch,rank=0):
+def _scalar_metrics(values):
+    metrics = {}
+    for key, value in values.items():
+        if isinstance(value, torch.Tensor):
+            if value.numel() != 1:
+                continue
+            value = value.detach().item()
+        if isinstance(value, (int, float)):
+            metrics[key] = float(value)
+    return metrics
+
+
+def train(
+    agent,
+    dataset,
+    training_iterations,
+    epoch,
+    rank=0,
+    writer=None,
+    wandb_run=None,
+    loss_print_interval=10,
+):
     agent.train()
     log = defaultdict(list)
 
     data_iter = iter(dataset)
     iter_command = range(training_iterations)
 
-    for iteration in tqdm.tqdm(
+    progress = tqdm.tqdm(
         iter_command, disable=(rank != 0), position=0, leave=True
-    ):
+    )
+    for iteration in progress:
 
         raw_batch = next(data_iter)
         dist.barrier()
@@ -77,9 +98,54 @@ def train(agent, dataset, training_iterations,epoch,rank=0):
         dist.barrier()
         if rank == 0:
             step=epoch*training_iterations+iteration
-            wandb.log(
-                    out,
-                    step=step,
+            metrics = _scalar_metrics(out)
+            if writer is not None:
+                for key, value in metrics.items():
+                    writer.add_scalar(f'train/{key}', value, step)
+                writer.add_scalar(
+                    'train/learning_rate',
+                    agent._optimizer.param_groups[0]['lr'],
+                    step,
+                )
+            if wandb_run is not None:
+                wandb_metrics = {
+                    f'train/{key}': value
+                    for key, value in metrics.items()
+                }
+                wandb_metrics['train/learning_rate'] = (
+                    agent._optimizer.param_groups[0]['lr']
+                )
+                wandb_run.log(wandb_metrics, step=step)
+
+            visible_losses = {
+                key: f'{metrics[key]:.4f}'
+                for key in (
+                    'total_loss',
+                    'trans_loss',
+                    'rot_loss_x',
+                    'rot_loss_y',
+                    'rot_loss_z',
+                    'grip_loss',
+                    'collision_loss',
+                )
+                if key in metrics
+            }
+            progress.set_postfix(visible_losses, refresh=False)
+            if (
+                loss_print_interval > 0
+                and (
+                    iteration % loss_print_interval == 0
+                    or iteration == training_iterations - 1
+                )
+            ):
+                loss_text = ' '.join(
+                    f'{key}={value:.6f}'
+                    for key, value in metrics.items()
+                    if 'loss' in key
+                )
+                tqdm.tqdm.write(
+                    f'[train] epoch={epoch} iter={iteration} '
+                    f'step={step} {loss_text}'
                 )
     return log
 
@@ -233,6 +299,11 @@ def setup_distributed(backend="nccl", port=None):
 
 
 def experiment(cmd_args):
+    if cmd_args.loss_print_interval < 0:
+        raise ValueError('--loss_print_interval must be >= 0')
+    if cmd_args.tensorboard_flush_secs <= 0:
+        raise ValueError('--tensorboard_flush_secs must be > 0')
+
     setup_distributed()
     local_rank = int(os.environ["LOCAL_RANK"])
     device_id = f"cuda:{local_rank}"
@@ -373,13 +444,53 @@ def experiment(cmd_args):
         exp_cfg.peract.lr = temp1
         exp_cfg.exp_id = temp2
         exp_cfg.freeze()
-    # Initialize Logging =>> W&B
+    # Logging is rank-0 only. Backends are imported lazily so selecting one
+    # backend does not require the other package.
+    writer = None
+    wandb_run = None
     if dist.get_rank() == 0:
-        wandb.login(key="")
-        if  cmd_args.debug:
-            wandb.init(entity="", project="", name=os.path.dirname(log_dir),mode="")
+        if cmd_args.log_backend == 'tensorboard':
+            try:
+                from torch.utils.tensorboard import SummaryWriter
+            except ImportError as exc:
+                raise RuntimeError(
+                    'TensorBoard logging was selected but tensorboard is not '
+                    'installed. Run: pip install tensorboard'
+                ) from exc
+            tensorboard_dir = os.path.join(log_dir, 'tensorboard')
+            writer = SummaryWriter(
+                log_dir=tensorboard_dir,
+                flush_secs=cmd_args.tensorboard_flush_secs,
+            )
+            print(f'TensorBoard logs: {tensorboard_dir}', flush=True)
+        elif cmd_args.log_backend == 'wandb':
+            try:
+                import wandb
+            except ImportError as exc:
+                raise RuntimeError(
+                    'W&B logging was selected but wandb is not installed. '
+                    'Run: pip install wandb'
+                ) from exc
+            wandb_kwargs = {
+                'project': cmd_args.wandb_project,
+                'name': os.path.basename(log_dir),
+                'dir': log_dir,
+                'mode': cmd_args.wandb_mode,
+                'config': {
+                    'exp_cfg': yaml.safe_load(exp_cfg.dump()),
+                    'mvt_cfg': yaml.safe_load(mvt_cfg.dump()),
+                },
+            }
+            if cmd_args.wandb_entity:
+                wandb_kwargs['entity'] = cmd_args.wandb_entity
+            wandb_run = wandb.init(**wandb_kwargs)
+            print(
+                f'W&B logging: project={cmd_args.wandb_project} '
+                f'mode={cmd_args.wandb_mode}',
+                flush=True,
+            )
         else:
-            wandb.init(entity="", project="", name=os.path.dirname(log_dir))
+            print('Metric backend disabled; tqdm/text loss remains enabled.')
 
     print("Start training ...", flush=True)
     i = start_epoch
@@ -387,7 +498,16 @@ def experiment(cmd_args):
 
         print(f"Rank [{dist.get_rank()}], Epoch [{i}]: Training on train dataset")
 
-        out = train(agent, train_dataset, TRAINING_ITERATIONS,epoch=i,rank=dist.get_rank())
+        out = train(
+            agent,
+            train_dataset,
+            TRAINING_ITERATIONS,
+            epoch=i,
+            rank=dist.get_rank(),
+            writer=writer,
+            wandb_run=wandb_run,
+            loss_print_interval=cmd_args.loss_print_interval,
+        )
 
         if dist.get_rank()==0 and (i %10==0 or i == end_epoch-1):
             # TODO: add logic to only save some models
@@ -408,6 +528,10 @@ def experiment(cmd_args):
 
     dist.barrier()
     if dist.get_rank() == 0:
+        if writer is not None:
+            writer.close()
+        if wandb_run is not None:
+            wandb_run.finish()
         print("[Finish]")
     dist.destroy_process_group()
 
@@ -428,6 +552,42 @@ if __name__ == "__main__":
     parser.add_argument("--freeze_vision_tower", action="store_true")
     parser.add_argument("--load_pretrain", action="store_true")
     parser.add_argument("--pretrain_path", type=str, default=None)
+    parser.add_argument(
+        '--log_backend',
+        choices=('tensorboard', 'wandb', 'none'),
+        default='tensorboard',
+        help='Metric logging backend. Live tqdm/text loss is always available.',
+    )
+    parser.add_argument(
+        '--wandb_project',
+        type=str,
+        default='BridgeVLA',
+        help='W&B project used when --log_backend wandb.',
+    )
+    parser.add_argument(
+        '--wandb_entity',
+        type=str,
+        default='',
+        help='Optional W&B entity used when --log_backend wandb.',
+    )
+    parser.add_argument(
+        '--wandb_mode',
+        choices=('online', 'offline', 'disabled'),
+        default='online',
+        help='W&B mode used when --log_backend wandb.',
+    )
+    parser.add_argument(
+        '--loss_print_interval',
+        type=int,
+        default=10,
+        help='Print scalar losses every N iterations; 0 disables text output.',
+    )
+    parser.add_argument(
+        '--tensorboard_flush_secs',
+        type=int,
+        default=10,
+        help='How often TensorBoard event data is flushed to disk.',
+    )
     parser.add_argument(
         "--resume",
         "--resume_checkpoint",
