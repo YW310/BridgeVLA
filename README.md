@@ -293,6 +293,12 @@ JSON 中保存 `gripper_handles`、`arm_handles`、合并后的 `robot_handles`�
 `--refresh-robot-handle-cache`。dry-run 可以读取已有缓存，但不会新建或覆盖缓存。
 自动结果仍可与重复传入的 `--exclude-robot-id ID` 精确黑名单同时使用。
 
+检测启动阶段会优先读取 replay 目录中的轻量 `replay_info.npy` 划分 episode，不再
+为分组而打开全部大型 `.replay`；每个未缓存 episode 只读取最多
+`--robot-detection-frames` 个 replay。已有 JSON 的 episode 会跳过帧加载。dry-run
+只检测本次抽样/可视化涉及的 episode。若旧目录没有有效 `replay_info.npy`，脚本会
+回退为逐 replay 元数据扫描，并显示 `robot detection: replay metadata scan` 进度条。
+
 该检测不使用 replay 中的下一动作 `gripper_pose`，因此不会引入未来动作标签；它
 读取的是 raw episode 中当前观测帧的夹爪位姿。由于这是无对象名称的几何时域
 启发式，建议先用 `--dry-run --visualize-every N --visualize-objects-only` 检查各任务

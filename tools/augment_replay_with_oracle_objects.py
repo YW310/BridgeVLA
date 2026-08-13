@@ -1014,11 +1014,100 @@ def _bounded_thread_map(function, items: Sequence[Path], workers: int):
 
 
 def _episode_detection_sources(
-    files: Sequence[Path], frames_per_episode: int
+    files: Sequence[Path],
+    frames_per_episode: int,
+    requested_episode_ids: Optional[Iterable[int]] = None,
+    cached_episode_ids: Iterable[int] = (),
+    show_progress: bool = True,
 ) -> Dict[int, List[Tuple[int, Path]]]:
     '''Select deterministic, temporally spread replay frames per episode.'''
+    requested = (
+        None
+        if requested_episode_ids is None
+        else {int(value) for value in requested_episode_ids}
+    )
+    cached = {int(value) for value in cached_episode_ids}
+    replay_info_path = files[0].parent / 'replay_info.npy' if files else None
+    if replay_info_path is not None and replay_info_path.is_file():
+        try:
+            replay_info = np.asarray(
+                np.load(replay_info_path, allow_pickle=False)
+            ).reshape(-1)
+        except (OSError, ValueError):
+            replay_info = np.empty((0,), dtype=np.int8)
+        if len(replay_info) == len(files):
+            segments: List[List[int]] = []
+            segment: List[int] = []
+            for index, terminal_value in enumerate(replay_info):
+                segment.append(index)
+                if int(terminal_value) == -1:
+                    segments.append(segment)
+                    segment = []
+            if segment:
+                segments.append(segment)
+
+            selected: Dict[int, List[Tuple[int, Path]]] = {}
+            progress = tqdm(
+                segments,
+                desc='robot detection: episode index',
+                unit='episode',
+                dynamic_ncols=True,
+                disable=not show_progress,
+            )
+            for indices in progress:
+                ordinary = [
+                    index
+                    for index in indices
+                    if int(replay_info[index]) != -1
+                ]
+                if not ordinary:
+                    continue
+                anchor_source = files[ordinary[0]]
+                with anchor_source.open('rb') as stream:
+                    anchor = pickle.load(stream)
+                if 'episode_idx' not in anchor:
+                    continue
+                episode_idx = int(np.asarray(anchor['episode_idx']).item())
+                if requested is not None and episode_idx not in requested:
+                    continue
+                if episode_idx in cached:
+                    selected[episode_idx] = []
+                    continue
+                if len(ordinary) > frames_per_episode:
+                    positions = np.linspace(
+                        0,
+                        len(ordinary) - 1,
+                        num=frames_per_episode,
+                        dtype=np.int64,
+                    )
+                    ordinary = [ordinary[int(position)] for position in positions]
+                frame_sources: Dict[int, Path] = {}
+                for index in ordinary:
+                    source = files[index]
+                    transition = anchor if source == anchor_source else None
+                    if transition is None:
+                        with source.open('rb') as stream:
+                            transition = pickle.load(stream)
+                    if int(np.asarray(transition.get('terminal', -1)).item()) == -1:
+                        continue
+                    sample_frame = int(
+                        np.asarray(transition['sample_frame']).item()
+                    )
+                    frame_sources.setdefault(sample_frame, source)
+                selected[episode_idx] = sorted(frame_sources.items())
+            return selected
+
+    # Compatibility fallback for old replay folders without replay_info.npy.
+    # This is slower because every large replay pickle must be opened.
     grouped: Dict[int, Dict[int, Path]] = {}
-    for source in files:
+    progress = tqdm(
+        files,
+        desc='robot detection: replay metadata scan',
+        unit='replay',
+        dynamic_ncols=True,
+        disable=not show_progress,
+    )
+    for source in progress:
         with source.open('rb') as stream:
             transition = pickle.load(stream)
         if int(np.asarray(transition.get('terminal', -1)).item()) == -1:
@@ -1026,6 +1115,11 @@ def _episode_detection_sources(
         if 'episode_idx' not in transition or 'sample_frame' not in transition:
             continue
         episode_idx = int(np.asarray(transition['episode_idx']).item())
+        if requested is not None and episode_idx not in requested:
+            continue
+        if episode_idx in cached:
+            grouped.setdefault(episode_idx, {})
+            continue
         sample_frame = int(np.asarray(transition['sample_frame']).item())
         grouped.setdefault(episode_idx, {}).setdefault(sample_frame, source)
 
@@ -1042,6 +1136,26 @@ def _episode_detection_sources(
             candidates = [candidates[int(index)] for index in indices]
         selected[episode_idx] = candidates
     return selected
+
+
+def _episode_ids_for_selected_files(
+    files: Sequence[Path],
+    previous_file_by_index: Mapping[int, Path],
+) -> Tuple[int, ...]:
+    '''Find only the episodes needed by a dry-run selection.'''
+    episode_ids = set()
+    for source in files:
+        with source.open('rb') as stream:
+            transition = pickle.load(stream)
+        if int(np.asarray(transition.get('terminal', -1)).item()) == -1:
+            previous = previous_file_by_index.get(int(source.stem))
+            if previous is None:
+                continue
+            with previous.open('rb') as stream:
+                transition = pickle.load(stream)
+        if 'episode_idx' in transition:
+            episode_ids.add(int(np.asarray(transition['episode_idx']).item()))
+    return tuple(sorted(episode_ids))
 
 
 def _load_current_gripper_positions(
@@ -1082,19 +1196,45 @@ def _detect_task_robot_handles(
     cache_dir: Path,
     refresh_cache: bool,
     write_cache: bool,
+    requested_episode_ids: Optional[Iterable[int]] = None,
+    show_progress: bool = True,
 ) -> Dict[int, Tuple[int, ...]]:
     if 'wrist' not in cameras:
         raise ValueError(
             '--detect-robot-handles requires wrist in the selected cameras'
         )
-    selected = _episode_detection_sources(files, frames_per_episode)
+    cached_episode_ids = set()
+    if not refresh_cache:
+        for path in (cache_dir / task).glob('episode_*.json'):
+            try:
+                cached_episode_ids.add(int(path.stem.rsplit('_', 1)[1]))
+            except (IndexError, ValueError):
+                continue
+    selected = _episode_detection_sources(
+        files,
+        frames_per_episode,
+        requested_episode_ids=requested_episode_ids,
+        cached_episode_ids=cached_episode_ids,
+        show_progress=show_progress,
+    )
     handles_by_episode: Dict[int, Tuple[int, ...]] = {}
-    for episode_idx, frame_sources in sorted(selected.items()):
+    progress = tqdm(
+        sorted(selected.items()),
+        desc=f'{task}: robot handle detection',
+        unit='episode',
+        dynamic_ncols=True,
+        disable=not show_progress,
+    )
+    for episode_idx, frame_sources in progress:
         cache_path = cache_dir / task / f'episode_{episode_idx:04d}.json'
         detection: Optional[RobotHandleDetection] = None
         if cache_path.is_file() and not refresh_cache:
             detection = load_robot_handle_detection(cache_path)
         if detection is None:
+            if not frame_sources:
+                raise RuntimeError(
+                    f'Robot cache missing frame sources for episode {episode_idx}'
+                )
             episode_dir = resolve_episode_dir(raw_data_dir, task, episode_idx)
             sample_frames = [frame for frame, _ in frame_sources]
             gripper_positions = _load_current_gripper_positions(
@@ -1125,12 +1265,11 @@ def _detect_task_robot_handles(
             if write_cache:
                 save_robot_handle_detection(cache_path, detection)
         handles_by_episode[episode_idx] = detection.robot_handles
-        print(
+        tqdm.write(
             f'{task} episode={episode_idx}: detected robot handles='
             f'{list(detection.robot_handles)} gripper='
             f'{list(detection.gripper_handles)} frames='
             f'{list(detection.sampled_frames)}',
-            flush=True,
         )
     return handles_by_episode
 
@@ -1196,6 +1335,11 @@ def process_task(
     excluded_ids = tuple(excluded_ids)
     robot_handles_by_episode: Dict[int, Tuple[int, ...]] = {}
     if auto_detect_robot_handles:
+        requested_robot_episodes = (
+            _episode_ids_for_selected_files(files, previous_file_by_index)
+            if dry_run
+            else None
+        )
         robot_handles_by_episode = _detect_task_robot_handles(
             task,
             all_files,
@@ -1206,6 +1350,8 @@ def process_task(
             robot_handle_cache_dir,
             refresh_robot_handle_cache,
             write_cache=not dry_run,
+            requested_episode_ids=requested_robot_episodes,
+            show_progress=show_progress,
         )
     frame_cache = OracleFrameCache(cache_frames)
 

@@ -21,6 +21,8 @@ from tools.augment_replay_with_oracle_objects import (
     _scene_points_for_visualization,
     _final_observation_oracle_for_visualization,
     _instance_color,
+    _episode_detection_sources,
+    _episode_ids_for_selected_files,
 )
 
 
@@ -82,6 +84,58 @@ class OracleReplayAugmentationTest(unittest.TestCase):
             [path.name for path in selected],
             ['0.replay', '3.replay', '6.replay', '9.replay'],
         )
+
+    def test_robot_detection_uses_replay_info_and_requested_episodes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            transitions = [
+                {'terminal': 0, 'episode_idx': 0, 'sample_frame': 0},
+                {'terminal': 1, 'episode_idx': 0, 'sample_frame': 5},
+                {'terminal': -1},
+                {'terminal': 0, 'episode_idx': 1, 'sample_frame': 2},
+                {'terminal': 1, 'episode_idx': 1, 'sample_frame': 8},
+                {'terminal': -1},
+            ]
+            files = []
+            for index, transition in enumerate(transitions):
+                source = root / f'{index}.replay'
+                with source.open('wb') as stream:
+                    pickle.dump(transition, stream)
+                files.append(source)
+            with (root / 'replay_info.npy').open('wb') as stream:
+                np.save(stream, np.array([0, 1, -1, 0, 1, -1], dtype=np.int8))
+
+            selected = _episode_detection_sources(
+                files,
+                frames_per_episode=1,
+                requested_episode_ids=(1,),
+                show_progress=False,
+            )
+            self.assertEqual(list(selected), [1])
+            self.assertEqual(selected[1][0][0], 2)
+
+            cached = _episode_detection_sources(
+                files,
+                frames_per_episode=2,
+                requested_episode_ids=(1,),
+                cached_episode_ids=(1,),
+                show_progress=False,
+            )
+            self.assertEqual(cached, {1: []})
+
+    def test_dry_run_episode_ids_recover_final_sentinel_from_previous(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            previous = root / '8.replay'
+            sentinel = root / '9.replay'
+            with previous.open('wb') as stream:
+                pickle.dump({'terminal': 1, 'episode_idx': 4}, stream)
+            with sentinel.open('wb') as stream:
+                pickle.dump({'terminal': -1}, stream)
+            episode_ids = _episode_ids_for_selected_files(
+                [sentinel], {9: previous}
+            )
+            self.assertEqual(episode_ids, (4,))
 
     def test_scene_visualization_points_keep_finite_nonzero_geometry(self):
         transition = {
