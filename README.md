@@ -238,6 +238,15 @@ GT mask 与点云融合完成、写入 `oracle_object_*` 之前，根据当前 t
 可视化颜色由解码后的 handle ID 确定，因此同一 episode 中相同 handle ID 在所有
 帧里始终使用相同颜色，不再随 slot 或绘制顺序变化。图片标题同时显示
 `episode_idx` 和 `sample_frame`，用于避免误将不同 episode 的颜色或 ID 作比较。
+所有 PNG 固定使用 BridgeVLA RLBench 的米制场景边界
+`[-0.3, -0.5, 0.6, 0.7, 0.5, 1.6]`，并保持 xyz 等比例显示；因此跨帧不会因
+Matplotlib 自动缩放而改变物体的视觉尺度。该设置只影响绘图，不缩放或修改保存的
+Oracle 点云。
+
+每张 PNG 使用四联图显示同一批点云：一个 3D 透视图，以及三个正交投影：俯视
+`XY`（沿 Z 轴观察）、正视 `XZ`（沿 Y 轴观察）和侧视 `YZ`（沿 X 轴观察）。
+四个视角共享固定场景尺度和 handle ID 颜色；`--visualize-objects-only` 会在四个
+视角中同时隐藏灰色场景背景。
 
 离线 GT mask 只保存数字 handle，没有 `handle -> object name` 语义映射，因此不能
 仅凭任务名称严格证明某个 handle 是机械臂。确认机器人 ID 后，可重复使用

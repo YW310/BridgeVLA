@@ -35,6 +35,10 @@ DEFAULT_CAMERAS = ('front', 'left_shoulder', 'right_shoulder', 'wrist')
 DEFAULT_MAX_OBJECTS = 32
 DEFAULT_NUM_POINTS = 512
 MAX_VISUALIZATION_SCENE_POINTS = 30000
+# Same metric workspace used by finetune/RLBench/utils/peract_utils_rlbench.py.
+# Fixed limits prevent per-frame Matplotlib autoscaling from changing apparent
+# object size, including when --visualize-objects-only is enabled.
+VISUALIZATION_SCENE_BOUNDS = (-0.3, -0.5, 0.6, 0.7, 0.5, 1.6)
 ORACLE_KEYS = (
     'oracle_object_points',
     'oracle_object_centers',
@@ -759,8 +763,11 @@ def visualize_oracle_objects(
         raise RuntimeError('--visualize-index requires matplotlib') from exc
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f'{task}_replay_{replay_index}.png'
-    figure = plt.figure()
-    axes = figure.add_subplot(111, projection='3d')
+    figure = plt.figure(figsize=(12, 10))
+    axes = figure.add_subplot(221, projection='3d')
+    top_axes = figure.add_subplot(222)
+    front_axes = figure.add_subplot(223)
+    side_axes = figure.add_subplot(224)
     scene_points = (
         np.asarray(scene_points)
         if scene_points is not None
@@ -777,30 +784,80 @@ def visualize_oracle_objects(
             depthshade=False,
             label='scene',
         )
+        scene_style = {
+            'c': 'lightgray',
+            's': 0.25,
+            'alpha': 0.18,
+        }
+        top_axes.scatter(
+            scene_points[:, 0], scene_points[:, 1], **scene_style
+        )
+        front_axes.scatter(
+            scene_points[:, 0], scene_points[:, 2], **scene_style
+        )
+        side_axes.scatter(
+            scene_points[:, 1], scene_points[:, 2], **scene_style
+        )
     for slot in np.flatnonzero(oracle.valid):
         points = oracle.points[slot]
         object_id = int(oracle.ids[slot])
+        color = _instance_color(object_id)
         axes.scatter(
             points[:, 0],
             points[:, 1],
             points[:, 2],
-            c=[_instance_color(object_id)],
+            c=[color],
             s=2,
             label=str(object_id),
         )
+        object_style = {'c': [color], 's': 2}
+        top_axes.scatter(points[:, 0], points[:, 1], **object_style)
+        front_axes.scatter(points[:, 0], points[:, 2], **object_style)
+        side_axes.scatter(points[:, 1], points[:, 2], **object_style)
     sentinel = terminal == -1
     alignment = ''
     if episode_idx is not None and sample_frame is not None:
         alignment = f' ep={episode_idx} frame={sample_frame}'
-    axes.set_title(
+    figure.suptitle(
         f'{task} replay {replay_index}{alignment}: Oracle GT instances '
         f'(valid={int(oracle.valid.sum())}'
         + (', final sentinel' if sentinel else '')
         + ')'
     )
+    axes.set_title('3D perspective')
     axes.set_xlabel('x')
     axes.set_ylabel('y')
     axes.set_zlabel('z')
+    x_min, y_min, z_min, x_max, y_max, z_max = VISUALIZATION_SCENE_BOUNDS
+    axes.set_xlim(x_min, x_max)
+    axes.set_ylim(y_min, y_max)
+    axes.set_zlim(z_min, z_max)
+    axes.set_box_aspect(
+        (x_max - x_min, y_max - y_min, z_max - z_min)
+    )
+    top_axes.set_title('Top orthographic (XY, view along Z)')
+    top_axes.set_xlabel('x')
+    top_axes.set_ylabel('y')
+    top_axes.set_xlim(x_min, x_max)
+    top_axes.set_ylim(y_min, y_max)
+    top_axes.set_aspect('equal', adjustable='box')
+    top_axes.grid(True, alpha=0.2)
+
+    front_axes.set_title('Front orthographic (XZ, view along Y)')
+    front_axes.set_xlabel('x')
+    front_axes.set_ylabel('z')
+    front_axes.set_xlim(x_min, x_max)
+    front_axes.set_ylim(z_min, z_max)
+    front_axes.set_aspect('equal', adjustable='box')
+    front_axes.grid(True, alpha=0.2)
+
+    side_axes.set_title('Side orthographic (YZ, view along X)')
+    side_axes.set_xlabel('y')
+    side_axes.set_ylabel('z')
+    side_axes.set_xlim(y_min, y_max)
+    side_axes.set_ylim(z_min, z_max)
+    side_axes.set_aspect('equal', adjustable='box')
+    side_axes.grid(True, alpha=0.2)
     if scene_points.size or oracle.valid.any():
         axes.legend(title='instance ID')
     else:
@@ -817,6 +874,16 @@ def visualize_oracle_objects(
             ha='center',
             va='center',
         )
+        for projection_axes in (top_axes, front_axes, side_axes):
+            projection_axes.text(
+                0.5,
+                0.5,
+                reason,
+                transform=projection_axes.transAxes,
+                ha='center',
+                va='center',
+            )
+    figure.tight_layout(rect=(0, 0, 1, 0.96))
     figure.savefig(output_path, dpi=200, bbox_inches='tight')
     plt.close(figure)
     print(f'Oracle visualization saved: {output_path}', flush=True)
