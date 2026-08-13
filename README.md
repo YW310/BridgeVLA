@@ -222,6 +222,7 @@ GT mask 与点云融合完成、写入 `oracle_object_*` 之前，根据当前 t
         --max-objects 32 \
         --num-points 512 \
         --workers 8 \
+        --visualize-objects-only \
         --cache-frames 256
 
 建议先配合 `--dry-run --visualize-every N` 检查结果。可使用
