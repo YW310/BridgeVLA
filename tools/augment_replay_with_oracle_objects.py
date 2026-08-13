@@ -662,6 +662,26 @@ def _select_dry_run_files(
     return selected
 
 
+def _select_visualization_files(
+    files: Sequence[Path],
+    visualize_index: Optional[int],
+    visualize_every: int,
+) -> List[Path]:
+    if visualize_index is not None:
+        by_index = {int(path.stem): path for path in files}
+        if visualize_index not in by_index:
+            missing = files[0].parent / (
+                str(visualize_index) + '.replay'
+            )
+            raise FileNotFoundError(
+                f'Visualization replay is missing: {missing}'
+            )
+        return [by_index[visualize_index]]
+    if visualize_every > 0:
+        return list(files[::visualize_every])
+    return []
+
+
 def _bounded_thread_map(function, items: Sequence[Path], workers: int):
     '''Yield completed results while keeping only 2 * workers tasks in flight.'''
     if workers == 1:
@@ -708,6 +728,7 @@ def process_task(
     dry_run: bool,
     dry_run_samples: int,
     visualize_index: Optional[int],
+    visualize_every: int,
     visualize_output_dir: Path,
     overwrite: bool,
     durable_write: bool,
@@ -716,13 +737,27 @@ def process_task(
     cache_frames: int,
     min_object_points: int,
 ) -> int:
-    files = _numeric_replay_files(source_dir)
-    if not files:
+    all_files = _numeric_replay_files(source_dir)
+    if not all_files:
         raise FileNotFoundError(f'No *.replay files found in {source_dir}')
+    visualization_files = _select_visualization_files(
+        all_files,
+        visualize_index,
+        visualize_every,
+    )
+    visualization_indices = {
+        int(path.stem) for path in visualization_files
+    }
+    files = all_files
     if dry_run:
-        files = _select_dry_run_files(
-            files, seed, dry_run_samples, visualize_index
-        )
+        if visualize_every > 0:
+            # Interval visualization is itself the dry-run selection. Skipped
+            # replay files do not need mask decoding or point-cloud fusion.
+            files = visualization_files
+        else:
+            files = _select_dry_run_files(
+                files, seed, dry_run_samples, visualize_index
+            )
 
     cameras = tuple(cameras)
     excluded_ids = tuple(excluded_ids)
@@ -768,6 +803,7 @@ def process_task(
 
     truncated = 0
     filtered = 0
+    visualized = 0
     progress = tqdm(
         total=len(files),
         desc=f'{task}: Oracle replay',
@@ -794,13 +830,14 @@ def process_task(
             progress.update(1)
             if dry_run:
                 _describe(task, replay_index, alignment, oracle)
-            if visualize_index == replay_index:
+            if replay_index in visualization_indices:
                 visualize_oracle_objects(
                     oracle,
                     task,
                     replay_index,
                     visualize_output_dir,
                 )
+                visualized += 1
     finally:
         progress.close()
 
@@ -812,6 +849,7 @@ def process_task(
     print(
         f'{task}: {mode} {len(files)} replay files; truncated={truncated}; '
         f'filtered={filtered}; '
+        f'visualized={visualized}; '
         f'cache_hits={cache_hits}; cache_misses={cache_misses}; '
         f'cache_entries={cache_entries}'
     )
@@ -889,13 +927,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument('--dry-run', action='store_true')
     parser.add_argument('--dry-run-samples', type=int, default=5)
-    parser.add_argument('--visualize-index', type=int)
+    visualization = parser.add_mutually_exclusive_group()
+    visualization.add_argument('--visualize-index', type=int)
+    visualization.add_argument(
+        '--visualize-every',
+        type=int,
+        default=0,
+        metavar='N',
+        help='save one visualization for every Nth sorted replay file',
+    )
     parser.add_argument(
         '--visualize-output-dir',
         type=Path,
         default=Path('oracle_visualizations'),
         help=(
-            'directory for --visualize-index PNG output '
+            'directory for visualization PNG output '
             '(default: ./oracle_visualizations)'
         ),
     )
@@ -933,6 +979,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
     if args.dry_run_samples <= 0:
         raise ValueError('--dry-run-samples must be positive')
+    if args.visualize_every < 0:
+        raise ValueError('--visualize-every must be non-negative')
     if args.workers <= 0:
         raise ValueError('--workers must be positive')
     if args.cache_frames < 0:
@@ -977,6 +1025,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             dry_run=args.dry_run,
             dry_run_samples=args.dry_run_samples,
             visualize_index=args.visualize_index,
+            visualize_every=args.visualize_every,
             visualize_output_dir=visualize_output_dir,
             overwrite=args.overwrite,
             durable_write=args.durable_write,

@@ -17,6 +17,7 @@ from tools.augment_replay_with_oracle_objects import (
     build_parser,
     _bounded_thread_map,
     _select_dry_run_files,
+    _select_visualization_files,
 )
 
 
@@ -53,6 +54,18 @@ class OracleReplayAugmentationTest(unittest.TestCase):
         )
         self.assertEqual(
             args.visualize_output_dir, Path('custom_visualizations')
+        )
+
+    def test_interval_visualization_selects_every_nth_sorted_file(self):
+        files = [Path(f'{index}.replay') for index in range(10)]
+        selected = _select_visualization_files(
+            files,
+            visualize_index=None,
+            visualize_every=3,
+        )
+        self.assertEqual(
+            [path.name for path in selected],
+            ['0.replay', '3.replay', '6.replay', '9.replay'],
         )
 
     def test_frame_cache_single_flight_reuses_one_result(self):

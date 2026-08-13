@@ -161,6 +161,20 @@ index、episode_idx、sample_frame、实例 ID、物体中心、点数、张量�
 若不传 `--visualize-output-dir`，默认也会保存到当前工作目录下新建的
 `oracle_visualizations` 文件夹；目标文件夹不存在时会自动创建。
 
+按排序后的 replay 文件间隔绘制整个任务目录，例如每 100 个文件保存一张：
+
+    python tools/augment_replay_with_oracle_objects.py \
+        --replay-dir LPY/BridgeVLA_RLBench_TRAIN_Buffer \
+        --raw-data-dir LPY/BridgeVLA_RLBench_TRAIN_DATA/train \
+        --task stack_blocks \
+        --dry-run \
+        --visualize-every 100 \
+        --visualize-output-dir oracle_visualizations
+
+配合 `--dry-run` 时，只计算并检查这些间隔抽样文件，不会写入 replay。去掉
+`--dry-run` 时仍会迁移整个 replay 目录，并在处理过程中每隔 100 个文件保存一张
+图片。`--visualize-index` 与 `--visualize-every` 不能同时使用。
+
 默认行为会生成新的 Oracle replay 副本，不会覆盖原始文件。每个 replay 先写入
 N.replay.tmp，重新加载并验证原字段及 Oracle 字段后，再原子重命名。已有输出
 默认会被拒绝；只有显式传入 --overwrite 才会替换输出。若确实需要修改原目录，
