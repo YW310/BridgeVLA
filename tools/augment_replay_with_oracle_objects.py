@@ -29,6 +29,22 @@ try:
 except ModuleNotFoundError:  # Direct execution: python tools/<script>.py
     from rlbench_task_object_priors import select_task_relevant_instances
 try:
+    from tools.rlbench_task_handle_detector import (
+        TaskHandleDetection,
+        build_task_frame_evidence,
+        detect_task_handles,
+        load_task_handle_detection,
+        save_task_handle_detection,
+    )
+except ModuleNotFoundError:  # Direct execution: python tools/<script>.py
+    from rlbench_task_handle_detector import (
+        TaskHandleDetection,
+        build_task_frame_evidence,
+        detect_task_handles,
+        load_task_handle_detection,
+        save_task_handle_detection,
+    )
+try:
     from tools.rlbench_robot_handle_detector import (
         RobotHandleDetection,
         build_robot_frame_evidence,
@@ -81,6 +97,8 @@ class OracleObjects:
     small_object_ids: Tuple[int, ...] = ()
     prior_filtered_object_ids: Tuple[int, ...] = ()
     truncated_object_ids: Tuple[int, ...] = ()
+    temporal_filtered_objects: int = 0
+    temporal_filtered_object_ids: Tuple[int, ...] = ()
 
     def as_replay_fields(self) -> Dict[str, np.ndarray]:
         return {
@@ -254,6 +272,22 @@ def load_frame_masks(
     return masks
 
 
+def load_frame_rgb_images(
+    episode_dir: Path,
+    sample_frame: int,
+    cameras: Sequence[str],
+) -> Dict[str, np.ndarray]:
+    '''Load available raw RLBench RGB views for a visualization frame.'''
+    images: Dict[str, np.ndarray] = {}
+    for camera in cameras:
+        image_path = episode_dir / f'{camera}_rgb' / f'{sample_frame}.png'
+        if not image_path.is_file():
+            continue
+        with Image.open(image_path) as image:
+            images[camera] = np.asarray(image.convert('RGB')).copy()
+    return images
+
+
 def extract_oracle_objects(
     transition: Mapping[str, object],
     masks: Mapping[str, np.ndarray],
@@ -261,6 +295,7 @@ def extract_oracle_objects(
     max_objects: int = DEFAULT_MAX_OBJECTS,
     num_points: int = DEFAULT_NUM_POINTS,
     excluded_ids: Iterable[int] = (0,),
+    included_ids: Optional[Iterable[int]] = None,
     min_object_points: int = 20,
     rng: Optional[np.random.Generator] = None,
     task_name: Optional[str] = None,
@@ -278,6 +313,9 @@ def extract_oracle_objects(
         )
     rng = rng or np.random.default_rng()
     excluded = {int(value) for value in excluded_ids}
+    included = (
+        None if included_ids is None else {int(value) for value in included_ids}
+    )
     points_by_id: Dict[int, List[np.ndarray]] = {}
     observed_ids = set()
 
@@ -301,6 +339,8 @@ def extract_oracle_objects(
                 observed_ids.add(object_id)
             if object_id in excluded or object_id < 0:
                 continue
+            if included is not None and object_id not in included:
+                continue
             object_points = point_cloud[mask == object_id]
             object_points = object_points[np.isfinite(object_points).all(axis=1)]
             if object_points.size:
@@ -310,8 +350,14 @@ def extract_oracle_objects(
         (object_id, np.concatenate(camera_points, axis=0))
         for object_id, camera_points in points_by_id.items()
     ]
+    temporal_filtered_object_ids = tuple(sorted(
+        observed_ids - excluded - (included if included is not None else observed_ids)
+    ))
     no_finite_point_object_ids = tuple(sorted(
-        observed_ids - excluded - set(points_by_id)
+        observed_ids
+        - excluded
+        - set(temporal_filtered_object_ids)
+        - set(points_by_id)
     ))
     small_object_ids = tuple(sorted(
         object_id
@@ -395,6 +441,8 @@ def extract_oracle_objects(
         small_object_ids,
         prior_filtered_object_ids,
         truncated_object_ids,
+        len(temporal_filtered_object_ids),
+        temporal_filtered_object_ids,
     )
     validate_oracle_objects(oracle, max_objects, num_points)
     return oracle
@@ -504,6 +552,7 @@ def augment_transition(
     num_points: int,
     excluded_ids: Iterable[int],
     seed: int,
+    included_ids: Optional[Iterable[int]] = None,
     min_object_points: int = 20,
     frame_cache: Optional[OracleFrameCache] = None,
     task_prior_filter: bool = False,
@@ -553,6 +602,7 @@ def augment_transition(
                 max_objects=max_objects,
                 num_points=num_points,
                 excluded_ids=excluded_ids,
+                included_ids=included_ids,
                 min_object_points=min_object_points,
                 rng=_stable_frame_rng(
                     seed, task, episode_idx, sample_frame
@@ -567,6 +617,8 @@ def augment_transition(
             )
 
         cache_key: Tuple[object, ...] = (task, episode_idx, sample_frame)
+        if included_ids is not None:
+            cache_key += ('included-ids', tuple(sorted(int(value) for value in included_ids)))
         if task_prior_filter:
             assert action_position is not None
             cache_key += (
@@ -600,6 +652,7 @@ def _final_observation_oracle_for_visualization(
     excluded_ids: Iterable[int],
     seed: int,
     min_object_points: int,
+    included_ids_by_episode: Optional[Mapping[int, Sequence[int]]] = None,
     task_prior_filter: bool = False,
     task_prior_radius: Optional[float] = None,
     task_prior_max_instances: Optional[int] = None,
@@ -636,6 +689,11 @@ def _final_observation_oracle_for_visualization(
         max_objects=max_objects,
         num_points=num_points,
         excluded_ids=effective_excluded_ids,
+        included_ids=(
+            included_ids_by_episode.get(episode_idx, ())
+            if included_ids_by_episode is not None
+            else None
+        ),
         min_object_points=min_object_points,
         rng=_stable_frame_rng(seed, task, episode_idx, sample_frame),
         task_name=task,
@@ -768,6 +826,10 @@ def _describe(
     )
     print(f'  truncated_object_ids={list(oracle.truncated_object_ids)}')
     print(
+        '  temporal_filtered_object_ids='
+        f'{list(oracle.temporal_filtered_object_ids)}'
+    )
+    print(
         f'  shapes=points{oracle.points.shape}, '
         f'centers{oracle.centers.shape}, sizes{oracle.sizes.shape}, '
         f'valid{oracle.valid.shape} '
@@ -827,6 +889,7 @@ def visualize_oracle_objects(
     terminal: Optional[int] = None,
     episode_idx: Optional[int] = None,
     sample_frame: Optional[int] = None,
+    camera_images: Optional[Mapping[str, np.ndarray]] = None,
 ) -> Path:
     try:
         import matplotlib
@@ -836,11 +899,46 @@ def visualize_oracle_objects(
         raise RuntimeError('--visualize-index requires matplotlib') from exc
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f'{task}_replay_{replay_index}.png'
-    figure = plt.figure(figsize=(12, 10))
-    axes = figure.add_subplot(221, projection='3d')
-    top_axes = figure.add_subplot(222)
-    front_axes = figure.add_subplot(223)
-    side_axes = figure.add_subplot(224)
+    figure = plt.figure(figsize=(18, 9))
+    grid = figure.add_gridspec(
+        2,
+        4,
+        height_ratios=(0.85, 1.15),
+        hspace=0.24,
+        wspace=0.18,
+    )
+    image_axes = [figure.add_subplot(grid[0, index]) for index in range(4)]
+    axes = figure.add_subplot(grid[1, 0], projection='3d')
+    top_axes = figure.add_subplot(grid[1, 1])
+    front_axes = figure.add_subplot(grid[1, 2])
+    side_axes = figure.add_subplot(grid[1, 3])
+    camera_images = dict(camera_images or {})
+    camera_order = list(DEFAULT_CAMERAS)
+    camera_order.extend(
+        camera for camera in camera_images if camera not in camera_order
+    )
+    camera_titles = {
+        'front': 'Front RGB',
+        'left_shoulder': 'Left shoulder RGB',
+        'right_shoulder': 'Right shoulder RGB',
+        'wrist': 'Wrist RGB',
+    }
+    for image_axes_value, camera in zip(image_axes, camera_order[:4]):
+        image = camera_images.get(camera)
+        if image is not None:
+            image_axes_value.imshow(image)
+        else:
+            image_axes_value.text(
+                0.5,
+                0.5,
+                f'{camera}\nRGB unavailable',
+                transform=image_axes_value.transAxes,
+                ha='center',
+                va='center',
+                color='gray',
+            )
+        image_axes_value.set_title(camera_titles.get(camera, f'{camera} RGB'))
+        image_axes_value.set_axis_off()
     scene_points = (
         np.asarray(scene_points)
         if scene_points is not None
@@ -956,7 +1054,7 @@ def visualize_oracle_objects(
                 ha='center',
                 va='center',
             )
-    figure.tight_layout(rect=(0, 0, 1, 0.96))
+    figure.subplots_adjust(top=0.90, bottom=0.06, left=0.04, right=0.98)
     figure.savefig(output_path, dpi=200, bbox_inches='tight')
     plt.close(figure)
     print(f'Oracle visualization saved: {output_path}', flush=True)
@@ -1350,6 +1448,142 @@ def _detect_task_robot_handles(
     return handles_by_episode
 
 
+def _detect_task_relevant_handles(
+    task: str,
+    files: Sequence[Path],
+    raw_data_dir: Path,
+    cameras: Sequence[str],
+    excluded_ids: Iterable[int],
+    robot_handles_by_episode: Mapping[int, Sequence[int]],
+    frames_per_episode: int,
+    cache_dir: Path,
+    refresh_cache: bool,
+    write_cache: bool,
+    task_prior_radius: Optional[float],
+    task_prior_max_instances: Optional[int],
+    task_prior_background_extent: float,
+    requested_episode_ids: Optional[Iterable[int]] = None,
+    show_progress: bool = True,
+) -> Dict[int, Tuple[int, ...]]:
+    '''Detect one stable task-handle whitelist per episode.'''
+    requested_episode_set = (
+        None
+        if requested_episode_ids is None
+        else {int(value) for value in requested_episode_ids}
+    )
+    cached_detections: Dict[int, TaskHandleDetection] = {}
+    stale_cache_count = 0
+    if not refresh_cache:
+        for path in (cache_dir / task).glob('episode_*.json'):
+            try:
+                episode_idx = int(path.stem.rsplit('_', 1)[1])
+            except (IndexError, ValueError):
+                continue
+            if (
+                requested_episode_set is not None
+                and episode_idx not in requested_episode_set
+            ):
+                continue
+            try:
+                detection = load_task_handle_detection(path)
+                if detection.episode_idx != episode_idx:
+                    raise ValueError(
+                        f'cache episode {detection.episode_idx} does not '
+                        f'match filename episode {episode_idx}'
+                    )
+            except (OSError, KeyError, TypeError, ValueError):
+                stale_cache_count += 1
+                continue
+            cached_detections[episode_idx] = detection
+    if stale_cache_count:
+        tqdm.write(
+            f'{task}: ignoring {stale_cache_count} stale task-handle '
+            'cache file(s); affected episodes will be detected again'
+        )
+
+    selected = _episode_detection_sources(
+        files,
+        frames_per_episode,
+        requested_episode_ids=requested_episode_set,
+        cached_episode_ids=cached_detections,
+        show_progress=show_progress,
+    )
+    handles_by_episode: Dict[int, Tuple[int, ...]] = {}
+    progress = tqdm(
+        sorted(selected.items()),
+        desc=f'{task}: task handle detection',
+        unit='episode',
+        dynamic_ncols=True,
+        disable=not show_progress,
+    )
+    for episode_idx, frame_sources in progress:
+        cache_path = cache_dir / task / f'episode_{episode_idx:04d}.json'
+        detection = cached_detections.get(episode_idx)
+        if detection is None:
+            if not frame_sources:
+                raise RuntimeError(
+                    f'Task cache missing frame sources for episode {episode_idx}'
+                )
+            episode_dir = resolve_episode_dir(raw_data_dir, task, episode_idx)
+            sample_frames = [frame for frame, _ in frame_sources]
+            gripper_positions = _load_current_gripper_positions(
+                episode_dir, sample_frames
+            )
+            effective_excluded_ids = list(excluded_ids)
+            effective_excluded_ids.extend(
+                robot_handles_by_episode.get(episode_idx, ())
+            )
+            evidence = []
+            for sample_frame, source in frame_sources:
+                with source.open('rb') as stream:
+                    transition = pickle.load(stream)
+                if 'gripper_pose' not in transition:
+                    raise KeyError(
+                        f'Task handle detection requires gripper_pose in {source}'
+                    )
+                action_position = np.asarray(
+                    transition['gripper_pose']
+                ).reshape(-1)[:3]
+                masks = load_frame_masks(episode_dir, sample_frame, cameras)
+                point_clouds = {
+                    camera: _point_cloud_hwc(
+                        np.asarray(transition[f'{camera}_point_cloud']),
+                        f'{camera}_point_cloud',
+                    )
+                    for camera in cameras
+                }
+                evidence.append(
+                    build_task_frame_evidence(
+                        sample_frame,
+                        gripper_positions[sample_frame],
+                        action_position,
+                        masks,
+                        point_clouds,
+                        excluded_ids=effective_excluded_ids,
+                    )
+                )
+            detection = detect_task_handles(
+                task,
+                episode_idx,
+                evidence,
+                interaction_radius=task_prior_radius,
+                max_instances=task_prior_max_instances,
+                background_extent=task_prior_background_extent,
+            )
+            if write_cache:
+                save_task_handle_detection(cache_path, detection)
+        handles_by_episode[episode_idx] = detection.task_handles
+        tqdm.write(
+            f'{task} episode={episode_idx}: task handles='
+            f'{list(detection.task_handles)} interaction='
+            f'{list(detection.interaction_handles)} adjacent='
+            f'{list(detection.adjacent_handles)} rejected_dynamic='
+            f'{list(detection.rejected_dynamic_handles)} frames='
+            f'{list(detection.sampled_frames)}'
+        )
+    return handles_by_episode
+
+
 def process_task(
     task: str,
     source_dir: Path,
@@ -1377,6 +1611,10 @@ def process_task(
     task_prior_max_instances: Optional[int],
     task_prior_background_extent: float,
     task_prior_strict: bool,
+    temporal_task_filter: bool,
+    task_handle_cache_dir: Path,
+    task_detection_frames: int,
+    refresh_task_handle_cache: bool,
     auto_detect_robot_handles: bool,
     robot_handle_cache_dir: Path,
     robot_detection_frames: int,
@@ -1430,6 +1668,30 @@ def process_task(
             requested_episode_ids=requested_robot_episodes,
             show_progress=show_progress,
         )
+    task_handles_by_episode: Dict[int, Tuple[int, ...]] = {}
+    if temporal_task_filter:
+        requested_task_episodes = (
+            _episode_ids_for_selected_files(files, previous_file_by_index)
+            if dry_run
+            else None
+        )
+        task_handles_by_episode = _detect_task_relevant_handles(
+            task,
+            all_files,
+            raw_data_dir,
+            cameras,
+            excluded_ids,
+            robot_handles_by_episode,
+            task_detection_frames,
+            task_handle_cache_dir,
+            refresh_task_handle_cache,
+            write_cache=not dry_run,
+            task_prior_radius=task_prior_radius,
+            task_prior_max_instances=task_prior_max_instances,
+            task_prior_background_extent=task_prior_background_extent,
+            requested_episode_ids=requested_task_episodes,
+            show_progress=show_progress,
+        )
     frame_cache = OracleFrameCache(cache_frames)
 
     def process_one(source: Path):
@@ -1441,6 +1703,7 @@ def process_task(
                 np.asarray(original.get('terminal', -1)).item()
             )
             effective_excluded_ids = list(excluded_ids)
+            included_ids = None
             if terminal != -1 and 'episode_idx' in original:
                 original_episode_idx = int(
                     np.asarray(original['episode_idx']).item()
@@ -1448,6 +1711,10 @@ def process_task(
                 effective_excluded_ids.extend(
                     robot_handles_by_episode.get(original_episode_idx, ())
                 )
+                if temporal_task_filter:
+                    included_ids = task_handles_by_episode.get(
+                        original_episode_idx, ()
+                    )
             migrated, oracle, _ = augment_transition(
                 original,
                 raw_data_dir,
@@ -1458,6 +1725,7 @@ def process_task(
                 num_points,
                 effective_excluded_ids,
                 seed,
+                included_ids=included_ids,
                 min_object_points=min_object_points,
                 frame_cache=frame_cache,
                 task_prior_filter=task_prior_filter,
@@ -1481,6 +1749,7 @@ def process_task(
                 if key in original
             }
             scene_points = None
+            camera_images: Dict[str, np.ndarray] = {}
             visualization_oracle = oracle
             visualization_episode_idx = (
                 int(np.asarray(original['episode_idx']).item())
@@ -1509,6 +1778,11 @@ def process_task(
                         excluded_ids,
                         seed,
                         min_object_points,
+                        included_ids_by_episode=(
+                            task_handles_by_episode
+                            if temporal_task_filter
+                            else None
+                        ),
                         task_prior_filter=task_prior_filter,
                         task_prior_radius=task_prior_radius,
                         task_prior_max_instances=task_prior_max_instances,
@@ -1524,12 +1798,27 @@ def process_task(
                             visualization_episode_idx,
                             visualization_sample_frame,
                         ) = recovered
+                if (
+                    visualization_episode_idx is not None
+                    and visualization_sample_frame is not None
+                ):
+                    visualization_episode_dir = resolve_episode_dir(
+                        raw_data_dir,
+                        task,
+                        visualization_episode_idx,
+                    )
+                    camera_images = load_frame_rgb_images(
+                        visualization_episode_dir,
+                        visualization_sample_frame,
+                        cameras,
+                    )
             return (
                 replay_index,
                 alignment,
                 oracle,
                 visualization_oracle,
                 scene_points,
+                camera_images,
                 visualization_episode_idx,
                 visualization_sample_frame,
             )
@@ -1542,6 +1831,7 @@ def process_task(
     filtered = 0
     prior_filtered = 0
     excluded = 0
+    temporal_filtered = 0
     visualized = 0
     progress = tqdm(
         total=len(files),
@@ -1557,6 +1847,7 @@ def process_task(
             oracle,
             visualization_oracle,
             scene_points,
+            camera_images,
             visualization_episode_idx,
             visualization_sample_frame,
         ) in _bounded_thread_map(process_one, files, workers):
@@ -1564,6 +1855,7 @@ def process_task(
             filtered += oracle.filtered_objects
             prior_filtered += oracle.prior_filtered_objects
             excluded += oracle.excluded_objects
+            temporal_filtered += oracle.temporal_filtered_objects
             cache_hits, cache_misses, _ = frame_cache.stats()
             progress.set_postfix(
                 objects=int(oracle.valid.sum()),
@@ -1571,6 +1863,7 @@ def process_task(
                 filtered=filtered,
                 prior_filtered=prior_filtered,
                 excluded=excluded,
+                temporal_filtered=temporal_filtered,
                 workers=workers,
                 cache_hits=cache_hits,
                 cache_misses=cache_misses,
@@ -1591,6 +1884,7 @@ def process_task(
                     ),
                     episode_idx=visualization_episode_idx,
                     sample_frame=visualization_sample_frame,
+                    camera_images=camera_images,
                 )
                 visualized += 1
     finally:
@@ -1606,6 +1900,7 @@ def process_task(
         f'filtered={filtered}; '
         f'prior_filtered={prior_filtered}; '
         f'excluded={excluded}; '
+        f'temporal_filtered={temporal_filtered}; '
         f'visualized={visualized}; '
         f'cache_hits={cache_hits}; cache_misses={cache_misses}; '
         f'cache_entries={cache_entries}'
@@ -1709,6 +2004,31 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        '--temporal-task-filter',
+        action='store_true',
+        help=(
+            'build one episode-level task-handle whitelist from the current '
+            'and next-action gripper trajectory'
+        ),
+    )
+    parser.add_argument(
+        '--task-handle-cache-dir',
+        type=Path,
+        default=Path('task_handle_maps'),
+        help='episode task-handle JSON cache directory',
+    )
+    parser.add_argument(
+        '--task-detection-frames',
+        type=int,
+        default=16,
+        help='maximum temporally spread replay frames inspected per episode',
+    )
+    parser.add_argument(
+        '--refresh-task-handle-cache',
+        action='store_true',
+        help='ignore existing task-handle JSON files and detect again',
+    )
+    parser.add_argument(
         '--detect-robot-handles',
         action='store_true',
         help=(
@@ -1794,6 +2114,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     raw_data_dir = args.raw_data_dir.resolve()
     visualize_output_dir = args.visualize_output_dir.resolve()
     robot_handle_cache_dir = args.robot_handle_cache_dir.resolve()
+    task_handle_cache_dir = args.task_handle_cache_dir.resolve()
     if not replay_dir.is_dir():
         raise FileNotFoundError(f'Replay directory does not exist: {replay_dir}')
     if not raw_data_dir.is_dir():
@@ -1817,6 +2138,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         raise ValueError('--cache-frames must be non-negative')
     if args.robot_detection_frames <= 0:
         raise ValueError('--robot-detection-frames must be positive')
+    if args.task_detection_frames <= 0:
+        raise ValueError('--task-detection-frames must be positive')
     if args.task_prior_radius is not None and args.task_prior_radius <= 0:
         raise ValueError('--task-prior-radius must be positive')
     if (
@@ -1882,6 +2205,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 args.task_prior_background_extent
             ),
             task_prior_strict=args.task_prior_strict,
+            temporal_task_filter=args.temporal_task_filter,
+            task_handle_cache_dir=task_handle_cache_dir,
+            task_detection_frames=args.task_detection_frames,
+            refresh_task_handle_cache=args.refresh_task_handle_cache,
             auto_detect_robot_handles=args.detect_robot_handles,
             robot_handle_cache_dir=robot_handle_cache_dir,
             robot_detection_frames=args.robot_detection_frames,

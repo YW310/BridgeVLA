@@ -160,6 +160,10 @@ index、episode_idx、sample_frame、实例 ID、物体中心、点数、张量�
 
 若不传 `--visualize-output-dir`，默认也会保存到当前工作目录下新建的
 `oracle_visualizations` 文件夹；目标文件夹不存在时会自动创建。
+每张 PNG 会从同一个 raw `episode_idx/sample_frame` 读取
+`front_rgb`、`left_shoulder_rgb`、`right_shoulder_rgb` 和 `wrist_rgb`，因此可以直接
+对照不同相机中的原始场景与筛选后的三维实例。某个 RGB 文件缺失时只在对应面板
+显示 `RGB unavailable`，不会中断 replay 生成。
 
 按排序后的 replay 文件间隔绘制整个任务目录，例如每 100 个文件保存一张：
 
@@ -268,10 +272,11 @@ ID/机械臂排除、mask 可见但点云全为 NaN/Inf、点数阈值、任务�
 Matplotlib 自动缩放而改变物体的视觉尺度。该设置只影响绘图，不缩放或修改保存的
 Oracle 点云。
 
-每张 PNG 使用四联图显示同一批点云：一个 3D 透视图，以及三个正交投影：俯视
-`XY`（沿 Z 轴观察）、正视 `XZ`（沿 Y 轴观察）和侧视 `YZ`（沿 X 轴观察）。
-四个视角共享固定场景尺度和 handle ID 颜色；`--visualize-objects-only` 会在四个
-视角中同时隐藏灰色场景背景。
+每张 PNG 使用两排八个面板：上排依次显示 front、left shoulder、right shoulder、
+wrist 四个 RGB 相机视角；下排显示同一批点云的 3D 透视图，以及三个正交投影：
+俯视 `XY`（沿 Z 轴观察）、正视 `XZ`（沿 Y 轴观察）和侧视 `YZ`（沿 X 轴观察）。
+四个点云视角共享固定场景尺度和 handle ID 颜色；`--visualize-objects-only` 只隐藏
+下排点云中的灰色完整场景，不会隐藏上排 RGB 图像。
 
 离线 GT mask 只保存数字 handle，没有 `handle -> object name` 语义映射，因此不能
 仅凭任务名称严格证明某个 handle 是机械臂。确认机器人 ID 后，可重复使用
@@ -286,6 +291,49 @@ Oracle 点云。
 **action-conditioned Oracle 上界/离线标注**，不能直接作为无标签推理阶段的公平
 筛选器。若要求完全不使用未来动作，需要额外提供离线 `handle -> object name` 或
 人工 handle 白名单；只有数字 mask ID 和任务名称时无法无歧义地完成该语义映射。
+
+#### Episode 级时序任务 handle 白名单
+
+若高召回模式仍保留无关实例，添加 `--temporal-task-filter`。脚本会为每个 episode
+抽取最多 `--task-detection-frames` 帧，将 raw observation 中的当前夹爪位置与 replay
+中的下一关键动作位置组成完整动作轨迹，然后生成一份供该 episode 所有帧共用的
+handle 白名单：
+
+- 静止物体只要曾靠近抓取、放置或操作位置就会保留；不要求它发生运动。
+- 推动、按压、拉动等未闭合夹爪的交互，只要移动期间靠近夹爪或动作位置也会保留。
+- 多帧显著移动但移动前后始终没有任何夹爪/动作邻近证据的 handle 会记录在
+  `rejected_dynamic_handles`，不会进入白名单。
+- 与已确认交互 handle 持续相邻的静态目标、容器或组合结构额外保留一跳；不会递归
+  扩散到整个场景。
+- `robot_handles` 会在时序任务检测之前排除，因此建议两个检测参数同时启用。
+
+    python tools/augment_replay_with_oracle_objects.py \
+        --replay-dir LPY/BridgeVLA_RLBench_TRAIN_Buffer \
+        --raw-data-dir LPY/BridgeVLA_RLBench_TRAIN_DATA/train \
+        --task stack_blocks \
+        --output-dir LPY/BridgeVLA_RLBench_TASK_OBJECT_Buffer \
+        --detect-robot-handles \
+        --robot-detection-frames 8 \
+        --robot-handle-cache-dir robot_handle_maps \
+        --temporal-task-filter \
+        --task-detection-frames 16 \
+        --task-handle-cache-dir task_handle_maps \
+        --task-prior-filter \
+        --min-object-points 1 \
+        --max-objects 32 \
+        --visualize-every 100 \
+        --visualize-objects-only
+
+时序结果缓存为 `task_handle_maps/<task>/episode_NNNN.json`。JSON 包含
+`task_handles`、`interaction_handles`、`adjacent_handles`、
+`rejected_dynamic_handles`、`background_handles` 和 `sampled_frames`。修改任务半径、
+最大实例数或检测帧数后，应添加 `--refresh-task-handle-cache` 重新检测。dry-run 会
+读取缓存但不会写入新缓存。运行进度及 dry-run 中的 `temporal_filtered` /
+`temporal_filtered_object_ids` 表示当前帧被 episode 白名单删除的 handle。
+
+该功能不调用 Qwen、SAM，也不重新运行 RLBench；它直接在生成 Oracle replay 前使用
+现有 GT mask、点云和动作轨迹完成离线筛选。若 episode 很长或存在很多轮操作，可将
+`--task-detection-frames` 提高到 24 或 32，以降低漏过短暂交互的概率。
 
 ### 自动检测并排除机械臂和夹爪
 

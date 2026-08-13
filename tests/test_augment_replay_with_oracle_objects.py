@@ -15,6 +15,8 @@ from tools.augment_replay_with_oracle_objects import (
     decode_mask_image,
     extract_oracle_objects,
     build_parser,
+    load_frame_rgb_images,
+    visualize_oracle_objects,
     _bounded_thread_map,
     _select_dry_run_files,
     _select_visualization_files,
@@ -65,6 +67,16 @@ class OracleReplayAugmentationTest(unittest.TestCase):
         self.assertFalse(args.task_prior_strict)
         args = parser.parse_args(base + ['--task-prior-strict'])
         self.assertTrue(args.task_prior_strict)
+        args = parser.parse_args(
+            base
+            + [
+                '--temporal-task-filter',
+                '--task-detection-frames',
+                '24',
+            ]
+        )
+        self.assertTrue(args.temporal_task_filter)
+        self.assertEqual(args.task_detection_frames, 24)
         args = parser.parse_args(
             base
             + [
@@ -211,6 +223,47 @@ class OracleReplayAugmentationTest(unittest.TestCase):
         decoded = decode_mask_image(encoded, decoder=decoder)
         self.assertEqual(decoded.tolist(), [[0, 1]])
 
+    def test_loads_all_available_raw_rgb_camera_views(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            episode = Path(temporary)
+            for index, camera in enumerate(CAMERAS):
+                folder = episode / f'{camera}_rgb'
+                folder.mkdir()
+                pixels = np.full((4, 6, 3), index * 40, dtype=np.uint8)
+                Image.fromarray(pixels).save(folder / '7.png')
+            loaded = load_frame_rgb_images(episode, 7, CAMERAS)
+        self.assertEqual(tuple(loaded), CAMERAS)
+        self.assertTrue(all(image.shape == (4, 6, 3) for image in loaded.values()))
+
+    def test_visualization_combines_camera_images_and_point_cloud_views(self):
+        transition = {'front_point_cloud': point_cloud(0)}
+        oracle = extract_oracle_objects(
+            transition,
+            {'front': np.array([[0, 5, 5], [0, 0, 0]], dtype=np.int32)},
+            cameras=('front',),
+            max_objects=2,
+            num_points=3,
+            min_object_points=1,
+            rng=np.random.default_rng(0),
+        )
+        camera_images = {
+            camera: np.full((16, 24, 3), index * 40, dtype=np.uint8)
+            for index, camera in enumerate(CAMERAS)
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            output = visualize_oracle_objects(
+                oracle,
+                'stack_blocks',
+                9,
+                Path(temporary),
+                episode_idx=2,
+                sample_frame=7,
+                camera_images=camera_images,
+            )
+            with Image.open(output) as image:
+                width, height = image.size
+        self.assertGreater(width, height)
+
     def test_dry_run_stops_after_enough_regular_transitions(self):
         with tempfile.TemporaryDirectory() as temporary:
             files = []
@@ -304,6 +357,23 @@ class OracleReplayAugmentationTest(unittest.TestCase):
         )
         self.assertEqual(oracle.no_finite_point_object_ids, (9,))
         self.assertFalse(oracle.valid.any())
+
+    def test_episode_whitelist_reports_temporally_filtered_ids(self):
+        transition = {'front_point_cloud': point_cloud(0)}
+        oracle = extract_oracle_objects(
+            transition,
+            {'front': np.array([[0, 5, 5], [7, 7, 0]], dtype=np.int32)},
+            cameras=('front',),
+            max_objects=4,
+            num_points=3,
+            excluded_ids=(0,),
+            included_ids=(5,),
+            min_object_points=1,
+            rng=np.random.default_rng(0),
+        )
+        self.assertEqual(oracle.ids.tolist(), [5, -1, -1, -1])
+        self.assertEqual(oracle.temporal_filtered_objects, 1)
+        self.assertEqual(oracle.temporal_filtered_object_ids, (7,))
 
     def test_task_prior_filter_runs_during_oracle_extraction(self):
         transition = {'front_point_cloud': point_cloud(0)}
