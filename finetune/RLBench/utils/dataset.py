@@ -30,7 +30,7 @@ def create_replay(
     voxel_sizes,
     replay_size=3e5,
     use_oracle_objects: bool = False,
-    oracle_max_objects: int = 16,
+    oracle_max_objects: int = 32,
     oracle_num_points: int = 512,
 ):
     trans_indicies_size = 3 * len(voxel_sizes)
@@ -147,6 +147,9 @@ def create_replay(
                 ),
                 ReplayElement(
                     'oracle_object_centers', (oracle_max_objects, 3), np.float32
+                ),
+                ReplayElement(
+                    'oracle_object_sizes', (oracle_max_objects, 3), np.float32
                 ),
                 ReplayElement('oracle_object_ids', (oracle_max_objects,), np.int32),
                 ReplayElement('oracle_object_valid', (oracle_max_objects,), bool),

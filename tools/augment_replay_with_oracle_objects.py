@@ -31,6 +31,7 @@ DEFAULT_NUM_POINTS = 512
 ORACLE_KEYS = (
     'oracle_object_points',
     'oracle_object_centers',
+    'oracle_object_sizes',
     'oracle_object_ids',
     'oracle_object_valid',
 )
@@ -40,15 +41,18 @@ ORACLE_KEYS = (
 class OracleObjects:
     points: np.ndarray
     centers: np.ndarray
+    sizes: np.ndarray
     ids: np.ndarray
     valid: np.ndarray
     raw_point_counts: Tuple[int, ...]
     discovered_objects: int
+    filtered_objects: int
 
     def as_replay_fields(self) -> Dict[str, np.ndarray]:
         return {
             'oracle_object_points': self.points,
             'oracle_object_centers': self.centers,
+            'oracle_object_sizes': self.sizes,
             'oracle_object_ids': self.ids,
             'oracle_object_valid': self.valid,
         }
@@ -132,10 +136,12 @@ def empty_oracle_objects(max_objects: int, num_points: int) -> OracleObjects:
     return OracleObjects(
         points=np.zeros((max_objects, num_points, 3), dtype=np.float32),
         centers=np.zeros((max_objects, 3), dtype=np.float32),
+        sizes=np.zeros((max_objects, 3), dtype=np.float32),
         ids=np.full((max_objects,), -1, dtype=np.int32),
         valid=np.zeros((max_objects,), dtype=np.bool_),
         raw_point_counts=(),
         discovered_objects=0,
+        filtered_objects=0,
     )
 
 
@@ -217,11 +223,14 @@ def extract_oracle_objects(
     max_objects: int = DEFAULT_MAX_OBJECTS,
     num_points: int = DEFAULT_NUM_POINTS,
     excluded_ids: Iterable[int] = (0,),
+    min_object_points: int = 20,
     rng: Optional[np.random.Generator] = None,
 ) -> OracleObjects:
     '''Fuse decoded instance masks with the existing replay point clouds.'''
-    if max_objects <= 0 or num_points <= 0:
-        raise ValueError('max_objects and num_points must both be positive')
+    if max_objects <= 0 or num_points <= 0 or min_object_points <= 0:
+        raise ValueError(
+            'max_objects, num_points, and min_object_points must be positive'
+        )
     rng = rng or np.random.default_rng()
     excluded = {int(value) for value in excluded_ids}
     points_by_id: Dict[int, List[np.ndarray]] = {}
@@ -253,6 +262,15 @@ def extract_oracle_objects(
         (object_id, np.concatenate(camera_points, axis=0))
         for object_id, camera_points in points_by_id.items()
     ]
+    filtered_objects = sum(
+        len(object_points) < min_object_points
+        for _, object_points in merged
+    )
+    merged = [
+        (object_id, object_points)
+        for object_id, object_points in merged
+        if len(object_points) >= min_object_points
+    ]
     # Fixed storage requires truncation. Prefer the strongest point support,
     # then use handle ID as a deterministic tie breaker.
     merged.sort(key=lambda item: (-len(item[1]), item[0]))
@@ -268,6 +286,10 @@ def extract_oracle_objects(
         padded.centers[slot] = np.mean(
             object_points, axis=0, dtype=np.float64
         ).astype(np.float32)
+        padded.sizes[slot] = (
+            np.max(object_points, axis=0)
+            - np.min(object_points, axis=0)
+        ).astype(np.float32)
         padded.ids[slot] = object_id
         padded.valid[slot] = True
         raw_counts.append(count)
@@ -275,10 +297,12 @@ def extract_oracle_objects(
     oracle = OracleObjects(
         padded.points,
         padded.centers,
+        padded.sizes,
         padded.ids,
         padded.valid,
         tuple(raw_counts),
         discovered_objects,
+        filtered_objects,
     )
     validate_oracle_objects(oracle, max_objects, num_points)
     return oracle
@@ -290,6 +314,7 @@ def validate_oracle_objects(
     expected = {
         'points': ((max_objects, num_points, 3), np.dtype(np.float32)),
         'centers': ((max_objects, 3), np.dtype(np.float32)),
+        'sizes': ((max_objects, 3), np.dtype(np.float32)),
         'ids': ((max_objects,), np.dtype(np.int32)),
         'valid': ((max_objects,), np.dtype(np.bool_)),
     }
@@ -304,6 +329,10 @@ def validate_oracle_objects(
         raise ValueError('oracle_object_points contains NaN or Inf')
     if not np.isfinite(oracle.centers).all():
         raise ValueError('oracle_object_centers contains NaN or Inf')
+    if not np.isfinite(oracle.sizes).all():
+        raise ValueError('oracle_object_sizes contains NaN or Inf')
+    if np.any(oracle.sizes < 0):
+        raise ValueError('oracle_object_sizes contains negative values')
     if np.any(oracle.ids[~oracle.valid] != -1):
         raise ValueError('Invalid Oracle slots must use object ID -1')
 
@@ -383,6 +412,7 @@ def augment_transition(
     num_points: int,
     excluded_ids: Iterable[int],
     seed: int,
+    min_object_points: int = 20,
     frame_cache: Optional[OracleFrameCache] = None,
 ) -> Tuple[Dict[str, object], OracleObjects, Optional[Path]]:
     existing_oracle_keys = set(ORACLE_KEYS).intersection(original)
@@ -419,6 +449,7 @@ def augment_transition(
                 max_objects=max_objects,
                 num_points=num_points,
                 excluded_ids=excluded_ids,
+                min_object_points=min_object_points,
                 rng=_stable_frame_rng(
                     seed, task, episode_idx, sample_frame
                 ),
@@ -536,9 +567,12 @@ def _describe(
     print(f'  raw_points_per_object={list(oracle.raw_point_counts)}')
     print(f'  sampled_points_per_object={[oracle.points.shape[1]] * count}')
     print(f'  centers={oracle.centers[oracle.valid].tolist()}')
+    print(f'  sizes={oracle.sizes[oracle.valid].tolist()}')
+    print(f'  filtered_small_objects={oracle.filtered_objects}')
     print(
         f'  shapes=points{oracle.points.shape}, '
-        f'centers{oracle.centers.shape}, valid{oracle.valid.shape} '
+        f'centers{oracle.centers.shape}, sizes{oracle.sizes.shape}, '
+        f'valid{oracle.valid.shape} '
         f'finite_points={bool(np.isfinite(oracle.points).all())}'
     )
 
@@ -669,6 +703,7 @@ def process_task(
     show_progress: bool,
     workers: int,
     cache_frames: int,
+    min_object_points: int,
 ) -> int:
     files = _numeric_replay_files(source_dir)
     if not files:
@@ -697,6 +732,7 @@ def process_task(
                 num_points,
                 excluded_ids,
                 seed,
+                min_object_points=min_object_points,
                 frame_cache=frame_cache,
             )
             if not dry_run:
@@ -720,6 +756,7 @@ def process_task(
             ) from exc
 
     truncated = 0
+    filtered = 0
     progress = tqdm(
         total=len(files),
         desc=f'{task}: Oracle replay',
@@ -732,10 +769,12 @@ def process_task(
             process_one, files, workers
         ):
             truncated += int(oracle.discovered_objects > max_objects)
+            filtered += oracle.filtered_objects
             cache_hits, cache_misses, _ = frame_cache.stats()
             progress.set_postfix(
                 objects=int(oracle.valid.sum()),
                 truncated=truncated,
+                filtered=filtered,
                 workers=workers,
                 cache_hits=cache_hits,
                 cache_misses=cache_misses,
@@ -756,6 +795,7 @@ def process_task(
     cache_hits, cache_misses, cache_entries = frame_cache.stats()
     print(
         f'{task}: {mode} {len(files)} replay files; truncated={truncated}; '
+        f'filtered={filtered}; '
         f'cache_hits={cache_hits}; cache_misses={cache_misses}; '
         f'cache_entries={cache_entries}'
     )
@@ -804,6 +844,12 @@ def build_parser() -> argparse.ArgumentParser:
         '--max-objects', type=int, default=DEFAULT_MAX_OBJECTS
     )
     parser.add_argument('--num-points', type=int, default=DEFAULT_NUM_POINTS)
+    parser.add_argument(
+        '--min-object-points',
+        type=int,
+        default=20,
+        help='discard decoded instances with fewer fused finite points',
+    )
     parser.add_argument('--camera', action='append', dest='cameras')
     parser.add_argument(
         '--exclude-object-id',
@@ -850,8 +896,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         raise FileNotFoundError(f'Replay directory does not exist: {replay_dir}')
     if not raw_data_dir.is_dir():
         raise FileNotFoundError(f'Raw directory does not exist: {raw_data_dir}')
-    if args.max_objects <= 0 or args.num_points <= 0:
-        raise ValueError('--max-objects and --num-points must be positive')
+    if (
+        args.max_objects <= 0
+        or args.num_points <= 0
+        or args.min_object_points <= 0
+    ):
+        raise ValueError(
+            '--max-objects, --num-points, and --min-object-points '
+            'must be positive'
+        )
     if args.dry_run_samples <= 0:
         raise ValueError('--dry-run-samples must be positive')
     if args.workers <= 0:
@@ -903,6 +956,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             show_progress=not args.no_progress,
             workers=args.workers,
             cache_frames=args.cache_frames,
+            min_object_points=args.min_object_points,
         )
     print(f'Done: {total} replay files')
     return 0

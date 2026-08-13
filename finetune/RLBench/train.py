@@ -83,7 +83,7 @@ def train(agent, dataset, training_iterations,epoch,rank=0):
                 )
     return log
 
-def save_agent(agent, path, epoch):
+def save_agent(agent, path, epoch, include_optimizer=False):
     model = agent._network
 
     if isinstance(model, DDP):
@@ -94,8 +94,9 @@ def save_agent(agent, path, epoch):
     checkpoint = {
         "epoch": epoch,
         "model_state": model_state,
-        "optimizer_state": agent._optimizer.state_dict(),
     }
+    if include_optimizer:
+        checkpoint["optimizer_state"] = agent._optimizer.state_dict()
 
     # Keep the previous checkpoint intact if the process is interrupted while
     # writing the new one.
@@ -390,8 +391,18 @@ def experiment(cmd_args):
 
         if dist.get_rank()==0 and (i %10==0 or i == end_epoch-1):
             # TODO: add logic to only save some models
-            save_agent(agent, f"{log_dir}/model_{i}.pth", i)
-            save_agent(agent, f"{log_dir}/model_last.pth", i)
+            save_agent(
+                agent,
+                f"{log_dir}/model_{i}.pth",
+                i,
+                include_optimizer=cmd_args.save_optimizer_state,
+            )
+            save_agent(
+                agent,
+                f"{log_dir}/model_last.pth",
+                i,
+                include_optimizer=cmd_args.save_optimizer_state,
+            )
         i += 1
         dist.barrier()
 
@@ -426,6 +437,14 @@ if __name__ == "__main__":
         help=(
             "Resume from a training checkpoint. --epochs remains the total target "
             "epoch count, not the number of additional epochs."
+        ),
+    )
+    parser.add_argument(
+        "--save_optimizer_state",
+        action="store_true",
+        help=(
+            "Include Adam state in checkpoints for exact training resume. "
+            "Disabled by default to keep evaluation/inference checkpoints small."
         ),
     )
     cmd_args = parser.parse_args()

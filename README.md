@@ -103,6 +103,7 @@ episode_idx 和 sample_frame 定位当前观测对应的原始 RLBench 帧：
 
     oracle_object_points   # [MAX_OBJECTS, NUM_POINTS, 3], float32
     oracle_object_centers  # [MAX_OBJECTS, 3], float32
+    oracle_object_sizes    # [MAX_OBJECTS, 3], float32
     oracle_object_ids      # [MAX_OBJECTS], int32
     oracle_object_valid    # [MAX_OBJECTS], bool
 
@@ -118,10 +119,11 @@ sentinel，其 episode/frame 元数据未定义，因此脚本只为它写入全
         --raw-data-dir LPY/BridgeVLA_RLBench_TRAIN_DATA/train \
         --task stack_blocks \
         --output-dir LPY/BridgeVLA_RLBench_ORACLE_Buffer \
-        --max-objects 16 \
+        --max-objects 32 \
         --num-points 512 \
+        --min-object-points 20 \
         --workers 8 \
-        --cache-frames 128
+        --cache-frames 256
 
 处理 replay 根目录下的全部任务：
 
@@ -161,13 +163,19 @@ N.replay.tmp，重新加载并验证原字段及 Oracle 字段后，再原子重
 文件，例如 --workers 8。线程数过高会增加内存占用和网络盘 I/O 竞争，建议从
 4 或 8 开始测试；默认值 1 保持原来的串行行为。
 
-脚本默认使用 --cache-frames 128 缓存最近完成的原始帧 Oracle 结果。缓存键为
-task、episode_idx 和 sample_frame；多个 replay transition 指向同一帧时，会
-复用 mask 解码、跨视角融合和点采样结果。多线程同时请求同一帧时也只计算一次。
-进度条中的 cache_hits 和 cache_misses 可用于确认缓存效果。可根据可用内存调整
-容量，或使用 --cache-frames 0 禁用缓存。同一原始帧的随机采样由 task、
-episode_idx、sample_frame 和 --seed 决定，不受 replay index 或线程完成顺序
-影响。
+脚本默认使用 --cache-frames 128 缓存最近完成的原始帧 Oracle 结果，上面的推荐
+命令将容量提高到 256。缓存键为 task、episode_idx 和 sample_frame；多个 replay
+transition 指向同一帧时，会复用 mask 解码、跨视角融合和点采样结果。多线程
+同时请求同一帧时也只计算一次。进度条中的 cache_hits 和 cache_misses 可用于
+确认缓存效果。可根据可用内存调整容量，或使用 --cache-frames 0 禁用缓存。同一
+原始帧的随机采样由 task、episode_idx、sample_frame 和 --seed 决定，不受
+replay index 或线程完成顺序影响。
+
+oracle_object_sizes 保存融合点云的轴对齐包围盒尺寸，即每个坐标轴上的
+max(points) - min(points)。脚本默认使用 --min-object-points 20，实例在跨相机
+合并并移除 NaN/Inf 后少于 20 个点时会被过滤。进度条中的 filtered 为累计过滤
+实例数，dry-run 会打印当前帧被过滤的数量。若希望保留此前的最宽松行为，可使用
+--min-object-points 1。
 
 RLBench mask 是 RGB 编码的 simulator handle，不能直接把 RGB 像素值当作实例
 ID。脚本调用 RLBench 自带的 rgb_handles_to_mask 解码，仅默认移除已确认的背景
@@ -184,12 +192,18 @@ TRAIN_REPLAY_STORAGE_DIR 指向 Oracle 输出目录，并启用与数据准备�
 尺寸：
 
     bash train.sh \
-        --exp_cfg_opts 'use_oracle_objects True oracle_max_objects 16 oracle_num_points 512' \
+        --exp_cfg_opts 'use_oracle_objects True oracle_max_objects 32 oracle_num_points 512' \
         [其他训练参数]
 
 use_oracle_objects 默认为 False，因此原始非 Oracle replay 的加载行为保持不变。
 当前改动负责准备和加载 Oracle 字段，不包含将这些字段转换为 object tokens 的
 策略网络结构。
+
+训练默认只在 `model_*.pth` 中保存 `epoch` 和 `model_state`，适用于评估与
+推理，不保存体积较大的 Adam optimizer state。如果需要完整恢复优化器以继续
+训练，启动训练时显式添加 `--save_optimizer_state`。轻量 checkpoint 仍可直接
+传给 RLBench `eval.py`；使用轻量 checkpoint 执行 `--resume` 时只恢复模型
+权重，优化器会重新初始化。
 
 3. **COLOSSEUM Fine-tuning:** For COLOSSEUM, we fine-tune the model with the training dataset provided by the [COLOSSEUM challenge](https://huggingface.co/datasets/colosseum/colosseum-challenge/tree/main). Similarly, our training code will first convert the raw data into replay buffer. You can also directly download the replay buffer we preprocess [here](https://huggingface.co/datasets/LPY/BridgeVLA_COLOSSEUM_TRAIN_BUFFER/tree/main). Then, you can use the `finetune/Colosseum/train.sh` file to finetune the model. Please run the following code:
 ```bash

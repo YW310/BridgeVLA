@@ -127,15 +127,44 @@ class OracleReplayAugmentationTest(unittest.TestCase):
             cameras=CAMERAS,
             max_objects=4,
             num_points=5,
+            min_object_points=1,
             rng=np.random.default_rng(3),
         )
 
         self.assertEqual(oracle.points.shape, (4, 5, 3))
         self.assertEqual(oracle.centers.shape, (4, 3))
+        self.assertEqual(oracle.sizes.shape, (4, 3))
         self.assertEqual(oracle.ids.tolist(), [5, 7, -1, -1])
         self.assertEqual(oracle.valid.tolist(), [True, True, False, False])
         self.assertEqual(oracle.raw_point_counts, (2, 2))
+        np.testing.assert_array_equal(
+            oracle.sizes[2:], np.zeros((2, 3), dtype=np.float32)
+        )
         self.assertTrue(np.isfinite(oracle.points).all())
+
+    def test_filters_instances_below_minimum_fused_point_count(self):
+        transition = {
+            f'{camera}_point_cloud': point_cloud(index)
+            for index, camera in enumerate(CAMERAS)
+        }
+        masks = {
+            'front': np.array([[0, 5, 5], [7, 0, 0]], dtype=np.int32),
+            'left_shoulder': np.zeros((2, 3), dtype=np.int32),
+            'right_shoulder': np.zeros((2, 3), dtype=np.int32),
+            'wrist': np.zeros((2, 3), dtype=np.int32),
+        }
+        oracle = extract_oracle_objects(
+            transition,
+            masks,
+            cameras=CAMERAS,
+            max_objects=4,
+            num_points=5,
+            min_object_points=2,
+            rng=np.random.default_rng(0),
+        )
+        self.assertEqual(oracle.ids.tolist(), [5, -1, -1, -1])
+        self.assertEqual(oracle.filtered_objects, 1)
+        self.assertEqual(oracle.discovered_objects, 1)
 
     def test_alignment_and_atomic_round_trip_preserve_original_fields(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -178,6 +207,7 @@ class OracleReplayAugmentationTest(unittest.TestCase):
                 num_points=4,
                 excluded_ids=(0,),
                 seed=8,
+                min_object_points=1,
             )
             _, repeated_oracle, _ = augment_transition(
                 original,
@@ -189,6 +219,7 @@ class OracleReplayAugmentationTest(unittest.TestCase):
                 num_points=4,
                 excluded_ids=(0,),
                 seed=8,
+                min_object_points=1,
             )
             output = root / 'output' / '9.replay'
             atomic_write_replay(output, original, migrated, oracle)
@@ -206,6 +237,9 @@ class OracleReplayAugmentationTest(unittest.TestCase):
             )
             self.assertEqual(
                 reloaded['oracle_object_ids'].tolist(), [11, -1, -1]
+            )
+            self.assertEqual(
+                reloaded['oracle_object_sizes'].shape, (3, 3)
             )
             self.assertFalse(Path(f'{output}.tmp').exists())
 
@@ -225,6 +259,7 @@ class OracleReplayAugmentationTest(unittest.TestCase):
             num_points=3,
             excluded_ids=(0,),
             seed=0,
+            min_object_points=1,
         )
         self.assertIsNone(episode_dir)
         self.assertFalse(oracle.valid.any())
