@@ -19,6 +19,7 @@ from tools.augment_replay_with_oracle_objects import (
     _select_dry_run_files,
     _select_visualization_files,
     _scene_points_for_visualization,
+    _final_observation_oracle_for_visualization,
 )
 
 
@@ -213,6 +214,27 @@ class OracleReplayAugmentationTest(unittest.TestCase):
         self.assertEqual(oracle.filtered_objects, 1)
         self.assertEqual(oracle.discovered_objects, 1)
 
+    def test_task_prior_filter_runs_during_oracle_extraction(self):
+        transition = {'front_point_cloud': point_cloud(0)}
+        masks = {
+            'front': np.array([[0, 5, 5], [7, 7, 0]], dtype=np.int32)
+        }
+        oracle = extract_oracle_objects(
+            transition,
+            masks,
+            cameras=('front',),
+            max_objects=4,
+            num_points=3,
+            min_object_points=1,
+            task_name='stack_blocks',
+            task_prior_filter=True,
+            action_position=np.array([1.5, 0.0, 1.0]),
+            task_prior_radius=0.2,
+            rng=np.random.default_rng(0),
+        )
+        self.assertEqual(oracle.ids.tolist(), [5, -1, -1, -1])
+        self.assertEqual(oracle.prior_filtered_objects, 1)
+
     def test_alignment_and_atomic_round_trip_preserve_original_fields(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -311,6 +333,54 @@ class OracleReplayAugmentationTest(unittest.TestCase):
         self.assertIsNone(episode_dir)
         self.assertFalse(oracle.valid.any())
         self.assertTrue(set(ORACLE_KEYS).issubset(migrated))
+
+    def test_final_visualization_recovers_mask_from_previous_transition(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            episode = (
+                root
+                / 'raw'
+                / 'stack_blocks'
+                / 'all_variations'
+                / 'episodes'
+                / 'episode2'
+            )
+            mask = np.array([[0, 11, 11], [0, 0, 0]], dtype=np.uint8)
+            for camera in CAMERAS:
+                folder = episode / f'{camera}_mask'
+                folder.mkdir(parents=True, exist_ok=True)
+                Image.fromarray(mask).save(folder / '5.png')
+            previous_source = root / '9.replay'
+            with previous_source.open('wb') as stream:
+                pickle.dump(
+                    {
+                        'terminal': np.int8(1),
+                        'episode_idx': 2,
+                        'next_keypoint_frame': 5,
+                    },
+                    stream,
+                )
+            final_transition = {
+                'terminal': np.int8(-1),
+                **{
+                    f'{camera}_point_cloud': point_cloud(index)
+                    for index, camera in enumerate(CAMERAS)
+                },
+            }
+            oracle = _final_observation_oracle_for_visualization(
+                final_transition,
+                previous_source,
+                root / 'raw',
+                'stack_blocks',
+                CAMERAS,
+                max_objects=3,
+                num_points=4,
+                excluded_ids=(0,),
+                seed=8,
+                min_object_points=1,
+            )
+            self.assertIsNotNone(oracle)
+            self.assertEqual(oracle.ids.tolist(), [11, -1, -1])
 
 
 if __name__ == '__main__':

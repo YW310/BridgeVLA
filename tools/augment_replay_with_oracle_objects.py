@@ -23,6 +23,11 @@ import numpy as np
 from PIL import Image
 from tqdm import tqdm
 
+try:
+    from tools.rlbench_task_object_priors import select_task_relevant_instances
+except ModuleNotFoundError:  # Direct execution: python tools/<script>.py
+    from rlbench_task_object_priors import select_task_relevant_instances
+
 
 # Oracle object experiment
 DEFAULT_CAMERAS = ('front', 'left_shoulder', 'right_shoulder', 'wrist')
@@ -48,6 +53,7 @@ class OracleObjects:
     raw_point_counts: Tuple[int, ...]
     discovered_objects: int
     filtered_objects: int
+    prior_filtered_objects: int = 0
 
     def as_replay_fields(self) -> Dict[str, np.ndarray]:
         return {
@@ -66,14 +72,14 @@ class OracleFrameCache:
         if capacity < 0:
             raise ValueError('cache capacity must be non-negative')
         self.capacity = capacity
-        self._entries: OrderedDict[Tuple[str, int, int], Future] = OrderedDict()
+        self._entries: OrderedDict[Tuple[object, ...], Future] = OrderedDict()
         self._lock = Lock()
         self._hits = 0
         self._misses = 0
 
     def get_or_compute(
         self,
-        key: Tuple[str, int, int],
+        key: Tuple[object, ...],
         compute: Callable[[], OracleObjects],
     ) -> OracleObjects:
         if self.capacity == 0:
@@ -114,7 +120,7 @@ class OracleFrameCache:
             self._evict_locked(protected_key=key)
         return value
 
-    def _evict_locked(self, protected_key: Tuple[str, int, int]) -> None:
+    def _evict_locked(self, protected_key: Tuple[object, ...]) -> None:
         while len(self._entries) > self.capacity:
             evicted = False
             for candidate, future in list(self._entries.items()):
@@ -143,6 +149,7 @@ def empty_oracle_objects(max_objects: int, num_points: int) -> OracleObjects:
         raw_point_counts=(),
         discovered_objects=0,
         filtered_objects=0,
+        prior_filtered_objects=0,
     )
 
 
@@ -150,10 +157,12 @@ def _point_cloud_hwc(point_cloud: np.ndarray, name: str) -> np.ndarray:
     point_cloud = np.asarray(point_cloud)
     if point_cloud.ndim != 3:
         raise ValueError(f'{name} must have 3 dimensions; got {point_cloud.shape}')
-    if point_cloud.shape[-1] == 3:
-        return point_cloud
+    # BridgeVLA replay point clouds are channel-first. Check that convention
+    # before HWC so a small test/input shaped [3, H, 3] is not ambiguous.
     if point_cloud.shape[0] == 3:
         return np.moveaxis(point_cloud, 0, -1)
+    if point_cloud.shape[-1] == 3:
+        return point_cloud
     raise ValueError(
         f'{name} must be [H, W, 3] or [3, H, W]; got {point_cloud.shape}'
     )
@@ -226,6 +235,12 @@ def extract_oracle_objects(
     excluded_ids: Iterable[int] = (0,),
     min_object_points: int = 20,
     rng: Optional[np.random.Generator] = None,
+    task_name: Optional[str] = None,
+    task_prior_filter: bool = False,
+    action_position: Optional[np.ndarray] = None,
+    task_prior_radius: Optional[float] = None,
+    task_prior_max_instances: Optional[int] = None,
+    task_prior_background_extent: float = 0.60,
 ) -> OracleObjects:
     '''Fuse decoded instance masks with the existing replay point clouds.'''
     if max_objects <= 0 or num_points <= 0 or min_object_points <= 0:
@@ -272,9 +287,29 @@ def extract_oracle_objects(
         for object_id, object_points in merged
         if len(object_points) >= min_object_points
     ]
+    prior_filtered_objects = 0
+    if task_prior_filter:
+        if task_name is None:
+            raise ValueError('task_name is required with task-prior filtering')
+        if action_position is None:
+            raise ValueError(
+                'action_position is required with task-prior filtering'
+            )
+        before_prior = len(merged)
+        merged = select_task_relevant_instances(
+            task_name,
+            merged,
+            action_position,
+            interaction_radius=task_prior_radius,
+            max_instances=task_prior_max_instances,
+            background_extent=task_prior_background_extent,
+        )
+        prior_filtered_objects = before_prior - len(merged)
     # Fixed storage requires truncation. Prefer the strongest point support,
-    # then use handle ID as a deterministic tie breaker.
-    merged.sort(key=lambda item: (-len(item[1]), item[0]))
+    # then use handle ID as a deterministic tie breaker. Task-prior results
+    # are already ordered by action proximity and must retain that ordering.
+    if not task_prior_filter:
+        merged.sort(key=lambda item: (-len(item[1]), item[0]))
     discovered_objects = len(merged)
     merged = merged[:max_objects]
 
@@ -304,6 +339,7 @@ def extract_oracle_objects(
         tuple(raw_counts),
         discovered_objects,
         filtered_objects,
+        prior_filtered_objects,
     )
     validate_oracle_objects(oracle, max_objects, num_points)
     return oracle
@@ -415,6 +451,10 @@ def augment_transition(
     seed: int,
     min_object_points: int = 20,
     frame_cache: Optional[OracleFrameCache] = None,
+    task_prior_filter: bool = False,
+    task_prior_radius: Optional[float] = None,
+    task_prior_max_instances: Optional[int] = None,
+    task_prior_background_extent: float = 0.60,
 ) -> Tuple[Dict[str, object], OracleObjects, Optional[Path]]:
     existing_oracle_keys = set(ORACLE_KEYS).intersection(original)
     if existing_oracle_keys:
@@ -440,6 +480,13 @@ def augment_transition(
                 f'episode_idx={episode_idx}, sample_frame={sample_frame}'
             )
         episode_dir = resolve_episode_dir(raw_data_dir, task, episode_idx)
+        action_position = None
+        if task_prior_filter:
+            if 'gripper_pose' not in original:
+                raise KeyError(
+                    'Replay task-prior filtering requires gripper_pose'
+                )
+            action_position = np.asarray(original['gripper_pose']).reshape(-1)[:3]
 
         def build_oracle() -> OracleObjects:
             masks = load_frame_masks(episode_dir, sample_frame, cameras)
@@ -454,9 +501,24 @@ def augment_transition(
                 rng=_stable_frame_rng(
                     seed, task, episode_idx, sample_frame
                 ),
+                task_name=task,
+                task_prior_filter=task_prior_filter,
+                action_position=action_position,
+                task_prior_radius=task_prior_radius,
+                task_prior_max_instances=task_prior_max_instances,
+                task_prior_background_extent=task_prior_background_extent,
             )
 
-        cache_key = (task, episode_idx, sample_frame)
+        cache_key: Tuple[object, ...] = (task, episode_idx, sample_frame)
+        if task_prior_filter:
+            assert action_position is not None
+            cache_key += (
+                'task-prior',
+                tuple(np.round(action_position.astype(np.float64), 6)),
+                task_prior_radius,
+                task_prior_max_instances,
+                task_prior_background_extent,
+            )
         oracle = (
             frame_cache.get_or_compute(cache_key, build_oracle)
             if frame_cache is not None
@@ -467,6 +529,61 @@ def augment_transition(
     migrated.update(oracle.as_replay_fields())
     validate_migrated_transition(original, migrated, oracle)
     return migrated, oracle, episode_dir
+
+
+def _final_observation_oracle_for_visualization(
+    final_transition: Mapping[str, object],
+    previous_source: Optional[Path],
+    raw_data_dir: Path,
+    task: str,
+    cameras: Sequence[str],
+    max_objects: int,
+    num_points: int,
+    excluded_ids: Iterable[int],
+    seed: int,
+    min_object_points: int,
+    task_prior_filter: bool = False,
+    task_prior_radius: Optional[float] = None,
+    task_prior_max_instances: Optional[int] = None,
+    task_prior_background_extent: float = 0.60,
+) -> Optional[OracleObjects]:
+    '''Recover a final observation's GT instances from prior alignment data.'''
+    if previous_source is None or not previous_source.is_file():
+        return None
+    with previous_source.open('rb') as stream:
+        previous = pickle.load(stream)
+    if int(np.asarray(previous.get('terminal', -1)).item()) == -1:
+        return None
+    if 'episode_idx' not in previous or 'next_keypoint_frame' not in previous:
+        return None
+    episode_idx = int(np.asarray(previous['episode_idx']).item())
+    sample_frame = int(np.asarray(previous['next_keypoint_frame']).item())
+    if episode_idx < 0 or sample_frame < 0:
+        return None
+    if task_prior_filter and 'gripper_pose' not in final_transition:
+        return None
+    episode_dir = resolve_episode_dir(raw_data_dir, task, episode_idx)
+    masks = load_frame_masks(episode_dir, sample_frame, cameras)
+    return extract_oracle_objects(
+        final_transition,
+        masks,
+        cameras=cameras,
+        max_objects=max_objects,
+        num_points=num_points,
+        excluded_ids=excluded_ids,
+        min_object_points=min_object_points,
+        rng=_stable_frame_rng(seed, task, episode_idx, sample_frame),
+        task_name=task,
+        task_prior_filter=task_prior_filter,
+        action_position=(
+            np.asarray(final_transition['gripper_pose']).reshape(-1)[:3]
+            if task_prior_filter and 'gripper_pose' in final_transition
+            else None
+        ),
+        task_prior_radius=task_prior_radius,
+        task_prior_max_instances=task_prior_max_instances,
+        task_prior_background_extent=task_prior_background_extent,
+    )
 
 
 def atomic_write_replay(
@@ -570,6 +687,7 @@ def _describe(
     print(f'  centers={oracle.centers[oracle.valid].tolist()}')
     print(f'  sizes={oracle.sizes[oracle.valid].tolist()}')
     print(f'  filtered_small_objects={oracle.filtered_objects}')
+    print(f'  filtered_by_task_prior={oracle.prior_filtered_objects}')
     print(
         f'  shapes=points{oracle.points.shape}, '
         f'centers{oracle.centers.shape}, sizes{oracle.sizes.shape}, '
@@ -811,6 +929,10 @@ def process_task(
     workers: int,
     cache_frames: int,
     min_object_points: int,
+    task_prior_filter: bool,
+    task_prior_radius: Optional[float],
+    task_prior_max_instances: Optional[int],
+    task_prior_background_extent: float,
 ) -> int:
     all_files = _numeric_replay_files(source_dir)
     if not all_files:
@@ -822,6 +944,10 @@ def process_task(
     )
     visualization_indices = {
         int(path.stem) for path in visualization_files
+    }
+    previous_file_by_index = {
+        int(current.stem): previous
+        for previous, current in zip(all_files, all_files[1:])
     }
     files = all_files
     if dry_run:
@@ -855,6 +981,10 @@ def process_task(
                 seed,
                 min_object_points=min_object_points,
                 frame_cache=frame_cache,
+                task_prior_filter=task_prior_filter,
+                task_prior_radius=task_prior_radius,
+                task_prior_max_instances=task_prior_max_instances,
+                task_prior_background_extent=task_prior_background_extent,
             )
             if not dry_run:
                 assert destination_dir is not None
@@ -871,11 +1001,42 @@ def process_task(
                 if key in original
             }
             scene_points = None
+            visualization_oracle = oracle
             if replay_index in visualization_indices:
                 scene_points = _scene_points_for_visualization(
                     original, cameras
                 )
-            return replay_index, alignment, oracle, scene_points
+                terminal = int(
+                    np.asarray(original.get('terminal', -1)).item()
+                )
+                if terminal == -1:
+                    recovered = _final_observation_oracle_for_visualization(
+                        original,
+                        previous_file_by_index.get(replay_index),
+                        raw_data_dir,
+                        task,
+                        cameras,
+                        max_objects,
+                        num_points,
+                        excluded_ids,
+                        seed,
+                        min_object_points,
+                        task_prior_filter=task_prior_filter,
+                        task_prior_radius=task_prior_radius,
+                        task_prior_max_instances=task_prior_max_instances,
+                        task_prior_background_extent=(
+                            task_prior_background_extent
+                        ),
+                    )
+                    if recovered is not None:
+                        visualization_oracle = recovered
+            return (
+                replay_index,
+                alignment,
+                oracle,
+                visualization_oracle,
+                scene_points,
+            )
         except Exception as exc:
             raise RuntimeError(
                 f'Failed to process replay {source}'
@@ -883,6 +1044,7 @@ def process_task(
 
     truncated = 0
     filtered = 0
+    prior_filtered = 0
     visualized = 0
     progress = tqdm(
         total=len(files),
@@ -892,16 +1054,22 @@ def process_task(
         disable=not show_progress,
     )
     try:
-        for replay_index, alignment, oracle, scene_points in _bounded_thread_map(
-            process_one, files, workers
-        ):
+        for (
+            replay_index,
+            alignment,
+            oracle,
+            visualization_oracle,
+            scene_points,
+        ) in _bounded_thread_map(process_one, files, workers):
             truncated += int(oracle.discovered_objects > max_objects)
             filtered += oracle.filtered_objects
+            prior_filtered += oracle.prior_filtered_objects
             cache_hits, cache_misses, _ = frame_cache.stats()
             progress.set_postfix(
                 objects=int(oracle.valid.sum()),
                 truncated=truncated,
                 filtered=filtered,
+                prior_filtered=prior_filtered,
                 workers=workers,
                 cache_hits=cache_hits,
                 cache_misses=cache_misses,
@@ -912,7 +1080,7 @@ def process_task(
                 _describe(task, replay_index, alignment, oracle)
             if replay_index in visualization_indices:
                 visualize_oracle_objects(
-                    oracle,
+                    visualization_oracle,
                     task,
                     replay_index,
                     visualize_output_dir,
@@ -933,6 +1101,7 @@ def process_task(
     print(
         f'{task}: {mode} {len(files)} replay files; truncated={truncated}; '
         f'filtered={filtered}; '
+        f'prior_filtered={prior_filtered}; '
         f'visualized={visualized}; '
         f'cache_hits={cache_hits}; cache_misses={cache_misses}; '
         f'cache_entries={cache_entries}'
@@ -991,10 +1160,41 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--camera', action='append', dest='cameras')
     parser.add_argument(
         '--exclude-object-id',
+        '--exclude-robot-id',
         action='append',
         type=int,
         default=[0],
-        help='Decoded handle to exclude; repeat as needed',
+        help=(
+            'decoded handle to exclude; --exclude-robot-id is an alias; '
+            'repeat as needed'
+        ),
+    )
+    parser.add_argument(
+        '--task-prior-filter',
+        action='store_true',
+        help=(
+            'filter GT handles during Oracle generation using the task-specific '
+            'next-action spatial prior (action-conditioned Oracle only)'
+        ),
+    )
+    parser.add_argument(
+        '--task-prior-radius',
+        type=float,
+        help='override the configured task interaction radius in metres',
+    )
+    parser.add_argument(
+        '--task-prior-max-instances',
+        type=int,
+        help='override the configured maximum retained simulator handles',
+    )
+    parser.add_argument(
+        '--task-prior-background-extent',
+        type=float,
+        default=0.60,
+        help=(
+            'reject obvious planar background spanning at least this many '
+            'metres on two axes (default: 0.60)'
+        ),
     )
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument(
@@ -1069,6 +1269,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         raise ValueError('--workers must be positive')
     if args.cache_frames < 0:
         raise ValueError('--cache-frames must be non-negative')
+    if args.task_prior_radius is not None and args.task_prior_radius <= 0:
+        raise ValueError('--task-prior-radius must be positive')
+    if (
+        args.task_prior_max_instances is not None
+        and args.task_prior_max_instances <= 0
+    ):
+        raise ValueError('--task-prior-max-instances must be positive')
+    if args.task_prior_background_extent <= 0:
+        raise ValueError('--task-prior-background-extent must be positive')
     if not args.dry_run and not args.in_place and args.output_dir is None:
         raise ValueError('Choose --output-dir or explicit --in-place')
 
@@ -1117,6 +1326,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             workers=args.workers,
             cache_frames=args.cache_frames,
             min_object_points=args.min_object_points,
+            task_prior_filter=args.task_prior_filter,
+            task_prior_radius=args.task_prior_radius,
+            task_prior_max_instances=args.task_prior_max_instances,
+            task_prior_background_extent=(
+                args.task_prior_background_extent
+            ),
         )
     print(f'Done: {total} replay files')
     return 0

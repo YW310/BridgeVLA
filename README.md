@@ -204,6 +204,45 @@ ID。脚本调用 RLBench 自带的 rgb_handles_to_mask 解码，仅默认移除
 ID 0。离线数据没有提供 handle 到物体名称的映射，因此不会自动移除机器人；
 如已知某个 handle，可重复传入 --exclude-object-id。
 
+### 生成 Oracle 时同步执行任务先验筛选
+
+无需重新运行 RLBench 或重新生成原始 replay。添加 `--task-prior-filter` 后，脚本会在
+GT mask 与点云融合完成、写入 `oracle_object_*` 之前，根据当前 transition 中监督的
+下一关键动作 `gripper_pose[:3]` 筛选实例。18 个 BridgeVLA 任务的默认动作类型、
+交互半径和最大 handle 数定义在 `tools/rlbench_task_object_priors.py`。明显覆盖两个大
+坐标轴的桌面/地面会作为背景移除；其余实例按点云包围盒到动作位置的距离排序。
+
+    python tools/augment_replay_with_oracle_objects.py \
+        --replay-dir LPY/BridgeVLA_RLBench_TRAIN_Buffer \
+        --raw-data-dir LPY/BridgeVLA_RLBench_TRAIN_DATA/train \
+        --task stack_blocks \
+        --output-dir LPY/BridgeVLA_RLBench_TASK_OBJECT_Buffer \
+        --task-prior-filter \
+        --min-object-points 1 \
+        --max-objects 32 \
+        --num-points 512 \
+        --workers 8 \
+        --cache-frames 256
+
+建议先配合 `--dry-run --visualize-every N` 检查结果。可使用
+`--task-prior-radius`、`--task-prior-max-instances` 和
+`--task-prior-background-extent` 覆盖默认值。进度条和 dry-run 输出中的
+`prior_filtered` 表示被任务先验删除的 handle 数。
+
+离线 GT mask 只保存数字 handle，没有 `handle -> object name` 语义映射，因此不能
+仅凭任务名称严格证明某个 handle 是机械臂。确认机器人 ID 后，可重复使用
+`--exclude-robot-id ID`（它是 `--exclude-object-id` 的别名）进行精确排除：
+
+    --exclude-robot-id 23 --exclude-robot-id 24 --exclude-robot-id 25
+
+该模式只筛选保留的 GT handle，不生成 target/reference 角色标签；默认不传
+`--task-prior-filter` 时仍保存全部有效 GT instance，与原 Oracle 实验保持兼容。
+
+注意：这里使用的 `gripper_pose` 是下一关键动作的监督值，因此该自动模式属于
+**action-conditioned Oracle 上界/离线标注**，不能直接作为无标签推理阶段的公平
+筛选器。若要求完全不使用未来动作，需要额外提供离线 `handle -> object name` 或
+人工 handle 白名单；只有数字 mask ID 和任务名称时无法无歧义地完成该语义映射。
+
 如果场景中的有效实例多于 max-objects，脚本优先保留点数最多的实例；少于
 num-points 的实例会有放回采样，多于该数量时无放回采样。所有 NaN 和 Inf 点均
 会在采样前移除。
