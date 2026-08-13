@@ -3,14 +3,14 @@ tasks: all
 bs: 2
 num_workers: 3
 epochs: 100
-train_iter: 10000
+train_iter: 40000
 sample_distribution_mode: task_uniform
 # Oracle object experiment: enable only with a migrated Oracle replay directory.
 use_oracle_objects: False
 oracle_max_objects: 32
 oracle_num_points: 512
 peract:
-  lr: 8e-5 # 
+  lr: 1e-5 # 
   transform_augmentation_xyz: [0.125, 0.125, 0.125]
   transform_augmentation_rpy: [0.0, 0.0, 45.0]
 rvt:
