@@ -18,6 +18,7 @@ from tools.augment_replay_with_oracle_objects import (
     _bounded_thread_map,
     _select_dry_run_files,
     _select_visualization_files,
+    _scene_points_for_visualization,
 )
 
 
@@ -67,6 +68,19 @@ class OracleReplayAugmentationTest(unittest.TestCase):
             [path.name for path in selected],
             ['0.replay', '3.replay', '6.replay', '9.replay'],
         )
+
+    def test_scene_visualization_points_keep_finite_nonzero_geometry(self):
+        transition = {
+            'front_point_cloud': point_cloud(0),
+            'left_shoulder_point_cloud': np.zeros((3, 2, 3), dtype=np.float32),
+        }
+        transition['front_point_cloud'][:, 0, 0] = np.nan
+        points = _scene_points_for_visualization(
+            transition, ('front', 'left_shoulder'), max_points=3
+        )
+        self.assertEqual(points.shape, (3, 3))
+        self.assertTrue(np.isfinite(points).all())
+        self.assertTrue(np.any(points != 0, axis=1).all())
 
     def test_frame_cache_single_flight_reuses_one_result(self):
         cache = OracleFrameCache(capacity=2)

@@ -28,6 +28,7 @@ from tqdm import tqdm
 DEFAULT_CAMERAS = ('front', 'left_shoulder', 'right_shoulder', 'wrist')
 DEFAULT_MAX_OBJECTS = 32
 DEFAULT_NUM_POINTS = 512
+MAX_VISUALIZATION_SCENE_POINTS = 30000
 ORACLE_KEYS = (
     'oracle_object_points',
     'oracle_object_centers',
@@ -577,11 +578,49 @@ def _describe(
     )
 
 
+def _scene_points_for_visualization(
+    transition: Mapping[str, object],
+    cameras: Sequence[str],
+    max_points: int = MAX_VISUALIZATION_SCENE_POINTS,
+) -> np.ndarray:
+    '''Collect a bounded full-scene point cloud for visualization only.'''
+    if max_points <= 0:
+        raise ValueError('max_points must be positive')
+    camera_points: List[np.ndarray] = []
+    for camera in cameras:
+        point_key = f'{camera}_point_cloud'
+        if point_key not in transition:
+            continue
+        point_cloud = _point_cloud_hwc(
+            np.asarray(transition[point_key]), point_key
+        )
+        points = point_cloud.reshape(-1, 3)
+        points = points[np.isfinite(points).all(axis=1)]
+        # Padding in YARR final-observation sentinels may be all zero. It does
+        # not describe scene geometry and would collapse the plot to one dot.
+        points = points[np.any(points != 0, axis=1)]
+        if points.size:
+            camera_points.append(points)
+    if not camera_points:
+        return np.empty((0, 3), dtype=np.float32)
+    scene_points = np.concatenate(camera_points, axis=0)
+    if len(scene_points) > max_points:
+        # Evenly spaced deterministic sampling keeps visualization fast and
+        # covers all cameras without retaining a large replay transition.
+        indices = np.linspace(
+            0, len(scene_points) - 1, num=max_points, dtype=np.int64
+        )
+        scene_points = scene_points[indices]
+    return scene_points.astype(np.float32, copy=False)
+
+
 def visualize_oracle_objects(
     oracle: OracleObjects,
     task: str,
     replay_index: int,
     output_dir: Path,
+    scene_points: Optional[np.ndarray] = None,
+    terminal: Optional[int] = None,
 ) -> Path:
     try:
         import matplotlib
@@ -593,6 +632,22 @@ def visualize_oracle_objects(
     output_path = output_dir / f'{task}_replay_{replay_index}.png'
     figure = plt.figure()
     axes = figure.add_subplot(111, projection='3d')
+    scene_points = (
+        np.asarray(scene_points)
+        if scene_points is not None
+        else np.empty((0, 3), dtype=np.float32)
+    )
+    if scene_points.size:
+        axes.scatter(
+            scene_points[:, 0],
+            scene_points[:, 1],
+            scene_points[:, 2],
+            c='lightgray',
+            s=0.25,
+            alpha=0.18,
+            depthshade=False,
+            label='scene',
+        )
     for slot in np.flatnonzero(oracle.valid):
         points = oracle.points[slot]
         axes.scatter(
@@ -602,12 +657,32 @@ def visualize_oracle_objects(
             s=2,
             label=str(oracle.ids[slot]),
         )
-    axes.set_title(f'{task} replay {replay_index}: Oracle GT instances')
+    sentinel = terminal == -1
+    axes.set_title(
+        f'{task} replay {replay_index}: Oracle GT instances '
+        f'(valid={int(oracle.valid.sum())}'
+        + (', final sentinel' if sentinel else '')
+        + ')'
+    )
     axes.set_xlabel('x')
     axes.set_ylabel('y')
     axes.set_zlabel('z')
-    if oracle.valid.any():
+    if scene_points.size or oracle.valid.any():
         axes.legend(title='instance ID')
+    else:
+        reason = (
+            'Final-observation sentinel:\nno scene or Oracle points available'
+            if sentinel
+            else 'No finite scene or valid Oracle points available'
+        )
+        axes.text2D(
+            0.5,
+            0.5,
+            reason,
+            transform=axes.transAxes,
+            ha='center',
+            va='center',
+        )
     figure.savefig(output_path, dpi=200, bbox_inches='tight')
     plt.close(figure)
     print(f'Oracle visualization saved: {output_path}', flush=True)
@@ -795,7 +870,12 @@ def process_task(
                 for key in ('terminal', 'episode_idx', 'sample_frame')
                 if key in original
             }
-            return replay_index, alignment, oracle
+            scene_points = None
+            if replay_index in visualization_indices:
+                scene_points = _scene_points_for_visualization(
+                    original, cameras
+                )
+            return replay_index, alignment, oracle, scene_points
         except Exception as exc:
             raise RuntimeError(
                 f'Failed to process replay {source}'
@@ -812,7 +892,7 @@ def process_task(
         disable=not show_progress,
     )
     try:
-        for replay_index, alignment, oracle in _bounded_thread_map(
+        for replay_index, alignment, oracle, scene_points in _bounded_thread_map(
             process_one, files, workers
         ):
             truncated += int(oracle.discovered_objects > max_objects)
@@ -836,6 +916,10 @@ def process_task(
                     task,
                     replay_index,
                     visualize_output_dir,
+                    scene_points=scene_points,
+                    terminal=int(
+                        np.asarray(alignment.get('terminal', -1)).item()
+                    ),
                 )
                 visualized += 1
     finally:
