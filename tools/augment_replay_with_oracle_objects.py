@@ -578,12 +578,19 @@ def _describe(
 
 
 def visualize_oracle_objects(
-    oracle: OracleObjects, task: str, replay_index: int
-) -> None:
+    oracle: OracleObjects,
+    task: str,
+    replay_index: int,
+    output_dir: Path,
+) -> Path:
     try:
+        import matplotlib
+        matplotlib.use('Agg')
         import matplotlib.pyplot as plt
     except ImportError as exc:
         raise RuntimeError('--visualize-index requires matplotlib') from exc
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f'{task}_replay_{replay_index}.png'
     figure = plt.figure()
     axes = figure.add_subplot(111, projection='3d')
     for slot in np.flatnonzero(oracle.valid):
@@ -601,7 +608,10 @@ def visualize_oracle_objects(
     axes.set_zlabel('z')
     if oracle.valid.any():
         axes.legend(title='instance ID')
-    plt.show()
+    figure.savefig(output_path, dpi=200, bbox_inches='tight')
+    plt.close(figure)
+    print(f'Oracle visualization saved: {output_path}', flush=True)
+    return output_path
 
 
 def _copy_metadata(
@@ -698,6 +708,7 @@ def process_task(
     dry_run: bool,
     dry_run_samples: int,
     visualize_index: Optional[int],
+    visualize_output_dir: Path,
     overwrite: bool,
     durable_write: bool,
     show_progress: bool,
@@ -784,7 +795,12 @@ def process_task(
             if dry_run:
                 _describe(task, replay_index, alignment, oracle)
             if visualize_index == replay_index:
-                visualize_oracle_objects(oracle, task, replay_index)
+                visualize_oracle_objects(
+                    oracle,
+                    task,
+                    replay_index,
+                    visualize_output_dir,
+                )
     finally:
         progress.close()
 
@@ -874,6 +890,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--dry-run', action='store_true')
     parser.add_argument('--dry-run-samples', type=int, default=5)
     parser.add_argument('--visualize-index', type=int)
+    parser.add_argument(
+        '--visualize-output-dir',
+        type=Path,
+        default=Path('oracle_visualizations'),
+        help=(
+            'directory for --visualize-index PNG output '
+            '(default: ./oracle_visualizations)'
+        ),
+    )
     parser.add_argument('--overwrite', action='store_true')
     parser.add_argument(
         '--durable-write',
@@ -892,6 +917,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = build_parser().parse_args(argv)
     replay_dir = args.replay_dir.resolve()
     raw_data_dir = args.raw_data_dir.resolve()
+    visualize_output_dir = args.visualize_output_dir.resolve()
     if not replay_dir.is_dir():
         raise FileNotFoundError(f'Replay directory does not exist: {replay_dir}')
     if not raw_data_dir.is_dir():
@@ -951,6 +977,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             dry_run=args.dry_run,
             dry_run_samples=args.dry_run_samples,
             visualize_index=args.visualize_index,
+            visualize_output_dir=visualize_output_dir,
             overwrite=args.overwrite,
             durable_write=args.durable_write,
             show_progress=not args.no_progress,

@@ -14,6 +14,7 @@ from tools.augment_replay_with_oracle_objects import (
     augment_transition,
     decode_mask_image,
     extract_oracle_objects,
+    build_parser,
     _bounded_thread_map,
     _select_dry_run_files,
 )
@@ -35,6 +36,25 @@ def point_cloud(offset):
 
 
 class OracleReplayAugmentationTest(unittest.TestCase):
+    def test_visualization_output_directory_defaults_and_override(self):
+        parser = build_parser()
+        base = [
+            '--replay-dir',
+            'replay',
+            '--raw-data-dir',
+            'raw',
+        ]
+        args = parser.parse_args(base)
+        self.assertEqual(
+            args.visualize_output_dir, Path('oracle_visualizations')
+        )
+        args = parser.parse_args(
+            base + ['--visualize-output-dir', 'custom_visualizations']
+        )
+        self.assertEqual(
+            args.visualize_output_dir, Path('custom_visualizations')
+        )
+
     def test_frame_cache_single_flight_reuses_one_result(self):
         cache = OracleFrameCache(capacity=2)
         calls = []

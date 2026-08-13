@@ -151,7 +151,15 @@ index、episode_idx、sample_frame、实例 ID、物体中心、点数、张量�
         --raw-data-dir LPY/BridgeVLA_RLBench_TRAIN_DATA/train \
         --task stack_blocks \
         --dry-run \
-        --visualize-index 100
+        --visualize-index 100 \
+        --visualize-output-dir oracle_visualizations
+
+可视化不再依赖图形界面弹窗，而是保存为 PNG。上述命令生成：
+
+    oracle_visualizations/stack_blocks_replay_100.png
+
+若不传 `--visualize-output-dir`，默认也会保存到当前工作目录下新建的
+`oracle_visualizations` 文件夹；目标文件夹不存在时会自动创建。
 
 默认行为会生成新的 Oracle replay 副本，不会覆盖原始文件。每个 replay 先写入
 N.replay.tmp，重新加载并验证原字段及 Oracle 字段后，再原子重命名。已有输出
