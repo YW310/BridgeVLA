@@ -60,6 +60,16 @@ class OracleReplayAugmentationTest(unittest.TestCase):
         )
         args = parser.parse_args(base + ['--visualize-objects-only'])
         self.assertTrue(args.visualize_objects_only)
+        args = parser.parse_args(
+            base
+            + [
+                '--detect-robot-handles',
+                '--robot-detection-frames',
+                '6',
+            ]
+        )
+        self.assertTrue(args.detect_robot_handles)
+        self.assertEqual(args.robot_detection_frames, 6)
 
     def test_interval_visualization_selects_every_nth_sorted_file(self):
         files = [Path(f'{index}.replay') for index in range(10)]

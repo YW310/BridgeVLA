@@ -262,6 +262,42 @@ Oracle 点云。
 筛选器。若要求完全不使用未来动作，需要额外提供离线 `handle -> object name` 或
 人工 handle 白名单；只有数字 mask ID 和任务名称时无法无歧义地完成该语义映射。
 
+### 自动检测并排除机械臂和夹爪
+
+不需要重新运行或重新采集 RLBench。添加 `--detect-robot-handles` 后，脚本会在生成
+Oracle 前对每个 episode 最多抽取若干个时间上均匀分布的 replay 帧，并读取原始
+`low_dim_obs.pkl[sample_frame].gripper_pose` 中的**当前**夹爪位置。检测器首先寻找
+wrist mask 中长期处于固定图像位置、同时靠近夹爪的 handles，再通过跨帧持久相邻
+关系扩展到随机械臂运动的 links。只在抓取后才靠近夹爪的任务物体不会作为机械臂
+扩展节点。
+
+    python tools/augment_replay_with_oracle_objects.py \
+        --replay-dir LPY/BridgeVLA_RLBench_TRAIN_Buffer \
+        --raw-data-dir LPY/BridgeVLA_RLBench_TRAIN_DATA/train \
+        --task stack_blocks \
+        --output-dir LPY/BridgeVLA_RLBench_TASK_OBJECT_Buffer \
+        --detect-robot-handles \
+        --robot-detection-frames 8 \
+        --robot-handle-cache-dir robot_handle_maps \
+        --task-prior-filter \
+        --min-object-points 1 \
+        --visualize-every 100 \
+        --visualize-objects-only
+
+检测结果按 task/episode 缓存，例如：
+
+    robot_handle_maps/stack_blocks/episode_0000.json
+
+JSON 中保存 `gripper_handles`、`arm_handles`、合并后的 `robot_handles`、置信度和
+参与检测的 `sampled_frames`。后续运行默认直接复用缓存；需要重新检测时添加
+`--refresh-robot-handle-cache`。dry-run 可以读取已有缓存，但不会新建或覆盖缓存。
+自动结果仍可与重复传入的 `--exclude-robot-id ID` 精确黑名单同时使用。
+
+该检测不使用 replay 中的下一动作 `gripper_pose`，因此不会引入未来动作标签；它
+读取的是 raw episode 中当前观测帧的夹爪位姿。由于这是无对象名称的几何时域
+启发式，建议先用 `--dry-run --visualize-every N --visualize-objects-only` 检查各任务
+的 JSON 和可视化，再处理完整训练集。
+
 如果场景中的有效实例多于 max-objects，脚本优先保留点数最多的实例；少于
 num-points 的实例会有放回采样，多于该数量时无放回采样。所有 NaN 和 Inf 点均
 会在采样前移除。

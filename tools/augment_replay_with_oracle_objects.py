@@ -28,6 +28,22 @@ try:
     from tools.rlbench_task_object_priors import select_task_relevant_instances
 except ModuleNotFoundError:  # Direct execution: python tools/<script>.py
     from rlbench_task_object_priors import select_task_relevant_instances
+try:
+    from tools.rlbench_robot_handle_detector import (
+        RobotHandleDetection,
+        build_robot_frame_evidence,
+        detect_robot_handles,
+        load_robot_handle_detection,
+        save_robot_handle_detection,
+    )
+except ModuleNotFoundError:  # Direct execution: python tools/<script>.py
+    from rlbench_robot_handle_detector import (
+        RobotHandleDetection,
+        build_robot_frame_evidence,
+        detect_robot_handles,
+        load_robot_handle_detection,
+        save_robot_handle_detection,
+    )
 
 
 # Oracle object experiment
@@ -551,6 +567,7 @@ def _final_observation_oracle_for_visualization(
     task_prior_radius: Optional[float] = None,
     task_prior_max_instances: Optional[int] = None,
     task_prior_background_extent: float = 0.60,
+    robot_handles_by_episode: Optional[Mapping[int, Sequence[int]]] = None,
 ) -> Optional[Tuple[OracleObjects, int, int]]:
     '''Recover a final observation's GT instances from prior alignment data.'''
     if previous_source is None or not previous_source.is_file():
@@ -569,13 +586,18 @@ def _final_observation_oracle_for_visualization(
         return None
     episode_dir = resolve_episode_dir(raw_data_dir, task, episode_idx)
     masks = load_frame_masks(episode_dir, sample_frame, cameras)
+    effective_excluded_ids = list(excluded_ids)
+    if robot_handles_by_episode is not None:
+        effective_excluded_ids.extend(
+            robot_handles_by_episode.get(episode_idx, ())
+        )
     oracle = extract_oracle_objects(
         final_transition,
         masks,
         cameras=cameras,
         max_objects=max_objects,
         num_points=num_points,
-        excluded_ids=excluded_ids,
+        excluded_ids=effective_excluded_ids,
         min_object_points=min_object_points,
         rng=_stable_frame_rng(seed, task, episode_idx, sample_frame),
         task_name=task,
@@ -991,6 +1013,128 @@ def _bounded_thread_map(function, items: Sequence[Path], workers: int):
         executor.shutdown(wait=True, cancel_futures=True)
 
 
+def _episode_detection_sources(
+    files: Sequence[Path], frames_per_episode: int
+) -> Dict[int, List[Tuple[int, Path]]]:
+    '''Select deterministic, temporally spread replay frames per episode.'''
+    grouped: Dict[int, Dict[int, Path]] = {}
+    for source in files:
+        with source.open('rb') as stream:
+            transition = pickle.load(stream)
+        if int(np.asarray(transition.get('terminal', -1)).item()) == -1:
+            continue
+        if 'episode_idx' not in transition or 'sample_frame' not in transition:
+            continue
+        episode_idx = int(np.asarray(transition['episode_idx']).item())
+        sample_frame = int(np.asarray(transition['sample_frame']).item())
+        grouped.setdefault(episode_idx, {}).setdefault(sample_frame, source)
+
+    selected: Dict[int, List[Tuple[int, Path]]] = {}
+    for episode_idx, by_frame in grouped.items():
+        candidates = sorted(by_frame.items())
+        if len(candidates) > frames_per_episode:
+            indices = np.linspace(
+                0,
+                len(candidates) - 1,
+                num=frames_per_episode,
+                dtype=np.int64,
+            )
+            candidates = [candidates[int(index)] for index in indices]
+        selected[episode_idx] = candidates
+    return selected
+
+
+def _load_current_gripper_positions(
+    episode_dir: Path, sample_frames: Sequence[int]
+) -> Dict[int, np.ndarray]:
+    low_dim_path = episode_dir / 'low_dim_obs.pkl'
+    if not low_dim_path.is_file():
+        raise FileNotFoundError(
+            f'Robot handle detection requires {low_dim_path}'
+        )
+    with low_dim_path.open('rb') as stream:
+        observations = pickle.load(stream)
+    positions: Dict[int, np.ndarray] = {}
+    for sample_frame in sample_frames:
+        try:
+            observation = observations[sample_frame]
+            pose = np.asarray(observation.gripper_pose).reshape(-1)
+        except (IndexError, TypeError, AttributeError) as exc:
+            raise ValueError(
+                f'Cannot read current gripper_pose for frame {sample_frame} '
+                f'from {low_dim_path}'
+            ) from exc
+        if pose.size < 3 or not np.isfinite(pose[:3]).all():
+            raise ValueError(
+                f'Invalid current gripper_pose at frame {sample_frame}: {pose}'
+            )
+        positions[sample_frame] = pose[:3].astype(np.float32)
+    return positions
+
+
+def _detect_task_robot_handles(
+    task: str,
+    files: Sequence[Path],
+    raw_data_dir: Path,
+    cameras: Sequence[str],
+    excluded_ids: Iterable[int],
+    frames_per_episode: int,
+    cache_dir: Path,
+    refresh_cache: bool,
+    write_cache: bool,
+) -> Dict[int, Tuple[int, ...]]:
+    if 'wrist' not in cameras:
+        raise ValueError(
+            '--detect-robot-handles requires wrist in the selected cameras'
+        )
+    selected = _episode_detection_sources(files, frames_per_episode)
+    handles_by_episode: Dict[int, Tuple[int, ...]] = {}
+    for episode_idx, frame_sources in sorted(selected.items()):
+        cache_path = cache_dir / task / f'episode_{episode_idx:04d}.json'
+        detection: Optional[RobotHandleDetection] = None
+        if cache_path.is_file() and not refresh_cache:
+            detection = load_robot_handle_detection(cache_path)
+        if detection is None:
+            episode_dir = resolve_episode_dir(raw_data_dir, task, episode_idx)
+            sample_frames = [frame for frame, _ in frame_sources]
+            gripper_positions = _load_current_gripper_positions(
+                episode_dir, sample_frames
+            )
+            evidence = []
+            for sample_frame, source in frame_sources:
+                with source.open('rb') as stream:
+                    transition = pickle.load(stream)
+                masks = load_frame_masks(episode_dir, sample_frame, cameras)
+                point_clouds = {
+                    camera: _point_cloud_hwc(
+                        np.asarray(transition[f'{camera}_point_cloud']),
+                        f'{camera}_point_cloud',
+                    )
+                    for camera in cameras
+                }
+                evidence.append(
+                    build_robot_frame_evidence(
+                        sample_frame,
+                        gripper_positions[sample_frame],
+                        masks,
+                        point_clouds,
+                        excluded_ids=excluded_ids,
+                    )
+                )
+            detection = detect_robot_handles(episode_idx, evidence)
+            if write_cache:
+                save_robot_handle_detection(cache_path, detection)
+        handles_by_episode[episode_idx] = detection.robot_handles
+        print(
+            f'{task} episode={episode_idx}: detected robot handles='
+            f'{list(detection.robot_handles)} gripper='
+            f'{list(detection.gripper_handles)} frames='
+            f'{list(detection.sampled_frames)}',
+            flush=True,
+        )
+    return handles_by_episode
+
+
 def process_task(
     task: str,
     source_dir: Path,
@@ -1017,6 +1161,10 @@ def process_task(
     task_prior_radius: Optional[float],
     task_prior_max_instances: Optional[int],
     task_prior_background_extent: float,
+    auto_detect_robot_handles: bool,
+    robot_handle_cache_dir: Path,
+    robot_detection_frames: int,
+    refresh_robot_handle_cache: bool,
 ) -> int:
     all_files = _numeric_replay_files(source_dir)
     if not all_files:
@@ -1046,6 +1194,19 @@ def process_task(
 
     cameras = tuple(cameras)
     excluded_ids = tuple(excluded_ids)
+    robot_handles_by_episode: Dict[int, Tuple[int, ...]] = {}
+    if auto_detect_robot_handles:
+        robot_handles_by_episode = _detect_task_robot_handles(
+            task,
+            all_files,
+            raw_data_dir,
+            cameras,
+            excluded_ids,
+            robot_detection_frames,
+            robot_handle_cache_dir,
+            refresh_robot_handle_cache,
+            write_cache=not dry_run,
+        )
     frame_cache = OracleFrameCache(cache_frames)
 
     def process_one(source: Path):
@@ -1053,6 +1214,17 @@ def process_task(
         try:
             with source.open('rb') as stream:
                 original = pickle.load(stream)
+            terminal = int(
+                np.asarray(original.get('terminal', -1)).item()
+            )
+            effective_excluded_ids = list(excluded_ids)
+            if terminal != -1 and 'episode_idx' in original:
+                original_episode_idx = int(
+                    np.asarray(original['episode_idx']).item()
+                )
+                effective_excluded_ids.extend(
+                    robot_handles_by_episode.get(original_episode_idx, ())
+                )
             migrated, oracle, _ = augment_transition(
                 original,
                 raw_data_dir,
@@ -1061,7 +1233,7 @@ def process_task(
                 cameras,
                 max_objects,
                 num_points,
-                excluded_ids,
+                effective_excluded_ids,
                 seed,
                 min_object_points=min_object_points,
                 frame_cache=frame_cache,
@@ -1084,9 +1256,6 @@ def process_task(
                 for key in ('terminal', 'episode_idx', 'sample_frame')
                 if key in original
             }
-            terminal = int(
-                np.asarray(original.get('terminal', -1)).item()
-            )
             scene_points = None
             visualization_oracle = oracle
             visualization_episode_idx = (
@@ -1122,6 +1291,7 @@ def process_task(
                         task_prior_background_extent=(
                             task_prior_background_extent
                         ),
+                        robot_handles_by_episode=robot_handles_by_episode,
                     )
                     if recovered is not None:
                         (
@@ -1301,6 +1471,31 @@ def build_parser() -> argparse.ArgumentParser:
             'metres on two axes (default: 0.60)'
         ),
     )
+    parser.add_argument(
+        '--detect-robot-handles',
+        action='store_true',
+        help=(
+            'detect gripper/arm handles once per episode from raw current '
+            'gripper poses and temporal GT masks, then exclude them'
+        ),
+    )
+    parser.add_argument(
+        '--robot-handle-cache-dir',
+        type=Path,
+        default=Path('robot_handle_maps'),
+        help='episode robot-handle JSON cache directory',
+    )
+    parser.add_argument(
+        '--robot-detection-frames',
+        type=int,
+        default=8,
+        help='maximum temporally spread replay frames inspected per episode',
+    )
+    parser.add_argument(
+        '--refresh-robot-handle-cache',
+        action='store_true',
+        help='ignore existing robot-handle JSON files and detect again',
+    )
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument(
         '--workers',
@@ -1361,6 +1556,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     replay_dir = args.replay_dir.resolve()
     raw_data_dir = args.raw_data_dir.resolve()
     visualize_output_dir = args.visualize_output_dir.resolve()
+    robot_handle_cache_dir = args.robot_handle_cache_dir.resolve()
     if not replay_dir.is_dir():
         raise FileNotFoundError(f'Replay directory does not exist: {replay_dir}')
     if not raw_data_dir.is_dir():
@@ -1382,6 +1578,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         raise ValueError('--workers must be positive')
     if args.cache_frames < 0:
         raise ValueError('--cache-frames must be non-negative')
+    if args.robot_detection_frames <= 0:
+        raise ValueError('--robot-detection-frames must be positive')
     if args.task_prior_radius is not None and args.task_prior_radius <= 0:
         raise ValueError('--task-prior-radius must be positive')
     if (
@@ -1446,6 +1644,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             task_prior_background_extent=(
                 args.task_prior_background_extent
             ),
+            auto_detect_robot_handles=args.detect_robot_handles,
+            robot_handle_cache_dir=robot_handle_cache_dir,
+            robot_detection_frames=args.robot_detection_frames,
+            refresh_robot_handle_cache=args.refresh_robot_handle_cache,
         )
     print(f'Done: {total} replay files')
     return 0
