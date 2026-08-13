@@ -23,6 +23,7 @@ from tools.augment_replay_with_oracle_objects import (
     _scene_points_for_visualization,
     _final_observation_oracle_for_visualization,
     _instance_color,
+    _instance_boxes_for_mask,
     _episode_detection_sources,
     _episode_ids_for_selected_files,
 )
@@ -235,6 +236,18 @@ class OracleReplayAugmentationTest(unittest.TestCase):
         self.assertEqual(tuple(loaded), CAMERAS)
         self.assertTrue(all(image.shape == (4, 6, 3) for image in loaded.values()))
 
+    def test_instance_boxes_use_retained_handle_pixels(self):
+        mask = np.array(
+            [
+                [0, 5, 5, 0],
+                [0, 5, 0, 7],
+                [0, 0, 0, 7],
+            ],
+            dtype=np.int32,
+        )
+        boxes = _instance_boxes_for_mask(mask, (5, 8))
+        self.assertEqual(boxes, {5: (1, 0, 2, 1)})
+
     def test_visualization_combines_camera_images_and_point_cloud_views(self):
         transition = {'front_point_cloud': point_cloud(0)}
         oracle = extract_oracle_objects(
@@ -250,6 +263,13 @@ class OracleReplayAugmentationTest(unittest.TestCase):
             camera: np.full((16, 24, 3), index * 40, dtype=np.uint8)
             for index, camera in enumerate(CAMERAS)
         }
+        camera_masks = {
+            camera: np.pad(
+                np.full((8, 12), 5, dtype=np.int32),
+                ((4, 4), (6, 6)),
+            )
+            for camera in CAMERAS
+        }
         with tempfile.TemporaryDirectory() as temporary:
             output = visualize_oracle_objects(
                 oracle,
@@ -259,6 +279,7 @@ class OracleReplayAugmentationTest(unittest.TestCase):
                 episode_idx=2,
                 sample_frame=7,
                 camera_images=camera_images,
+                camera_masks=camera_masks,
             )
             with Image.open(output) as image:
                 width, height = image.size

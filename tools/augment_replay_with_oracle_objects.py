@@ -880,6 +880,31 @@ def _instance_color(object_id: int) -> Tuple[float, float, float]:
     return colorsys.hsv_to_rgb(hue, 0.72, 0.92)
 
 
+def _instance_boxes_for_mask(
+    mask: np.ndarray,
+    object_ids: Iterable[int],
+) -> Dict[int, Tuple[int, int, int, int]]:
+    '''Return inclusive pixel boxes (x_min, y_min, x_max, y_max) by handle.'''
+    mask = np.asarray(mask)
+    if mask.ndim != 2:
+        raise ValueError(f'Instance box mask must be [H, W]; got {mask.shape}')
+    boxes: Dict[int, Tuple[int, int, int, int]] = {}
+    for object_id_value in object_ids:
+        object_id = int(object_id_value)
+        pixels = np.argwhere(mask == object_id)
+        if not pixels.size:
+            continue
+        y_min, x_min = np.min(pixels, axis=0)
+        y_max, x_max = np.max(pixels, axis=0)
+        boxes[object_id] = (
+            int(x_min),
+            int(y_min),
+            int(x_max),
+            int(y_max),
+        )
+    return boxes
+
+
 def visualize_oracle_objects(
     oracle: OracleObjects,
     task: str,
@@ -890,11 +915,13 @@ def visualize_oracle_objects(
     episode_idx: Optional[int] = None,
     sample_frame: Optional[int] = None,
     camera_images: Optional[Mapping[str, np.ndarray]] = None,
+    camera_masks: Optional[Mapping[str, np.ndarray]] = None,
 ) -> Path:
     try:
         import matplotlib
         matplotlib.use('Agg')
         import matplotlib.pyplot as plt
+        from matplotlib.patches import Rectangle
     except ImportError as exc:
         raise RuntimeError('--visualize-index requires matplotlib') from exc
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -913,6 +940,8 @@ def visualize_oracle_objects(
     front_axes = figure.add_subplot(grid[1, 2])
     side_axes = figure.add_subplot(grid[1, 3])
     camera_images = dict(camera_images or {})
+    camera_masks = dict(camera_masks or {})
+    retained_ids = [int(oracle.ids[slot]) for slot in np.flatnonzero(oracle.valid)]
     camera_order = list(DEFAULT_CAMERAS)
     camera_order.extend(
         camera for camera in camera_images if camera not in camera_order
@@ -927,6 +956,37 @@ def visualize_oracle_objects(
         image = camera_images.get(camera)
         if image is not None:
             image_axes_value.imshow(image)
+            mask = camera_masks.get(camera)
+            if mask is not None and np.asarray(mask).shape == image.shape[:2]:
+                boxes = _instance_boxes_for_mask(mask, retained_ids)
+                for object_id, (x_min, y_min, x_max, y_max) in boxes.items():
+                    color = _instance_color(object_id)
+                    image_axes_value.add_patch(
+                        Rectangle(
+                            (x_min, y_min),
+                            x_max - x_min + 1,
+                            y_max - y_min + 1,
+                            fill=False,
+                            edgecolor=color,
+                            linewidth=2.0,
+                        )
+                    )
+                    image_axes_value.text(
+                        x_min,
+                        max(0, y_min - 2),
+                        f'ID {object_id}',
+                        color='black',
+                        fontsize=8,
+                        fontweight='bold',
+                        ha='left',
+                        va='bottom',
+                        bbox={
+                            'facecolor': color,
+                            'edgecolor': color,
+                            'alpha': 0.88,
+                            'pad': 1.5,
+                        },
+                    )
         else:
             image_axes_value.text(
                 0.5,
@@ -1750,6 +1810,7 @@ def process_task(
             }
             scene_points = None
             camera_images: Dict[str, np.ndarray] = {}
+            camera_masks: Dict[str, np.ndarray] = {}
             visualization_oracle = oracle
             visualization_episode_idx = (
                 int(np.asarray(original['episode_idx']).item())
@@ -1812,6 +1873,11 @@ def process_task(
                         visualization_sample_frame,
                         cameras,
                     )
+                    camera_masks = load_frame_masks(
+                        visualization_episode_dir,
+                        visualization_sample_frame,
+                        cameras,
+                    )
             return (
                 replay_index,
                 alignment,
@@ -1819,6 +1885,7 @@ def process_task(
                 visualization_oracle,
                 scene_points,
                 camera_images,
+                camera_masks,
                 visualization_episode_idx,
                 visualization_sample_frame,
             )
@@ -1848,6 +1915,7 @@ def process_task(
             visualization_oracle,
             scene_points,
             camera_images,
+            camera_masks,
             visualization_episode_idx,
             visualization_sample_frame,
         ) in _bounded_thread_map(process_one, files, workers):
@@ -1885,6 +1953,7 @@ def process_task(
                     episode_idx=visualization_episode_idx,
                     sample_frame=visualization_sample_frame,
                     camera_images=camera_images,
+                    camera_masks=camera_masks,
                 )
                 visualized += 1
     finally:

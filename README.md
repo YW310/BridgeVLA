@@ -85,304 +85,154 @@ bash train.sh --exp_cfg_path  configs/rlbench_config.yaml \
 ```
 ### RLBench Oracle 3D 物体 Replay 数据准备
 
-为了进行 BridgeVLA + Oracle 3D Object Tokens 实验，可以在不重新生成原始
-BridgeVLA replay buffer 的前提下，为已有的逐 transition replay 文件追加 GT
-物体点云。工具位于 tools/augment_replay_with_oracle_objects.py。
+`tools/augment_replay_with_oracle_objects.py` 可直接为已有 BridgeVLA replay 追加
+RLBench GT instance 点云，无需重新采集数据或重建原始 replay。脚本用每个
+`N.replay` 的 `episode_idx` 和 `sample_frame` 找到四路相机 mask，经
+`rgb_handles_to_mask` 解码后与 replay 点云逐像素对齐，并跨视角合并相同 handle。
 
-每个 N.replay 都是一个独立的 pickle transition 字典。脚本使用其中的
-episode_idx 和 sample_frame 定位当前观测对应的原始 RLBench 帧：
+```text
+N.replay[episode_idx, sample_frame]
+  -> episode{episode_idx}/{camera}_mask/{sample_frame}.png
+  -> front / left_shoulder / right_shoulder / wrist 点云融合
+  -> 固定尺寸 Oracle instance 张量
+```
 
-    N.replay[episode_idx] + N.replay[sample_frame]
-        -> episode{episode_idx}/{camera}_mask/{sample_frame}.png
-        -> RLBench rgb_handles_to_mask 解码实例 ID
-        -> 与 N.replay[{camera}_point_cloud] 按像素对齐
-        -> 跨 front、left_shoulder、right_shoulder、wrist 相机合并同一实例
-        -> 固定尺寸 Oracle 物体点云
+新增字段：
 
-追加的字段为：
+```text
+oracle_object_points   [MAX_OBJECTS, NUM_POINTS, 3]  float32
+oracle_object_centers  [MAX_OBJECTS, 3]              float32
+oracle_object_sizes    [MAX_OBJECTS, 3]              float32
+oracle_object_ids      [MAX_OBJECTS]                 int32
+oracle_object_valid    [MAX_OBJECTS]                 bool
+```
 
-    oracle_object_points   # [MAX_OBJECTS, NUM_POINTS, 3], float32
-    oracle_object_centers  # [MAX_OBJECTS, 3], float32
-    oracle_object_sizes    # [MAX_OBJECTS, 3], float32
-    oracle_object_ids      # [MAX_OBJECTS], int32
-    oracle_object_valid    # [MAX_OBJECTS], bool
+`sample_frame` 是当前 observation 对应的 raw 帧；`keypoint_frame` 不参与 Oracle
+对齐。`terminal == -1` 是 YARR final-observation sentinel，写入全 invalid 的填充张量；
+可视化时会通过上一条 replay 的 `next_keypoint_frame` 恢复最终 raw 帧。
 
-sample_frame 表示当前 replay observation 的原始帧。keypoint_frame 表示前一个
-关键帧，Oracle 对齐不会使用它。terminal == -1 的文件是 YARR 的最终观测
-sentinel，其 episode/frame 元数据未定义，因此脚本只为它写入全 invalid 的填充
-张量。
+推荐先在命令末尾保留 `--dry-run` 检查结果，确认后移除它进行正式写入：
 
-处理 stack_blocks：
+```bash
+python tools/augment_replay_with_oracle_objects.py \
+    --replay-dir LPY/BridgeVLA_RLBench_TRAIN_Buffer \
+    --raw-data-dir LPY/BridgeVLA_RLBench_TRAIN_DATA/train \
+    --task stack_blocks \
+    --output-dir LPY/BridgeVLA_RLBench_TASK_OBJECT_Buffer \
+    --detect-robot-handles \
+    --robot-detection-frames 8 \
+    --robot-handle-cache-dir robot_handle_maps \
+    --temporal-task-filter \
+    --task-detection-frames 16 \
+    --task-handle-cache-dir task_handle_maps \
+    --task-prior-filter \
+    --min-object-points 1 \
+    --max-objects 32 \
+    --num-points 512 \
+    --workers 8 \
+    --cache-frames 256 \
+    --visualize-every 100 \
+    --visualize-output-dir oracle_visualizations \
+    --visualize-objects-only \
+    --dry-run
+```
 
-    python tools/augment_replay_with_oracle_objects.py \
-        --replay-dir LPY/BridgeVLA_RLBench_TRAIN_Buffer \
-        --raw-data-dir LPY/BridgeVLA_RLBench_TRAIN_DATA/train \
-        --task stack_blocks \
-        --output-dir LPY/BridgeVLA_RLBench_ORACLE_Buffer \
-        --max-objects 32 \
-        --num-points 512 \
-        --min-object-points 20 \
-        --workers 8 \
-        --cache-frames 256
+#### 参数表
 
-处理 replay 根目录下的全部任务：
+| 类别 | 参数 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| 输入 | `--replay-dir PATH` | 必填 | 原始 BridgeVLA replay 目录；可为单任务目录或包含多个任务的根目录。 |
+| 输入 | `--raw-data-dir PATH` | 必填 | RLBench raw data 的 `train` 目录或可解析到 episode 的上级目录。 |
+| 输入 | `--task NAME` | `all` | 任务名、逗号分隔任务名或 `all`；可重复传入。 |
+| 输出 | `--output-dir PATH` | 无 | 写入新的 Oracle replay 目录；非 dry-run 时必须与 `--in-place` 二选一。 |
+| 输出 | `--in-place` | 关闭 | 原地修改 replay；与 `--output-dir` 互斥，建议优先使用新目录。 |
+| 输出 | `--overwrite` | 关闭 | 允许覆盖已有输出 replay/元数据。 |
+| 输出 | `--durable-write` | 关闭 | 临时文件重命名前执行 `fsync`；更安全，但网络盘上更慢。 |
+| 张量 | `--max-objects N` | `32` | 每帧固定的最大 instance 槽位数；超出部分会截断。 |
+| 张量 | `--num-points N` | `512` | 每个 instance 的固定采样点数；不足时有放回采样。 |
+| 张量 | `--min-object-points N` | `20` | 跨相机融合并移除 NaN/Inf 后少于该点数的实例会删除；高召回检查可设为 `1`。 |
+| 张量 | `--camera NAME` | 四路相机 | 指定相机，可重复传入；默认 `front`、`left_shoulder`、`right_shoulder`、`wrist`。 |
+| 排除 | `--exclude-object-id ID` | `0` | 精确排除 decoded handle，可重复传入；`--exclude-robot-id` 是同义参数。 |
+| 单帧先验 | `--task-prior-filter` | 关闭 | 按下一关键动作距离排序，并删除明显大平面背景；默认高召回，不按半径删除远处实例。 |
+| 单帧先验 | `--task-prior-strict` | 关闭 | 配合 `--task-prior-filter` 删除交互半径外实例；召回率更低，仅在明确需要激进筛选时使用。 |
+| 单帧先验 | `--task-prior-radius METRES` | 按任务 | 覆盖 18 个任务配置中的交互半径。 |
+| 单帧先验 | `--task-prior-max-instances N` | 高召回不限；strict 按任务 | 限制先验保留的 simulator handle 数。 |
+| 单帧先验 | `--task-prior-background-extent METRES` | `0.60` | 两个轴均达到该尺度时视为明显桌面/地面。 |
+| 时序任务 | `--temporal-task-filter` | 关闭 | 根据整个 episode 的当前/下一动作轨迹生成稳定 task handle 白名单。 |
+| 时序任务 | `--task-detection-frames N` | `16` | 每个 episode 均匀抽取的最大检测帧数；长 episode 可提高到 `24` 或 `32`。 |
+| 时序任务 | `--task-handle-cache-dir PATH` | `task_handle_maps` | episode task handle JSON 缓存目录。 |
+| 时序任务 | `--refresh-task-handle-cache` | 关闭 | 忽略已有 task handle JSON 并重新检测。 |
+| 机器人 | `--detect-robot-handles` | 关闭 | 用当前夹爪位姿、wrist mask 和时域几何检测并排除夹爪/机械臂 handle。 |
+| 机器人 | `--robot-detection-frames N` | `8` | 每个 episode 均匀抽取的最大机器人检测帧数。 |
+| 机器人 | `--robot-handle-cache-dir PATH` | `robot_handle_maps` | episode robot handle JSON 缓存目录。 |
+| 机器人 | `--refresh-robot-handle-cache` | 关闭 | 忽略已有 robot handle JSON 并重新检测。 |
+| 性能 | `--workers N` | `1` | replay 线程数；建议从 `4` 或 `8` 测试，过高会增加内存和网络盘竞争。 |
+| 性能 | `--cache-frames N` | `128` | 相同 raw 帧 Oracle 结果的 LRU 容量；`0` 禁用，内存有限时降低。 |
+| 性能 | `--seed N` | `0` | 控制确定性点采样和 dry-run 抽样。 |
+| 性能 | `--no-progress` | 关闭 | 关闭 tqdm 进度条。 |
+| 检查 | `--dry-run` | 关闭 | 只验证和可视化，不写 replay，也不新建/覆盖 handle 缓存。 |
+| 检查 | `--dry-run-samples N` | `5` | 未指定间隔可视化时，dry-run 随机检查的普通 transition 数。 |
+| 可视化 | `--visualize-index N` | 无 | 保存指定 replay index；与 `--visualize-every` 互斥。 |
+| 可视化 | `--visualize-every N` | `0` | 每隔 N 个排序后的 replay 保存一张 PNG；`0` 关闭。 |
+| 可视化 | `--visualize-output-dir PATH` | `oracle_visualizations` | PNG 输出目录，不设置时也会自动创建该默认目录。 |
+| 可视化 | `--visualize-objects-only` | 关闭 | 隐藏点云面板中的灰色完整场景，仅绘制保留实例；不影响上排 RGB。 |
 
-    python tools/augment_replay_with_oracle_objects.py \
-        --replay-dir LPY/BridgeVLA_RLBench_TRAIN_Buffer \
-        --raw-data-dir LPY/BridgeVLA_RLBench_TRAIN_DATA/train \
-        --task all \
-        --output-dir LPY/BridgeVLA_RLBench_ORACLE_Buffer
+#### 关键行为与检查
 
-建议首先执行 dry-run。该模式会随机选择若干 transition，打印 task、replay
-index、episode_idx、sample_frame、实例 ID、物体中心、点数、张量形状及有限值
-检查结果，但不会写入文件：
+- 推荐同时启用 `--detect-robot-handles`、`--temporal-task-filter` 和
+  `--task-prior-filter`：先排除机器人，再生成 episode 级任务白名单，最后进行单帧
+  排序和背景清理。
+- 时序白名单保留曾靠近抓取、放置或操作位置的静止物体，也保留靠近夹爪/动作位置
+  的推、拉、按等未闭合夹爪交互。多帧移动但始终没有任何交互证据的 handle 会进入
+  `rejected_dynamic_handles`；持续邻接任务实例的静态目标或容器最多扩展一跳。
+- Robot 检测只使用 raw observation 中的当前夹爪位姿；task prior 和时序任务筛选会
+  使用 replay 的下一关键动作，因此属于 action-conditioned Oracle 离线标注，不是
+  无标签推理阶段的公平筛选器。整个流程不调用 Qwen 或 SAM。
+- Task 缓存位于 `task_handle_maps/<task>/episode_NNNN.json`，robot 缓存位于
+  `robot_handle_maps/<task>/episode_NNNN.json`。修改检测帧数、半径或实例限制后应使用
+  对应的 `--refresh-*-handle-cache`；旧版 robot v1 缓存会自动失效。
+- `dry-run` 会打印 `excluded_object_ids`、`no_finite_point_object_ids`、
+  `small_object_ids`、`task_prior_filtered_object_ids`、
+  `temporal_filtered_object_ids` 和 `truncated_object_ids`。若缺失 ID 不在这些列表中，
+  说明它在当前帧所选相机的 GT mask 中不可见。
+- 每张可视化 PNG 使用两排八个面板：上排为 front、left shoulder、right shoulder、
+  wrist RGB；下排为 3D、XY、XZ、YZ 点云。相同 episode/handle ID 跨帧颜色固定，
+  上排利用同帧 GT mask 为下排实际保留的 ID 绘制同色框和 `ID` 标签；某个实例在
+  当前相机不可见时不画框。点云使用固定米制场景边界；缺失 RGB 显示
+  `RGB unavailable`，不会中断生成。
+- 默认先写 `.tmp`、回读验证后原子重命名，不覆盖原始数据。缓存会自动淘汰已完成的
+  旧帧；进度条中的 `cache_hits`、`cache_misses` 和 `cache_entries` 可用于检查效果。
 
-    python tools/augment_replay_with_oracle_objects.py \
-        --replay-dir LPY/BridgeVLA_RLBench_TRAIN_Buffer \
-        --raw-data-dir LPY/BridgeVLA_RLBench_TRAIN_DATA/train \
-        --task stack_blocks \
-        --dry-run \
-        --dry-run-samples 5
+**突然只剩一个物体时：**先比较启动日志中的 `task handles=[...]` 和图片标题里的
+`episode_idx/sample_frame`。`--max-objects 32` 只是容量上限，不会补回被筛选或当前帧
+不可见的实例。
 
-可视化指定 transition：
+- 如果 `task handles` 本身只有一个，说明 episode 白名单过窄。当前保护逻辑只在
+  0 个候选时启用最近实例 fallback；恰好检测到 1 个候选时会直接保留这一个。常见
+  原因是 16 个抽样帧漏过短暂交互、交互半径偏小，或复用了旧 task cache。
+- 如果 `task handles` 有多个，但某个 replay 只剩一个，检查 dry-run 输出：
+  `excluded_object_ids` 表示被 robot/手工 ID 排除，`temporal_filtered_object_ids`
+  表示不在 episode 白名单，`small_object_ids` 表示点数不足，
+  `no_finite_point_object_ids` 表示 mask 可见但点云全为 NaN/Inf。缺失 ID 不在任何
+  列表时，说明它在当前帧所选相机的 GT mask 中不可见或被完全遮挡。
+- 图片标题切换到新的 `episode_idx` 时，会改用另一份 episode cache；这不是同一
+  episode 内 ID 突变。`sentinel=True` 对应 `terminal == -1` 填充 transition，保存的
+  Oracle 张量为空是预期行为。
 
-    python tools/augment_replay_with_oracle_objects.py \
-        --replay-dir LPY/BridgeVLA_RLBench_TRAIN_Buffer \
-        --raw-data-dir LPY/BridgeVLA_RLBench_TRAIN_DATA/train \
-        --task stack_blocks \
-        --dry-run \
-        --visualize-index 100 \
-        --visualize-output-dir oracle_visualizations
+可先提高采样密度和交互半径重新检查；dry-run 只实时重检，不写入新缓存，确认后需
+移除 `--dry-run` 才会保存结果：
 
-可视化不再依赖图形界面弹窗，而是保存为 PNG。上述命令生成：
+```bash
+--temporal-task-filter \
+--task-detection-frames 32 \
+--task-prior-radius 0.30 \
+--refresh-task-handle-cache \
+--dry-run \
+--visualize-index 100
+```
 
-    oracle_visualizations/stack_blocks_replay_100.png
-
-若不传 `--visualize-output-dir`，默认也会保存到当前工作目录下新建的
-`oracle_visualizations` 文件夹；目标文件夹不存在时会自动创建。
-每张 PNG 会从同一个 raw `episode_idx/sample_frame` 读取
-`front_rgb`、`left_shoulder_rgb`、`right_shoulder_rgb` 和 `wrist_rgb`，因此可以直接
-对照不同相机中的原始场景与筛选后的三维实例。某个 RGB 文件缺失时只在对应面板
-显示 `RGB unavailable`，不会中断 replay 生成。
-
-按排序后的 replay 文件间隔绘制整个任务目录，例如每 100 个文件保存一张：
-
-    python tools/augment_replay_with_oracle_objects.py \
-        --replay-dir LPY/BridgeVLA_RLBench_TRAIN_Buffer \
-        --raw-data-dir LPY/BridgeVLA_RLBench_TRAIN_DATA/train \
-        --task stack_blocks \
-        --dry-run \
-        --visualize-every 100 \
-        --visualize-output-dir oracle_visualizations
-
-配合 `--dry-run` 时，只计算并检查这些间隔抽样文件，不会写入 replay。去掉
-`--dry-run` 时仍会迁移整个 replay 目录，并在处理过程中每隔 100 个文件保存一张
-图片。`--visualize-index` 与 `--visualize-every` 不能同时使用。
-
-默认行为会生成新的 Oracle replay 副本，不会覆盖原始文件。每个 replay 先写入
-N.replay.tmp，重新加载并验证原字段及 Oracle 字段后，再原子重命名。已有输出
-默认会被拒绝；只有显式传入 --overwrite 才会替换输出。若确实需要修改原目录，
-必须显式使用 --in-place。默认不对每个文件调用 fsync，以避免网络盘上的严重
-性能损失；如需要每个临时文件在重命名前强制落盘，可显式添加 --durable-write。
-处理过程中默认显示每个任务的 tqdm 进度、速度和预计剩余时间；后台运行时可用
---no-progress 关闭进度条。可通过 --workers N 使用线程池并行处理不同 replay
-文件，例如 --workers 8。线程数过高会增加内存占用和网络盘 I/O 竞争，建议从
-4 或 8 开始测试；默认值 1 保持原来的串行行为。
-
-脚本默认使用 --cache-frames 128 缓存最近完成的原始帧 Oracle 结果，上面的推荐
-命令将容量提高到 256。缓存键为 task、episode_idx 和 sample_frame；多个 replay
-transition 指向同一帧时，会复用 mask 解码、跨视角融合和点采样结果。多线程
-同时请求同一帧时也只计算一次。进度条中的 cache_hits 和 cache_misses 可用于
-确认缓存效果。可根据可用内存调整容量，或使用 --cache-frames 0 禁用缓存。同一
-原始帧的随机采样由 task、episode_idx、sample_frame 和 --seed 决定，不受
-replay index 或线程完成顺序影响。
-
-oracle_object_sizes 保存融合点云的轴对齐包围盒尺寸，即每个坐标轴上的
-max(points) - min(points)。脚本默认使用 --min-object-points 20，实例在跨相机
-合并并移除 NaN/Inf 后少于 20 个点时会被过滤。进度条中的 filtered 为累计过滤
-实例数，dry-run 会打印当前帧被过滤的数量。若希望保留此前的最宽松行为，可使用
---min-object-points 1。
-
-RLBench mask 是 RGB 编码的 simulator handle，不能直接把 RGB 像素值当作实例
-ID。脚本调用 RLBench 自带的 rgb_handles_to_mask 解码，仅默认移除已确认的背景
-ID 0。离线数据没有提供 handle 到物体名称的映射，因此不会自动移除机器人；
-如已知某个 handle，可重复传入 --exclude-object-id。
-
-### 生成 Oracle 时同步执行任务先验筛选
-
-无需重新运行 RLBench 或重新生成原始 replay。添加 `--task-prior-filter` 后，脚本会在
-GT mask 与点云融合完成、写入 `oracle_object_*` 之前，根据当前 transition 中监督的
-下一关键动作 `gripper_pose[:3]` 对实例排序。18 个 BridgeVLA 任务的默认动作类型、
-交互半径和最大 handle 数定义在 `tools/rlbench_task_object_priors.py`。明显覆盖两个大
-坐标轴的桌面/地面会作为背景移除；其余实例按点云包围盒到动作位置的距离排序。
-默认采用高召回模式，距离超过交互半径的实例不会仅因此被删除，避免多物体任务中
-只保留下一步动作附近的一个物体。
-
-    python tools/augment_replay_with_oracle_objects.py \
-        --replay-dir LPY/BridgeVLA_RLBench_TRAIN_Buffer \
-        --raw-data-dir LPY/BridgeVLA_RLBench_TRAIN_DATA/train \
-        --task stack_blocks \
-        --output-dir LPY/BridgeVLA_RLBench_TASK_OBJECT_Buffer \
-        --task-prior-filter \
-        --min-object-points 1 \
-        --max-objects 32 \
-        --num-points 512 \
-        --workers 8 \
-        --visualize-objects-only \
-        --cache-frames 256
-
-    python tools/augment_replay_with_oracle_objects.py \
-        --replay-dir LPY/BridgeVLA_RLBench_TRAIN_Buffer \
-        --raw-data-dir LPY/BridgeVLA_RLBench_TRAIN_DATA/train \
-        --task stack_blocks \
-        --detect-robot-handles \
-        --refresh-robot-handle-cache \
-        --robot-detection-frames 8 \
-        --robot-handle-cache-dir robot_handle_maps \
-        --task-prior-filter \
-        --min-object-points 1 \
-        --max-objects 32 \
-        --visualize-index 100 \
-        --visualize-objects-only \
-        --dry-run
-
-建议先配合 `--dry-run --visualize-every N` 检查结果。可使用
-`--task-prior-radius`、`--task-prior-max-instances` 和
-`--task-prior-background-extent` 覆盖默认值。进度条和 dry-run 输出中的
-`prior_filtered` 表示被任务先验删除的 handle 数。如确实需要旧式的激进空间筛选，
-显式添加 `--task-prior-strict`；此时才会删除交互半径之外的 handle，并使用任务默认
-的最大 handle 数。也可以只传 `--task-prior-max-instances N` 主动限制高召回结果。
-
-dry-run 会同时打印 `excluded_object_ids`、`no_finite_point_object_ids`、
-`small_object_ids`、`task_prior_filtered_object_ids` 和 `truncated_object_ids`，分别对应
-ID/机械臂排除、mask 可见但点云全为 NaN/Inf、点数阈值、任务先验以及
-`--max-objects` 截断。若某个 handle 不在这些列表，也不在当前帧保留 ID 中，说明它
-在所选相机的当前帧 GT mask 中不可见，而不是过滤器删除。
-
-若只想查看筛选后保留的彩色 object，不显示灰色完整场景点云，可添加：
-
-    --visualize-objects-only
-
-该参数只影响保存的 PNG，不修改 `oracle_object_*` 或其他 replay 字段。
-可视化颜色由解码后的 handle ID 确定，因此同一 episode 中相同 handle ID 在所有
-帧里始终使用相同颜色，不再随 slot 或绘制顺序变化。图片标题同时显示
-`episode_idx` 和 `sample_frame`，用于避免误将不同 episode 的颜色或 ID 作比较。
-所有 PNG 固定使用 BridgeVLA RLBench 的米制场景边界
-`[-0.3, -0.5, 0.6, 0.7, 0.5, 1.6]`，并保持 xyz 等比例显示；因此跨帧不会因
-Matplotlib 自动缩放而改变物体的视觉尺度。该设置只影响绘图，不缩放或修改保存的
-Oracle 点云。
-
-每张 PNG 使用两排八个面板：上排依次显示 front、left shoulder、right shoulder、
-wrist 四个 RGB 相机视角；下排显示同一批点云的 3D 透视图，以及三个正交投影：
-俯视 `XY`（沿 Z 轴观察）、正视 `XZ`（沿 Y 轴观察）和侧视 `YZ`（沿 X 轴观察）。
-四个点云视角共享固定场景尺度和 handle ID 颜色；`--visualize-objects-only` 只隐藏
-下排点云中的灰色完整场景，不会隐藏上排 RGB 图像。
-
-离线 GT mask 只保存数字 handle，没有 `handle -> object name` 语义映射，因此不能
-仅凭任务名称严格证明某个 handle 是机械臂。确认机器人 ID 后，可重复使用
-`--exclude-robot-id ID`（它是 `--exclude-object-id` 的别名）进行精确排除：
-
-    --exclude-robot-id 23 --exclude-robot-id 24 --exclude-robot-id 25
-
-该模式只筛选保留的 GT handle，不生成 target/reference 角色标签；默认不传
-`--task-prior-filter` 时仍保存全部有效 GT instance，与原 Oracle 实验保持兼容。
-
-注意：这里使用的 `gripper_pose` 是下一关键动作的监督值，因此该自动模式属于
-**action-conditioned Oracle 上界/离线标注**，不能直接作为无标签推理阶段的公平
-筛选器。若要求完全不使用未来动作，需要额外提供离线 `handle -> object name` 或
-人工 handle 白名单；只有数字 mask ID 和任务名称时无法无歧义地完成该语义映射。
-
-#### Episode 级时序任务 handle 白名单
-
-若高召回模式仍保留无关实例，添加 `--temporal-task-filter`。脚本会为每个 episode
-抽取最多 `--task-detection-frames` 帧，将 raw observation 中的当前夹爪位置与 replay
-中的下一关键动作位置组成完整动作轨迹，然后生成一份供该 episode 所有帧共用的
-handle 白名单：
-
-- 静止物体只要曾靠近抓取、放置或操作位置就会保留；不要求它发生运动。
-- 推动、按压、拉动等未闭合夹爪的交互，只要移动期间靠近夹爪或动作位置也会保留。
-- 多帧显著移动但移动前后始终没有任何夹爪/动作邻近证据的 handle 会记录在
-  `rejected_dynamic_handles`，不会进入白名单。
-- 与已确认交互 handle 持续相邻的静态目标、容器或组合结构额外保留一跳；不会递归
-  扩散到整个场景。
-- `robot_handles` 会在时序任务检测之前排除，因此建议两个检测参数同时启用。
-
-    python tools/augment_replay_with_oracle_objects.py \
-        --replay-dir LPY/BridgeVLA_RLBench_TRAIN_Buffer \
-        --raw-data-dir LPY/BridgeVLA_RLBench_TRAIN_DATA/train \
-        --task stack_blocks \
-        --output-dir LPY/BridgeVLA_RLBench_TASK_OBJECT_Buffer \
-        --detect-robot-handles \
-        --robot-detection-frames 8 \
-        --robot-handle-cache-dir robot_handle_maps \
-        --temporal-task-filter \
-        --task-detection-frames 16 \
-        --task-handle-cache-dir task_handle_maps \
-        --task-prior-filter \
-        --min-object-points 1 \
-        --max-objects 32 \
-        --visualize-every 100 \
-        --visualize-objects-only
-
-时序结果缓存为 `task_handle_maps/<task>/episode_NNNN.json`。JSON 包含
-`task_handles`、`interaction_handles`、`adjacent_handles`、
-`rejected_dynamic_handles`、`background_handles` 和 `sampled_frames`。修改任务半径、
-最大实例数或检测帧数后，应添加 `--refresh-task-handle-cache` 重新检测。dry-run 会
-读取缓存但不会写入新缓存。运行进度及 dry-run 中的 `temporal_filtered` /
-`temporal_filtered_object_ids` 表示当前帧被 episode 白名单删除的 handle。
-
-该功能不调用 Qwen、SAM，也不重新运行 RLBench；它直接在生成 Oracle replay 前使用
-现有 GT mask、点云和动作轨迹完成离线筛选。若 episode 很长或存在很多轮操作，可将
-`--task-detection-frames` 提高到 24 或 32，以降低漏过短暂交互的概率。
-
-### 自动检测并排除机械臂和夹爪
-
-不需要重新运行或重新采集 RLBench。添加 `--detect-robot-handles` 后，脚本会在生成
-Oracle 前对每个 episode 最多抽取若干个时间上均匀分布的 replay 帧，并读取原始
-`low_dim_obs.pkl[sample_frame].gripper_pose` 中的**当前**夹爪位置。检测器只把首个
-采样帧就在 wrist mask 中可见、靠近夹爪，并且跨帧保持稳定“物体中心－夹爪位置”
-偏移的 handle 作为夹爪种子；机械臂 link 除了需要持续运动和相邻，还必须在 episode
-早期就已和夹爪/机械臂链连接。因此只在抓取后才靠近或随机械臂运动的任务物体，
-不会被误加入 `robot_handles`。
-
-    python tools/augment_replay_with_oracle_objects.py \
-        --replay-dir LPY/BridgeVLA_RLBench_TRAIN_Buffer \
-        --raw-data-dir LPY/BridgeVLA_RLBench_TRAIN_DATA/train \
-        --task stack_blocks \
-        --output-dir LPY/BridgeVLA_RLBench_TASK_OBJECT_Buffer \
-        --detect-robot-handles \
-        --robot-detection-frames 8 \
-        --robot-handle-cache-dir robot_handle_maps \
-        --task-prior-filter \
-        --min-object-points 1 \
-        --visualize-every 100 \
-        --visualize-objects-only
-
-检测结果按 task/episode 缓存，例如：
-
-    robot_handle_maps/stack_blocks/episode_0000.json
-
-JSON 中保存 `gripper_handles`、`arm_handles`、合并后的 `robot_handles`、置信度和
-参与检测的 `sampled_frames`。后续运行默认直接复用缓存；需要重新检测时添加
-`--refresh-robot-handle-cache`。dry-run 可以读取已有缓存，但不会新建或覆盖缓存。
-自动结果仍可与重复传入的 `--exclude-robot-id ID` 精确黑名单同时使用。
-检测缓存带有算法版本；旧版 `wrist_pose_temporal_adjacency_v1` JSON 会自动失效，
-对应 episode 将按新版规则重新检测并在非 dry-run 时覆盖为 v2，不需要手动删除。
-
-检测启动阶段会优先读取 replay 目录中的轻量 `replay_info.npy` 划分 episode，不再
-为分组而打开全部大型 `.replay`；每个未缓存 episode 只读取最多
-`--robot-detection-frames` 个 replay。已有 JSON 的 episode 会跳过帧加载。dry-run
-只检测本次抽样/可视化涉及的 episode。若旧目录没有有效 `replay_info.npy`，脚本会
-回退为逐 replay 元数据扫描，并显示 `robot detection: replay metadata scan` 进度条。
-
-该检测不使用 replay 中的下一动作 `gripper_pose`，因此不会引入未来动作标签；它
-读取的是 raw episode 中当前观测帧的夹爪位姿。由于这是无对象名称的几何时域
-启发式，建议先用 `--dry-run --visualize-every N --visualize-objects-only` 检查各任务
-的 JSON 和可视化，再处理完整训练集。
-
-如果场景中的有效实例多于 max-objects，脚本优先保留点数最多的实例；少于
-num-points 的实例会有放回采样，多于该数量时无放回采样。所有 NaN 和 Inf 点均
-会在采样前移除。
+若临时移除 `--temporal-task-filter` 后实例恢复，可以确认问题来自 episode 白名单，
+而不是 GT mask 解码或点云对齐。
 
 训练加载 Oracle replay 时，需要将
 finetune/RLBench/utils/peract_utils_rlbench.py 中的
