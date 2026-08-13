@@ -57,6 +57,8 @@ class OracleReplayAugmentationTest(unittest.TestCase):
         self.assertEqual(
             args.visualize_output_dir, Path('custom_visualizations')
         )
+        args = parser.parse_args(base + ['--visualize-objects-only'])
+        self.assertTrue(args.visualize_objects_only)
 
     def test_interval_visualization_selects_every_nth_sorted_file(self):
         files = [Path(f'{index}.replay') for index in range(10)]

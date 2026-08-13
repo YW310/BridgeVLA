@@ -229,6 +229,12 @@ GT mask 与点云融合完成、写入 `oracle_object_*` 之前，根据当前 t
 `--task-prior-background-extent` 覆盖默认值。进度条和 dry-run 输出中的
 `prior_filtered` 表示被任务先验删除的 handle 数。
 
+若只想查看筛选后保留的彩色 object，不显示灰色完整场景点云，可添加：
+
+    --visualize-objects-only
+
+该参数只影响保存的 PNG，不修改 `oracle_object_*` 或其他 replay 字段。
+
 离线 GT mask 只保存数字 handle，没有 `handle -> object name` 语义映射，因此不能
 仅凭任务名称严格证明某个 handle 是机械臂。确认机器人 ID 后，可重复使用
 `--exclude-robot-id ID`（它是 `--exclude-object-id` 的别名）进行精确排除：

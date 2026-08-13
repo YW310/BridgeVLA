@@ -923,6 +923,7 @@ def process_task(
     visualize_index: Optional[int],
     visualize_every: int,
     visualize_output_dir: Path,
+    visualize_objects_only: bool,
     overwrite: bool,
     durable_write: bool,
     show_progress: bool,
@@ -1003,9 +1004,10 @@ def process_task(
             scene_points = None
             visualization_oracle = oracle
             if replay_index in visualization_indices:
-                scene_points = _scene_points_for_visualization(
-                    original, cameras
-                )
+                if not visualize_objects_only:
+                    scene_points = _scene_points_for_visualization(
+                        original, cameras
+                    )
                 terminal = int(
                     np.asarray(original.get('terminal', -1)).item()
                 )
@@ -1229,6 +1231,14 @@ def build_parser() -> argparse.ArgumentParser:
             '(default: ./oracle_visualizations)'
         ),
     )
+    parser.add_argument(
+        '--visualize-objects-only',
+        action='store_true',
+        help=(
+            'draw only retained Oracle instances without the gray full-scene '
+            'point cloud'
+        ),
+    )
     parser.add_argument('--overwrite', action='store_true')
     parser.add_argument(
         '--durable-write',
@@ -1320,6 +1330,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             visualize_index=args.visualize_index,
             visualize_every=args.visualize_every,
             visualize_output_dir=visualize_output_dir,
+            visualize_objects_only=args.visualize_objects_only,
             overwrite=args.overwrite,
             durable_write=args.durable_write,
             show_progress=not args.no_progress,
