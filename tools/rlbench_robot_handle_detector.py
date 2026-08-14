@@ -11,7 +11,7 @@ import numpy as np
 
 
 Bounds = Tuple[np.ndarray, np.ndarray]
-ROBOT_DETECTOR_METHOD = 'wrist_pose_temporal_adjacency_v3'
+ROBOT_DETECTOR_METHOD = 'wrist_pose_temporal_adjacency_v4_conservative'
 
 
 @dataclass(frozen=True)
@@ -28,6 +28,7 @@ class RobotHandleDetection:
     episode_idx: int
     gripper_handles: Tuple[int, ...]
     arm_handles: Tuple[int, ...]
+    ambiguous_handles: Tuple[int, ...]
     confidence: Mapping[int, float]
     sampled_frames: Tuple[int, ...]
 
@@ -41,6 +42,7 @@ class RobotHandleDetection:
             'gripper_handles': list(self.gripper_handles),
             'arm_handles': list(self.arm_handles),
             'robot_handles': list(self.robot_handles),
+            'ambiguous_handles': list(self.ambiguous_handles),
             'confidence': {
                 str(handle): float(value)
                 for handle, value in sorted(self.confidence.items())
@@ -137,12 +139,24 @@ def detect_robot_handles(
     adjacency_distance: float = 0.05,
     adjacency_ratio: float = 0.70,
     min_link_motion: float = 0.008,
+    min_hard_confidence: float = 0.75,
+    arm_min_visibility_ratio: float = 0.90,
 ) -> RobotHandleDetection:
     '''Detect gripper seeds and expand persistent moving robot-link neighbors.'''
     if not frames:
         raise ValueError('Robot detection requires at least one frame')
-    if not 0 < min_visibility_ratio <= 1 or not 0 < adjacency_ratio <= 1:
-        raise ValueError('visibility and adjacency ratios must be in (0, 1]')
+    if not all(
+        0 < value <= 1
+        for value in (
+            min_visibility_ratio,
+            adjacency_ratio,
+            min_hard_confidence,
+            arm_min_visibility_ratio,
+        )
+    ):
+        raise ValueError(
+            'visibility, adjacency, and confidence ratios must be in (0, 1]'
+        )
     if min(
         gripper_radius,
         wrist_centroid_std,
@@ -183,6 +197,7 @@ def detect_robot_handles(
             wrist_centroids.setdefault(object_id, []).append(centroid)
 
     gripper_handles: List[int] = []
+    ambiguous_handles = set()
     confidence: Dict[int, float] = {}
     minimum_visible = min(
         frame_count,
@@ -204,6 +219,10 @@ def detect_robot_handles(
                 first_frame.gripper_position,
                 first_frame.bounds_by_id[object_id],
             ) > gripper_radius
+            or any(
+                distance > gripper_radius
+                for distance in distances[object_id]
+            )
         ):
             continue
         wrist_array = np.stack(wrist_values)
@@ -231,17 +250,22 @@ def detect_robot_handles(
             position_score = max(0.0, 1.0 - centroid_spread / wrist_centroid_std)
             offset_score = max(0.0, 1.0 - offset_spread / relative_offset_std)
             distance_score = max(0.0, 1.0 - median_distance / gripper_radius)
-            confidence[object_id] = float(
+            score = float(
                 0.30 * visibility_score
                 + 0.25 * position_score
                 + 0.25 * offset_score
                 + 0.20 * distance_score
             )
-            gripper_handles.append(object_id)
+            if score >= min_hard_confidence:
+                confidence[object_id] = score
+                gripper_handles.append(object_id)
+            else:
+                ambiguous_handles.add(object_id)
 
     if not gripper_handles:
-        # Conservative fallback: choose persistent wrist-visible handles nearest
-        # the current gripper, never arbitrary scene objects.
+        # Low-confidence wrist-near candidates are diagnostic only. Hard
+        # exclusion is intentionally disabled because a grasped task object
+        # can look rigidly attached to the wrist after contact.
         candidates = []
         for object_id in all_ids:
             wrist_values = wrist_centroids.get(object_id, [])
@@ -276,8 +300,7 @@ def detect_robot_handles(
                 )
         for median_distance, object_id in sorted(candidates)[:2]:
             if median_distance <= gripper_radius * 1.5:
-                gripper_handles.append(object_id)
-                confidence[object_id] = 0.35
+                ambiguous_handles.add(object_id)
 
     motion: Dict[int, float] = {}
     for object_id, values in centers.items():
@@ -328,6 +351,10 @@ def detect_robot_handles(
     robot_handles = set(gripper_handles)
     queue = list(gripper_handles)
     early_limit = max(1, int(np.ceil(frame_count * 0.25)))
+    minimum_arm_visible = min(
+        frame_count,
+        max(2, int(np.ceil(frame_count * arm_min_visibility_ratio))),
+    )
     while queue:
         object_id = queue.pop()
         for neighbor in adjacency.get(object_id, ()):
@@ -337,14 +364,41 @@ def detect_robot_handles(
             # episode. Objects that only enter the gripper later are rejected.
             if first_seen.get(neighbor, frame_count) > early_limit:
                 continue
-            if visibility[neighbor] < minimum_visible:
-                continue
-            if motion[neighbor] < min_link_motion:
+            early_centers = [
+                frame.centers_by_id[neighbor]
+                for frame in early_frames
+                if neighbor in frame.centers_by_id
+            ]
+            early_motion = 0.0
+            if len(early_centers) >= 2:
+                early_array = np.stack(early_centers)
+                early_motion = float(
+                    np.linalg.norm(
+                        np.max(early_array, 0) - np.min(early_array, 0)
+                    )
+                )
+            first_adjacent = (
+                neighbor in first_frame.bounds_by_id
+                and object_id in first_frame.bounds_by_id
+                and _bounds_distance(
+                    first_frame.bounds_by_id[object_id],
+                    first_frame.bounds_by_id[neighbor],
+                ) <= adjacency_distance
+            )
+            hard_robot_evidence = (
+                visibility[neighbor] >= minimum_arm_visible
+                and len(early_centers) == early_frame_count
+                and first_adjacent
+                and motion[neighbor] >= min_link_motion
+                and early_motion >= min_link_motion
+            )
+            if not hard_robot_evidence:
+                ambiguous_handles.add(neighbor)
                 continue
             robot_handles.add(neighbor)
             confidence[neighbor] = min(
                 0.90,
-                0.55 + min(0.35, motion[neighbor]),
+                0.75 + min(0.15, early_motion),
             )
             queue.append(neighbor)
 
@@ -354,6 +408,7 @@ def detect_robot_handles(
         episode_idx=int(episode_idx),
         gripper_handles=tuple(sorted(gripper_set)),
         arm_handles=tuple(arm_handles),
+        ambiguous_handles=tuple(sorted(ambiguous_handles - robot_handles)),
         confidence=confidence,
         sampled_frames=tuple(frame.sample_frame for frame in frames),
     )
@@ -383,6 +438,9 @@ def load_robot_handle_detection(path: Path) -> RobotHandleDetection:
         episode_idx=int(payload['episode_idx']),
         gripper_handles=tuple(int(value) for value in payload['gripper_handles']),
         arm_handles=tuple(int(value) for value in payload['arm_handles']),
+        ambiguous_handles=tuple(
+            int(value) for value in payload.get('ambiguous_handles', ())
+        ),
         confidence={
             int(handle): float(value)
             for handle, value in payload.get('confidence', {}).items()

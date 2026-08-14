@@ -122,6 +122,36 @@ class RLBenchRobotHandleDetectorTest(unittest.TestCase):
         self.assertEqual(detection.gripper_handles, (10,))
         self.assertNotIn(20, detection.arm_handles)
 
+    def test_static_early_neighbor_is_ambiguous_not_hard_excluded(self):
+        frames = []
+        for frame_index in range(8):
+            gripper = np.array(
+                [frame_index * 0.04, 0.0, 0.8], dtype=np.float32
+            )
+            neighbor = (
+                np.array([0.04, 0.0, 0.8], dtype=np.float32)
+                if frame_index < 3
+                else gripper + np.array([0.04, 0.0, 0.0])
+            )
+            centers = {10: gripper, 20: neighbor}
+            frames.append(
+                RobotFrameEvidence(
+                    sample_frame=frame_index,
+                    gripper_position=gripper,
+                    bounds_by_id={
+                        object_id: bounds(center, 0.015)
+                        for object_id, center in centers.items()
+                    },
+                    centers_by_id=centers,
+                    wrist_centroids_by_id={10: np.array([0.5, 0.5])},
+                )
+            )
+
+        detection = detect_robot_handles(6, frames)
+        self.assertEqual(detection.gripper_handles, (10,))
+        self.assertNotIn(20, detection.robot_handles)
+        self.assertIn(20, detection.ambiguous_handles)
+
     def test_json_cache_round_trip(self):
         frames = [
             RobotFrameEvidence(
@@ -148,7 +178,7 @@ class RLBenchRobotHandleDetectorTest(unittest.TestCase):
             'robot_handles': [5],
             'confidence': {'5': 0.9},
             'sampled_frames': [0, 1],
-            'method': 'wrist_pose_temporal_adjacency_v1',
+            'method': 'wrist_pose_temporal_adjacency_v3',
         }
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / 'episode_0007.json'

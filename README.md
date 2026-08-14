@@ -162,7 +162,7 @@ python tools/augment_replay_with_oracle_objects.py \
 | 时序任务 | `--task-detection-frames N` | `16` | 每个 episode 均匀抽取的最大检测帧数；长 episode 可提高到 `24` 或 `32`。 |
 | 时序匹配 | `--task-handle-cache-dir PATH` | `task_handle_maps` | episode 稳定 slot 与 task handle JSON 缓存目录。 |
 | 时序任务 | `--refresh-task-handle-cache` | 关闭 | 忽略已有 task handle JSON 并重新检测。 |
-| 机器人 | `--detect-robot-handles` | 关闭 | 用当前夹爪位姿、wrist mask 和时域几何检测并排除夹爪/机械臂 handle。 |
+| 机器人 | `--detect-robot-handles` | 关闭 | 保守检测高置信度夹爪/机械臂 handle；邻近或后期随动的模糊实例只记录为 `ambiguous_handles`，不会删除。 |
 | 机器人 | `--robot-detection-frames N` | `8` | 每个 episode 均匀抽取的最大机器人检测帧数。 |
 | 机器人 | `--robot-handle-cache-dir PATH` | `robot_handle_maps` | episode robot handle JSON 缓存目录。 |
 | 机器人 | `--refresh-robot-handle-cache` | 关闭 | 忽略已有 robot handle JSON 并重新检测。 |
@@ -186,7 +186,10 @@ python tools/augment_replay_with_oracle_objects.py \
   handle 追加到稳定映射；`rejected_dynamic_handles` 仅作为诊断和优先级证据，不会由
   temporal 模式删除。某个稳定 handle 在当前帧不可见时保留该 slot，写入
   `valid=False`；其他可见 handle 会使用剩余 slot。
-- Robot 检测只使用 raw observation 中的当前夹爪位姿；task prior 和时序任务筛选会
+- Robot 检测只使用 raw observation 中的当前夹爪位姿。夹爪 seed 必须在全部观测帧
+  持续位于夹爪半径内；arm 邻接扩展还要求从 episode 早期就持续可见、首帧相邻且已
+  发生运动。仅在夹取后随动、早期静止或证据不足的实例进入 `ambiguous_handles`，不会
+  加入 `excluded_object_ids`。task prior 和时序任务筛选会
   使用 replay 的下一关键动作，因此属于 action-conditioned Oracle 离线标注，不是
   无标签推理阶段的公平筛选器。整个流程不调用 Qwen 或 SAM。
 - Replay 文件编号按写入顺序排列，但 `sample_frame` 是稀疏关键帧，不保证 raw 帧号
@@ -205,8 +208,9 @@ python tools/augment_replay_with_oracle_objects.py \
   的 GT mask 中不可见。
 - 每张可视化 PNG 使用两排八个面板：上排为 front、left shoulder、right shoulder、
   wrist RGB；下排为 3D、XY、XZ、YZ 点云。相同 episode/handle ID 跨帧颜色固定，
-  上排利用同帧 GT mask 为下排实际保留的 ID 绘制同色框和 `ID` 标签；某个实例在
-  当前相机不可见时不画框。点云使用固定米制场景边界；缺失 RGB 显示
+  上排利用同帧 GT mask 为下排实际保留的 ID 绘制半透明同色框和纯数字标签（例如
+  `17`，不再显示 `ID 17`）；某个实例在当前相机不可见时不画框。点云使用固定米制
+  场景边界；缺失 RGB 显示
   `RGB unavailable`，不会中断生成。
 - 默认先写 `.tmp`、回读验证后原子重命名，不覆盖原始数据。缓存会自动淘汰已完成的
   旧帧；进度条中的 `cache_hits`、`cache_misses` 和 `cache_entries` 可用于检查效果。
@@ -223,6 +227,10 @@ python tools/augment_replay_with_oracle_objects.py \
   `small_object_ids` 表示点数不足，`no_finite_point_object_ids` 表示 mask 可见但点云
   全为 NaN/Inf。缺失 ID 不在任何列表时，说明它在当前帧所选相机的 GT mask 中不可见
   或被完全遮挡；不再归因于 temporal 匹配。
+- 若 robot 检测仍有疑似误判，检查
+  `robot_handle_maps/<task>/episode_NNNN.json`：只有 `gripper_handles` 和
+  `arm_handles` 会硬删除，`ambiguous_handles` 仅供诊断。旧 v3 robot cache 会自动
+  失效；重新生成 robot 结果后也应刷新 task cache。
 - 图片标题切换到新的 `episode_idx` 时，会改用另一份 episode cache；这不是同一
   episode 内 ID 突变。`sentinel=True` 对应 `terminal == -1` 填充 transition，保存的
   Oracle 张量为空是预期行为。

@@ -1029,12 +1029,13 @@ def visualize_oracle_objects(
                             fill=False,
                             edgecolor=color,
                             linewidth=2.0,
+                            alpha=0.65,
                         )
                     )
                     image_axes_value.text(
                         x_min,
                         max(0, y_min - 2),
-                        f'ID {object_id}',
+                        str(object_id),
                         color='black',
                         fontsize=8,
                         fontweight='bold',
@@ -1043,7 +1044,7 @@ def visualize_oracle_objects(
                         bbox={
                             'facecolor': color,
                             'edgecolor': color,
-                            'alpha': 0.88,
+                            'alpha': 0.50,
                             'pad': 1.5,
                         },
                     )
@@ -1603,7 +1604,9 @@ def _detect_task_robot_handles(
         tqdm.write(
             f'{task} episode={episode_idx}: detected robot handles='
             f'{list(detection.robot_handles)} gripper='
-            f'{list(detection.gripper_handles)} frames='
+            f'{list(detection.gripper_handles)} arm='
+            f'{list(detection.arm_handles)} ambiguous='
+            f'{list(detection.ambiguous_handles)} frames='
             f'{list(detection.sampled_frames)}',
         )
     return handles_by_episode
