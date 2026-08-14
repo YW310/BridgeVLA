@@ -18,7 +18,7 @@ def bounds(center, half_extent=0.01):
     return center - half_extent, center + half_extent
 
 
-def frame(index, gripper, action, centers):
+def frame(index, gripper, action, centers, gripper_open=1.0):
     return TaskFrameEvidence(
         sample_frame=index,
         gripper_position=np.asarray(gripper, dtype=np.float32),
@@ -29,6 +29,7 @@ def frame(index, gripper, action, centers):
             for key, value in centers.items()
         },
         point_counts_by_id={key: 20 for key in centers},
+        gripper_open=gripper_open,
     )
 
 
@@ -74,7 +75,111 @@ class RLBenchTaskHandleDetectorTest(unittest.TestCase):
             'slide_block_to_color_target', 3, frames
         )
         self.assertEqual(detection.task_handles, (11,))
+        self.assertEqual(detection.target_handles, (11,))
+        self.assertEqual(detection.reference_handles, ())
         self.assertNotIn(11, detection.rejected_dynamic_handles)
+
+    def test_close_and_follow_marks_target_and_static_contact_as_reference(self):
+        frames = []
+        grippers = [0.00, 0.00, 0.05, 0.10, 0.10]
+        openings = [1.0, 0.0, 0.0, 0.0, 1.0]
+        targets = [0.01, 0.01, 0.06, 0.11, 0.11]
+        for index, (gripper_x, gripper_open, target_x) in enumerate(
+            zip(grippers, openings, targets)
+        ):
+            frames.append(
+                frame(
+                    index,
+                    gripper=[gripper_x, 0.0, 0.8],
+                    action=[gripper_x, 0.0, 0.8],
+                    centers={
+                        10: [target_x, 0.0, 0.8],
+                        20: [0.055, 0.0, 0.8],
+                    },
+                    gripper_open=gripper_open,
+                )
+            )
+
+        detection = detect_task_handles(
+            'stack_blocks',
+            6,
+            frames,
+            interaction_radius=0.08,
+            adjacency_distance=0.05,
+        )
+        self.assertIn(10, detection.target_handles)
+        self.assertIn(20, detection.reference_handles)
+        self.assertEqual(detection.role_by_handle[10], 1)
+        self.assertEqual(detection.role_by_handle[20], 2)
+
+    def test_reference_is_optional(self):
+        frames = [
+            frame(
+                index,
+                gripper=[index * 0.04, 0.0, 0.8],
+                action=[index * 0.04, 0.0, 0.8],
+                centers={10: [index * 0.04 + 0.01, 0.0, 0.8]},
+            )
+            for index in range(4)
+        ]
+        detection = detect_task_handles(
+            'slide_block_to_color_target', 7, frames
+        )
+        self.assertEqual(detection.target_handles, (10,))
+        self.assertEqual(detection.reference_handles, ())
+
+    def test_persistent_rigid_neighbors_merge_and_share_target_role(self):
+        frames = []
+        for index in range(5):
+            target_x = index * 0.04
+            frames.append(
+                frame(
+                    index,
+                    gripper=[target_x, 0.0, 0.8],
+                    action=[target_x, 0.0, 0.8],
+                    centers={
+                        10: [target_x, 0.0, 0.8],
+                        11: [target_x + 0.025, 0.0, 0.8],
+                    },
+                )
+            )
+        detection = detect_task_handles(
+            'slide_block_to_color_target',
+            8,
+            frames,
+            interaction_radius=0.01,
+        )
+        self.assertIn((10, 11), detection.object_groups)
+        self.assertEqual(detection.group_by_handle[11], 10)
+        self.assertEqual(detection.grouped_slot_handles, (10,))
+        self.assertEqual(detection.target_handles, (10, 11))
+        self.assertEqual(detection.role_by_group, {10: 1})
+
+    def test_handles_that_only_touch_late_do_not_merge(self):
+        frames = []
+        for index in range(5):
+            target_x = index * 0.04
+            frames.append(
+                frame(
+                    index,
+                    gripper=[target_x, 0.0, 0.8],
+                    action=[target_x, 0.0, 0.8],
+                    centers={
+                        10: [target_x, 0.0, 0.8],
+                        20: [0.18, 0.0, 0.8],
+                    },
+                )
+            )
+        detection = detect_task_handles(
+            'stack_blocks',
+            9,
+            frames,
+            interaction_radius=0.05,
+        )
+        self.assertNotEqual(
+            detection.group_by_handle[10],
+            detection.group_by_handle[20],
+        )
 
     def test_keeps_static_handle_persistently_adjacent_to_interaction_seed(self):
         frames = [

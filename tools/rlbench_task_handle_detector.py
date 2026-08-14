@@ -16,7 +16,7 @@ except ModuleNotFoundError:  # Direct execution: python tools/<script>.py
 
 
 Bounds = Tuple[np.ndarray, np.ndarray]
-TASK_HANDLE_DETECTOR_METHOD = 'episode_action_trajectory_v3_stable_slots'
+TASK_HANDLE_DETECTOR_METHOD = 'episode_action_trajectory_v5_rigid_groups'
 
 
 @dataclass(frozen=True)
@@ -27,6 +27,7 @@ class TaskFrameEvidence:
     bounds_by_id: Mapping[int, Bounds]
     centers_by_id: Mapping[int, np.ndarray]
     point_counts_by_id: Mapping[int, int]
+    gripper_open: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -39,6 +40,9 @@ class TaskHandleDetection:
     rejected_dynamic_handles: Tuple[int, ...]
     background_handles: Tuple[int, ...]
     sampled_frames: Tuple[int, ...]
+    target_handles: Tuple[int, ...] = ()
+    reference_handles: Tuple[int, ...] = ()
+    object_groups: Tuple[Tuple[int, ...], ...] = ()
 
     @property
     def slot_handles(self) -> Tuple[int, ...]:
@@ -50,6 +54,40 @@ class TaskHandleDetection:
             if handle not in task_handle_set
         )
 
+    @property
+    def role_by_handle(self) -> Dict[int, int]:
+        '''Return replay role codes: 1=target, 2=reference.'''
+        roles = {handle: 1 for handle in self.target_handles}
+        roles.update({handle: 2 for handle in self.reference_handles})
+        return roles
+
+    @property
+    def group_by_handle(self) -> Dict[int, int]:
+        '''Map every raw handle to its stable representative handle ID.'''
+        mapping: Dict[int, int] = {}
+        for group in self.object_groups:
+            representative = min(group)
+            mapping.update({handle: representative for handle in group})
+        for handle in self.observed_handles:
+            mapping.setdefault(handle, handle)
+        return mapping
+
+    @property
+    def grouped_slot_handles(self) -> Tuple[int, ...]:
+        mapping = self.group_by_handle
+        return tuple(
+            dict.fromkeys(mapping.get(handle, handle) for handle in self.slot_handles)
+        )
+
+    @property
+    def role_by_group(self) -> Dict[int, int]:
+        mapping = self.group_by_handle
+        roles: Dict[int, int] = {}
+        for handle, role in self.role_by_handle.items():
+            representative = mapping.get(handle, handle)
+            roles[representative] = min(roles.get(representative, role), role)
+        return roles
+
     def as_json(self) -> Dict[str, object]:
         return {
             'episode_idx': self.episode_idx,
@@ -60,6 +98,14 @@ class TaskHandleDetection:
             'adjacent_handles': list(self.adjacent_handles),
             'rejected_dynamic_handles': list(self.rejected_dynamic_handles),
             'background_handles': list(self.background_handles),
+            'target_handles': list(self.target_handles),
+            'reference_handles': list(self.reference_handles),
+            'object_groups': [list(group) for group in self.object_groups],
+            'group_by_handle': {
+                str(handle): representative
+                for handle, representative in self.group_by_handle.items()
+            },
+            'grouped_slot_handles': list(self.grouped_slot_handles),
             'sampled_frames': list(self.sampled_frames),
             'method': TASK_HANDLE_DETECTOR_METHOD,
         }
@@ -73,6 +119,7 @@ def build_task_frame_evidence(
     point_clouds: Mapping[str, np.ndarray],
     *,
     excluded_ids: Iterable[int] = (0,),
+    gripper_open: float = 1.0,
 ) -> TaskFrameEvidence:
     '''Fuse multi-view geometry needed by the episode-level selector.'''
     excluded = {int(value) for value in excluded_ids}
@@ -119,6 +166,9 @@ def build_task_frame_evidence(
         or not np.isfinite(action[:3]).all()
     ):
         raise ValueError('Task detector poses must contain 3 finite values')
+    gripper_open = float(gripper_open)
+    if not np.isfinite(gripper_open):
+        raise ValueError('Task detector gripper_open must be finite')
     return TaskFrameEvidence(
         sample_frame=int(sample_frame),
         gripper_position=gripper[:3],
@@ -126,6 +176,7 @@ def build_task_frame_evidence(
         bounds_by_id=bounds_by_id,
         centers_by_id=centers_by_id,
         point_counts_by_id=point_counts_by_id,
+        gripper_open=gripper_open,
     )
 
 
@@ -152,6 +203,114 @@ def _is_planar_background(sizes: Sequence[np.ndarray], extent: float) -> bool:
     return bool(ordered[-1] >= extent and ordered[-2] >= extent)
 
 
+def _detect_rigid_groups(
+    object_ids: Sequence[int],
+    frames: Sequence[TaskFrameEvidence],
+    *,
+    excluded_ids: Iterable[int],
+    adjacency_distance: float,
+    adjacency_ratio: float,
+    relative_distance_std: float,
+    motion_threshold: float,
+) -> Tuple[Tuple[int, ...], ...]:
+    '''Merge handles with persistent contact and a stable relative distance.'''
+    excluded = {int(value) for value in excluded_ids}
+    parent = {object_id: object_id for object_id in object_ids}
+
+    def find(object_id: int) -> int:
+        while parent[object_id] != object_id:
+            parent[object_id] = parent[parent[object_id]]
+            object_id = parent[object_id]
+        return object_id
+
+    def union(left_id: int, right_id: int) -> None:
+        left_root = find(left_id)
+        right_root = find(right_id)
+        if left_root == right_root:
+            return
+        representative = min(left_root, right_root)
+        parent[left_root] = representative
+        parent[right_root] = representative
+
+    visibility = {
+        object_id: sum(
+            object_id in frame.centers_by_id for frame in frames
+        )
+        for object_id in object_ids
+    }
+    eligible = [
+        object_id for object_id in object_ids if object_id not in excluded
+    ]
+    for left_index, left_id in enumerate(eligible):
+        for right_id in eligible[left_index + 1:]:
+            records = []
+            for frame in frames:
+                if (
+                    left_id not in frame.centers_by_id
+                    or right_id not in frame.centers_by_id
+                ):
+                    continue
+                left_center = frame.centers_by_id[left_id]
+                right_center = frame.centers_by_id[right_id]
+                records.append(
+                    (
+                        left_center,
+                        right_center,
+                        _bounds_distance(
+                            frame.bounds_by_id[left_id],
+                            frame.bounds_by_id[right_id],
+                        ),
+                    )
+                )
+            required_co_visible = max(
+                2,
+                int(
+                    np.ceil(
+                        min(visibility[left_id], visibility[right_id]) * 0.75
+                    )
+                ),
+            )
+            if len(records) < required_co_visible:
+                continue
+            bounds_distances = np.asarray(
+                [record[2] for record in records], dtype=np.float32
+            )
+            if float(np.mean(bounds_distances <= adjacency_distance)) < adjacency_ratio:
+                continue
+            relative_distances = np.asarray(
+                [
+                    np.linalg.norm(right_center - left_center)
+                    for left_center, right_center, _ in records
+                ],
+                dtype=np.float32,
+            )
+            if float(np.std(relative_distances)) > relative_distance_std:
+                continue
+            shared_motion = 0.0
+            for left_record, right_record in zip(records, records[1:]):
+                shared_motion += max(
+                    float(np.linalg.norm(right_record[0] - left_record[0])),
+                    float(np.linalg.norm(right_record[1] - left_record[1])),
+                )
+            tightly_connected_while_static = bool(
+                np.max(bounds_distances) <= min(0.005, adjacency_distance)
+            )
+            if (
+                shared_motion < motion_threshold * 0.5
+                and not tightly_connected_while_static
+            ):
+                continue
+            union(left_id, right_id)
+
+    groups: Dict[int, List[int]] = {}
+    for object_id in object_ids:
+        groups.setdefault(find(object_id), []).append(object_id)
+    return tuple(
+        tuple(sorted(group))
+        for group in sorted(groups.values(), key=lambda value: min(value))
+    )
+
+
 def detect_task_handles(
     task_name: str,
     episode_idx: int,
@@ -163,6 +322,9 @@ def detect_task_handles(
     motion_threshold: float = 0.03,
     adjacency_distance: float = 0.04,
     adjacency_ratio: float = 0.50,
+    group_adjacency_distance: float = 0.02,
+    group_adjacency_ratio: float = 0.80,
+    group_relative_distance_std: float = 0.01,
 ) -> TaskHandleDetection:
     '''Build one stable handle whitelist for an entire demonstration.
 
@@ -172,10 +334,16 @@ def detect_task_handles(
     '''
     if not frames:
         raise ValueError('Task handle detection requires at least one frame')
-    if min(background_extent, motion_threshold, adjacency_distance) <= 0:
+    if min(
+        background_extent,
+        motion_threshold,
+        adjacency_distance,
+        group_adjacency_distance,
+        group_relative_distance_std,
+    ) <= 0:
         raise ValueError('Task detector distance thresholds must be positive')
-    if not 0 < adjacency_ratio <= 1:
-        raise ValueError('adjacency_ratio must be in (0, 1]')
+    if not 0 < min(adjacency_ratio, group_adjacency_ratio) <= 1:
+        raise ValueError('adjacency ratios must be in (0, 1]')
 
     prior = get_task_object_prior(task_name)
     radius = prior.interaction_radius if interaction_radius is None else float(
@@ -196,18 +364,23 @@ def detect_task_handles(
     }
     point_support: Dict[int, int] = {object_id: 0 for object_id in all_ids}
     near_in_frame: Dict[Tuple[int, int], bool] = {}
+    gripper_distance: Dict[Tuple[int, int], float] = {}
 
     for frame_index, frame in enumerate(frames):
         for object_id, bounds in frame.bounds_by_id.items():
             sizes[object_id].append(bounds[1] - bounds[0])
             centers[object_id].append((frame_index, frame.centers_by_id[object_id]))
             point_support[object_id] += frame.point_counts_by_id.get(object_id, 0)
+            current_gripper_distance = _point_to_bounds_distance(
+                frame.gripper_position, bounds
+            )
             distance = min(
-                _point_to_bounds_distance(frame.gripper_position, bounds),
+                current_gripper_distance,
                 _point_to_bounds_distance(frame.action_position, bounds),
             )
             minimum_distance[object_id] = min(minimum_distance[object_id], distance)
             near_in_frame[(frame_index, object_id)] = distance <= radius
+            gripper_distance[(frame_index, object_id)] = current_gripper_distance
 
     background = {
         object_id
@@ -283,6 +456,148 @@ def detect_task_handles(
         )[: min(2, limit)]
     selected = tuple(sorted(ranked[:limit]))
     selected_set = set(selected)
+
+    close_indices = [
+        index
+        for index in range(1, len(frames))
+        if frames[index - 1].gripper_open >= 0.5
+        and frames[index].gripper_open < 0.5
+    ]
+    close_distance = {
+        object_id: min(
+            (
+                min(
+                    gripper_distance.get(
+                        (index - 1, object_id), float('inf')
+                    ),
+                    gripper_distance.get((index, object_id), float('inf')),
+                )
+                for index in close_indices
+            ),
+            default=float('inf'),
+        )
+        for object_id in selected
+    }
+    grasp_contact_radius = min(
+        radius,
+        max(adjacency_distance, 0.06),
+    )
+    close_contact = {
+        object_id
+        for object_id in selected
+        if close_distance[object_id] <= grasp_contact_radius
+    }
+    total_motion: Dict[int, float] = {object_id: 0.0 for object_id in all_ids}
+    affected_motion: Dict[int, float] = {object_id: 0.0 for object_id in all_ids}
+    closed_follow_motion: Dict[int, float] = {
+        object_id: 0.0 for object_id in all_ids
+    }
+    for object_id, observations in centers.items():
+        for (left_index, left), (right_index, right) in zip(
+            observations, observations[1:]
+        ):
+            displacement = float(np.linalg.norm(right - left))
+            total_motion[object_id] += displacement
+            if displacement <= 1e-4:
+                continue
+            if (
+                near_in_frame.get((left_index, object_id), False)
+                or near_in_frame.get((right_index, object_id), False)
+            ):
+                affected_motion[object_id] += displacement
+            if (
+                frames[left_index].gripper_open < 0.5
+                and frames[right_index].gripper_open < 0.5
+            ):
+                left_offset = left - frames[left_index].gripper_position
+                right_offset = right - frames[right_index].gripper_position
+                if float(np.linalg.norm(right_offset - left_offset)) <= max(
+                    adjacency_distance, motion_threshold
+                ):
+                    closed_follow_motion[object_id] += displacement
+
+    target = {
+        object_id
+        for object_id in selected
+        if affected_motion[object_id] >= motion_threshold
+        or closed_follow_motion[object_id] >= motion_threshold
+    }
+    if not target and selected:
+        # Static reach/press targets may not exhibit measurable object motion.
+        # Retain exactly the strongest directly interacted handle as target.
+        direct = [
+            handle
+            for handle in ranked
+            if handle in selected_set and handle in interaction
+        ]
+        fallback = list(close_contact) or direct or list(selected)
+        target.add(
+            min(
+                fallback,
+                key=lambda object_id: (
+                    close_distance.get(object_id, float('inf')),
+                    minimum_distance[object_id],
+                    -point_support[object_id],
+                    object_id,
+                ),
+            )
+        )
+
+    reference = set()
+    if target:
+        for candidate in selected_set - target:
+            candidate_motion = total_motion[candidate]
+            strongest_target_motion = max(
+                (total_motion[object_id] for object_id in target),
+                default=0.0,
+            )
+            is_static_reference = (
+                candidate_motion < motion_threshold
+                or (
+                    strongest_target_motion >= motion_threshold
+                    and candidate_motion <= strongest_target_motion * 0.25
+                )
+            )
+            if not is_static_reference:
+                continue
+            related = candidate in adjacent
+            for frame in frames:
+                if candidate not in frame.bounds_by_id:
+                    continue
+                for target_id in target:
+                    if target_id not in frame.bounds_by_id:
+                        continue
+                    if _bounds_distance(
+                        frame.bounds_by_id[candidate],
+                        frame.bounds_by_id[target_id],
+                    ) <= max(adjacency_distance, radius * 0.5):
+                        related = True
+                        break
+                if related:
+                    break
+            if related:
+                reference.add(candidate)
+
+    object_groups = _detect_rigid_groups(
+        all_ids,
+        frames,
+        # Rigid co-motion is stronger evidence than the earlier
+        # action-proximity-only rejected_dynamic diagnostic. Attached parts
+        # can move away from the gripper while remaining the same object.
+        excluded_ids=background,
+        adjacency_distance=group_adjacency_distance,
+        adjacency_ratio=group_adjacency_ratio,
+        relative_distance_std=group_relative_distance_std,
+        motion_threshold=motion_threshold,
+    )
+    for group in object_groups:
+        group_set = set(group)
+        if target.intersection(group_set):
+            target.update(group_set)
+            reference.difference_update(group_set)
+        elif reference.intersection(group_set):
+            reference.update(group_set)
+
     return TaskHandleDetection(
         episode_idx=int(episode_idx),
         task_handles=selected,
@@ -292,6 +607,9 @@ def detect_task_handles(
         rejected_dynamic_handles=tuple(sorted(rejected_dynamic)),
         background_handles=tuple(sorted(background)),
         sampled_frames=tuple(frame.sample_frame for frame in frames),
+        target_handles=tuple(sorted(target)),
+        reference_handles=tuple(sorted(reference)),
+        object_groups=object_groups,
     )
 
 
@@ -330,4 +648,12 @@ def load_task_handle_detection(path: Path) -> TaskHandleDetection:
             int(value) for value in payload['background_handles']
         ),
         sampled_frames=tuple(int(value) for value in payload['sampled_frames']),
+        target_handles=tuple(int(value) for value in payload['target_handles']),
+        reference_handles=tuple(
+            int(value) for value in payload['reference_handles']
+        ),
+        object_groups=tuple(
+            tuple(int(value) for value in group)
+            for group in payload['object_groups']
+        ),
     )

@@ -634,6 +634,12 @@ class OracleReplayAugmentationTest(unittest.TestCase):
         )
         boxes = _instance_boxes_for_mask(mask, (5, 8))
         self.assertEqual(boxes, {5: (1, 0, 2, 1)})
+        grouped_boxes = _instance_boxes_for_mask(
+            mask,
+            (5,),
+            group_by_id={5: 5, 7: 5},
+        )
+        self.assertEqual(grouped_boxes, {5: (1, 0, 3, 2)})
 
     def test_visualization_combines_camera_images_and_point_cloud_views(self):
         transition = {'front_point_cloud': point_cloud(0)}
@@ -711,6 +717,7 @@ class OracleReplayAugmentationTest(unittest.TestCase):
             max_objects=4,
             num_points=5,
             min_object_points=1,
+            role_by_id={5: 1, 7: 2},
             rng=np.random.default_rng(3),
         )
 
@@ -719,6 +726,7 @@ class OracleReplayAugmentationTest(unittest.TestCase):
         self.assertEqual(oracle.sizes.shape, (4, 3))
         self.assertEqual(oracle.ids.tolist(), [5, 7, -1, -1])
         self.assertEqual(oracle.valid.tolist(), [True, True, False, False])
+        self.assertEqual(oracle.roles.tolist(), [1, 2, 0, 0])
         self.assertEqual(oracle.raw_point_counts, (2, 2))
         self.assertEqual(oracle.excluded_object_ids, (0,))
         np.testing.assert_array_equal(
@@ -814,6 +822,29 @@ class OracleReplayAugmentationTest(unittest.TestCase):
         )
         self.assertEqual(next_oracle.ids.tolist(), [5, 7, -1, -1])
         self.assertEqual(next_oracle.valid.tolist(), [True, True, False, False])
+
+    def test_rigid_group_merges_multiple_mask_handles_into_one_slot(self):
+        oracle = extract_oracle_objects(
+            {'front_point_cloud': point_cloud(0)},
+            {
+                'front': np.array(
+                    [[5, 5, 7], [7, 0, 0]], dtype=np.int32
+                )
+            },
+            cameras=('front',),
+            max_objects=4,
+            num_points=4,
+            excluded_ids=(0,),
+            slot_ids=(5, 7),
+            role_by_id={5: 1},
+            group_by_id={5: 5, 7: 5},
+            min_object_points=1,
+            rng=np.random.default_rng(0),
+        )
+        self.assertEqual(oracle.ids.tolist(), [5, -1, -1, -1])
+        self.assertEqual(oracle.valid.tolist(), [True, False, False, False])
+        self.assertEqual(oracle.roles.tolist(), [1, 0, 0, 0])
+        self.assertEqual(oracle.raw_point_counts, (4,))
 
     def test_task_prior_filter_runs_during_oracle_extraction(self):
         transition = {'front_point_cloud': point_cloud(0)}
@@ -912,6 +943,9 @@ class OracleReplayAugmentationTest(unittest.TestCase):
             )
             self.assertEqual(
                 reloaded['oracle_object_sizes'].shape, (3, 3)
+            )
+            self.assertEqual(
+                reloaded['oracle_object_roles'].tolist(), [0, 0, 0]
             )
             self.assertFalse(Path(f'{output}.tmp').exists())
 

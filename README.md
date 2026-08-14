@@ -157,7 +157,14 @@ oracle_object_centers  [MAX_OBJECTS, 3]              float32
 oracle_object_sizes    [MAX_OBJECTS, 3]              float32
 oracle_object_ids      [MAX_OBJECTS]                 int32
 oracle_object_valid    [MAX_OBJECTS]                 bool
+oracle_object_roles    [MAX_OBJECTS]                 int8
 ```
+
+`oracle_object_roles` 与 ID/valid 使用相同 slot：`0=unknown/padding`、
+`1=target`、`2=reference`。reference 是可选角色，一个 episode 可以没有 reference。
+启用时序匹配后，同一刚性物体的多个 raw mask handle 会先合并点云，再占用一个 slot；
+`oracle_object_ids` 使用组内最小 handle ID 作为稳定代表，原始成员保存在 task handle
+JSON 的 `object_groups` 和 `group_by_handle` 中。
 
 `sample_frame` 是当前 observation 对应的 raw 帧；`keypoint_frame` 不参与 Oracle
 对齐。`terminal == -1` 是 YARR final-observation sentinel，写入全 invalid 的填充张量；
@@ -213,7 +220,7 @@ python tools/augment_replay_with_oracle_objects.py \
 | 单帧先验 | `--task-prior-radius METRES` | 按任务 | 覆盖 18 个任务配置中的交互半径。 |
 | 单帧先验 | `--task-prior-max-instances N` | 高召回不限；strict 按任务 | 限制先验保留的 simulator handle 数。 |
 | 单帧先验 | `--task-prior-background-extent METRES` | `0.60` | 两个轴均达到该尺度时视为明显桌面/地面。 |
-| 时序匹配 | `--temporal-id-matching`（兼容旧名 `--temporal-task-filter`） | 关闭 | 根据整个 episode 的 handle 证据建立稳定 `handle ID → slot`；不删除当前帧可见实例。 |
+| 时序匹配 | `--temporal-id-matching`（兼容旧名 `--temporal-task-filter`） | 关闭 | 建立稳定 `handle ID → object group → slot`，合并持续邻接且相对距离稳定的 handle，并利用夹爪开闭及物体受影响运动生成 target/reference 角色；不删除当前帧可见实例。 |
 | 时序任务 | `--task-detection-frames N` | `16` | 每个 episode 均匀抽取的最大检测帧数；长 episode 可提高到 `24` 或 `32`。 |
 | 时序匹配 | `--task-handle-cache-dir PATH` | `<output-dir>/<task>/task_handle_maps` | episode 稳定 slot 与 task handle JSON 缓存；显式 PATH 作为根目录并追加 task 名。 |
 | 时序任务 | `--refresh-task-handle-cache` | 关闭 | 忽略已有 task handle JSON 并重新检测。 |
@@ -247,6 +254,15 @@ python tools/augment_replay_with_oracle_objects.py \
   handle 追加到稳定映射；`rejected_dynamic_handles` 仅作为诊断和优先级证据，不会由
   temporal 模式删除。某个稳定 handle 在当前帧不可见时保留该 slot，写入
   `valid=False`；其他可见 handle 会使用剩余 slot。
+- 角色检测把夹爪由开到闭时接触、闭合后随夹爪运动，或在夹爪/下一动作附近发生可解释
+  位移的实例标为 `target`。剩余静态实例只有在与 target 持续邻接或形成放置接触时才标为
+  `reference`；没有这种证据时 reference 为空。静态 reach/press 类任务没有明显位移时，
+  会把最强的直接交互 handle 回退为 target。task handle JSON 同时保存
+  `target_handles` 和 `reference_handles`。
+- 刚性分组要求两个 handle 在至少 75% 的共同可见证据中可用、80% 以上持续邻接，且
+  多帧中心间距离标准差不超过 1 cm。移动实例需要表现出共同运动；静止实例只有边界长期
+  紧密接触时才合并。只在放置后才接触的 target/reference 不会合并。分组角色按整组传播：
+  任一成员为 target 时整组为 target，否则 reference 证据传播到整组。
 - Robot 检测使用 raw observation 中的当前夹爪位姿、`gripper_open`、GT mask 和 raw
   depth。depth 会用同帧相机内外参重建世界坐标点云，与 mask 像素严格对齐。夹爪 seed 以
   wrist 图像稳定性为主，并允许夹爪旋转造成的世界坐标偏移、部分遮挡及距离离群；夹爪
@@ -358,8 +374,8 @@ TRAIN_REPLAY_STORAGE_DIR 指向 Oracle 输出目录，并启用与数据准备�
         [其他训练参数]
 
 use_oracle_objects 默认为 False，因此原始非 Oracle replay 的加载行为保持不变。
-当前改动负责准备和加载 Oracle 字段，不包含将这些字段转换为 object tokens 的
-策略网络结构。
+当前改动负责准备和加载 Oracle 字段（包括 target/reference 角色），不包含将这些字段
+转换为 object tokens 或角色监督损失的策略网络结构。
 
 训练默认只在 `model_*.pth` 中保存 `epoch` 和 `model_state`，适用于评估与
 推理，不保存体积较大的 Adam optimizer state。如果需要完整恢复优化器以继续

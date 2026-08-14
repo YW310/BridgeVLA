@@ -153,6 +153,9 @@ def create_replay(
                 ),
                 ReplayElement('oracle_object_ids', (oracle_max_objects,), np.int32),
                 ReplayElement('oracle_object_valid', (oracle_max_objects,), bool),
+                ReplayElement(
+                    'oracle_object_roles', (oracle_max_objects,), np.int8
+                ),
             ]
         )
 

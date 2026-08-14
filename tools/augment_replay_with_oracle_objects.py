@@ -81,7 +81,11 @@ ORACLE_KEYS = (
     'oracle_object_sizes',
     'oracle_object_ids',
     'oracle_object_valid',
+    'oracle_object_roles',
 )
+ORACLE_ROLE_UNKNOWN = 0
+ORACLE_ROLE_TARGET = 1
+ORACLE_ROLE_REFERENCE = 2
 
 
 ReplayMetadataArrays = Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
@@ -97,6 +101,7 @@ class OracleObjects:
     sizes: np.ndarray
     ids: np.ndarray
     valid: np.ndarray
+    roles: np.ndarray
     raw_point_counts: Tuple[int, ...]
     discovered_objects: int
     filtered_objects: int
@@ -117,6 +122,7 @@ class OracleObjects:
             'oracle_object_sizes': self.sizes,
             'oracle_object_ids': self.ids,
             'oracle_object_valid': self.valid,
+            'oracle_object_roles': self.roles,
         }
 
 
@@ -211,6 +217,7 @@ def empty_oracle_objects(max_objects: int, num_points: int) -> OracleObjects:
         sizes=np.zeros((max_objects, 3), dtype=np.float32),
         ids=np.full((max_objects,), -1, dtype=np.int32),
         valid=np.zeros((max_objects,), dtype=np.bool_),
+        roles=np.zeros((max_objects,), dtype=np.int8),
         raw_point_counts=(),
         discovered_objects=0,
         filtered_objects=0,
@@ -408,6 +415,8 @@ def extract_oracle_objects(
     task_prior_max_instances: Optional[int] = None,
     task_prior_background_extent: float = 0.60,
     task_prior_strict: bool = False,
+    role_by_id: Optional[Mapping[int, int]] = None,
+    group_by_id: Optional[Mapping[int, int]] = None,
 ) -> OracleObjects:
     '''Fuse decoded instance masks with the existing replay point clouds.'''
     if max_objects <= 0 or num_points <= 0 or min_object_points <= 0:
@@ -437,12 +446,25 @@ def extract_oracle_objects(
             )
 
         for object_id_value in np.unique(mask):
-            object_id = int(object_id_value)
+            raw_object_id = int(object_id_value)
+            object_id = (
+                int(group_by_id.get(raw_object_id, raw_object_id))
+                if group_by_id is not None
+                else raw_object_id
+            )
             if object_id >= 0:
                 observed_ids.add(object_id)
-            if object_id in excluded or object_id < 0:
+            if (
+                raw_object_id in excluded
+                or object_id in excluded
+                or object_id < 0
+            ):
                 continue
-            if included is not None and object_id not in included:
+            if (
+                included is not None
+                and raw_object_id not in included
+                and object_id not in included
+            ):
                 continue
             object_points = point_cloud[mask == object_id]
             object_points = object_points[np.isfinite(object_points).all(axis=1)]
@@ -524,7 +546,12 @@ def extract_oracle_objects(
         # in this frame; visible handles outside the sampled episode map fill
         # remaining capacity without displacing known handles.
         stable_ids = tuple(
-            dict.fromkeys(int(object_id) for object_id in slot_ids)
+            dict.fromkeys(
+                int(group_by_id.get(int(object_id), int(object_id)))
+                if group_by_id is not None
+                else int(object_id)
+                for object_id in slot_ids
+            )
         )
         slot_by_id = {
             object_id: slot
@@ -578,26 +605,31 @@ def extract_oracle_objects(
         ).astype(np.float32)
         padded.ids[slot] = object_id
         padded.valid[slot] = True
+        if role_by_id is not None:
+            padded.roles[slot] = int(
+                role_by_id.get(object_id, ORACLE_ROLE_UNKNOWN)
+            )
         raw_counts.append(count)
 
     oracle = OracleObjects(
-        padded.points,
-        padded.centers,
-        padded.sizes,
-        padded.ids,
-        padded.valid,
-        tuple(raw_counts),
-        discovered_objects,
-        filtered_objects,
-        prior_filtered_objects,
-        len(observed_ids.intersection(excluded)),
-        tuple(sorted(observed_ids.intersection(excluded))),
-        no_finite_point_object_ids,
-        small_object_ids,
-        prior_filtered_object_ids,
-        truncated_object_ids,
-        len(temporal_filtered_object_ids),
-        temporal_filtered_object_ids,
+        points=padded.points,
+        centers=padded.centers,
+        sizes=padded.sizes,
+        ids=padded.ids,
+        valid=padded.valid,
+        roles=padded.roles,
+        raw_point_counts=tuple(raw_counts),
+        discovered_objects=discovered_objects,
+        filtered_objects=filtered_objects,
+        prior_filtered_objects=prior_filtered_objects,
+        excluded_objects=len(observed_ids.intersection(excluded)),
+        excluded_object_ids=tuple(sorted(observed_ids.intersection(excluded))),
+        no_finite_point_object_ids=no_finite_point_object_ids,
+        small_object_ids=small_object_ids,
+        prior_filtered_object_ids=prior_filtered_object_ids,
+        truncated_object_ids=truncated_object_ids,
+        temporal_filtered_objects=len(temporal_filtered_object_ids),
+        temporal_filtered_object_ids=temporal_filtered_object_ids,
     )
     validate_oracle_objects(oracle, max_objects, num_points)
     return oracle
@@ -612,6 +644,7 @@ def validate_oracle_objects(
         'sizes': ((max_objects, 3), np.dtype(np.float32)),
         'ids': ((max_objects,), np.dtype(np.int32)),
         'valid': ((max_objects,), np.dtype(np.bool_)),
+        'roles': ((max_objects,), np.dtype(np.int8)),
     }
     for name, (shape, dtype) in expected.items():
         value = getattr(oracle, name)
@@ -630,6 +663,13 @@ def validate_oracle_objects(
         raise ValueError('oracle_object_sizes contains negative values')
     if np.any(oracle.ids[~oracle.valid] != -1):
         raise ValueError('Invalid Oracle slots must use object ID -1')
+    if np.any(oracle.roles[~oracle.valid] != ORACLE_ROLE_UNKNOWN):
+        raise ValueError('Invalid Oracle slots must use role 0')
+    if not np.isin(
+        oracle.roles,
+        (ORACLE_ROLE_UNKNOWN, ORACLE_ROLE_TARGET, ORACLE_ROLE_REFERENCE),
+    ).all():
+        raise ValueError('oracle_object_roles contains an unknown role code')
 
 
 def _same_original_value(before: object, after: object) -> bool:
@@ -716,6 +756,8 @@ def augment_transition(
     task_prior_max_instances: Optional[int] = None,
     task_prior_background_extent: float = 0.60,
     task_prior_strict: bool = False,
+    role_by_id: Optional[Mapping[int, int]] = None,
+    group_by_id: Optional[Mapping[int, int]] = None,
 ) -> Tuple[Dict[str, object], OracleObjects, Optional[Path]]:
     existing_oracle_keys = set(ORACLE_KEYS).intersection(original)
     if existing_oracle_keys:
@@ -771,6 +813,8 @@ def augment_transition(
                 task_prior_max_instances=task_prior_max_instances,
                 task_prior_background_extent=task_prior_background_extent,
                 task_prior_strict=task_prior_strict,
+                role_by_id=role_by_id,
+                group_by_id=group_by_id,
             )
 
         cache_key: Tuple[object, ...] = (task, episode_idx, sample_frame)
@@ -790,6 +834,21 @@ def augment_transition(
                 task_prior_max_instances,
                 task_prior_background_extent,
                 task_prior_strict,
+            )
+        if role_by_id is not None:
+            cache_key += (
+                'roles',
+                tuple(sorted((int(key), int(value)) for key, value in role_by_id.items())),
+            )
+        if group_by_id is not None:
+            cache_key += (
+                'groups',
+                tuple(
+                    sorted(
+                        (int(key), int(value))
+                        for key, value in group_by_id.items()
+                    )
+                ),
             )
         oracle = (
             frame_cache.get_or_compute(cache_key, build_oracle)
@@ -821,6 +880,8 @@ def _final_observation_oracle_for_visualization(
     task_prior_background_extent: float = 0.60,
     task_prior_strict: bool = False,
     robot_handles_by_episode: Optional[Mapping[int, Sequence[int]]] = None,
+    roles_by_episode: Optional[Mapping[int, Mapping[int, int]]] = None,
+    groups_by_episode: Optional[Mapping[int, Mapping[int, int]]] = None,
 ) -> Optional[Tuple[OracleObjects, int, int]]:
     '''Recover a final observation's GT instances from prior alignment data.'''
     if previous_source is None or not previous_source.is_file():
@@ -869,6 +930,16 @@ def _final_observation_oracle_for_visualization(
         task_prior_max_instances=task_prior_max_instances,
         task_prior_background_extent=task_prior_background_extent,
         task_prior_strict=task_prior_strict,
+        role_by_id=(
+            roles_by_episode.get(episode_idx, {})
+            if roles_by_episode is not None
+            else None
+        ),
+        group_by_id=(
+            groups_by_episode.get(episode_idx, {})
+            if groups_by_episode is not None
+            else None
+        ),
     )
     return oracle, episode_idx, sample_frame
 
@@ -980,6 +1051,7 @@ def _describe(
         f'  gt_objects={oracle.discovered_objects} stored_objects={count} '
         f'object_ids={oracle.ids[oracle.valid].tolist()}'
     )
+    print(f'  object_roles={oracle.roles[oracle.valid].tolist()}')
     print(f'  raw_points_per_object={list(oracle.raw_point_counts)}')
     print(f'  sampled_points_per_object={[oracle.points.shape[1]] * count}')
     print(f'  centers={oracle.centers[oracle.valid].tolist()}')
@@ -1056,15 +1128,27 @@ def _instance_color(object_id: int) -> Tuple[float, float, float]:
 def _instance_boxes_for_mask(
     mask: np.ndarray,
     object_ids: Iterable[int],
+    group_by_id: Optional[Mapping[int, int]] = None,
 ) -> Dict[int, Tuple[int, int, int, int]]:
-    '''Return inclusive pixel boxes (x_min, y_min, x_max, y_max) by handle.'''
+    '''Return inclusive pixel boxes by handle or merged group representative.'''
     mask = np.asarray(mask)
     if mask.ndim != 2:
         raise ValueError(f'Instance box mask must be [H, W]; got {mask.shape}')
     boxes: Dict[int, Tuple[int, int, int, int]] = {}
     for object_id_value in object_ids:
         object_id = int(object_id_value)
-        pixels = np.argwhere(mask == object_id)
+        members = (
+            [
+                int(handle)
+                for handle, representative in group_by_id.items()
+                if int(representative) == object_id
+            ]
+            if group_by_id is not None
+            else [object_id]
+        )
+        if object_id not in members:
+            members.append(object_id)
+        pixels = np.argwhere(np.isin(mask, members))
         if not pixels.size:
             continue
         y_min, x_min = np.min(pixels, axis=0)
@@ -1089,6 +1173,7 @@ def visualize_oracle_objects(
     sample_frame: Optional[int] = None,
     camera_images: Optional[Mapping[str, np.ndarray]] = None,
     camera_masks: Optional[Mapping[str, np.ndarray]] = None,
+    group_by_id: Optional[Mapping[int, int]] = None,
 ) -> Path:
     try:
         import matplotlib
@@ -1131,7 +1216,11 @@ def visualize_oracle_objects(
             image_axes_value.imshow(image)
             mask = camera_masks.get(camera)
             if mask is not None and np.asarray(mask).shape == image.shape[:2]:
-                boxes = _instance_boxes_for_mask(mask, retained_ids)
+                boxes = _instance_boxes_for_mask(
+                    mask,
+                    retained_ids,
+                    group_by_id=group_by_id,
+                )
                 for object_id, (x_min, y_min, x_max, y_max) in boxes.items():
                     color = _instance_color(object_id)
                     image_axes_value.add_patch(
@@ -1902,7 +1991,11 @@ def _detect_task_robot_handles(
     show_progress: bool = True,
     refresh_metadata_cache: bool = False,
     metadata_cache_dir: Optional[Path] = None,
-) -> Dict[int, Tuple[int, ...]]:
+) -> Tuple[
+    Dict[int, Tuple[int, ...]],
+    Dict[int, Dict[int, int]],
+    Dict[int, Dict[int, int]],
+]:
     if 'wrist' not in cameras:
         raise ValueError(
             '--detect-robot-handles requires wrist in the selected cameras'
@@ -1963,6 +2056,8 @@ def _detect_task_robot_handles(
         sampling_strategy='early',
     )
     handles_by_episode: Dict[int, Tuple[int, ...]] = {}
+    roles_by_episode: Dict[int, Dict[int, int]] = {}
+    groups_by_episode: Dict[int, Dict[int, int]] = {}
     progress = tqdm(
         sorted(selected.items()),
         desc=f'{task}: robot handle detection',
@@ -2155,7 +2250,7 @@ def _detect_task_relevant_handles(
                 )
             episode_dir = resolve_episode_dir(raw_data_dir, task, episode_idx)
             sample_frames = [frame for frame, _ in frame_sources]
-            gripper_positions = _load_current_gripper_positions(
+            gripper_positions, gripper_openings = _load_current_gripper_states(
                 episode_dir, sample_frames
             )
             effective_excluded_ids = list(excluded_ids)
@@ -2189,6 +2284,7 @@ def _detect_task_relevant_handles(
                         masks,
                         point_clouds,
                         excluded_ids=effective_excluded_ids,
+                        gripper_open=gripper_openings[sample_frame],
                     )
                 )
             detection = detect_task_handles(
@@ -2201,17 +2297,22 @@ def _detect_task_relevant_handles(
             )
             if write_cache:
                 save_task_handle_detection(cache_path, detection)
-        handles_by_episode[episode_idx] = detection.slot_handles
+        handles_by_episode[episode_idx] = detection.grouped_slot_handles
+        roles_by_episode[episode_idx] = detection.role_by_group
+        groups_by_episode[episode_idx] = detection.group_by_handle
         tqdm.write(
             f'{task} episode={episode_idx}: task handles='
             f'{list(detection.task_handles)} interaction='
             f'{list(detection.interaction_handles)} adjacent='
             f'{list(detection.adjacent_handles)} rejected_dynamic='
-            f'{list(detection.rejected_dynamic_handles)} slots='
-            f'{list(detection.slot_handles)} frames='
+            f'{list(detection.rejected_dynamic_handles)} target='
+            f'{list(detection.target_handles)} reference='
+            f'{list(detection.reference_handles)} groups='
+            f'{[list(group) for group in detection.object_groups if len(group) > 1]} '
+            f'slots={list(detection.grouped_slot_handles)} frames='
             f'{list(detection.sampled_frames)}'
         )
-    return handles_by_episode
+    return handles_by_episode, roles_by_episode, groups_by_episode
 
 
 def process_task(
@@ -2316,13 +2417,19 @@ def process_task(
             metadata_cache_dir=replay_metadata_cache_dir,
         )
     task_slot_ids_by_episode: Dict[int, Tuple[int, ...]] = {}
+    task_roles_by_episode: Dict[int, Dict[int, int]] = {}
+    task_groups_by_episode: Dict[int, Dict[int, int]] = {}
     if temporal_task_filter:
         requested_task_episodes = (
             _episode_ids_for_selected_files(files, previous_file_by_index)
             if dry_run
             else None
         )
-        task_slot_ids_by_episode = _detect_task_relevant_handles(
+        (
+            task_slot_ids_by_episode,
+            task_roles_by_episode,
+            task_groups_by_episode,
+        ) = _detect_task_relevant_handles(
             task,
             all_files,
             raw_data_dir,
@@ -2353,6 +2460,8 @@ def process_task(
             )
             effective_excluded_ids = list(excluded_ids)
             slot_ids = None
+            role_by_id = None
+            group_by_id = None
             if terminal != -1 and 'episode_idx' in original:
                 original_episode_idx = int(
                     np.asarray(original['episode_idx']).item()
@@ -2363,6 +2472,12 @@ def process_task(
                 if temporal_task_filter:
                     slot_ids = task_slot_ids_by_episode.get(
                         original_episode_idx, ()
+                    )
+                    role_by_id = task_roles_by_episode.get(
+                        original_episode_idx, {}
+                    )
+                    group_by_id = task_groups_by_episode.get(
+                        original_episode_idx, {}
                     )
             migrated, oracle, _ = augment_transition(
                 original,
@@ -2382,6 +2497,8 @@ def process_task(
                 task_prior_max_instances=task_prior_max_instances,
                 task_prior_background_extent=task_prior_background_extent,
                 task_prior_strict=task_prior_strict,
+                role_by_id=role_by_id,
+                group_by_id=group_by_id,
             )
             if not dry_run:
                 assert destination_dir is not None
@@ -2441,6 +2558,16 @@ def process_task(
                         ),
                         task_prior_strict=task_prior_strict,
                         robot_handles_by_episode=robot_handles_by_episode,
+                        roles_by_episode=(
+                            task_roles_by_episode
+                            if temporal_task_filter
+                            else None
+                        ),
+                        groups_by_episode=(
+                            task_groups_by_episode
+                            if temporal_task_filter
+                            else None
+                        ),
                     )
                     if recovered is not None:
                         (
@@ -2543,6 +2670,16 @@ def process_task(
                     sample_frame=visualization_sample_frame,
                     camera_images=camera_images,
                     camera_masks=camera_masks,
+                    group_by_id=(
+                        task_groups_by_episode.get(
+                            visualization_episode_idx, {}
+                        )
+                        if (
+                            temporal_task_filter
+                            and visualization_episode_idx is not None
+                        )
+                        else None
+                    ),
                 )
                 visualized += 1
     finally:
