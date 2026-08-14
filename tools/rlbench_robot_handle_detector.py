@@ -11,7 +11,7 @@ import numpy as np
 
 
 Bounds = Tuple[np.ndarray, np.ndarray]
-ROBOT_DETECTOR_METHOD = 'wrist_pose_temporal_adjacency_v4_conservative'
+ROBOT_DETECTOR_METHOD = 'wrist_pose_temporal_adjacency_v6_grasp_protected'
 
 
 @dataclass(frozen=True)
@@ -21,6 +21,7 @@ class RobotFrameEvidence:
     bounds_by_id: Mapping[int, Bounds]
     centers_by_id: Mapping[int, np.ndarray]
     wrist_centroids_by_id: Mapping[int, np.ndarray]
+    gripper_open: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -29,6 +30,7 @@ class RobotHandleDetection:
     gripper_handles: Tuple[int, ...]
     arm_handles: Tuple[int, ...]
     ambiguous_handles: Tuple[int, ...]
+    grasped_handles: Tuple[int, ...]
     confidence: Mapping[int, float]
     sampled_frames: Tuple[int, ...]
 
@@ -43,6 +45,7 @@ class RobotHandleDetection:
             'arm_handles': list(self.arm_handles),
             'robot_handles': list(self.robot_handles),
             'ambiguous_handles': list(self.ambiguous_handles),
+            'grasped_handles': list(self.grasped_handles),
             'confidence': {
                 str(handle): float(value)
                 for handle, value in sorted(self.confidence.items())
@@ -58,6 +61,7 @@ def build_robot_frame_evidence(
     masks: Mapping[str, np.ndarray],
     point_clouds: Mapping[str, np.ndarray],
     *,
+    gripper_open: float = 1.0,
     excluded_ids: Iterable[int] = (0,),
 ) -> RobotFrameEvidence:
     '''Build per-handle geometry and wrist-image evidence for one raw frame.'''
@@ -104,12 +108,16 @@ def build_robot_frame_evidence(
     gripper_position = np.asarray(gripper_position, dtype=np.float32).reshape(-1)
     if gripper_position.size < 3 or not np.isfinite(gripper_position[:3]).all():
         raise ValueError('Current gripper position must contain 3 finite values')
+    gripper_open = float(gripper_open)
+    if not np.isfinite(gripper_open):
+        raise ValueError('Current gripper_open must be finite')
     return RobotFrameEvidence(
         int(sample_frame),
         gripper_position[:3],
         bounds_by_id,
         centers_by_id,
         wrist_centroids,
+        gripper_open,
     )
 
 
@@ -128,19 +136,111 @@ def _bounds_distance(left: Bounds, right: Bounds) -> float:
     return float(np.linalg.norm(outside))
 
 
+def _detect_grasped_handles(
+    frames: Sequence[RobotFrameEvidence],
+    object_ids: Sequence[int],
+    *,
+    gripper_radius: float,
+    follow_tolerance: float = 0.035,
+    min_follow_motion: float = 0.01,
+) -> set:
+    '''Find handles that begin following the gripper after it closes.'''
+    grasped = set()
+    for close_index in range(1, len(frames)):
+        if not (
+            frames[close_index - 1].gripper_open >= 0.5
+            and frames[close_index].gripper_open < 0.5
+        ):
+            continue
+        closed_end = close_index + 1
+        while (
+            closed_end < len(frames)
+            and frames[closed_end].gripper_open < 0.5
+        ):
+            closed_end += 1
+        pre_start = max(0, close_index - 3)
+
+        for object_id in object_ids:
+            close_frame = frames[close_index]
+            bounds = close_frame.bounds_by_id.get(object_id)
+            if bounds is None or _point_to_bounds_distance(
+                close_frame.gripper_position, bounds
+            ) > gripper_radius:
+                continue
+
+            def motion_pairs(start: int, stop: int):
+                values = []
+                for right_index in range(start + 1, stop):
+                    left = frames[right_index - 1]
+                    right = frames[right_index]
+                    if (
+                        object_id not in left.centers_by_id
+                        or object_id not in right.centers_by_id
+                    ):
+                        continue
+                    object_delta = (
+                        right.centers_by_id[object_id]
+                        - left.centers_by_id[object_id]
+                    )
+                    gripper_delta = (
+                        right.gripper_position - left.gripper_position
+                    )
+                    values.append(
+                        (
+                            float(np.linalg.norm(object_delta - gripper_delta)),
+                            float(np.linalg.norm(object_delta)),
+                            float(np.linalg.norm(gripper_delta)),
+                        )
+                    )
+                return values
+
+            before = motion_pairs(pre_start, close_index)
+            after = motion_pairs(close_index, closed_end)
+            if not before:
+                continue
+            before_error = float(np.mean([value[0] for value in before]))
+            before_object_motion = float(sum(value[1] for value in before))
+            before_gripper_motion = float(sum(value[2] for value in before))
+            did_not_follow_before = (
+                before_error > follow_tolerance
+                or (
+                    before_gripper_motion >= min_follow_motion
+                    and before_object_motion < before_gripper_motion * 0.6
+                )
+            )
+            if not did_not_follow_before:
+                continue
+            if not after:
+                # A close event at the end of the sampled sequence still
+                # protects a nearby non-robot object. Later motion is useful
+                # confirmation, but is not required for safe exclusion.
+                grasped.add(object_id)
+                continue
+            after_error = float(np.mean([value[0] for value in after]))
+            after_object_motion = float(sum(value[1] for value in after))
+            after_gripper_motion = float(sum(value[2] for value in after))
+            if (
+                after_error <= follow_tolerance
+                and after_object_motion >= min_follow_motion * 0.5
+                and after_gripper_motion >= min_follow_motion
+            ):
+                grasped.add(object_id)
+    return grasped
+
+
 def detect_robot_handles(
     episode_idx: int,
     frames: Sequence[RobotFrameEvidence],
     *,
     gripper_radius: float = 0.14,
     wrist_centroid_std: float = 0.08,
-    relative_offset_std: float = 0.06,
+    relative_offset_std: float = 0.12,
     min_visibility_ratio: float = 0.75,
     adjacency_distance: float = 0.05,
     adjacency_ratio: float = 0.70,
     min_link_motion: float = 0.008,
     min_hard_confidence: float = 0.75,
-    arm_min_visibility_ratio: float = 0.90,
+    arm_min_visibility_ratio: float = 0.75,
 ) -> RobotHandleDetection:
     '''Detect gripper seeds and expand persistent moving robot-link neighbors.'''
     if not frames:
@@ -171,6 +271,42 @@ def detect_robot_handles(
     all_ids = sorted(
         set().union(*(set(frame.bounds_by_id) for frame in frames))
     )
+    grasped_handles = _detect_grasped_handles(
+        frames,
+        all_ids,
+        gripper_radius=gripper_radius,
+    )
+    first_closed_index = next(
+        (
+            index
+            for index, frame in enumerate(frames)
+            if frame.gripper_open < 0.5
+        ),
+        frame_count,
+    )
+    pre_grasp_frames = frames[:first_closed_index]
+
+    def pre_grasp_motion(object_id: int) -> Tuple[float, float]:
+        object_motion = 0.0
+        gripper_motion = 0.0
+        for left, right in zip(pre_grasp_frames, pre_grasp_frames[1:]):
+            if (
+                object_id not in left.centers_by_id
+                or object_id not in right.centers_by_id
+            ):
+                continue
+            object_motion += float(
+                np.linalg.norm(
+                    right.centers_by_id[object_id]
+                    - left.centers_by_id[object_id]
+                )
+            )
+            gripper_motion += float(
+                np.linalg.norm(
+                    right.gripper_position - left.gripper_position
+                )
+            )
+        return object_motion, gripper_motion
     visibility: Dict[int, int] = {object_id: 0 for object_id in all_ids}
     distances: Dict[int, List[float]] = {object_id: [] for object_id in all_ids}
     wrist_centroids: Dict[int, List[np.ndarray]] = {
@@ -205,6 +341,18 @@ def detect_robot_handles(
     )
     first_frame = frames[0]
     for object_id in all_ids:
+        if object_id in grasped_handles:
+            ambiguous_handles.add(object_id)
+            continue
+        object_pre_motion, gripper_pre_motion = pre_grasp_motion(object_id)
+        if (
+            gripper_pre_motion >= min_link_motion
+            and object_pre_motion < gripper_pre_motion * 0.25
+        ):
+            # A task object is commonly static while the open gripper moves
+            # toward it. Robot geometry must already move before grasping.
+            ambiguous_handles.add(object_id)
+            continue
         wrist_values = wrist_centroids.get(object_id, [])
         # A gripper link must already be visible beside the gripper at the
         # beginning. A manipulated object may follow the wrist later, but must
@@ -219,10 +367,10 @@ def detect_robot_handles(
                 first_frame.gripper_position,
                 first_frame.bounds_by_id[object_id],
             ) > gripper_radius
-            or any(
-                distance > gripper_radius
+            or sum(
+                distance <= gripper_radius
                 for distance in distances[object_id]
-            )
+            ) / len(distances[object_id]) < min_visibility_ratio
         ):
             continue
         wrist_array = np.stack(wrist_values)
@@ -360,6 +508,9 @@ def detect_robot_handles(
         for neighbor in adjacency.get(object_id, ()):
             if neighbor in robot_handles:
                 continue
+            if neighbor in grasped_handles:
+                ambiguous_handles.add(neighbor)
+                continue
             # Robot links are present from the beginning and move over the
             # episode. Objects that only enter the gripper later are rejected.
             if first_seen.get(neighbor, frame_count) > early_limit:
@@ -390,8 +541,14 @@ def detect_robot_handles(
                 and len(early_centers) == early_frame_count
                 and first_adjacent
                 and motion[neighbor] >= min_link_motion
-                and early_motion >= min_link_motion
+                and early_motion >= min_link_motion * 0.5
             )
+            object_pre_motion, gripper_pre_motion = pre_grasp_motion(neighbor)
+            if (
+                gripper_pre_motion >= min_link_motion
+                and object_pre_motion < gripper_pre_motion * 0.25
+            ):
+                hard_robot_evidence = False
             if not hard_robot_evidence:
                 ambiguous_handles.add(neighbor)
                 continue
@@ -403,12 +560,15 @@ def detect_robot_handles(
             queue.append(neighbor)
 
     gripper_set = set(gripper_handles)
+    gripper_set.difference_update(grasped_handles)
+    robot_handles.difference_update(grasped_handles)
     arm_handles = sorted(robot_handles - gripper_set)
     return RobotHandleDetection(
         episode_idx=int(episode_idx),
         gripper_handles=tuple(sorted(gripper_set)),
         arm_handles=tuple(arm_handles),
         ambiguous_handles=tuple(sorted(ambiguous_handles - robot_handles)),
+        grasped_handles=tuple(sorted(grasped_handles)),
         confidence=confidence,
         sampled_frames=tuple(frame.sample_frame for frame in frames),
     )
@@ -440,6 +600,9 @@ def load_robot_handle_detection(path: Path) -> RobotHandleDetection:
         arm_handles=tuple(int(value) for value in payload['arm_handles']),
         ambiguous_handles=tuple(
             int(value) for value in payload.get('ambiguous_handles', ())
+        ),
+        grasped_handles=tuple(
+            int(value) for value in payload.get('grasped_handles', ())
         ),
         confidence={
             int(handle): float(value)

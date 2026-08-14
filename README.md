@@ -162,10 +162,11 @@ python tools/augment_replay_with_oracle_objects.py \
 | 时序任务 | `--task-detection-frames N` | `16` | 每个 episode 均匀抽取的最大检测帧数；长 episode 可提高到 `24` 或 `32`。 |
 | 时序匹配 | `--task-handle-cache-dir PATH` | `task_handle_maps` | episode 稳定 slot 与 task handle JSON 缓存目录。 |
 | 时序任务 | `--refresh-task-handle-cache` | 关闭 | 忽略已有 task handle JSON 并重新检测。 |
-| 机器人 | `--detect-robot-handles` | 关闭 | 保守检测高置信度夹爪/机械臂 handle；邻近或后期随动的模糊实例只记录为 `ambiguous_handles`，不会删除。 |
-| 机器人 | `--robot-detection-frames N` | `8` | 每个 episode 均匀抽取的最大机器人检测帧数。 |
+| 机器人 | `--detect-robot-handles` | 关闭 | 保守检测高置信度夹爪/机械臂 handle；使用 `gripper_open` 和闭合前后运动识别被抓物体，并将其加入 `grasped_handles` 保护集合。 |
+| 机器人 | `--robot-detection-frames N` | `8` | 每个 episode 均匀抽取的最大机器人检测帧数；长 episode 可设为 `12` 或 `16`，提高捕获夹爪闭合事件的概率。 |
 | 机器人 | `--robot-handle-cache-dir PATH` | `robot_handle_maps` | episode robot handle JSON 缓存目录。 |
 | 机器人 | `--refresh-robot-handle-cache` | 关闭 | 忽略已有 robot handle JSON 并重新检测。 |
+| 性能 | `--refresh-replay-metadata-cache` | 关闭 | 强制重建 replay 元数据索引；仅在同名 `.replay` 被原地改写时使用，日常运行不要添加。 |
 | 性能 | `--workers N` | `1` | replay 线程数；建议从 `4` 或 `8` 测试，过高会增加内存和网络盘竞争。 |
 | 性能 | `--cache-frames N` | `128` | 相同 raw 帧 Oracle 结果的 LRU 容量；`0` 禁用，内存有限时降低。 |
 | 性能 | `--seed N` | `0` | 控制确定性点采样和 dry-run 抽样。 |
@@ -186,10 +187,13 @@ python tools/augment_replay_with_oracle_objects.py \
   handle 追加到稳定映射；`rejected_dynamic_handles` 仅作为诊断和优先级证据，不会由
   temporal 模式删除。某个稳定 handle 在当前帧不可见时保留该 slot，写入
   `valid=False`；其他可见 handle 会使用剩余 slot。
-- Robot 检测只使用 raw observation 中的当前夹爪位姿。夹爪 seed 必须在全部观测帧
-  持续位于夹爪半径内；arm 邻接扩展还要求从 episode 早期就持续可见、首帧相邻且已
-  发生运动。仅在夹取后随动、早期静止或证据不足的实例进入 `ambiguous_handles`，不会
-  加入 `excluded_object_ids`。task prior 和时序任务筛选会
+- Robot 检测只使用 raw observation 中的当前夹爪位姿与 `gripper_open`。夹爪 seed 以
+  wrist 图像稳定性为主，并允许夹爪旋转造成的世界坐标偏移及少量距离离群；arm 邻接
+  扩展仍要求从 episode 早期就持续可见、首帧相邻且已经随夹爪运动。夹爪张开阶段若
+  夹爪持续运动而某实例基本静止，该实例不会判为机器人；某实例在夹爪闭合前不随动、
+  闭合后开始跟随夹爪时，会加入 `grasped_handles`。`grasped_handles` 会从机器人硬删除
+  集合中强制移除；早期静止或证据不足的实例也只进入 `ambiguous_handles`，不会加入
+  `excluded_object_ids`。task prior 和时序任务筛选会
   使用 replay 的下一关键动作，因此属于 action-conditioned Oracle 离线标注，不是
   无标签推理阶段的公平筛选器。整个流程不调用 Qwen 或 SAM。
 - Replay 文件编号按写入顺序排列，但 `sample_frame` 是稀疏关键帧，不保证 raw 帧号
@@ -201,6 +205,12 @@ python tools/augment_replay_with_oracle_objects.py \
   `robot_handle_maps/<task>/episode_NNNN.json`。修改检测帧数、半径或实例限制后应使用
   对应的 `--refresh-*-handle-cache`；修复前生成的旧版 task/robot 缓存会自动失效并
   重新检测。
+- 缺少可用的 `replay_info.npy` 时，首次运行必须读取每个 `.replay` 的 metadata，并在
+  对应 task replay 目录写入 `.oracle_replay_metadata_v1.npz`。以后运行会显示
+  `replay metadata disk cache hit`，同一次运行中 robot/task 共用索引时显示
+  `memory cache hit`。新增、删除或重命名 replay 会自动使索引失效；若原地改写同名文件，
+  使用一次 `--refresh-replay-metadata-cache`。如果日志提示无法保存索引，需要检查 replay
+  目录写权限，否则下次仍会全量扫描。
 - `dry-run` 会打印 `excluded_object_ids`、`no_finite_point_object_ids`、
   `small_object_ids`、`task_prior_filtered_object_ids`、
   `temporal_filtered_object_ids` 和 `truncated_object_ids`。命令行时序匹配不再产生
@@ -229,16 +239,21 @@ python tools/augment_replay_with_oracle_objects.py \
   或被完全遮挡；不再归因于 temporal 匹配。
 - 若 robot 检测仍有疑似误判，检查
   `robot_handle_maps/<task>/episode_NNNN.json`：只有 `gripper_handles` 和
-  `arm_handles` 会硬删除，`ambiguous_handles` 仅供诊断。旧 v3 robot cache 会自动
-  失效；重新生成 robot 结果后也应刷新 task cache。
+  `arm_handles` 会硬删除；`grasped_handles` 是被抓物体保护集合，
+  `ambiguous_handles` 仅供诊断。旧 v5 robot cache 会自动失效；重新生成 robot 结果后
+  也应刷新 task cache。
 - 图片标题切换到新的 `episode_idx` 时，会改用另一份 episode cache；这不是同一
   episode 内 ID 突变。`sentinel=True` 对应 `terminal == -1` 填充 transition，保存的
   Oracle 张量为空是预期行为。
 
-可先提高采样密度和交互半径重新检查；dry-run 只实时重检，不写入新缓存，确认后需
-移除 `--dry-run` 才会保存结果：
+可先提高 robot/task 采样密度和交互半径重新检查；dry-run 只实时重检，不写入新缓存，
+确认后需移除 `--dry-run` 才会保存结果。robot 结果会影响后续 task slot，因此刷新顺序
+是先 robot、再 task：
 
 ```bash
+--detect-robot-handles \
+--robot-detection-frames 16 \
+--refresh-robot-handle-cache \
 --temporal-id-matching \
 --task-detection-frames 32 \
 --task-prior-radius 0.30 \

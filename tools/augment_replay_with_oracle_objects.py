@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
 from typing import Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from zipfile import BadZipFile
 
 import numpy as np
 from PIL import Image
@@ -66,6 +67,8 @@ except ModuleNotFoundError:  # Direct execution: python tools/<script>.py
 DEFAULT_CAMERAS = ('front', 'left_shoulder', 'right_shoulder', 'wrist')
 DEFAULT_MAX_OBJECTS = 32
 DEFAULT_NUM_POINTS = 512
+REPLAY_METADATA_CACHE_VERSION = 1
+REPLAY_METADATA_CACHE_NAME = '.oracle_replay_metadata_v1.npz'
 MAX_VISUALIZATION_SCENE_POINTS = 30000
 # Same metric workspace used by finetune/RLBench/utils/peract_utils_rlbench.py.
 # Fixed limits prevent per-frame Matplotlib autoscaling from changing apparent
@@ -78,6 +81,12 @@ ORACLE_KEYS = (
     'oracle_object_ids',
     'oracle_object_valid',
 )
+
+
+ReplayMetadataArrays = Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
+_REPLAY_METADATA_MEMORY_CACHE: Dict[
+    Tuple[str, str], ReplayMetadataArrays
+] = {}
 
 
 @dataclass(frozen=True)
@@ -1283,6 +1292,143 @@ def _bounded_thread_map(function, items: Sequence[Path], workers: int):
         executor.shutdown(wait=True, cancel_futures=True)
 
 
+def _replay_file_name_fingerprint(files: Sequence[Path]) -> str:
+    digest = hashlib.sha256()
+    for source in files:
+        digest.update(source.name.encode('utf-8'))
+        digest.update(b'\0')
+    return digest.hexdigest()
+
+
+def _load_or_scan_replay_metadata(
+    files: Sequence[Path],
+    *,
+    show_progress: bool,
+    refresh_cache: bool,
+) -> ReplayMetadataArrays:
+    '''Load a compact replay index or deserialize every replay once.'''
+    if not files:
+        empty = np.empty((0,), dtype=np.int64)
+        return empty, empty.copy(), empty.copy(), empty.copy()
+
+    source_dir = files[0].parent
+    fingerprint = _replay_file_name_fingerprint(files)
+    memory_key = (str(source_dir.resolve()), fingerprint)
+    memory_cached = _REPLAY_METADATA_MEMORY_CACHE.get(memory_key)
+    if memory_cached is not None:
+        if show_progress:
+            tqdm.write(
+                'episode detection: replay metadata memory cache hit '
+                f'({len(files)} replay files)'
+            )
+        return memory_cached
+
+    cache_path = source_dir / REPLAY_METADATA_CACHE_NAME
+    if cache_path.is_file() and not refresh_cache:
+        try:
+            with np.load(cache_path, allow_pickle=False) as payload:
+                version = int(np.asarray(payload['version']).item())
+                cached_fingerprint = str(
+                    np.asarray(payload['file_name_fingerprint']).item()
+                )
+                file_count = int(np.asarray(payload['file_count']).item())
+                if (
+                    version != REPLAY_METADATA_CACHE_VERSION
+                    or cached_fingerprint != fingerprint
+                    or file_count != len(files)
+                ):
+                    raise ValueError('stale replay metadata cache')
+                metadata = (
+                    np.asarray(payload['terminal'], dtype=np.int64).copy(),
+                    np.asarray(payload['episode_idx'], dtype=np.int64).copy(),
+                    np.asarray(payload['sample_frame'], dtype=np.int64).copy(),
+                    np.asarray(
+                        payload['next_keypoint_frame'], dtype=np.int64
+                    ).copy(),
+                )
+            if any(len(values) != len(files) for values in metadata):
+                raise ValueError('replay metadata cache length mismatch')
+        except (BadZipFile, EOFError, KeyError, OSError, ValueError):
+            if show_progress:
+                tqdm.write(
+                    'episode detection: stale replay metadata cache; '
+                    'rebuilding'
+                )
+        else:
+            _REPLAY_METADATA_MEMORY_CACHE[memory_key] = metadata
+            if show_progress:
+                tqdm.write(
+                    'episode detection: replay metadata disk cache hit '
+                    f'({len(files)} replay files)'
+                )
+            return metadata
+
+    terminal = np.full(len(files), -1, dtype=np.int64)
+    episode_idx = np.full(len(files), -1, dtype=np.int64)
+    sample_frame = np.full(len(files), -1, dtype=np.int64)
+    next_keypoint_frame = np.full(len(files), -1, dtype=np.int64)
+    progress = tqdm(
+        enumerate(files),
+        total=len(files),
+        desc='episode detection: replay metadata scan',
+        unit='replay',
+        dynamic_ncols=True,
+        disable=not show_progress,
+    )
+    for index, source in progress:
+        with source.open('rb') as stream:
+            transition = pickle.load(stream)
+        terminal[index] = int(
+            np.asarray(transition.get('terminal', -1)).item()
+        )
+        if terminal[index] == -1:
+            continue
+        if 'episode_idx' not in transition or 'sample_frame' not in transition:
+            continue
+        episode_idx[index] = int(
+            np.asarray(transition['episode_idx']).item()
+        )
+        sample_frame[index] = int(
+            np.asarray(transition['sample_frame']).item()
+        )
+        next_keypoint_frame[index] = int(
+            np.asarray(
+                transition.get('next_keypoint_frame', sample_frame[index])
+            ).item()
+        )
+
+    metadata = terminal, episode_idx, sample_frame, next_keypoint_frame
+    _REPLAY_METADATA_MEMORY_CACHE[memory_key] = metadata
+    temporary = Path(f'{cache_path}.tmp')
+    try:
+        with temporary.open('wb') as stream:
+            np.savez_compressed(
+                stream,
+                version=np.asarray(REPLAY_METADATA_CACHE_VERSION),
+                file_name_fingerprint=np.asarray(fingerprint),
+                file_count=np.asarray(len(files)),
+                terminal=terminal,
+                episode_idx=episode_idx,
+                sample_frame=sample_frame,
+                next_keypoint_frame=next_keypoint_frame,
+            )
+        os.replace(temporary, cache_path)
+        if show_progress:
+            tqdm.write(
+                f'episode detection: replay metadata cache saved: {cache_path}'
+            )
+    except OSError as exc:
+        if show_progress:
+            tqdm.write(
+                'episode detection: could not save replay metadata cache '
+                f'({exc})'
+            )
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+    return metadata
+
+
 def _episode_detection_sources(
     files: Sequence[Path],
     frames_per_episode: int,
@@ -1290,6 +1436,7 @@ def _episode_detection_sources(
     cached_episode_ids: Iterable[int] = (),
     show_progress: bool = True,
     preserve_action_edges: bool = False,
+    refresh_metadata_cache: bool = False,
 ) -> Dict[int, List[Tuple[int, Path]]]:
     '''Merge augmented replay segments, then sample frames per raw episode.'''
     requested = (
@@ -1399,34 +1546,36 @@ def _episode_detection_sources(
             return selected
 
     # Compatibility fallback for old replay folders without replay_info.npy.
-    # This is slower because every large replay pickle must be opened.
-    grouped: Dict[int, Dict[Tuple[int, int], Path]] = {}
-    progress = tqdm(
+    # The first scan opens every large replay pickle; later runs use the compact
+    # metadata cache unless the ordered replay filename set changes.
+    (
+        terminal_values,
+        episode_indices,
+        sample_frame_values,
+        next_keypoint_frames,
+    ) = _load_or_scan_replay_metadata(
         files,
-        desc='episode detection: replay metadata scan',
-        unit='replay',
-        dynamic_ncols=True,
-        disable=not show_progress,
+        show_progress=show_progress,
+        refresh_cache=refresh_metadata_cache,
     )
-    for source in progress:
-        with source.open('rb') as stream:
-            transition = pickle.load(stream)
-        if int(np.asarray(transition.get('terminal', -1)).item()) == -1:
+    grouped: Dict[int, Dict[Tuple[int, int], Path]] = {}
+    for index, source in enumerate(files):
+        if terminal_values[index] == -1:
             continue
-        if 'episode_idx' not in transition or 'sample_frame' not in transition:
+        if episode_indices[index] < 0 or sample_frame_values[index] < 0:
             continue
-        episode_idx = int(np.asarray(transition['episode_idx']).item())
+        episode_idx = int(episode_indices[index])
         if requested is not None and episode_idx not in requested:
             continue
         if episode_idx in cached:
             grouped.setdefault(episode_idx, {})
             continue
-        sample_frame = int(np.asarray(transition['sample_frame']).item())
-        next_keypoint_frame = sample_frame
-        if preserve_action_edges and 'next_keypoint_frame' in transition:
-            next_keypoint_frame = int(
-                np.asarray(transition['next_keypoint_frame']).item()
-            )
+        sample_frame = int(sample_frame_values[index])
+        next_keypoint_frame = (
+            int(next_keypoint_frames[index])
+            if preserve_action_edges
+            else sample_frame
+        )
         grouped.setdefault(episode_idx, {}).setdefault(
             (sample_frame, next_keypoint_frame), source
         )
@@ -1469,9 +1618,9 @@ def _episode_ids_for_selected_files(
     return tuple(sorted(episode_ids))
 
 
-def _load_current_gripper_positions(
+def _load_current_gripper_states(
     episode_dir: Path, sample_frames: Sequence[int]
-) -> Dict[int, np.ndarray]:
+) -> Tuple[Dict[int, np.ndarray], Dict[int, float]]:
     low_dim_path = episode_dir / 'low_dim_obs.pkl'
     if not low_dim_path.is_file():
         raise FileNotFoundError(
@@ -1480,10 +1629,12 @@ def _load_current_gripper_positions(
     with low_dim_path.open('rb') as stream:
         observations = pickle.load(stream)
     positions: Dict[int, np.ndarray] = {}
+    openings: Dict[int, float] = {}
     for sample_frame in sample_frames:
         try:
             observation = observations[sample_frame]
             pose = np.asarray(observation.gripper_pose).reshape(-1)
+            gripper_open = float(observation.gripper_open)
         except (IndexError, TypeError, AttributeError) as exc:
             raise ValueError(
                 f'Cannot read current gripper_pose for frame {sample_frame} '
@@ -1494,6 +1645,19 @@ def _load_current_gripper_positions(
                 f'Invalid current gripper_pose at frame {sample_frame}: {pose}'
             )
         positions[sample_frame] = pose[:3].astype(np.float32)
+        if not np.isfinite(gripper_open):
+            raise ValueError(
+                f'Invalid gripper_open at frame {sample_frame}: '
+                f'{gripper_open}'
+            )
+        openings[sample_frame] = gripper_open
+    return positions, openings
+
+
+def _load_current_gripper_positions(
+    episode_dir: Path, sample_frames: Sequence[int]
+) -> Dict[int, np.ndarray]:
+    positions, _ = _load_current_gripper_states(episode_dir, sample_frames)
     return positions
 
 
@@ -1509,6 +1673,7 @@ def _detect_task_robot_handles(
     write_cache: bool,
     requested_episode_ids: Optional[Iterable[int]] = None,
     show_progress: bool = True,
+    refresh_metadata_cache: bool = False,
 ) -> Dict[int, Tuple[int, ...]]:
     if 'wrist' not in cameras:
         raise ValueError(
@@ -1554,6 +1719,7 @@ def _detect_task_robot_handles(
         requested_episode_ids=requested_episode_set,
         cached_episode_ids=cached_detections,
         show_progress=show_progress,
+        refresh_metadata_cache=refresh_metadata_cache,
     )
     handles_by_episode: Dict[int, Tuple[int, ...]] = {}
     progress = tqdm(
@@ -1573,7 +1739,7 @@ def _detect_task_robot_handles(
                 )
             episode_dir = resolve_episode_dir(raw_data_dir, task, episode_idx)
             sample_frames = [frame for frame, _ in frame_sources]
-            gripper_positions = _load_current_gripper_positions(
+            gripper_positions, gripper_openings = _load_current_gripper_states(
                 episode_dir, sample_frames
             )
             evidence = []
@@ -1594,6 +1760,7 @@ def _detect_task_robot_handles(
                         gripper_positions[sample_frame],
                         masks,
                         point_clouds,
+                        gripper_open=gripper_openings[sample_frame],
                         excluded_ids=excluded_ids,
                     )
                 )
@@ -1606,7 +1773,8 @@ def _detect_task_robot_handles(
             f'{list(detection.robot_handles)} gripper='
             f'{list(detection.gripper_handles)} arm='
             f'{list(detection.arm_handles)} ambiguous='
-            f'{list(detection.ambiguous_handles)} frames='
+            f'{list(detection.ambiguous_handles)} grasped='
+            f'{list(detection.grasped_handles)} frames='
             f'{list(detection.sampled_frames)}',
         )
     return handles_by_episode
@@ -1628,6 +1796,7 @@ def _detect_task_relevant_handles(
     task_prior_background_extent: float,
     requested_episode_ids: Optional[Iterable[int]] = None,
     show_progress: bool = True,
+    refresh_metadata_cache: bool = False,
 ) -> Dict[int, Tuple[int, ...]]:
     '''Detect one stable task-handle whitelist per episode.'''
     requested_episode_set = (
@@ -1672,6 +1841,7 @@ def _detect_task_relevant_handles(
         cached_episode_ids=cached_detections,
         show_progress=show_progress,
         preserve_action_edges=True,
+        refresh_metadata_cache=refresh_metadata_cache,
     )
     handles_by_episode: Dict[int, Tuple[int, ...]] = {}
     progress = tqdm(
@@ -1785,6 +1955,7 @@ def process_task(
     robot_handle_cache_dir: Path,
     robot_detection_frames: int,
     refresh_robot_handle_cache: bool,
+    refresh_replay_metadata_cache: bool,
 ) -> int:
     all_files = _numeric_replay_files(source_dir)
     if not all_files:
@@ -1833,6 +2004,7 @@ def process_task(
             write_cache=not dry_run,
             requested_episode_ids=requested_robot_episodes,
             show_progress=show_progress,
+            refresh_metadata_cache=refresh_replay_metadata_cache,
         )
     task_slot_ids_by_episode: Dict[int, Tuple[int, ...]] = {}
     if temporal_task_filter:
@@ -1857,6 +2029,7 @@ def process_task(
             task_prior_background_extent=task_prior_background_extent,
             requested_episode_ids=requested_task_episodes,
             show_progress=show_progress,
+            refresh_metadata_cache=refresh_replay_metadata_cache,
         )
     frame_cache = OracleFrameCache(cache_frames)
 
@@ -2230,6 +2403,14 @@ def build_parser() -> argparse.ArgumentParser:
         action='store_true',
         help='ignore existing robot-handle JSON files and detect again',
     )
+    parser.add_argument(
+        '--refresh-replay-metadata-cache',
+        action='store_true',
+        help=(
+            'ignore the compact replay metadata index and deserialize all '
+            'replay files again'
+        ),
+    )
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument(
         '--workers',
@@ -2390,6 +2571,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             robot_handle_cache_dir=robot_handle_cache_dir,
             robot_detection_frames=args.robot_detection_frames,
             refresh_robot_handle_cache=args.refresh_robot_handle_cache,
+            refresh_replay_metadata_cache=(
+                args.refresh_replay_metadata_cache
+            ),
         )
     print(f'Done: {total} replay files')
     return 0

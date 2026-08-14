@@ -2,6 +2,7 @@ import pickle
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
@@ -9,6 +10,7 @@ from PIL import Image
 
 from tools.augment_replay_with_oracle_objects import (
     ORACLE_KEYS,
+    REPLAY_METADATA_CACHE_NAME,
     OracleFrameCache,
     atomic_write_replay,
     augment_transition,
@@ -26,6 +28,8 @@ from tools.augment_replay_with_oracle_objects import (
     _instance_boxes_for_mask,
     _episode_detection_sources,
     _episode_ids_for_selected_files,
+    _load_current_gripper_states,
+    _REPLAY_METADATA_MEMORY_CACHE,
 )
 
 
@@ -86,10 +90,12 @@ class OracleReplayAugmentationTest(unittest.TestCase):
                 '--detect-robot-handles',
                 '--robot-detection-frames',
                 '6',
+                '--refresh-replay-metadata-cache',
             ]
         )
         self.assertTrue(args.detect_robot_handles)
         self.assertEqual(args.robot_detection_frames, 6)
+        self.assertTrue(args.refresh_replay_metadata_cache)
 
     def test_interval_visualization_selects_every_nth_sorted_file(self):
         files = [Path(f'{index}.replay') for index in range(10)]
@@ -140,6 +146,29 @@ class OracleReplayAugmentationTest(unittest.TestCase):
                 show_progress=False,
             )
             self.assertEqual(cached, {1: []})
+
+    def test_load_current_gripper_states_keeps_frame_alignment(self):
+        observations = [
+            SimpleNamespace(
+                gripper_pose=[0.1, 0.2, 0.3, 0.0, 0.0, 0.0, 1.0],
+                gripper_open=1.0,
+            ),
+            SimpleNamespace(
+                gripper_pose=[0.4, 0.5, 0.6, 0.0, 0.0, 0.0, 1.0],
+                gripper_open=0.0,
+            ),
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            episode_dir = Path(temporary)
+            with (episode_dir / 'low_dim_obs.pkl').open('wb') as stream:
+                pickle.dump(observations, stream)
+            positions, openings = _load_current_gripper_states(
+                episode_dir, [1, 0]
+            )
+
+        np.testing.assert_allclose(positions[0], [0.1, 0.2, 0.3])
+        np.testing.assert_allclose(positions[1], [0.4, 0.5, 0.6])
+        self.assertEqual(openings, {1: 0.0, 0: 1.0})
 
     def test_episode_sources_merge_augmented_segments_and_task_action_edges(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -233,6 +262,62 @@ class OracleReplayAugmentationTest(unittest.TestCase):
                 preserve_action_edges=True,
             )
             self.assertEqual(len(selected[4]), 2)
+
+    def test_fallback_metadata_cache_hits_disk_and_invalidates_on_new_file(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            files = []
+            for index in range(2):
+                source = root / f'{index}.replay'
+                with source.open('wb') as stream:
+                    pickle.dump(
+                        {
+                            'terminal': index,
+                            'episode_idx': 4,
+                            'sample_frame': index,
+                        },
+                        stream,
+                    )
+                files.append(source)
+
+            first = _episode_detection_sources(
+                files, frames_per_episode=10, show_progress=False
+            )
+            self.assertEqual(
+                [frame for frame, _ in first[4]], [0, 1]
+            )
+            self.assertTrue((root / REPLAY_METADATA_CACHE_NAME).is_file())
+
+            _REPLAY_METADATA_MEMORY_CACHE.clear()
+            with patch(
+                'tools.augment_replay_with_oracle_objects.pickle.load',
+                side_effect=AssertionError('disk cache should avoid pickle'),
+            ):
+                second = _episode_detection_sources(
+                    files, frames_per_episode=10, show_progress=False
+                )
+            self.assertEqual(
+                [frame for frame, _ in second[4]], [0, 1]
+            )
+
+            added = root / '2.replay'
+            with added.open('wb') as stream:
+                pickle.dump(
+                    {
+                        'terminal': 1,
+                        'episode_idx': 4,
+                        'sample_frame': 9,
+                    },
+                    stream,
+                )
+            files.append(added)
+            _REPLAY_METADATA_MEMORY_CACHE.clear()
+            rebuilt = _episode_detection_sources(
+                files, frames_per_episode=10, show_progress=False
+            )
+            self.assertEqual(
+                [frame for frame, _ in rebuilt[4]], [0, 1, 9]
+            )
 
     def test_dry_run_episode_ids_recover_final_sentinel_from_previous(self):
         with tempfile.TemporaryDirectory() as temporary:
