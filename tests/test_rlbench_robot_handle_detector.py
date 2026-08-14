@@ -148,6 +148,35 @@ class RLBenchRobotHandleDetectorTest(unittest.TestCase):
         detection = detect_robot_handles(16, frames)
         self.assertEqual(detection.gripper_handles, (10, 11))
 
+    def test_non_wrist_gripper_link_may_first_appear_at_raw_frame_ten(self):
+        frames = []
+        for frame_index in range(8):
+            gripper = np.array(
+                [frame_index * 0.03, 0.0, 0.8], dtype=np.float32
+            )
+            centers = {10: gripper}
+            if frame_index >= 2:
+                centers[11] = gripper + np.array(
+                    [0.04, 0.0, 0.0], dtype=np.float32
+                )
+            frames.append(
+                RobotFrameEvidence(
+                    sample_frame=frame_index * 5,
+                    gripper_position=gripper,
+                    bounds_by_id={
+                        object_id: bounds(center, 0.015)
+                        for object_id, center in centers.items()
+                    },
+                    centers_by_id=centers,
+                    # Some gripper links are visible only from scene cameras.
+                    wrist_centroids_by_id={10: np.array([0.5, 0.5])},
+                )
+            )
+
+        detection = detect_robot_handles(17, frames)
+        self.assertEqual(detection.gripper_handles, (10,))
+        self.assertIn(11, detection.arm_handles)
+
     def test_low_confidence_wrist_candidate_recovers_gripper_seed(self):
         frames = []
         for frame_index in range(5):

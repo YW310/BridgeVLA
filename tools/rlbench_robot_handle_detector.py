@@ -11,7 +11,7 @@ import numpy as np
 
 
 Bounds = Tuple[np.ndarray, np.ndarray]
-ROBOT_DETECTOR_METHOD = 'wrist_pose_temporal_adjacency_v12_early_seed_visibility'
+ROBOT_DETECTOR_METHOD = 'wrist_pose_temporal_adjacency_v13_late_visible_links'
 
 
 @dataclass(frozen=True)
@@ -517,7 +517,6 @@ def detect_robot_handles(
         max(2, int(np.ceil(frame_count * 0.35))),
     )
     early_frames = frames[:early_frame_count]
-    minimum_early_co_visible = min(2, early_frame_count)
     for left_index, left_id in enumerate(all_ids):
         for right_id in all_ids[left_index + 1:]:
             co_visible = 0
@@ -540,10 +539,18 @@ def detect_robot_handles(
                     frame.bounds_by_id[left_id], frame.bounds_by_id[right_id]
                 ) <= adjacency_distance:
                     early_adjacent += 1
+            first_joint_index = max(
+                first_seen.get(left_id, frame_count),
+                first_seen.get(right_id, frame_count),
+            )
+            required_early_co_visible = max(
+                1,
+                min(2, early_frame_count - first_joint_index),
+            )
             if (
                 co_visible >= 2
                 and adjacent / co_visible >= adjacency_ratio
-                and early_co_visible >= minimum_early_co_visible
+                and early_co_visible >= required_early_co_visible
                 and early_adjacent / early_co_visible >= adjacency_ratio
             ):
                 adjacency[left_id].add(right_id)
@@ -574,6 +581,14 @@ def detect_robot_handles(
                 for frame in early_frames
                 if neighbor in frame.centers_by_id
             ]
+            required_neighbor_early_visible = max(
+                1,
+                min(
+                    2,
+                    early_frame_count
+                    - first_seen.get(neighbor, frame_count),
+                ),
+            )
             early_motion = 0.0
             if len(early_centers) >= 2:
                 early_array = np.stack(early_centers)
@@ -582,15 +597,27 @@ def detect_robot_handles(
                         np.max(early_array, 0) - np.min(early_array, 0)
                     )
                 )
+            first_joint_frame = next(
+                (
+                    frame
+                    for frame in early_frames
+                    if neighbor in frame.bounds_by_id
+                    and object_id in frame.bounds_by_id
+                ),
+                None,
+            )
             first_adjacent = (
-                neighbor in first_frame.bounds_by_id
-                and object_id in first_frame.bounds_by_id
+                first_joint_frame is not None
                 and _bounds_distance(
-                    first_frame.bounds_by_id[object_id],
-                    first_frame.bounds_by_id[neighbor],
+                    first_joint_frame.bounds_by_id[object_id],
+                    first_joint_frame.bounds_by_id[neighbor],
                 ) <= adjacency_distance
             )
-            first_bounds = first_frame.bounds_by_id.get(neighbor)
+            first_bounds = (
+                None
+                if first_joint_frame is None
+                else first_joint_frame.bounds_by_id.get(neighbor)
+            )
             maximum_extent = float('inf')
             if first_bounds is not None:
                 maximum_extent = float(
@@ -598,13 +625,20 @@ def detect_robot_handles(
                 )
             persistent_chain_evidence = (
                 visibility[neighbor] >= minimum_arm_visible
-                and len(early_centers) >= minimum_early_co_visible
+                and len(early_centers) >= required_neighbor_early_visible
                 and first_adjacent
                 and maximum_extent <= 0.50
             )
+            object_pre_motion, gripper_pre_motion = pre_grasp_motion(neighbor)
             moving_link_evidence = (
                 motion[neighbor] >= min_link_motion
-                and early_motion >= min_link_motion * 0.5
+                and (
+                    early_motion >= min_link_motion * 0.5
+                    or (
+                        first_seen.get(neighbor, 0) > 0
+                        and object_pre_motion >= min_link_motion
+                    )
+                )
             )
             # The first hop beside a gripper seed must already move; this
             # protects a static task object that the open gripper approaches.
@@ -613,7 +647,6 @@ def detect_robot_handles(
             hard_robot_evidence = persistent_chain_evidence and (
                 moving_link_evidence or object_id not in gripper_set
             )
-            object_pre_motion, gripper_pre_motion = pre_grasp_motion(neighbor)
             if (
                 gripper_pre_motion >= min_link_motion
                 and object_pre_motion < min_link_motion

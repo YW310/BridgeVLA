@@ -252,7 +252,8 @@ python tools/augment_replay_with_oracle_objects.py \
   wrist 图像稳定性为主，并允许夹爪旋转造成的世界坐标偏移、部分遮挡及距离离群；夹爪
   handle 不必在第 0 帧可见，在 episode 早期窗口内首次出现（如 raw frame 10）时，会以
   它自己的首个可见帧检查 wrist 邻接和后续随动。严格评分没有 seed 时会从 wrist 稳定候选
-  恢复 seed。arm 扩展先确认紧邻夹爪的移动 link，
+  恢复 seed。只在外部相机可见、wrist mask 中不可见的夹爪 link 也允许在早期首次出现；
+  arm 扩展会使用它与 seed 的首个共同可见帧，而不再强制要求 raw frame 0 可见。arm 扩展先确认紧邻夹爪的移动 link，
   再沿 episode 早期已连接且持续邻接的运动学链扩展，因此可覆盖运动较少的机械臂底座。
   默认在 `0–100` raw 帧内每隔 5 帧取样；若夹爪相对第 0 帧的最大位移不足 2 cm，则继续
   按相同间隔向后扩展，直到运动足够、达到帧数上限、episode 结束或夹爪第一次闭合。
