@@ -171,6 +171,88 @@ class RLBenchRobotHandleDetectorTest(unittest.TestCase):
         self.assertEqual(detection.gripper_handles, (10,))
         self.assertEqual(detection.arm_handles, (11, 12))
 
+    def test_meaningful_slow_arm_motion_is_not_rejected_by_ratio_alone(self):
+        frames = []
+        gripper_positions = (0.0, 0.05, 0.10)
+        link_positions = (0.04, 0.05, 0.06)
+        for frame_index, (gripper_x, link_x) in enumerate(
+            zip(gripper_positions, link_positions)
+        ):
+            gripper = np.array([gripper_x, 0.0, 0.8], dtype=np.float32)
+            link = np.array([link_x, 0.0, 0.8], dtype=np.float32)
+            frames.append(
+                RobotFrameEvidence(
+                    sample_frame=frame_index,
+                    gripper_position=gripper,
+                    bounds_by_id={
+                        10: bounds(gripper, 0.015),
+                        11: bounds(link, 0.015),
+                    },
+                    centers_by_id={10: gripper, 11: link},
+                    wrist_centroids_by_id={10: np.array([0.5, 0.5])},
+                )
+            )
+
+        detection = detect_robot_handles(13, frames)
+        self.assertEqual(detection.gripper_handles, (10,))
+        self.assertEqual(detection.arm_handles, (11,))
+
+    def test_link_motion_threshold_can_recover_low_amplitude_arm_link(self):
+        frames = []
+        gripper_positions = (0.0, 0.05, 0.10)
+        link_positions = (0.04, 0.043, 0.046)
+        for frame_index, (gripper_x, link_x) in enumerate(
+            zip(gripper_positions, link_positions)
+        ):
+            gripper = np.array([gripper_x, 0.0, 0.8], dtype=np.float32)
+            link = np.array([link_x, 0.0, 0.8], dtype=np.float32)
+            frames.append(
+                RobotFrameEvidence(
+                    sample_frame=frame_index,
+                    gripper_position=gripper,
+                    bounds_by_id={
+                        10: bounds(gripper, 0.02),
+                        11: bounds(link, 0.02),
+                    },
+                    centers_by_id={10: gripper, 11: link},
+                    wrist_centroids_by_id={10: np.array([0.5, 0.5])},
+                )
+            )
+
+        conservative = detect_robot_handles(14, frames)
+        relaxed = detect_robot_handles(
+            14, frames, min_link_motion=0.002
+        )
+        self.assertNotIn(11, conservative.arm_handles)
+        self.assertIn(11, relaxed.arm_handles)
+
+    def test_adjacency_distance_can_bridge_segmented_robot_link_gap(self):
+        frames = []
+        for frame_index in range(3):
+            gripper = np.array(
+                [frame_index * 0.03, 0.0, 0.8], dtype=np.float32
+            )
+            link = gripper + np.array([0.09, 0.0, 0.0], dtype=np.float32)
+            frames.append(
+                RobotFrameEvidence(
+                    sample_frame=frame_index,
+                    gripper_position=gripper,
+                    bounds_by_id={
+                        10: bounds(gripper, 0.01),
+                        11: bounds(link, 0.01),
+                    },
+                    centers_by_id={10: gripper, 11: link},
+                    wrist_centroids_by_id={10: np.array([0.5, 0.5])},
+                )
+            )
+
+        conservative = detect_robot_handles(15, frames)
+        relaxed = detect_robot_handles(
+            15, frames, adjacency_distance=0.08
+        )
+        self.assertNotIn(11, conservative.arm_handles)
+        self.assertIn(11, relaxed.arm_handles)
+
     def test_late_adjacency_cannot_expand_robot_chain(self):
         frames = []
         for frame_index in range(8):

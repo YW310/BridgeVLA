@@ -102,6 +102,10 @@ class OracleReplayAugmentationTest(unittest.TestCase):
                 '80',
                 '--robot-motion-threshold',
                 '0.03',
+                '--robot-link-motion-threshold',
+                '0.002',
+                '--robot-adjacency-distance',
+                '0.08',
                 '--refresh-replay-metadata-cache',
             ]
         )
@@ -110,6 +114,8 @@ class OracleReplayAugmentationTest(unittest.TestCase):
         self.assertEqual(args.robot_detection_stride, 4)
         self.assertEqual(args.robot_detection_window, 80)
         self.assertAlmostEqual(args.robot_motion_threshold, 0.03)
+        self.assertAlmostEqual(args.robot_link_motion_threshold, 0.002)
+        self.assertAlmostEqual(args.robot_adjacency_distance, 0.08)
         self.assertTrue(args.refresh_replay_metadata_cache)
 
     def test_robot_sampling_defaults_cover_raw_frames_zero_through_100(self):
@@ -120,6 +126,8 @@ class OracleReplayAugmentationTest(unittest.TestCase):
         self.assertEqual(args.robot_detection_stride, 5)
         self.assertEqual(args.robot_detection_window, 100)
         self.assertAlmostEqual(args.robot_motion_threshold, 0.02)
+        self.assertAlmostEqual(args.robot_link_motion_threshold, 0.008)
+        self.assertAlmostEqual(args.robot_adjacency_distance, 0.05)
 
     def test_handle_cache_defaults_follow_output_and_explicit_path_wins(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -1893,6 +1893,8 @@ def _detect_task_robot_handles(
     frame_stride: int,
     initial_window: int,
     motion_threshold: float,
+    link_motion_threshold: float,
+    adjacency_distance: float,
     cache_dir: Path,
     refresh_cache: bool,
     write_cache: bool,
@@ -1910,12 +1912,14 @@ def _detect_task_robot_handles(
         if requested_episode_ids is None
         else {int(value) for value in requested_episode_ids}
     )
-    sampling_config = {
+    cache_config = {
         'source': 'raw_depth',
         'stride': int(frame_stride),
         'initial_window': int(initial_window),
         'max_frames': int(frames_per_episode),
         'motion_threshold': float(motion_threshold),
+        'link_motion_threshold': float(link_motion_threshold),
+        'adjacency_distance': float(adjacency_distance),
     }
     cached_detections: Dict[int, RobotHandleDetection] = {}
     stale_cache_count = 0
@@ -1932,7 +1936,7 @@ def _detect_task_robot_handles(
                 continue
             try:
                 detection = load_robot_handle_detection(
-                    path, expected_sampling_config=sampling_config
+                    path, expected_sampling_config=cache_config
                 )
                 if detection.episode_idx != episode_idx:
                     raise ValueError(
@@ -2026,12 +2030,17 @@ def _detect_task_robot_handles(
                         excluded_ids=excluded_ids,
                     )
                 )
-            detection = detect_robot_handles(episode_idx, evidence)
+            detection = detect_robot_handles(
+                episode_idx,
+                evidence,
+                min_link_motion=link_motion_threshold,
+                adjacency_distance=adjacency_distance,
+            )
             if write_cache:
                 save_robot_handle_detection(
                     cache_path,
                     detection,
-                    sampling_config=sampling_config,
+                    sampling_config=cache_config,
                 )
             if not selection.motion_sufficient:
                 tqdm.write(
@@ -2242,6 +2251,8 @@ def process_task(
     robot_detection_stride: int,
     robot_detection_window: int,
     robot_motion_threshold: float,
+    robot_link_motion_threshold: float,
+    robot_adjacency_distance: float,
     refresh_robot_handle_cache: bool,
     refresh_replay_metadata_cache: bool,
     replay_metadata_cache_dir: Optional[Path],
@@ -2294,6 +2305,8 @@ def process_task(
             robot_detection_stride,
             robot_detection_window,
             robot_motion_threshold,
+            robot_link_motion_threshold,
+            robot_adjacency_distance,
             robot_handle_cache_dir,
             refresh_robot_handle_cache,
             write_cache=not dry_run,
@@ -2731,6 +2744,24 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        '--robot-link-motion-threshold',
+        type=float,
+        default=0.008,
+        help=(
+            'minimum arm-link motion in metres for the first kinematic-chain '
+            'hop (default: 0.008)'
+        ),
+    )
+    parser.add_argument(
+        '--robot-adjacency-distance',
+        type=float,
+        default=0.05,
+        help=(
+            'maximum AABB gap in metres between connected robot handles '
+            '(default: 0.05)'
+        ),
+    )
+    parser.add_argument(
         '--refresh-robot-handle-cache',
         action='store_true',
         help='ignore existing robot-handle JSON files and detect again',
@@ -2833,6 +2864,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         raise ValueError('--robot-detection-window must be non-negative')
     if args.robot_motion_threshold < 0:
         raise ValueError('--robot-motion-threshold must be non-negative')
+    if args.robot_link_motion_threshold <= 0:
+        raise ValueError('--robot-link-motion-threshold must be positive')
+    if args.robot_adjacency_distance <= 0:
+        raise ValueError('--robot-adjacency-distance must be positive')
     if args.task_detection_frames <= 0:
         raise ValueError('--task-detection-frames must be positive')
     if args.task_prior_radius is not None and args.task_prior_radius <= 0:
@@ -2926,6 +2961,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             robot_detection_stride=args.robot_detection_stride,
             robot_detection_window=args.robot_detection_window,
             robot_motion_threshold=args.robot_motion_threshold,
+            robot_link_motion_threshold=args.robot_link_motion_threshold,
+            robot_adjacency_distance=args.robot_adjacency_distance,
             refresh_robot_handle_cache=args.refresh_robot_handle_cache,
             refresh_replay_metadata_cache=(
                 args.refresh_replay_metadata_cache

@@ -167,8 +167,8 @@ oracle_object_valid    [MAX_OBJECTS]                 bool
 
 ```bash
 python tools/augment_replay_with_oracle_objects.py \
-    --replay-dir LPY/BridgeVLA_RLBench_TRAIN_Buffer \
-    --raw-data-dir LPY/BridgeVLA_RLBench_TRAIN_DATA/train \
+    --replay-dir LPY/BridgeVLA_RLBench_TINY_Buffer \
+    --raw-data-dir LPY/BridgeVLA_RLBench_TINY_DATA/train \
     --task stack_blocks \
     --output-dir LPY/BridgeVLA_RLBench_TASK_OBJECT_Buffer \
     --detect-robot-handles \
@@ -176,6 +176,8 @@ python tools/augment_replay_with_oracle_objects.py \
     --robot-detection-stride 5 \
     --robot-detection-window 100 \
     --robot-motion-threshold 0.02 \
+    --robot-link-motion-threshold 0.008 \
+    --robot-adjacency-distance 0.05 \
     --temporal-id-matching \
     --task-detection-frames 16 \
     --task-prior-filter \
@@ -219,7 +221,9 @@ python tools/augment_replay_with_oracle_objects.py \
 | 机器人 | `--robot-detection-frames N` | `64` | 自适应扩展时最多读取的 raw 证据帧数；正常有运动时通常只读取初始窗口的 21 帧。 |
 | 机器人 | `--robot-detection-stride N` | `5` | raw 帧采样间隔；默认依次读取 `0, 5, 10, ...`。 |
 | 机器人 | `--robot-detection-window N` | `100` | 从 raw 帧 0 开始的初始闭区间；运动不足时才在该窗口之后继续扩展。 |
-| 机器人 | `--robot-motion-threshold METRES` | `0.02` | 初始位置到采样位置的最大夹爪位移达到该值后，认为已有足够运动证据。 |
+| 机器人 | `--robot-motion-threshold METRES` | `0.02` | 只控制自适应 raw 采样：夹爪最大位移达到该值后不再扩展采样；不直接改变 arm 判定。 |
+| 机器人 | `--robot-link-motion-threshold METRES` | `0.008` | 第一段机械臂 link 需要达到的最小位移；漏掉低幅运动 link 时可尝试 `0.002` 或 `0.001`。 |
+| 机器人 | `--robot-adjacency-distance METRES` | `0.05` | 两个 robot handle 的 AABB 最大连接间隙；分段机械臂链断开时可尝试 `0.08`，过大会增加误删风险。 |
 | 机器人 | `--robot-handle-cache-dir PATH` | `<output-dir>/<task>/robot_handle_maps` | episode robot handle JSON 缓存；显式 PATH 作为根目录并追加 task 名。 |
 | 机器人 | `--refresh-robot-handle-cache` | 关闭 | 忽略已有 robot handle JSON 并重新检测。 |
 | 性能 | `--refresh-replay-metadata-cache` | 关闭 | 强制重建 replay 元数据索引；仅在同名 `.replay` 被原地改写时使用，日常运行不要添加。 |
@@ -250,6 +254,9 @@ python tools/augment_replay_with_oracle_objects.py \
   再沿 episode 早期已连接且持续邻接的运动学链扩展，因此可覆盖运动较少的机械臂底座。
   默认在 `0–100` raw 帧内每隔 5 帧取样；若夹爪相对第 0 帧的最大位移不足 2 cm，则继续
   按相同间隔向后扩展，直到运动足够、达到帧数上限、episode 结束或夹爪第一次闭合。
+  `--robot-motion-threshold` 只影响这里的采样长度。机械臂是否进入 `arm_handles` 由
+  `--robot-link-motion-threshold`、`--robot-adjacency-distance`、可见率和持续邻接共同决定。
+  低幅 link 只要达到独立的绝对运动阈值，就不会再仅因运动量小于夹爪的 25% 被当作静止物体。
   若一直静止会打印 `motion-based robot evidence is weak`，提示运动证据不足。检测只使用
   第一次闭合之前的前缀，因此不会把随后被夹起并跟随夹爪运动的任务物体当成机械臂。
   夹爪持续运动而某实例基本静止时，该实例不会判为机器人；证据不足的实例只进入
@@ -266,7 +273,8 @@ python tools/augment_replay_with_oracle_objects.py \
   `<output-dir>/<task>/task_handle_maps/episode_NNNN.json`，robot 缓存位于
   `<output-dir>/<task>/robot_handle_maps/episode_NNNN.json`。显式指定对应的
   `--*-handle-cache-dir PATH` 时使用 `PATH/<task>/episode_NNNN.json`，避免多任务间
-  episode 文件重名。Robot cache 会记录 raw 采样间隔、窗口、帧数上限和运动阈值；
+  episode 文件重名。Robot cache 会记录 raw 采样间隔、窗口、帧数上限、采样运动阈值、
+  link 运动阈值和邻接距离；
   修改这些参数时会自动失效。修改 task 检测帧数、半径或实例限制后仍应使用
   `--refresh-task-handle-cache`；修复前生成的旧版 task/robot 缓存也会自动失效。
 - 缺少可用的 `replay_info.npy` 时，首次运行必须读取每个 `.replay` 的 metadata，并写入
@@ -323,6 +331,8 @@ python tools/augment_replay_with_oracle_objects.py \
 --robot-detection-stride 5 \
 --robot-detection-window 100 \
 --robot-motion-threshold 0.02 \
+--robot-link-motion-threshold 0.002 \
+--robot-adjacency-distance 0.08 \
 --refresh-robot-handle-cache \
 --temporal-id-matching \
 --task-detection-frames 32 \

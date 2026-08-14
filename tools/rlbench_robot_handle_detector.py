@@ -11,7 +11,7 @@ import numpy as np
 
 
 Bounds = Tuple[np.ndarray, np.ndarray]
-ROBOT_DETECTOR_METHOD = 'wrist_pose_temporal_adjacency_v10_raw_adaptive_prefix'
+ROBOT_DETECTOR_METHOD = 'wrist_pose_temporal_adjacency_v11_arm_motion_controls'
 
 
 @dataclass(frozen=True)
@@ -347,6 +347,7 @@ def detect_robot_handles(
         object_pre_motion, gripper_pre_motion = pre_grasp_motion(object_id)
         if (
             gripper_pre_motion >= min_link_motion
+            and object_pre_motion < min_link_motion
             and object_pre_motion < gripper_pre_motion * 0.25
         ):
             # A task object is commonly static while the open gripper moves
@@ -421,6 +422,7 @@ def detect_robot_handles(
             object_pre_motion, gripper_pre_motion = pre_grasp_motion(object_id)
             if (
                 gripper_pre_motion >= min_link_motion
+                and object_pre_motion < min_link_motion
                 and object_pre_motion < gripper_pre_motion * 0.25
             ):
                 ambiguous_handles.add(object_id)
@@ -601,6 +603,7 @@ def detect_robot_handles(
             object_pre_motion, gripper_pre_motion = pre_grasp_motion(neighbor)
             if (
                 gripper_pre_motion >= min_link_motion
+                and object_pre_motion < min_link_motion
                 and object_pre_motion < gripper_pre_motion * 0.25
                 and object_id in gripper_set
             ):
