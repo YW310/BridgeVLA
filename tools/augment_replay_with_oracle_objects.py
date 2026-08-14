@@ -1991,11 +1991,7 @@ def _detect_task_robot_handles(
     show_progress: bool = True,
     refresh_metadata_cache: bool = False,
     metadata_cache_dir: Optional[Path] = None,
-) -> Tuple[
-    Dict[int, Tuple[int, ...]],
-    Dict[int, Dict[int, int]],
-    Dict[int, Dict[int, int]],
-]:
+) -> Dict[int, Tuple[int, ...]]:
     if 'wrist' not in cameras:
         raise ValueError(
             '--detect-robot-handles requires wrist in the selected cameras'
@@ -2056,8 +2052,6 @@ def _detect_task_robot_handles(
         sampling_strategy='early',
     )
     handles_by_episode: Dict[int, Tuple[int, ...]] = {}
-    roles_by_episode: Dict[int, Dict[int, int]] = {}
-    groups_by_episode: Dict[int, Dict[int, int]] = {}
     progress = tqdm(
         sorted(selected.items()),
         desc=f'{task}: robot handle detection',
@@ -2185,7 +2179,11 @@ def _detect_task_relevant_handles(
     show_progress: bool = True,
     refresh_metadata_cache: bool = False,
     metadata_cache_dir: Optional[Path] = None,
-) -> Dict[int, Tuple[int, ...]]:
+) -> Tuple[
+    Dict[int, Tuple[int, ...]],
+    Dict[int, Dict[int, int]],
+    Dict[int, Dict[int, int]],
+]:
     '''Detect one stable task-handle whitelist per episode.'''
     requested_episode_set = (
         None
@@ -2233,6 +2231,8 @@ def _detect_task_relevant_handles(
         metadata_cache_dir=metadata_cache_dir,
     )
     handles_by_episode: Dict[int, Tuple[int, ...]] = {}
+    roles_by_episode: Dict[int, Dict[int, int]] = {}
+    groups_by_episode: Dict[int, Dict[int, int]] = {}
     progress = tqdm(
         sorted(selected.items()),
         desc=f'{task}: task handle detection',

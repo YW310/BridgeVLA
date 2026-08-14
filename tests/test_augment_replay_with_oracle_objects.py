@@ -30,6 +30,7 @@ from tools.augment_replay_with_oracle_objects import (
     _instance_boxes_for_mask,
     _episode_detection_sources,
     _episode_ids_for_selected_files,
+    _detect_task_relevant_handles,
     _load_current_gripper_states,
     _limit_episode_candidates,
     _open_gripper_prefix,
@@ -37,6 +38,7 @@ from tools.augment_replay_with_oracle_objects import (
     _resolve_task_cache_directory,
     _select_adaptive_robot_frames,
 )
+from tools.rlbench_task_handle_detector import TaskHandleDetection
 
 
 CAMERAS = ('front', 'left_shoulder', 'right_shoulder', 'wrist')
@@ -55,6 +57,55 @@ def point_cloud(offset):
 
 
 class OracleReplayAugmentationTest(unittest.TestCase):
+    def test_cached_task_detection_returns_slots_roles_and_groups(self):
+        detection = TaskHandleDetection(
+            episode_idx=3,
+            task_handles=(10, 11),
+            observed_handles=(10, 11),
+            interaction_handles=(10,),
+            adjacent_handles=(11,),
+            rejected_dynamic_handles=(),
+            background_handles=(),
+            sampled_frames=(0, 5),
+            target_handles=(10, 11),
+            reference_handles=(),
+            object_groups=((10, 11),),
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            cache_dir = Path(temporary)
+            (cache_dir / 'episode_0003.json').touch()
+            with (
+                patch(
+                    'tools.augment_replay_with_oracle_objects.'
+                    'load_task_handle_detection',
+                    return_value=detection,
+                ),
+                patch(
+                    'tools.augment_replay_with_oracle_objects.'
+                    '_episode_detection_sources',
+                    return_value={3: []},
+                ),
+            ):
+                slots, roles, groups = _detect_task_relevant_handles(
+                    'stack_blocks',
+                    [],
+                    Path('raw'),
+                    CAMERAS,
+                    (0,),
+                    {},
+                    16,
+                    cache_dir,
+                    False,
+                    False,
+                    None,
+                    None,
+                    0.60,
+                    show_progress=False,
+                )
+        self.assertEqual(slots, {3: (10,)})
+        self.assertEqual(roles, {3: {10: 1}})
+        self.assertEqual(groups, {3: {10: 10, 11: 10}})
+
     def test_visualization_output_directory_defaults_and_override(self):
         parser = build_parser()
         base = [

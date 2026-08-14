@@ -176,8 +176,7 @@ JSON 的 `object_groups` 和 `group_by_handle` 中。
 python tools/augment_replay_with_oracle_objects.py \
     --replay-dir LPY/BridgeVLA_RLBench_TINY_Buffer \
     --raw-data-dir LPY/BridgeVLA_RLBench_TINY_DATA/train \
-    --task stack_blocks \
-    --output-dir LPY/BridgeVLA_RLBench_TASK_OBJECT_Buffer \
+    --output-dir LPY/BridgeVLA_RLBench_TINY_TASK_OBJECT_Buffer \
     --detect-robot-handles \
     --robot-detection-frames 128 \
     --robot-detection-stride 5 \
