@@ -67,6 +67,7 @@ except ModuleNotFoundError:  # Direct execution: python tools/<script>.py
 DEFAULT_CAMERAS = ('front', 'left_shoulder', 'right_shoulder', 'wrist')
 DEFAULT_MAX_OBJECTS = 32
 DEFAULT_NUM_POINTS = 512
+RLBENCH_DEPTH_SCALE = 2**24 - 1
 REPLAY_METADATA_CACHE_VERSION = 1
 REPLAY_METADATA_CACHE_NAME = '.oracle_replay_metadata_v1.npz'
 MAX_VISUALIZATION_SCENE_POINTS = 30000
@@ -117,6 +118,16 @@ class OracleObjects:
             'oracle_object_ids': self.ids,
             'oracle_object_valid': self.valid,
         }
+
+
+@dataclass(frozen=True)
+class RobotFrameSelection:
+    '''Adaptive raw-frame prefix used to identify the robot.'''
+
+    sample_frames: Tuple[int, ...]
+    max_gripper_displacement: float
+    motion_sufficient: bool
+    stopped_on_close: bool
 
 
 class OracleFrameCache:
@@ -279,6 +290,88 @@ def load_frame_masks(
         with Image.open(mask_path) as image:
             masks[camera] = decode_mask_image(np.asarray(image), decoder=decoder)
     return masks
+
+
+def decode_depth_image(image: np.ndarray) -> np.ndarray:
+    '''Decode an RLBench fixed-point depth PNG to normalized depth in [0, 1].'''
+    image = np.asarray(image)
+    if image.ndim == 3 and image.shape[-1] in (3, 4):
+        rgb = image[..., :3].astype(np.float64, copy=False)
+        fixed = np.sum(rgb * np.array([65536.0, 256.0, 1.0]), axis=-1)
+        depth = fixed / float(RLBENCH_DEPTH_SCALE)
+    elif image.ndim == 2:
+        if np.issubdtype(image.dtype, np.integer):
+            scale = float(np.iinfo(image.dtype).max)
+        else:
+            scale = 1.0
+        depth = image.astype(np.float64, copy=False) / scale
+    else:
+        raise ValueError(f'Unsupported RLBench depth image shape: {image.shape}')
+    return depth.astype(np.float32, copy=False)
+
+
+def point_cloud_from_depth_and_camera_params(
+    depth: np.ndarray,
+    extrinsics: np.ndarray,
+    intrinsics: np.ndarray,
+) -> np.ndarray:
+    '''Convert metric camera depth to world coordinates using pure NumPy.'''
+    depth = np.asarray(depth, dtype=np.float64)
+    extrinsics = np.asarray(extrinsics, dtype=np.float64)
+    intrinsics = np.asarray(intrinsics, dtype=np.float64)
+    if depth.ndim != 2:
+        raise ValueError(f'depth must be [H, W]; got {depth.shape}')
+    if extrinsics.shape != (4, 4):
+        raise ValueError(f'extrinsics must be [4, 4]; got {extrinsics.shape}')
+    if intrinsics.shape != (3, 3):
+        raise ValueError(f'intrinsics must be [3, 3]; got {intrinsics.shape}')
+
+    rows, columns = np.indices(depth.shape, dtype=np.float64)
+    projected = np.stack(
+        (columns * depth, rows * depth, depth), axis=-1
+    )
+    camera_points = projected @ np.linalg.inv(intrinsics).T
+    rotation = extrinsics[:3, :3]
+    translation = extrinsics[:3, 3]
+    world_points = camera_points @ rotation.T + translation
+    return world_points.astype(np.float32, copy=False)
+
+
+def load_raw_frame_point_clouds(
+    episode_dir: Path,
+    sample_frame: int,
+    cameras: Sequence[str],
+    observation: object,
+) -> Dict[str, np.ndarray]:
+    '''Reconstruct raw RLBench point clouds aligned with the raw mask PNGs.'''
+    misc = getattr(observation, 'misc', None)
+    if not isinstance(misc, Mapping):
+        raise ValueError(
+            f'Raw observation frame {sample_frame} has no camera metadata'
+        )
+    point_clouds: Dict[str, np.ndarray] = {}
+    for camera in cameras:
+        depth_path = episode_dir / f'{camera}_depth' / f'{sample_frame}.png'
+        if not depth_path.is_file():
+            raise FileNotFoundError(
+                f'Missing {camera} depth for frame {sample_frame}: {depth_path}'
+            )
+        with Image.open(depth_path) as image:
+            normalized_depth = decode_depth_image(np.asarray(image))
+        try:
+            near = float(misc[f'{camera}_camera_near'])
+            far = float(misc[f'{camera}_camera_far'])
+            extrinsics = misc[f'{camera}_camera_extrinsics']
+            intrinsics = misc[f'{camera}_camera_intrinsics']
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(
+                f'Invalid {camera} camera metadata at frame {sample_frame}'
+            ) from exc
+        metric_depth = near + normalized_depth * (far - near)
+        point_clouds[camera] = point_cloud_from_depth_and_camera_params(
+            metric_depth, extrinsics, intrinsics
+        )
+    return point_clouds
 
 
 def load_frame_rgb_images(
@@ -1443,6 +1536,40 @@ def _load_or_scan_replay_metadata(
     return metadata
 
 
+def _limit_episode_candidates(
+    candidates: Sequence[object],
+    limit: int,
+    strategy: str,
+) -> List[object]:
+    '''Deterministically limit episode evidence without random sampling.'''
+    if strategy not in ('early', 'uniform'):
+        raise ValueError(f'Unknown episode sampling strategy: {strategy}')
+    values = list(candidates)
+    if len(values) <= limit:
+        return values
+    if strategy == 'early':
+        return values[:limit]
+    indices = np.linspace(
+        0, len(values) - 1, num=limit, dtype=np.int64
+    )
+    return [values[int(index)] for index in indices]
+
+
+def _open_gripper_prefix(
+    frame_sources: Sequence[Tuple[int, Path]],
+    gripper_openings: Mapping[int, float],
+) -> List[Tuple[int, Path]]:
+    '''Keep consecutive episode-start evidence before the first close event.'''
+    prefix = []
+    for sample_frame, source in frame_sources:
+        if gripper_openings[sample_frame] < 0.5:
+            break
+        prefix.append((sample_frame, source))
+    # One frame cannot provide motion evidence. Keep the original early sample
+    # as a compatibility fallback for unusual episodes that begin closed.
+    return prefix if len(prefix) >= 2 else list(frame_sources)
+
+
 def _episode_detection_sources(
     files: Sequence[Path],
     frames_per_episode: int,
@@ -1452,6 +1579,7 @@ def _episode_detection_sources(
     preserve_action_edges: bool = False,
     refresh_metadata_cache: bool = False,
     metadata_cache_dir: Optional[Path] = None,
+    sampling_strategy: str = 'uniform',
 ) -> Dict[int, List[Tuple[int, Path]]]:
     '''Merge augmented replay segments, then sample frames per raw episode.'''
     requested = (
@@ -1509,14 +1637,9 @@ def _episode_detection_sources(
                 # Each demo-augmentation start produces another replay segment
                 # with the same raw episode_idx. Sample each segment first, but
                 # merge all of them before applying the episode-wide limit.
-                if len(ordinary) > frames_per_episode:
-                    positions = np.linspace(
-                        0,
-                        len(ordinary) - 1,
-                        num=frames_per_episode,
-                        dtype=np.int64,
-                    )
-                    ordinary = [ordinary[int(position)] for position in positions]
+                ordinary = _limit_episode_candidates(
+                    ordinary, frames_per_episode, sampling_strategy
+                )
                 frame_sources = grouped.setdefault(episode_idx, {})
                 for index in ordinary:
                     source = files[index]
@@ -1547,16 +1670,9 @@ def _episode_detection_sources(
                     (key[0], source)
                     for key, source in sorted(by_edge.items())
                 ]
-                if len(candidates) > frames_per_episode:
-                    positions = np.linspace(
-                        0,
-                        len(candidates) - 1,
-                        num=frames_per_episode,
-                        dtype=np.int64,
-                    )
-                    candidates = [
-                        candidates[int(position)] for position in positions
-                    ]
+                candidates = _limit_episode_candidates(
+                    candidates, frames_per_episode, sampling_strategy
+                )
                 selected[episode_idx] = candidates
             return selected
 
@@ -1602,14 +1718,9 @@ def _episode_detection_sources(
             (key[0], source)
             for key, source in sorted(by_edge.items())
         ]
-        if len(candidates) > frames_per_episode:
-            indices = np.linspace(
-                0,
-                len(candidates) - 1,
-                num=frames_per_episode,
-                dtype=np.int64,
-            )
-            candidates = [candidates[int(index)] for index in indices]
+        candidates = _limit_episode_candidates(
+            candidates, frames_per_episode, sampling_strategy
+        )
         selected[episode_idx] = candidates
     return selected
 
@@ -1634,9 +1745,7 @@ def _episode_ids_for_selected_files(
     return tuple(sorted(episode_ids))
 
 
-def _load_current_gripper_states(
-    episode_dir: Path, sample_frames: Sequence[int]
-) -> Tuple[Dict[int, np.ndarray], Dict[int, float]]:
+def _load_low_dim_observations(episode_dir: Path) -> Sequence[object]:
     low_dim_path = episode_dir / 'low_dim_obs.pkl'
     if not low_dim_path.is_file():
         raise FileNotFoundError(
@@ -1644,6 +1753,20 @@ def _load_current_gripper_states(
         )
     with low_dim_path.open('rb') as stream:
         observations = pickle.load(stream)
+    try:
+        observation_count = len(observations)
+    except TypeError as exc:
+        raise ValueError(f'Invalid observations in {low_dim_path}') from exc
+    if observation_count == 0:
+        raise ValueError(f'No observations in {low_dim_path}')
+    return observations
+
+
+def _gripper_states_from_observations(
+    observations: Sequence[object],
+    sample_frames: Sequence[int],
+    source_name: object = 'low_dim_obs.pkl',
+) -> Tuple[Dict[int, np.ndarray], Dict[int, float]]:
     positions: Dict[int, np.ndarray] = {}
     openings: Dict[int, float] = {}
     for sample_frame in sample_frames:
@@ -1654,7 +1777,7 @@ def _load_current_gripper_states(
         except (IndexError, TypeError, AttributeError) as exc:
             raise ValueError(
                 f'Cannot read current gripper_pose for frame {sample_frame} '
-                f'from {low_dim_path}'
+                f'from {source_name}'
             ) from exc
         if pose.size < 3 or not np.isfinite(pose[:3]).all():
             raise ValueError(
@@ -1668,6 +1791,89 @@ def _load_current_gripper_states(
             )
         openings[sample_frame] = gripper_open
     return positions, openings
+
+
+def _load_current_gripper_states(
+    episode_dir: Path, sample_frames: Sequence[int]
+) -> Tuple[Dict[int, np.ndarray], Dict[int, float]]:
+    observations = _load_low_dim_observations(episode_dir)
+    return _gripper_states_from_observations(
+        observations,
+        sample_frames,
+        episode_dir / 'low_dim_obs.pkl',
+    )
+
+
+def _select_adaptive_robot_frames(
+    observations: Sequence[object],
+    *,
+    stride: int = 5,
+    initial_window: int = 100,
+    max_frames: int = 64,
+    motion_threshold: float = 0.02,
+) -> RobotFrameSelection:
+    '''Sample an open-gripper raw prefix and extend it only when motion is weak.'''
+    if stride <= 0 or max_frames <= 0:
+        raise ValueError('stride and max_frames must be positive')
+    if initial_window < 0:
+        raise ValueError('initial_window must be non-negative')
+    if motion_threshold < 0:
+        raise ValueError('motion_threshold must be non-negative')
+    if len(observations) == 0:
+        raise ValueError('observations must not be empty')
+
+    first_close: Optional[int] = None
+    for frame, observation in enumerate(observations):
+        try:
+            gripper_open = float(observation.gripper_open)
+        except (TypeError, AttributeError, ValueError) as exc:
+            raise ValueError(f'Invalid gripper_open at frame {frame}') from exc
+        if not np.isfinite(gripper_open):
+            raise ValueError(f'Invalid gripper_open at frame {frame}')
+        if gripper_open < 0.5:
+            first_close = frame
+            break
+
+    open_stop = len(observations) if first_close is None else first_close
+    candidates = list(range(0, open_stop, stride))
+    # Unusual episodes can begin closed. Preserve one frame so the wrist-view
+    # geometric seed can still produce a conservative result.
+    if not candidates:
+        candidates = [0]
+    initial = [frame for frame in candidates if frame <= initial_window]
+    selected = (initial or candidates[:1])[:max_frames]
+    positions, _ = _gripper_states_from_observations(observations, selected)
+    origin = positions[selected[0]]
+    max_displacement = max(
+        float(np.linalg.norm(positions[frame] - origin)) for frame in selected
+    )
+
+    motion_sufficient = max_displacement + 1e-8 >= motion_threshold
+    if not motion_sufficient and len(selected) < max_frames:
+        for frame in candidates[len(initial):]:
+            selected.append(frame)
+            position, _ = _gripper_states_from_observations(
+                observations, [frame]
+            )
+            max_displacement = max(
+                max_displacement,
+                float(np.linalg.norm(position[frame] - origin)),
+            )
+            motion_sufficient = max_displacement + 1e-8 >= motion_threshold
+            if motion_sufficient or len(selected) >= max_frames:
+                break
+
+    stopped_on_close = bool(
+        first_close is not None
+        and selected
+        and selected[-1] + stride >= first_close
+    )
+    return RobotFrameSelection(
+        sample_frames=tuple(selected),
+        max_gripper_displacement=max_displacement,
+        motion_sufficient=motion_sufficient,
+        stopped_on_close=stopped_on_close,
+    )
 
 
 def _load_current_gripper_positions(
@@ -1684,6 +1890,9 @@ def _detect_task_robot_handles(
     cameras: Sequence[str],
     excluded_ids: Iterable[int],
     frames_per_episode: int,
+    frame_stride: int,
+    initial_window: int,
+    motion_threshold: float,
     cache_dir: Path,
     refresh_cache: bool,
     write_cache: bool,
@@ -1701,6 +1910,13 @@ def _detect_task_robot_handles(
         if requested_episode_ids is None
         else {int(value) for value in requested_episode_ids}
     )
+    sampling_config = {
+        'source': 'raw_depth',
+        'stride': int(frame_stride),
+        'initial_window': int(initial_window),
+        'max_frames': int(frames_per_episode),
+        'motion_threshold': float(motion_threshold),
+    }
     cached_detections: Dict[int, RobotHandleDetection] = {}
     stale_cache_count = 0
     if not refresh_cache:
@@ -1715,7 +1931,9 @@ def _detect_task_robot_handles(
             ):
                 continue
             try:
-                detection = load_robot_handle_detection(path)
+                detection = load_robot_handle_detection(
+                    path, expected_sampling_config=sampling_config
+                )
                 if detection.episode_idx != episode_idx:
                     raise ValueError(
                         f'cache episode {detection.episode_idx} does not '
@@ -1732,12 +1950,13 @@ def _detect_task_robot_handles(
         )
     selected = _episode_detection_sources(
         files,
-        frames_per_episode,
+        1,
         requested_episode_ids=requested_episode_set,
         cached_episode_ids=cached_detections,
         show_progress=show_progress,
         refresh_metadata_cache=refresh_metadata_cache,
         metadata_cache_dir=metadata_cache_dir,
+        sampling_strategy='early',
     )
     handles_by_episode: Dict[int, Tuple[int, ...]] = {}
     progress = tqdm(
@@ -1756,22 +1975,47 @@ def _detect_task_robot_handles(
                     f'Robot cache missing frame sources for episode {episode_idx}'
                 )
             episode_dir = resolve_episode_dir(raw_data_dir, task, episode_idx)
-            sample_frames = [frame for frame, _ in frame_sources]
-            gripper_positions, gripper_openings = _load_current_gripper_states(
-                episode_dir, sample_frames
+            observations = _load_low_dim_observations(episode_dir)
+            selection = _select_adaptive_robot_frames(
+                observations,
+                stride=frame_stride,
+                initial_window=initial_window,
+                max_frames=frames_per_episode,
+                motion_threshold=motion_threshold,
+            )
+            sample_frames = list(selection.sample_frames)
+            gripper_positions, gripper_openings = (
+                _gripper_states_from_observations(
+                    observations,
+                    sample_frames,
+                    episode_dir / 'low_dim_obs.pkl',
+                )
+            )
+            tqdm.write(
+                f'{task} episode={episode_idx}: raw robot sampling '
+                f'count={len(sample_frames)} range='
+                f'{sample_frames[0]}-{sample_frames[-1]} stride={frame_stride} '
+                f'motion={selection.max_gripper_displacement:.4f}m '
+                f'sufficient={selection.motion_sufficient} '
+                f'stopped_on_close={selection.stopped_on_close}'
             )
             evidence = []
-            for sample_frame, source in frame_sources:
-                with source.open('rb') as stream:
-                    transition = pickle.load(stream)
+            frame_progress = tqdm(
+                sample_frames,
+                desc=f'{task} episode={episode_idx}: robot raw frames',
+                unit='frame',
+                dynamic_ncols=True,
+                leave=False,
+                disable=not show_progress,
+            )
+            for sample_frame in frame_progress:
                 masks = load_frame_masks(episode_dir, sample_frame, cameras)
-                point_clouds = {
-                    camera: _point_cloud_hwc(
-                        np.asarray(transition[f'{camera}_point_cloud']),
-                        f'{camera}_point_cloud',
-                    )
-                    for camera in cameras
-                }
+                point_clouds = load_raw_frame_point_clouds(
+                    episode_dir,
+                    sample_frame,
+                    cameras,
+                    observations[sample_frame],
+                )
                 evidence.append(
                     build_robot_frame_evidence(
                         sample_frame,
@@ -1784,7 +2028,17 @@ def _detect_task_robot_handles(
                 )
             detection = detect_robot_handles(episode_idx, evidence)
             if write_cache:
-                save_robot_handle_detection(cache_path, detection)
+                save_robot_handle_detection(
+                    cache_path,
+                    detection,
+                    sampling_config=sampling_config,
+                )
+            if not selection.motion_sufficient:
+                tqdm.write(
+                    f'{task} episode={episode_idx}: WARNING gripper moved only '
+                    f'{selection.max_gripper_displacement:.4f} m in the sampled '
+                    'open prefix; motion-based robot evidence is weak'
+                )
         handles_by_episode[episode_idx] = detection.robot_handles
         observed_handles = sorted(
             set(detection.robot_handles)
@@ -1985,6 +2239,9 @@ def process_task(
     auto_detect_robot_handles: bool,
     robot_handle_cache_dir: Path,
     robot_detection_frames: int,
+    robot_detection_stride: int,
+    robot_detection_window: int,
+    robot_motion_threshold: float,
     refresh_robot_handle_cache: bool,
     refresh_replay_metadata_cache: bool,
     replay_metadata_cache_dir: Optional[Path],
@@ -2034,6 +2291,9 @@ def process_task(
             cameras,
             excluded_ids,
             robot_detection_frames,
+            robot_detection_stride,
+            robot_detection_window,
+            robot_motion_threshold,
             robot_handle_cache_dir,
             refresh_robot_handle_cache,
             write_cache=not dry_run,
@@ -2440,8 +2700,35 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         '--robot-detection-frames',
         type=int,
-        default=8,
-        help='maximum temporally spread replay frames inspected per episode',
+        default=64,
+        help=(
+            'maximum raw frames inspected per episode after adaptive extension '
+            '(default: 64)'
+        ),
+    )
+    parser.add_argument(
+        '--robot-detection-stride',
+        type=int,
+        default=5,
+        help='raw-frame interval for robot evidence (default: 5)',
+    )
+    parser.add_argument(
+        '--robot-detection-window',
+        type=int,
+        default=100,
+        help=(
+            'initial inclusive raw-frame window starting at frame 0; extends '
+            'when gripper motion is insufficient (default: 100)'
+        ),
+    )
+    parser.add_argument(
+        '--robot-motion-threshold',
+        type=float,
+        default=0.02,
+        help=(
+            'minimum gripper displacement in metres before adaptive sampling '
+            'can stop (default: 0.02)'
+        ),
     )
     parser.add_argument(
         '--refresh-robot-handle-cache',
@@ -2540,6 +2827,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         raise ValueError('--cache-frames must be non-negative')
     if args.robot_detection_frames <= 0:
         raise ValueError('--robot-detection-frames must be positive')
+    if args.robot_detection_stride <= 0:
+        raise ValueError('--robot-detection-stride must be positive')
+    if args.robot_detection_window < 0:
+        raise ValueError('--robot-detection-window must be non-negative')
+    if args.robot_motion_threshold < 0:
+        raise ValueError('--robot-motion-threshold must be non-negative')
     if args.task_detection_frames <= 0:
         raise ValueError('--task-detection-frames must be positive')
     if args.task_prior_radius is not None and args.task_prior_radius <= 0:
@@ -2630,6 +2923,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             auto_detect_robot_handles=args.detect_robot_handles,
             robot_handle_cache_dir=robot_handle_cache_dir,
             robot_detection_frames=args.robot_detection_frames,
+            robot_detection_stride=args.robot_detection_stride,
+            robot_detection_window=args.robot_detection_window,
+            robot_motion_threshold=args.robot_motion_threshold,
             refresh_robot_handle_cache=args.refresh_robot_handle_cache,
             refresh_replay_metadata_cache=(
                 args.refresh_replay_metadata_cache

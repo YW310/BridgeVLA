@@ -83,6 +83,58 @@ bash train.sh --exp_cfg_path  configs/rlbench_config.yaml \
               --load_pretrain \
               --pretrain_path  LPY/BridgeVLA/checkpoints/RLBench/model_80.pth 
 ```
+
+### RLBench Raw → Replay 独立生成
+
+`tools/generate_rlbench_replay.py` 使用与训练入口完全相同的
+`create_replay()` / `fill_replay()` 实现，把已保存的 RLBench raw episode 转换为标准
+BridgeVLA/YARR replay。它会完成关键帧发现、demo augmentation、动作离散化、四相机观测、
+RN50 CLIP 语言特征、`replay_info.npy` 和 final-observation sentinel。请在已安装
+RLBench/PyRep/YARR/peract_colab 的 `bridgevla` 环境中，从仓库根目录运行。
+
+先仅检查任务和 episode：
+
+```bash
+python tools/generate_rlbench_replay.py \
+    --raw-data-dir LPY/BridgeVLA_RLBench_TRAIN_DATA \
+    --output-dir LPY/BridgeVLA_RLBench_TRAIN_Buffer \
+    --split train \
+    --task stack_blocks \
+    --start-episode 0 \
+    --num-demos 100 \
+    --demo-augmentation-every-n 10 \
+    --device cuda:0 \
+    --dry-run
+```
+
+确认路径和 episode 数量后移除 `--dry-run` 正式生成。输出位于
+`LPY/BridgeVLA_RLBench_TRAIN_Buffer/stack_blocks`，可直接作为下一节 Oracle 增强脚本的
+`--replay-dir`。如果 `--raw-data-dir` 已经指向 `.../train`，程序也会自动识别，
+不需要再次拼接 `train`。
+
+| 参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| `--raw-data-dir PATH` | 必填 | 数据集根目录、`train` split、单任务目录或 `episodes` 目录。 |
+| `--output-dir PATH` | 必填 | Replay 输出根目录；每个任务写入 `PATH/<task>`，必须与 raw 路径相互独立。 |
+| `--split NAME` | `train` | raw 根目录下的 split 名。 |
+| `--task NAME` | `all` | 任务名、逗号分隔任务名或 `all`；可重复传入。 |
+| `--start-episode N` | `0` | 第一个 raw episode 编号。 |
+| `--num-demos N` | 从起点到最后 | 连续 episode 数量；若范围内缺号会在生成前报错。 |
+| `--demo-augmentation-every-n N` | `10` | 每隔 N 个 raw 帧创建一个 demo augmentation replay 子序列，与原训练默认值一致。 |
+| `--no-demo-augmentation` | 关闭 | 每个 episode 只从起始帧生成一个子序列，数据更少且与默认训练数据分布不同。 |
+| `--device DEVICE` | `auto` | CLIP 特征设备；`auto` 优先 `cuda:0`，也可指定 `cpu` 或其他 CUDA 卡。 |
+| `--clip-model NAME_OR_PATH` | `RN50` | OpenAI CLIP 名称或本地权重路径；首次使用名称时可能需要下载权重。 |
+| `--batch-size N` | `1` | YARR replay schema 的 batch size；不影响生成的 transition 内容。 |
+| `--replay-capacity N` | `300000` | 内部 UniformReplayBuffer 容量。 |
+| `--dry-run` | 关闭 | 只发现并检查输入，不加载 CLIP、不创建输出。 |
+| `--skip-existing` | 关闭 | 校验已有任务 replay 后跳过；不会补写不完整目录。 |
+| `--overwrite` | 关闭 | 删除并重建已存在的精确任务输出；与 `--skip-existing` 互斥。 |
+
+生成时先写入 `<output-dir>/.<task>.raw_to_replay.tmp`。只有 replay 文件连续、
+`replay_info.npy` 长度一致且普通 transition/final sentinel 校验通过后，才会原子改名为
+正式任务目录。若程序中断，临时目录会保留用于检查；确认无需保留后使用
+`--overwrite` 重新生成。
+
 ### RLBench Oracle 3D 物体 Replay 数据准备
 
 `tools/augment_replay_with_oracle_objects.py` 可直接为已有 BridgeVLA replay 追加
@@ -120,7 +172,10 @@ python tools/augment_replay_with_oracle_objects.py \
     --task stack_blocks \
     --output-dir LPY/BridgeVLA_RLBench_TASK_OBJECT_Buffer \
     --detect-robot-handles \
-    --robot-detection-frames 16 \
+    --robot-detection-frames 64 \
+    --robot-detection-stride 5 \
+    --robot-detection-window 100 \
+    --robot-motion-threshold 0.02 \
     --temporal-id-matching \
     --task-detection-frames 16 \
     --task-prior-filter \
@@ -160,8 +215,11 @@ python tools/augment_replay_with_oracle_objects.py \
 | 时序任务 | `--task-detection-frames N` | `16` | 每个 episode 均匀抽取的最大检测帧数；长 episode 可提高到 `24` 或 `32`。 |
 | 时序匹配 | `--task-handle-cache-dir PATH` | `<output-dir>/<task>/task_handle_maps` | episode 稳定 slot 与 task handle JSON 缓存；显式 PATH 作为根目录并追加 task 名。 |
 | 时序任务 | `--refresh-task-handle-cache` | 关闭 | 忽略已有 task handle JSON 并重新检测。 |
-| 机器人 | `--detect-robot-handles` | 关闭 | 检测 wrist 稳定的夹爪 seed，并沿持续邻接的运动学链扩展到机械臂及静止底座；被抓物体加入 `grasped_handles` 保护集合。 |
-| 机器人 | `--robot-detection-frames N` | `8` | 每个 episode 均匀抽取的最大机器人检测帧数；长 episode 可设为 `12` 或 `16`，提高捕获夹爪闭合事件的概率。 |
+| 机器人 | `--detect-robot-handles` | 关闭 | 检测 wrist 稳定的夹爪 seed，并沿持续邻接的运动学链扩展到机械臂及静止底座；只使用第一次闭合前的前缀，避免把被抓物体当作机器人。 |
+| 机器人 | `--robot-detection-frames N` | `64` | 自适应扩展时最多读取的 raw 证据帧数；正常有运动时通常只读取初始窗口的 21 帧。 |
+| 机器人 | `--robot-detection-stride N` | `5` | raw 帧采样间隔；默认依次读取 `0, 5, 10, ...`。 |
+| 机器人 | `--robot-detection-window N` | `100` | 从 raw 帧 0 开始的初始闭区间；运动不足时才在该窗口之后继续扩展。 |
+| 机器人 | `--robot-motion-threshold METRES` | `0.02` | 初始位置到采样位置的最大夹爪位移达到该值后，认为已有足够运动证据。 |
 | 机器人 | `--robot-handle-cache-dir PATH` | `<output-dir>/<task>/robot_handle_maps` | episode robot handle JSON 缓存；显式 PATH 作为根目录并追加 task 名。 |
 | 机器人 | `--refresh-robot-handle-cache` | 关闭 | 忽略已有 robot handle JSON 并重新检测。 |
 | 性能 | `--refresh-replay-metadata-cache` | 关闭 | 强制重建 replay 元数据索引；仅在同名 `.replay` 被原地改写时使用，日常运行不要添加。 |
@@ -185,29 +243,32 @@ python tools/augment_replay_with_oracle_objects.py \
   handle 追加到稳定映射；`rejected_dynamic_handles` 仅作为诊断和优先级证据，不会由
   temporal 模式删除。某个稳定 handle 在当前帧不可见时保留该 slot，写入
   `valid=False`；其他可见 handle 会使用剩余 slot。
-- Robot 检测只使用 raw observation 中的当前夹爪位姿与 `gripper_open`。夹爪 seed 以
+- Robot 检测使用 raw observation 中的当前夹爪位姿、`gripper_open`、GT mask 和 raw
+  depth。depth 会用同帧相机内外参重建世界坐标点云，与 mask 像素严格对齐。夹爪 seed 以
   wrist 图像稳定性为主，并允许夹爪旋转造成的世界坐标偏移、部分遮挡及距离离群；严格
   评分没有 seed 时会从 wrist 稳定候选恢复 seed。arm 扩展先确认紧邻夹爪的移动 link，
   再沿 episode 早期已连接且持续邻接的运动学链扩展，因此可覆盖运动较少的机械臂底座。
-  夹爪张开阶段若
-  夹爪持续运动而某实例基本静止，该实例不会判为机器人；某实例在夹爪闭合前不随动、
-  闭合后开始跟随夹爪时，会加入 `grasped_handles`。`grasped_handles` 会从机器人硬删除
-  集合中强制移除；早期静止或证据不足的实例也只进入 `ambiguous_handles`，不会加入
-  `excluded_object_ids`。task prior 和时序任务筛选会
+  默认在 `0–100` raw 帧内每隔 5 帧取样；若夹爪相对第 0 帧的最大位移不足 2 cm，则继续
+  按相同间隔向后扩展，直到运动足够、达到帧数上限、episode 结束或夹爪第一次闭合。
+  若一直静止会打印 `motion-based robot evidence is weak`，提示运动证据不足。检测只使用
+  第一次闭合之前的前缀，因此不会把随后被夹起并跟随夹爪运动的任务物体当成机械臂。
+  夹爪持续运动而某实例基本静止时，该实例不会判为机器人；证据不足的实例只进入
+  `ambiguous_handles`，不会加入 `excluded_object_ids`。task prior 和时序任务筛选会
   使用 replay 的下一关键动作，因此属于 action-conditioned Oracle 离线标注，不是
   无标签推理阶段的公平筛选器。整个流程不调用 Qwen 或 SAM。
 - Replay 文件编号按写入顺序排列，但 `sample_frame` 是稀疏关键帧，不保证 raw 帧号
   连续；`terminal == -1` 分隔的是 replay 子序列。Demo augmentation 可能让同一个
-  `episode_idx` 出现多段子序列，检测器会先合并全部分段，再执行 episode 级均匀
-  采样。Robot 按 `(episode_idx, sample_frame)` 去重，task 按
+  `episode_idx` 出现多段子序列。Robot 只借助 replay metadata 确定 episode，检测证据
+  直接来自 episode 前部等间隔的 raw 帧；检测出的稳定 handle ID 会应用到后续整个
+  episode。task 仍执行 episode 级 replay 均匀采样，并按
   `(episode_idx, sample_frame, next_keypoint_frame)` 保留不同动作边。
 - 提供 `--output-dir` 时，Task 缓存位于
   `<output-dir>/<task>/task_handle_maps/episode_NNNN.json`，robot 缓存位于
   `<output-dir>/<task>/robot_handle_maps/episode_NNNN.json`。显式指定对应的
   `--*-handle-cache-dir PATH` 时使用 `PATH/<task>/episode_NNNN.json`，避免多任务间
-  episode 文件重名。修改检测帧数、半径或实例限制后应使用
-  对应的 `--refresh-*-handle-cache`；修复前生成的旧版 task/robot 缓存会自动失效并
-  重新检测。
+  episode 文件重名。Robot cache 会记录 raw 采样间隔、窗口、帧数上限和运动阈值；
+  修改这些参数时会自动失效。修改 task 检测帧数、半径或实例限制后仍应使用
+  `--refresh-task-handle-cache`；修复前生成的旧版 task/robot 缓存也会自动失效。
 - 缺少可用的 `replay_info.npy` 时，首次运行必须读取每个 `.replay` 的 metadata，并写入
   `.oracle_replay_metadata_v1.npz`。提供 `--output-dir` 时，缓存位于对应的输出 task
   目录（包括 dry-run）；未提供输出目录或使用 `--in-place` 时才写入输入 replay 目录。
@@ -246,7 +307,7 @@ python tools/augment_replay_with_oracle_objects.py \
   `<output-dir>/<task>/robot_handle_maps/episode_NNNN.json`：只有
   `gripper_handles` 和
   `arm_handles` 会硬删除；`grasped_handles` 是被抓物体保护集合，
-  `ambiguous_handles` 仅供诊断。旧 v6 robot cache 会自动失效；重新生成 robot 结果后
+  `ambiguous_handles` 仅供诊断。旧版 robot cache 会自动失效；重新生成 robot 结果后
   也应刷新 task cache。
 - 图片标题切换到新的 `episode_idx` 时，会改用另一份 episode cache；这不是同一
   episode 内 ID 突变。`sentinel=True` 对应 `terminal == -1` 填充 transition，保存的
@@ -258,7 +319,10 @@ python tools/augment_replay_with_oracle_objects.py \
 
 ```bash
 --detect-robot-handles \
---robot-detection-frames 16 \
+--robot-detection-frames 64 \
+--robot-detection-stride 5 \
+--robot-detection-window 100 \
+--robot-motion-threshold 0.02 \
 --refresh-robot-handle-cache \
 --temporal-id-matching \
 --task-detection-frames 32 \

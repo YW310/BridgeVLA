@@ -11,7 +11,7 @@ import numpy as np
 
 
 Bounds = Tuple[np.ndarray, np.ndarray]
-ROBOT_DETECTOR_METHOD = 'wrist_pose_temporal_adjacency_v7_kinematic_chain'
+ROBOT_DETECTOR_METHOD = 'wrist_pose_temporal_adjacency_v10_raw_adaptive_prefix'
 
 
 @dataclass(frozen=True)
@@ -630,24 +630,42 @@ def detect_robot_handles(
 
 
 def save_robot_handle_detection(
-    path: Path, detection: RobotHandleDetection
+    path: Path,
+    detection: RobotHandleDetection,
+    sampling_config: Optional[Mapping[str, object]] = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = Path(f'{path}.tmp')
+    payload = detection.as_json()
+    if sampling_config is not None:
+        payload['sampling_config'] = dict(sampling_config)
     temporary.write_text(
-        json.dumps(detection.as_json(), indent=2, sort_keys=True),
+        json.dumps(payload, indent=2, sort_keys=True),
         encoding='utf-8',
     )
     temporary.replace(path)
 
 
-def load_robot_handle_detection(path: Path) -> RobotHandleDetection:
+def load_robot_handle_detection(
+    path: Path,
+    expected_sampling_config: Optional[Mapping[str, object]] = None,
+) -> RobotHandleDetection:
     payload = json.loads(path.read_text(encoding='utf-8'))
     method = payload.get('method')
     if method != ROBOT_DETECTOR_METHOD:
         raise ValueError(
             f'Stale robot-handle cache method {method!r}; '
             f'expected {ROBOT_DETECTOR_METHOD!r}'
+        )
+    cached_sampling_config = payload.get('sampling_config')
+    if (
+        expected_sampling_config is not None
+        and cached_sampling_config != dict(expected_sampling_config)
+    ):
+        raise ValueError(
+            'Stale robot-handle cache sampling configuration '
+            f'{cached_sampling_config!r}; '
+            f'expected {dict(expected_sampling_config)!r}'
         )
     return RobotHandleDetection(
         episode_idx=int(payload['episode_idx']),

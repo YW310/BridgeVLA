@@ -317,6 +317,35 @@ class RLBenchRobotHandleDetectorTest(unittest.TestCase):
             loaded = load_robot_handle_detection(path)
         self.assertEqual(loaded, detection)
 
+    def test_json_cache_rejects_changed_sampling_configuration(self):
+        frames = [
+            RobotFrameEvidence(
+                sample_frame=0,
+                gripper_position=np.array([0.0, 0.0, 0.8]),
+                bounds_by_id={5: bounds([0.0, 0.0, 0.8])},
+                centers_by_id={5: np.array([0.0, 0.0, 0.8])},
+                wrist_centroids_by_id={5: np.array([0.5, 0.5])},
+            )
+        ]
+        detection = detect_robot_handles(7, frames)
+        config = {
+            'source': 'raw_depth',
+            'stride': 5,
+            'initial_window': 100,
+            'max_frames': 64,
+            'motion_threshold': 0.02,
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'episode_0007.json'
+            save_robot_handle_detection(path, detection, config)
+            loaded = load_robot_handle_detection(path, config)
+            self.assertEqual(loaded, detection)
+            changed = dict(config, stride=10)
+            with self.assertRaisesRegex(
+                ValueError, 'sampling configuration'
+            ):
+                load_robot_handle_detection(path, changed)
+
     def test_old_cache_method_is_rejected(self):
         payload = {
             'episode_idx': 7,

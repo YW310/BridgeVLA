@@ -14,10 +14,12 @@ from tools.augment_replay_with_oracle_objects import (
     OracleFrameCache,
     atomic_write_replay,
     augment_transition,
+    decode_depth_image,
     decode_mask_image,
     extract_oracle_objects,
     build_parser,
     load_frame_rgb_images,
+    point_cloud_from_depth_and_camera_params,
     visualize_oracle_objects,
     _bounded_thread_map,
     _select_dry_run_files,
@@ -29,8 +31,11 @@ from tools.augment_replay_with_oracle_objects import (
     _episode_detection_sources,
     _episode_ids_for_selected_files,
     _load_current_gripper_states,
+    _limit_episode_candidates,
+    _open_gripper_prefix,
     _REPLAY_METADATA_MEMORY_CACHE,
     _resolve_task_cache_directory,
+    _select_adaptive_robot_frames,
 )
 
 
@@ -91,12 +96,30 @@ class OracleReplayAugmentationTest(unittest.TestCase):
                 '--detect-robot-handles',
                 '--robot-detection-frames',
                 '6',
+                '--robot-detection-stride',
+                '4',
+                '--robot-detection-window',
+                '80',
+                '--robot-motion-threshold',
+                '0.03',
                 '--refresh-replay-metadata-cache',
             ]
         )
         self.assertTrue(args.detect_robot_handles)
         self.assertEqual(args.robot_detection_frames, 6)
+        self.assertEqual(args.robot_detection_stride, 4)
+        self.assertEqual(args.robot_detection_window, 80)
+        self.assertAlmostEqual(args.robot_motion_threshold, 0.03)
         self.assertTrue(args.refresh_replay_metadata_cache)
+
+    def test_robot_sampling_defaults_cover_raw_frames_zero_through_100(self):
+        args = build_parser().parse_args(
+            ['--replay-dir', 'replay', '--raw-data-dir', 'raw']
+        )
+        self.assertEqual(args.robot_detection_frames, 64)
+        self.assertEqual(args.robot_detection_stride, 5)
+        self.assertEqual(args.robot_detection_window, 100)
+        self.assertAlmostEqual(args.robot_motion_threshold, 0.02)
 
     def test_handle_cache_defaults_follow_output_and_explicit_path_wins(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -129,6 +152,31 @@ class OracleReplayAugmentationTest(unittest.TestCase):
         self.assertEqual(
             [path.name for path in selected],
             ['0.replay', '3.replay', '6.replay', '9.replay'],
+        )
+
+    def test_robot_sampling_keeps_only_early_sequence(self):
+        candidates = list(range(20))
+        selected = _limit_episode_candidates(
+            candidates, limit=8, strategy='early'
+        )
+        self.assertEqual(selected, list(range(8)))
+        self.assertEqual(
+            _limit_episode_candidates(
+                candidates, limit=4, strategy='uniform'
+            ),
+            [0, 6, 12, 19],
+        )
+
+    def test_robot_sampling_stops_at_first_gripper_close(self):
+        frame_sources = [
+            (index, Path(f'{index}.replay')) for index in range(5)
+        ]
+        selected = _open_gripper_prefix(
+            frame_sources,
+            {0: 1.0, 1: 1.0, 2: 0.0, 3: 1.0, 4: 1.0},
+        )
+        self.assertEqual(
+            [sample_frame for sample_frame, _ in selected], [0, 1]
         )
 
     def test_robot_detection_uses_replay_info_and_requested_episodes(self):
@@ -191,6 +239,62 @@ class OracleReplayAugmentationTest(unittest.TestCase):
         np.testing.assert_allclose(positions[0], [0.1, 0.2, 0.3])
         np.testing.assert_allclose(positions[1], [0.4, 0.5, 0.6])
         self.assertEqual(openings, {1: 0.0, 0: 1.0})
+
+    def test_adaptive_robot_sampling_extends_static_initial_window(self):
+        observations = [
+            SimpleNamespace(
+                gripper_pose=[
+                    max(0, frame - 100) * 0.001,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0,
+                ],
+                gripper_open=1.0,
+            )
+            for frame in range(151)
+        ]
+        selected = _select_adaptive_robot_frames(
+            observations,
+            stride=5,
+            initial_window=100,
+            max_frames=64,
+            motion_threshold=0.02,
+        )
+        self.assertEqual(selected.sample_frames[:3], (0, 5, 10))
+        self.assertEqual(selected.sample_frames[-1], 120)
+        self.assertTrue(selected.motion_sufficient)
+        self.assertAlmostEqual(selected.max_gripper_displacement, 0.02)
+
+    def test_adaptive_robot_sampling_never_crosses_first_close(self):
+        observations = [
+            SimpleNamespace(
+                gripper_pose=[frame * 0.001, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+                gripper_open=0.0 if frame >= 43 else 1.0,
+            )
+            for frame in range(100)
+        ]
+        selected = _select_adaptive_robot_frames(observations)
+        self.assertEqual(selected.sample_frames, tuple(range(0, 43, 5)))
+        self.assertTrue(selected.stopped_on_close)
+
+    def test_adaptive_robot_sampling_reports_static_gripper(self):
+        observations = [
+            SimpleNamespace(
+                gripper_pose=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+                gripper_open=1.0,
+            )
+            for _ in range(150)
+        ]
+        selected = _select_adaptive_robot_frames(
+            observations, max_frames=25
+        )
+        self.assertEqual(len(selected.sample_frames), 25)
+        self.assertEqual(selected.sample_frames[-1], 120)
+        self.assertFalse(selected.motion_sufficient)
+        self.assertEqual(selected.max_gripper_displacement, 0.0)
 
     def test_episode_sources_merge_augmented_segments_and_task_action_edges(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -469,6 +573,35 @@ class OracleReplayAugmentationTest(unittest.TestCase):
 
         decoded = decode_mask_image(encoded, decoder=decoder)
         self.assertEqual(decoded.tolist(), [[0, 1]])
+
+    def test_decodes_rlbench_rgb_depth_fixed_point_values(self):
+        encoded = np.array(
+            [[[0, 0, 0], [128, 0, 0], [255, 255, 255]]],
+            dtype=np.uint8,
+        )
+        decoded = decode_depth_image(encoded)
+        np.testing.assert_allclose(
+            decoded,
+            [[0.0, 8388608.0 / 16777215.0, 1.0]],
+            rtol=1e-7,
+        )
+
+    def test_reconstructs_world_point_cloud_from_depth(self):
+        cloud = point_cloud_from_depth_and_camera_params(
+            np.ones((2, 2), dtype=np.float32),
+            np.eye(4, dtype=np.float32),
+            np.eye(3, dtype=np.float32),
+        )
+        np.testing.assert_allclose(
+            cloud,
+            np.array(
+                [
+                    [[0.0, 0.0, 1.0], [1.0, 0.0, 1.0]],
+                    [[0.0, 1.0, 1.0], [1.0, 1.0, 1.0]],
+                ],
+                dtype=np.float32,
+            ),
+        )
 
     def test_loads_all_available_raw_rgb_camera_views(self):
         with tempfile.TemporaryDirectory() as temporary:
