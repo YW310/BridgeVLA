@@ -139,6 +139,99 @@ class OracleReplayAugmentationTest(unittest.TestCase):
             )
             self.assertEqual(cached, {1: []})
 
+    def test_episode_sources_merge_augmented_segments_and_task_action_edges(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            transitions = [
+                {
+                    'terminal': 0,
+                    'episode_idx': 3,
+                    'sample_frame': 0,
+                    'next_keypoint_frame': 5,
+                },
+                {
+                    'terminal': 1,
+                    'episode_idx': 3,
+                    'sample_frame': 5,
+                    'next_keypoint_frame': 10,
+                },
+                {'terminal': -1},
+                {
+                    'terminal': 0,
+                    'episode_idx': 3,
+                    'sample_frame': 2,
+                    'next_keypoint_frame': 5,
+                },
+                {
+                    'terminal': 1,
+                    'episode_idx': 3,
+                    'sample_frame': 5,
+                    'next_keypoint_frame': 12,
+                },
+                {'terminal': -1},
+            ]
+            files = []
+            for index, transition in enumerate(transitions):
+                source = root / f'{index}.replay'
+                with source.open('wb') as stream:
+                    pickle.dump(transition, stream)
+                files.append(source)
+            with (root / 'replay_info.npy').open('wb') as stream:
+                np.save(
+                    stream,
+                    np.array([0, 1, -1, 0, 1, -1], dtype=np.int8),
+                )
+
+            robot_sources = _episode_detection_sources(
+                files,
+                frames_per_episode=10,
+                show_progress=False,
+            )
+            self.assertEqual(
+                [sample_frame for sample_frame, _ in robot_sources[3]],
+                [0, 2, 5],
+            )
+
+            task_sources = _episode_detection_sources(
+                files,
+                frames_per_episode=10,
+                show_progress=False,
+                preserve_action_edges=True,
+            )
+            self.assertEqual(
+                [sample_frame for sample_frame, _ in task_sources[3]],
+                [0, 2, 5, 5],
+            )
+            self.assertEqual(
+                [int(source.stem) for _, source in task_sources[3]],
+                [0, 3, 1, 4],
+            )
+
+    def test_fallback_scan_preserves_distinct_task_action_edges(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            files = []
+            for index, next_frame in enumerate((10, 12)):
+                source = root / f'{index}.replay'
+                with source.open('wb') as stream:
+                    pickle.dump(
+                        {
+                            'terminal': 0,
+                            'episode_idx': 4,
+                            'sample_frame': 5,
+                            'next_keypoint_frame': next_frame,
+                        },
+                        stream,
+                    )
+                files.append(source)
+            selected = _episode_detection_sources(
+                files,
+                frames_per_episode=10,
+                show_progress=False,
+                preserve_action_edges=True,
+            )
+            self.assertEqual(len(selected[4]), 2)
+
     def test_dry_run_episode_ids_recover_final_sentinel_from_previous(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

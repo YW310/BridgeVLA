@@ -1228,8 +1228,9 @@ def _episode_detection_sources(
     requested_episode_ids: Optional[Iterable[int]] = None,
     cached_episode_ids: Iterable[int] = (),
     show_progress: bool = True,
+    preserve_action_edges: bool = False,
 ) -> Dict[int, List[Tuple[int, Path]]]:
-    '''Select deterministic, temporally spread replay frames per episode.'''
+    '''Merge augmented replay segments, then sample frames per raw episode.'''
     requested = (
         None
         if requested_episode_ids is None
@@ -1255,11 +1256,11 @@ def _episode_detection_sources(
             if segment:
                 segments.append(segment)
 
-            selected: Dict[int, List[Tuple[int, Path]]] = {}
+            grouped: Dict[int, Dict[Tuple[int, int], Path]] = {}
             progress = tqdm(
                 segments,
-                desc='robot detection: episode index',
-                unit='episode',
+                desc='episode detection: replay segments',
+                unit='segment',
                 dynamic_ncols=True,
                 disable=not show_progress,
             )
@@ -1280,8 +1281,11 @@ def _episode_detection_sources(
                 if requested is not None and episode_idx not in requested:
                     continue
                 if episode_idx in cached:
-                    selected[episode_idx] = []
+                    grouped.setdefault(episode_idx, {})
                     continue
+                # Each demo-augmentation start produces another replay segment
+                # with the same raw episode_idx. Sample each segment first, but
+                # merge all of them before applying the episode-wide limit.
                 if len(ordinary) > frames_per_episode:
                     positions = np.linspace(
                         0,
@@ -1290,7 +1294,7 @@ def _episode_detection_sources(
                         dtype=np.int64,
                     )
                     ordinary = [ordinary[int(position)] for position in positions]
-                frame_sources: Dict[int, Path] = {}
+                frame_sources = grouped.setdefault(episode_idx, {})
                 for index in ordinary:
                     source = files[index]
                     transition = anchor if source == anchor_source else None
@@ -1302,16 +1306,43 @@ def _episode_detection_sources(
                     sample_frame = int(
                         np.asarray(transition['sample_frame']).item()
                     )
-                    frame_sources.setdefault(sample_frame, source)
-                selected[episode_idx] = sorted(frame_sources.items())
+                    next_keypoint_frame = sample_frame
+                    if (
+                        preserve_action_edges
+                        and 'next_keypoint_frame' in transition
+                    ):
+                        next_keypoint_frame = int(
+                            np.asarray(transition['next_keypoint_frame']).item()
+                        )
+                    frame_sources.setdefault(
+                        (sample_frame, next_keypoint_frame), source
+                    )
+
+            selected: Dict[int, List[Tuple[int, Path]]] = {}
+            for episode_idx, by_edge in grouped.items():
+                candidates = [
+                    (key[0], source)
+                    for key, source in sorted(by_edge.items())
+                ]
+                if len(candidates) > frames_per_episode:
+                    positions = np.linspace(
+                        0,
+                        len(candidates) - 1,
+                        num=frames_per_episode,
+                        dtype=np.int64,
+                    )
+                    candidates = [
+                        candidates[int(position)] for position in positions
+                    ]
+                selected[episode_idx] = candidates
             return selected
 
     # Compatibility fallback for old replay folders without replay_info.npy.
     # This is slower because every large replay pickle must be opened.
-    grouped: Dict[int, Dict[int, Path]] = {}
+    grouped: Dict[int, Dict[Tuple[int, int], Path]] = {}
     progress = tqdm(
         files,
-        desc='robot detection: replay metadata scan',
+        desc='episode detection: replay metadata scan',
         unit='replay',
         dynamic_ncols=True,
         disable=not show_progress,
@@ -1330,11 +1361,21 @@ def _episode_detection_sources(
             grouped.setdefault(episode_idx, {})
             continue
         sample_frame = int(np.asarray(transition['sample_frame']).item())
-        grouped.setdefault(episode_idx, {}).setdefault(sample_frame, source)
+        next_keypoint_frame = sample_frame
+        if preserve_action_edges and 'next_keypoint_frame' in transition:
+            next_keypoint_frame = int(
+                np.asarray(transition['next_keypoint_frame']).item()
+            )
+        grouped.setdefault(episode_idx, {}).setdefault(
+            (sample_frame, next_keypoint_frame), source
+        )
 
     selected: Dict[int, List[Tuple[int, Path]]] = {}
-    for episode_idx, by_frame in grouped.items():
-        candidates = sorted(by_frame.items())
+    for episode_idx, by_edge in grouped.items():
+        candidates = [
+            (key[0], source)
+            for key, source in sorted(by_edge.items())
+        ]
         if len(candidates) > frames_per_episode:
             indices = np.linspace(
                 0,
@@ -1567,6 +1608,7 @@ def _detect_task_relevant_handles(
         requested_episode_ids=requested_episode_set,
         cached_episode_ids=cached_detections,
         show_progress=show_progress,
+        preserve_action_edges=True,
     )
     handles_by_episode: Dict[int, Tuple[int, ...]] = {}
     progress = tqdm(

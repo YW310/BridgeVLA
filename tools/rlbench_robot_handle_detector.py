@@ -11,7 +11,7 @@ import numpy as np
 
 
 Bounds = Tuple[np.ndarray, np.ndarray]
-ROBOT_DETECTOR_METHOD = 'wrist_pose_temporal_adjacency_v2'
+ROBOT_DETECTOR_METHOD = 'wrist_pose_temporal_adjacency_v3'
 
 
 @dataclass(frozen=True)

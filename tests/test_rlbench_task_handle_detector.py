@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -109,6 +110,23 @@ class RLBenchTaskHandleDetectorTest(unittest.TestCase):
             save_task_handle_detection(path, detection)
             loaded = load_task_handle_detection(path)
         self.assertEqual(loaded, detection)
+
+    def test_old_cache_method_is_rejected(self):
+        payload = {
+            'episode_idx': 5,
+            'task_handles': [10],
+            'interaction_handles': [10],
+            'adjacent_handles': [],
+            'rejected_dynamic_handles': [],
+            'background_handles': [],
+            'sampled_frames': [0, 5],
+            'method': 'episode_action_trajectory_v1',
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'episode_0005.json'
+            path.write_text(json.dumps(payload), encoding='utf-8')
+            with self.assertRaisesRegex(ValueError, 'Stale task-handle cache'):
+                load_task_handle_detection(path)
 
 
 if __name__ == '__main__':

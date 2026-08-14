@@ -188,9 +188,15 @@ python tools/augment_replay_with_oracle_objects.py \
 - Robot 检测只使用 raw observation 中的当前夹爪位姿；task prior 和时序任务筛选会
   使用 replay 的下一关键动作，因此属于 action-conditioned Oracle 离线标注，不是
   无标签推理阶段的公平筛选器。整个流程不调用 Qwen 或 SAM。
+- Replay 文件编号按写入顺序排列，但 `sample_frame` 是稀疏关键帧，不保证 raw 帧号
+  连续；`terminal == -1` 分隔的是 replay 子序列。Demo augmentation 可能让同一个
+  `episode_idx` 出现多段子序列，检测器会先合并全部分段，再执行 episode 级均匀
+  采样。Robot 按 `(episode_idx, sample_frame)` 去重，task 按
+  `(episode_idx, sample_frame, next_keypoint_frame)` 保留不同动作边。
 - Task 缓存位于 `task_handle_maps/<task>/episode_NNNN.json`，robot 缓存位于
   `robot_handle_maps/<task>/episode_NNNN.json`。修改检测帧数、半径或实例限制后应使用
-  对应的 `--refresh-*-handle-cache`；旧版 robot v1 缓存会自动失效。
+  对应的 `--refresh-*-handle-cache`；修复前生成的旧版 task/robot 缓存会自动失效并
+  重新检测。
 - `dry-run` 会打印 `excluded_object_ids`、`no_finite_point_object_ids`、
   `small_object_ids`、`task_prior_filtered_object_ids`、
   `temporal_filtered_object_ids` 和 `truncated_object_ids`。若缺失 ID 不在这些列表中，
@@ -209,7 +215,8 @@ python tools/augment_replay_with_oracle_objects.py \
 
 - 如果 `task handles` 本身只有一个，说明 episode 白名单过窄。当前保护逻辑只在
   0 个候选时启用最近实例 fallback；恰好检测到 1 个候选时会直接保留这一个。常见
-  原因是 16 个抽样帧漏过短暂交互、交互半径偏小，或复用了旧 task cache。
+  原因是 episode 合并后 16 个抽样帧仍漏过短暂交互，或交互半径偏小。旧版按分段
+  覆盖同一 episode 的问题已修复，旧 cache 会通过版本号自动失效。
 - 如果 `task handles` 有多个，但某个 replay 只剩一个，检查 dry-run 输出：
   `excluded_object_ids` 表示被 robot/手工 ID 排除，`temporal_filtered_object_ids`
   表示不在 episode 白名单，`small_object_ids` 表示点数不足，

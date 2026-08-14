@@ -16,7 +16,7 @@ except ModuleNotFoundError:  # Direct execution: python tools/<script>.py
 
 
 Bounds = Tuple[np.ndarray, np.ndarray]
-TASK_HANDLE_DETECTOR_METHOD = 'episode_action_trajectory_v1'
+TASK_HANDLE_DETECTOR_METHOD = 'episode_action_trajectory_v2'
 
 
 @dataclass(frozen=True)
