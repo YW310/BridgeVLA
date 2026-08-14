@@ -822,6 +822,17 @@ def _parse_tasks(values: Sequence[str]) -> List[str]:
     return list(dict.fromkeys(tasks))
 
 
+def _resolve_task_cache_directory(
+    configured: Optional[Path],
+    task_storage_dir: Path,
+    task: str,
+    default_name: str,
+) -> Path:
+    if configured is not None:
+        return (configured.resolve() / task)
+    return (task_storage_dir.resolve() / default_name)
+
+
 def discover_task_directories(
     replay_dir: Path, requested_tasks: Sequence[str]
 ) -> List[Tuple[str, Path]]:
@@ -1200,6 +1211,7 @@ def _copy_metadata(
         if (
             source.is_dir()
             or source.suffix == '.replay'
+            or source.name == REPLAY_METADATA_CACHE_NAME
             or source.name.endswith('.tmp')
         ):
             continue
@@ -1305,6 +1317,7 @@ def _load_or_scan_replay_metadata(
     *,
     show_progress: bool,
     refresh_cache: bool,
+    cache_dir: Optional[Path] = None,
 ) -> ReplayMetadataArrays:
     '''Load a compact replay index or deserialize every replay once.'''
     if not files:
@@ -1323,7 +1336,7 @@ def _load_or_scan_replay_metadata(
             )
         return memory_cached
 
-    cache_path = source_dir / REPLAY_METADATA_CACHE_NAME
+    cache_path = (cache_dir or source_dir) / REPLAY_METADATA_CACHE_NAME
     if cache_path.is_file() and not refresh_cache:
         try:
             with np.load(cache_path, allow_pickle=False) as payload:
@@ -1401,6 +1414,7 @@ def _load_or_scan_replay_metadata(
     _REPLAY_METADATA_MEMORY_CACHE[memory_key] = metadata
     temporary = Path(f'{cache_path}.tmp')
     try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
         with temporary.open('wb') as stream:
             np.savez_compressed(
                 stream,
@@ -1437,6 +1451,7 @@ def _episode_detection_sources(
     show_progress: bool = True,
     preserve_action_edges: bool = False,
     refresh_metadata_cache: bool = False,
+    metadata_cache_dir: Optional[Path] = None,
 ) -> Dict[int, List[Tuple[int, Path]]]:
     '''Merge augmented replay segments, then sample frames per raw episode.'''
     requested = (
@@ -1557,6 +1572,7 @@ def _episode_detection_sources(
         files,
         show_progress=show_progress,
         refresh_cache=refresh_metadata_cache,
+        cache_dir=metadata_cache_dir,
     )
     grouped: Dict[int, Dict[Tuple[int, int], Path]] = {}
     for index, source in enumerate(files):
@@ -1674,6 +1690,7 @@ def _detect_task_robot_handles(
     requested_episode_ids: Optional[Iterable[int]] = None,
     show_progress: bool = True,
     refresh_metadata_cache: bool = False,
+    metadata_cache_dir: Optional[Path] = None,
 ) -> Dict[int, Tuple[int, ...]]:
     if 'wrist' not in cameras:
         raise ValueError(
@@ -1687,7 +1704,7 @@ def _detect_task_robot_handles(
     cached_detections: Dict[int, RobotHandleDetection] = {}
     stale_cache_count = 0
     if not refresh_cache:
-        for path in (cache_dir / task).glob('episode_*.json'):
+        for path in cache_dir.glob('episode_*.json'):
             try:
                 episode_idx = int(path.stem.rsplit('_', 1)[1])
             except (IndexError, ValueError):
@@ -1720,6 +1737,7 @@ def _detect_task_robot_handles(
         cached_episode_ids=cached_detections,
         show_progress=show_progress,
         refresh_metadata_cache=refresh_metadata_cache,
+        metadata_cache_dir=metadata_cache_dir,
     )
     handles_by_episode: Dict[int, Tuple[int, ...]] = {}
     progress = tqdm(
@@ -1730,7 +1748,7 @@ def _detect_task_robot_handles(
         disable=not show_progress,
     )
     for episode_idx, frame_sources in progress:
-        cache_path = cache_dir / task / f'episode_{episode_idx:04d}.json'
+        cache_path = cache_dir / f'episode_{episode_idx:04d}.json'
         detection = cached_detections.get(episode_idx)
         if detection is None:
             if not frame_sources:
@@ -1797,6 +1815,7 @@ def _detect_task_relevant_handles(
     requested_episode_ids: Optional[Iterable[int]] = None,
     show_progress: bool = True,
     refresh_metadata_cache: bool = False,
+    metadata_cache_dir: Optional[Path] = None,
 ) -> Dict[int, Tuple[int, ...]]:
     '''Detect one stable task-handle whitelist per episode.'''
     requested_episode_set = (
@@ -1807,7 +1826,7 @@ def _detect_task_relevant_handles(
     cached_detections: Dict[int, TaskHandleDetection] = {}
     stale_cache_count = 0
     if not refresh_cache:
-        for path in (cache_dir / task).glob('episode_*.json'):
+        for path in cache_dir.glob('episode_*.json'):
             try:
                 episode_idx = int(path.stem.rsplit('_', 1)[1])
             except (IndexError, ValueError):
@@ -1842,6 +1861,7 @@ def _detect_task_relevant_handles(
         show_progress=show_progress,
         preserve_action_edges=True,
         refresh_metadata_cache=refresh_metadata_cache,
+        metadata_cache_dir=metadata_cache_dir,
     )
     handles_by_episode: Dict[int, Tuple[int, ...]] = {}
     progress = tqdm(
@@ -1852,7 +1872,7 @@ def _detect_task_relevant_handles(
         disable=not show_progress,
     )
     for episode_idx, frame_sources in progress:
-        cache_path = cache_dir / task / f'episode_{episode_idx:04d}.json'
+        cache_path = cache_dir / f'episode_{episode_idx:04d}.json'
         detection = cached_detections.get(episode_idx)
         if detection is None:
             if not frame_sources:
@@ -1956,6 +1976,7 @@ def process_task(
     robot_detection_frames: int,
     refresh_robot_handle_cache: bool,
     refresh_replay_metadata_cache: bool,
+    replay_metadata_cache_dir: Optional[Path],
 ) -> int:
     all_files = _numeric_replay_files(source_dir)
     if not all_files:
@@ -1985,6 +2006,9 @@ def process_task(
 
     cameras = tuple(cameras)
     excluded_ids = tuple(excluded_ids)
+    replay_metadata_cache_dir = (
+        replay_metadata_cache_dir or destination_dir or source_dir
+    )
     robot_handles_by_episode: Dict[int, Tuple[int, ...]] = {}
     if auto_detect_robot_handles:
         requested_robot_episodes = (
@@ -2005,6 +2029,7 @@ def process_task(
             requested_episode_ids=requested_robot_episodes,
             show_progress=show_progress,
             refresh_metadata_cache=refresh_replay_metadata_cache,
+            metadata_cache_dir=replay_metadata_cache_dir,
         )
     task_slot_ids_by_episode: Dict[int, Tuple[int, ...]] = {}
     if temporal_task_filter:
@@ -2030,6 +2055,7 @@ def process_task(
             requested_episode_ids=requested_task_episodes,
             show_progress=show_progress,
             refresh_metadata_cache=refresh_replay_metadata_cache,
+            metadata_cache_dir=replay_metadata_cache_dir,
         )
     frame_cache = OracleFrameCache(cache_frames)
 
@@ -2273,6 +2299,8 @@ def _preflight_output(
     for task, source_dir in task_directories:
         destination_dir = output_dir if direct_input else output_dir / task
         for source in source_dir.iterdir():
+            if source.name == REPLAY_METADATA_CACHE_NAME:
+                continue
             if source.is_file() and (destination_dir / source.name).exists():
                 conflicts.append(destination_dir / source.name)
     if conflicts:
@@ -2364,8 +2392,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         '--task-handle-cache-dir',
         type=Path,
-        default=Path('task_handle_maps'),
-        help='episode stable-slot and task-handle JSON cache directory',
+        default=None,
+        help=(
+            'root for per-task stable-slot and task-handle JSON caches; '
+            'defaults to <task-output-dir>/task_handle_maps'
+        ),
     )
     parser.add_argument(
         '--task-detection-frames',
@@ -2389,8 +2420,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         '--robot-handle-cache-dir',
         type=Path,
-        default=Path('robot_handle_maps'),
-        help='episode robot-handle JSON cache directory',
+        default=None,
+        help=(
+            'root for per-task robot-handle JSON caches; defaults to '
+            '<task-output-dir>/robot_handle_maps'
+        ),
     )
     parser.add_argument(
         '--robot-detection-frames',
@@ -2471,8 +2505,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     replay_dir = args.replay_dir.resolve()
     raw_data_dir = args.raw_data_dir.resolve()
     visualize_output_dir = args.visualize_output_dir.resolve()
-    robot_handle_cache_dir = args.robot_handle_cache_dir.resolve()
-    task_handle_cache_dir = args.task_handle_cache_dir.resolve()
+    output_dir = args.output_dir.resolve() if args.output_dir else None
     if not replay_dir.is_dir():
         raise FileNotFoundError(f'Replay directory does not exist: {replay_dir}')
     if not raw_data_dir.is_dir():
@@ -2514,7 +2547,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         replay_dir, args.task or ['all']
     )
     direct_input = bool(_numeric_replay_files(replay_dir))
-    output_dir = args.output_dir.resolve() if args.output_dir else None
     if output_dir is not None and not args.dry_run:
         _preflight_output(
             task_directories,
@@ -2534,6 +2566,23 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             destination_dir = output_dir
         else:
             destination_dir = output_dir / task
+        replay_metadata_cache_dir = source_dir
+        if output_dir is not None:
+            replay_metadata_cache_dir = (
+                output_dir if direct_input else output_dir / task
+            )
+        robot_handle_cache_dir = _resolve_task_cache_directory(
+            args.robot_handle_cache_dir,
+            replay_metadata_cache_dir,
+            task,
+            'robot_handle_maps',
+        )
+        task_handle_cache_dir = _resolve_task_cache_directory(
+            args.task_handle_cache_dir,
+            replay_metadata_cache_dir,
+            task,
+            'task_handle_maps',
+        )
         total += process_task(
             task=task,
             source_dir=source_dir,
@@ -2574,6 +2623,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             refresh_replay_metadata_cache=(
                 args.refresh_replay_metadata_cache
             ),
+            replay_metadata_cache_dir=replay_metadata_cache_dir,
         )
     print(f'Done: {total} replay files')
     return 0

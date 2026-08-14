@@ -121,10 +121,8 @@ python tools/augment_replay_with_oracle_objects.py \
     --output-dir LPY/BridgeVLA_RLBench_TASK_OBJECT_Buffer \
     --detect-robot-handles \
     --robot-detection-frames 8 \
-    --robot-handle-cache-dir robot_handle_maps \
     --temporal-id-matching \
     --task-detection-frames 16 \
-    --task-handle-cache-dir task_handle_maps \
     --task-prior-filter \
     --min-object-points 1 \
     --max-objects 32 \
@@ -160,11 +158,11 @@ python tools/augment_replay_with_oracle_objects.py \
 | 单帧先验 | `--task-prior-background-extent METRES` | `0.60` | 两个轴均达到该尺度时视为明显桌面/地面。 |
 | 时序匹配 | `--temporal-id-matching`（兼容旧名 `--temporal-task-filter`） | 关闭 | 根据整个 episode 的 handle 证据建立稳定 `handle ID → slot`；不删除当前帧可见实例。 |
 | 时序任务 | `--task-detection-frames N` | `16` | 每个 episode 均匀抽取的最大检测帧数；长 episode 可提高到 `24` 或 `32`。 |
-| 时序匹配 | `--task-handle-cache-dir PATH` | `task_handle_maps` | episode 稳定 slot 与 task handle JSON 缓存目录。 |
+| 时序匹配 | `--task-handle-cache-dir PATH` | `<output-dir>/<task>/task_handle_maps` | episode 稳定 slot 与 task handle JSON 缓存；显式 PATH 作为根目录并追加 task 名。 |
 | 时序任务 | `--refresh-task-handle-cache` | 关闭 | 忽略已有 task handle JSON 并重新检测。 |
 | 机器人 | `--detect-robot-handles` | 关闭 | 保守检测高置信度夹爪/机械臂 handle；使用 `gripper_open` 和闭合前后运动识别被抓物体，并将其加入 `grasped_handles` 保护集合。 |
 | 机器人 | `--robot-detection-frames N` | `8` | 每个 episode 均匀抽取的最大机器人检测帧数；长 episode 可设为 `12` 或 `16`，提高捕获夹爪闭合事件的概率。 |
-| 机器人 | `--robot-handle-cache-dir PATH` | `robot_handle_maps` | episode robot handle JSON 缓存目录。 |
+| 机器人 | `--robot-handle-cache-dir PATH` | `<output-dir>/<task>/robot_handle_maps` | episode robot handle JSON 缓存；显式 PATH 作为根目录并追加 task 名。 |
 | 机器人 | `--refresh-robot-handle-cache` | 关闭 | 忽略已有 robot handle JSON 并重新检测。 |
 | 性能 | `--refresh-replay-metadata-cache` | 关闭 | 强制重建 replay 元数据索引；仅在同名 `.replay` 被原地改写时使用，日常运行不要添加。 |
 | 性能 | `--workers N` | `1` | replay 线程数；建议从 `4` 或 `8` 测试，过高会增加内存和网络盘竞争。 |
@@ -201,12 +199,17 @@ python tools/augment_replay_with_oracle_objects.py \
   `episode_idx` 出现多段子序列，检测器会先合并全部分段，再执行 episode 级均匀
   采样。Robot 按 `(episode_idx, sample_frame)` 去重，task 按
   `(episode_idx, sample_frame, next_keypoint_frame)` 保留不同动作边。
-- Task 缓存位于 `task_handle_maps/<task>/episode_NNNN.json`，robot 缓存位于
-  `robot_handle_maps/<task>/episode_NNNN.json`。修改检测帧数、半径或实例限制后应使用
+- 提供 `--output-dir` 时，Task 缓存位于
+  `<output-dir>/<task>/task_handle_maps/episode_NNNN.json`，robot 缓存位于
+  `<output-dir>/<task>/robot_handle_maps/episode_NNNN.json`。显式指定对应的
+  `--*-handle-cache-dir PATH` 时使用 `PATH/<task>/episode_NNNN.json`，避免多任务间
+  episode 文件重名。修改检测帧数、半径或实例限制后应使用
   对应的 `--refresh-*-handle-cache`；修复前生成的旧版 task/robot 缓存会自动失效并
   重新检测。
-- 缺少可用的 `replay_info.npy` 时，首次运行必须读取每个 `.replay` 的 metadata，并在
-  对应 task replay 目录写入 `.oracle_replay_metadata_v1.npz`。以后运行会显示
+- 缺少可用的 `replay_info.npy` 时，首次运行必须读取每个 `.replay` 的 metadata，并写入
+  `.oracle_replay_metadata_v1.npz`。提供 `--output-dir` 时，缓存位于对应的输出 task
+  目录（包括 dry-run）；未提供输出目录或使用 `--in-place` 时才写入输入 replay 目录。
+  以后运行会显示
   `replay metadata disk cache hit`，同一次运行中 robot/task 共用索引时显示
   `memory cache hit`。新增、删除或重命名 replay 会自动使索引失效；若原地改写同名文件，
   使用一次 `--refresh-replay-metadata-cache`。如果日志提示无法保存索引，需要检查 replay
@@ -238,7 +241,8 @@ python tools/augment_replay_with_oracle_objects.py \
   全为 NaN/Inf。缺失 ID 不在任何列表时，说明它在当前帧所选相机的 GT mask 中不可见
   或被完全遮挡；不再归因于 temporal 匹配。
 - 若 robot 检测仍有疑似误判，检查
-  `robot_handle_maps/<task>/episode_NNNN.json`：只有 `gripper_handles` 和
+  `<output-dir>/<task>/robot_handle_maps/episode_NNNN.json`：只有
+  `gripper_handles` 和
   `arm_handles` 会硬删除；`grasped_handles` 是被抓物体保护集合，
   `ambiguous_handles` 仅供诊断。旧 v5 robot cache 会自动失效；重新生成 robot 结果后
   也应刷新 task cache。

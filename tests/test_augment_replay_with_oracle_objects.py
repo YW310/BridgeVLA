@@ -30,6 +30,7 @@ from tools.augment_replay_with_oracle_objects import (
     _episode_ids_for_selected_files,
     _load_current_gripper_states,
     _REPLAY_METADATA_MEMORY_CACHE,
+    _resolve_task_cache_directory,
 )
 
 
@@ -96,6 +97,27 @@ class OracleReplayAugmentationTest(unittest.TestCase):
         self.assertTrue(args.detect_robot_handles)
         self.assertEqual(args.robot_detection_frames, 6)
         self.assertTrue(args.refresh_replay_metadata_cache)
+
+    def test_handle_cache_defaults_follow_output_and_explicit_path_wins(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output_dir = root / 'oracle_output'
+            self.assertEqual(
+                _resolve_task_cache_directory(
+                    None, output_dir, 'stack_blocks', 'robot_handle_maps'
+                ),
+                (output_dir / 'robot_handle_maps').resolve(),
+            )
+            explicit = root / 'custom_robot_cache'
+            self.assertEqual(
+                _resolve_task_cache_directory(
+                    explicit,
+                    output_dir,
+                    'stack_blocks',
+                    'robot_handle_maps',
+                ),
+                (explicit / 'stack_blocks').resolve(),
+            )
 
     def test_interval_visualization_selects_every_nth_sorted_file(self):
         files = [Path(f'{index}.replay') for index in range(10)]
@@ -318,6 +340,50 @@ class OracleReplayAugmentationTest(unittest.TestCase):
             self.assertEqual(
                 [frame for frame, _ in rebuilt[4]], [0, 1, 9]
             )
+
+    def test_fallback_metadata_cache_can_live_in_output_directory(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source_dir = root / 'input'
+            output_dir = root / 'output'
+            source_dir.mkdir()
+            source = source_dir / '0.replay'
+            with source.open('wb') as stream:
+                pickle.dump(
+                    {
+                        'terminal': 1,
+                        'episode_idx': 2,
+                        'sample_frame': 7,
+                    },
+                    stream,
+                )
+
+            selected = _episode_detection_sources(
+                [source],
+                frames_per_episode=10,
+                show_progress=False,
+                metadata_cache_dir=output_dir,
+            )
+            self.assertEqual(selected[2][0][0], 7)
+            self.assertTrue(
+                (output_dir / REPLAY_METADATA_CACHE_NAME).is_file()
+            )
+            self.assertFalse(
+                (source_dir / REPLAY_METADATA_CACHE_NAME).exists()
+            )
+
+            _REPLAY_METADATA_MEMORY_CACHE.clear()
+            with patch(
+                'tools.augment_replay_with_oracle_objects.pickle.load',
+                side_effect=AssertionError('output cache should avoid pickle'),
+            ):
+                cached = _episode_detection_sources(
+                    [source],
+                    frames_per_episode=10,
+                    show_progress=False,
+                    metadata_cache_dir=output_dir,
+                )
+            self.assertEqual(cached[2][0][0], 7)
 
     def test_dry_run_episode_ids_recover_final_sentinel_from_previous(self):
         with tempfile.TemporaryDirectory() as temporary:
