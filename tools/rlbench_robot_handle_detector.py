@@ -11,7 +11,7 @@ import numpy as np
 
 
 Bounds = Tuple[np.ndarray, np.ndarray]
-ROBOT_DETECTOR_METHOD = 'wrist_pose_temporal_adjacency_v11_arm_motion_controls'
+ROBOT_DETECTOR_METHOD = 'wrist_pose_temporal_adjacency_v12_early_seed_visibility'
 
 
 @dataclass(frozen=True)
@@ -340,6 +340,7 @@ def detect_robot_handles(
         max(2, int(np.ceil(frame_count * min_visibility_ratio))),
     )
     first_frame = frames[0]
+    early_seed_limit = max(1, int(np.ceil(frame_count * 0.25)))
     for object_id in all_ids:
         if object_id in grasped_handles:
             ambiguous_handles.add(object_id)
@@ -355,18 +356,24 @@ def detect_robot_handles(
             ambiguous_handles.add(object_id)
             continue
         wrist_values = wrist_centroids.get(object_id, [])
-        # A gripper link must already be visible beside the gripper at the
-        # beginning. A manipulated object may follow the wrist later, but must
-        # never become a gripper seed for that reason.
+        seed_frame_number = first_seen.get(object_id, frame_count)
+        seed_frame = (
+            frames[seed_frame_number]
+            if seed_frame_number < frame_count
+            else first_frame
+        )
+        # A gripper link may be hidden in raw frame 0 and first become visible
+        # a few samples later. Accept that early appearance, but reject handles
+        # that only enter the gripper after the early prefix.
         if (
-            object_id not in first_frame.bounds_by_id
-            or object_id not in first_frame.wrist_centroids_by_id
-            or first_seen.get(object_id) != 0
+            seed_frame_number > early_seed_limit
+            or object_id not in seed_frame.bounds_by_id
+            or object_id not in seed_frame.wrist_centroids_by_id
             or visibility[object_id] < minimum_visible
             or len(wrist_values) < minimum_visible
             or _point_to_bounds_distance(
-                first_frame.gripper_position,
-                first_frame.bounds_by_id[object_id],
+                seed_frame.gripper_position,
+                seed_frame.bounds_by_id[object_id],
             ) > gripper_radius
             or sum(
                 distance <= gripper_radius
@@ -428,16 +435,22 @@ def detect_robot_handles(
                 ambiguous_handles.add(object_id)
                 continue
             wrist_values = wrist_centroids.get(object_id, [])
+            seed_frame_number = first_seen.get(object_id, frame_count)
+            seed_frame = (
+                frames[seed_frame_number]
+                if seed_frame_number < frame_count
+                else first_frame
+            )
             if (
-                first_seen.get(object_id) != 0
-                or object_id not in first_frame.bounds_by_id
-                or object_id not in first_frame.wrist_centroids_by_id
+                seed_frame_number > early_seed_limit
+                or object_id not in seed_frame.bounds_by_id
+                or object_id not in seed_frame.wrist_centroids_by_id
                 or len(wrist_values) < minimum_visible
             ):
                 continue
             first_distance = _point_to_bounds_distance(
-                first_frame.gripper_position,
-                first_frame.bounds_by_id[object_id],
+                seed_frame.gripper_position,
+                seed_frame.bounds_by_id[object_id],
             )
             offset_array = np.stack(relative_offsets[object_id])
             offset_spread = float(

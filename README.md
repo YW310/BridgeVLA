@@ -172,12 +172,12 @@ python tools/augment_replay_with_oracle_objects.py \
     --task stack_blocks \
     --output-dir LPY/BridgeVLA_RLBench_TASK_OBJECT_Buffer \
     --detect-robot-handles \
-    --robot-detection-frames 64 \
+    --robot-detection-frames 128 \
     --robot-detection-stride 5 \
-    --robot-detection-window 100 \
+    --robot-detection-window 200 \
     --robot-motion-threshold 0.02 \
-    --robot-link-motion-threshold 0.008 \
-    --robot-adjacency-distance 0.05 \
+    --robot-link-motion-threshold 0.001 \
+    --robot-adjacency-distance 0.10 \
     --temporal-id-matching \
     --task-detection-frames 16 \
     --task-prior-filter \
@@ -249,8 +249,10 @@ python tools/augment_replay_with_oracle_objects.py \
   `valid=False`；其他可见 handle 会使用剩余 slot。
 - Robot 检测使用 raw observation 中的当前夹爪位姿、`gripper_open`、GT mask 和 raw
   depth。depth 会用同帧相机内外参重建世界坐标点云，与 mask 像素严格对齐。夹爪 seed 以
-  wrist 图像稳定性为主，并允许夹爪旋转造成的世界坐标偏移、部分遮挡及距离离群；严格
-  评分没有 seed 时会从 wrist 稳定候选恢复 seed。arm 扩展先确认紧邻夹爪的移动 link，
+  wrist 图像稳定性为主，并允许夹爪旋转造成的世界坐标偏移、部分遮挡及距离离群；夹爪
+  handle 不必在第 0 帧可见，在 episode 早期窗口内首次出现（如 raw frame 10）时，会以
+  它自己的首个可见帧检查 wrist 邻接和后续随动。严格评分没有 seed 时会从 wrist 稳定候选
+  恢复 seed。arm 扩展先确认紧邻夹爪的移动 link，
   再沿 episode 早期已连接且持续邻接的运动学链扩展，因此可覆盖运动较少的机械臂底座。
   默认在 `0–100` raw 帧内每隔 5 帧取样；若夹爪相对第 0 帧的最大位移不足 2 cm，则继续
   按相同间隔向后扩展，直到运动足够、达到帧数上限、episode 结束或夹爪第一次闭合。
