@@ -118,6 +118,59 @@ class RLBenchRobotHandleDetectorTest(unittest.TestCase):
         detection = detect_robot_handles(8, frames)
         self.assertEqual(detection.gripper_handles, (10,))
 
+    def test_low_confidence_wrist_candidate_recovers_gripper_seed(self):
+        frames = []
+        for frame_index in range(5):
+            gripper = np.array(
+                [frame_index * 0.04, 0.0, 0.8], dtype=np.float32
+            )
+            center = gripper + np.array(
+                [0.0, 0.13 if frame_index % 2 == 0 else -0.13, 0.0],
+                dtype=np.float32,
+            )
+            frames.append(
+                RobotFrameEvidence(
+                    sample_frame=frame_index,
+                    gripper_position=gripper,
+                    bounds_by_id={10: bounds(center, 0.01)},
+                    centers_by_id={10: center},
+                    wrist_centroids_by_id={10: np.array([0.5, 0.5])},
+                )
+            )
+
+        detection = detect_robot_handles(11, frames)
+        self.assertEqual(detection.gripper_handles, (10,))
+
+    def test_kinematic_chain_reaches_static_robot_base(self):
+        frames = []
+        for frame_index in range(6):
+            gripper = np.array(
+                [frame_index * 0.02, 0.0, 0.8], dtype=np.float32
+            )
+            moving_link = gripper + np.array([0.04, 0.0, 0.0])
+            static_base = np.array([0.16, 0.0, 0.8], dtype=np.float32)
+            frames.append(
+                RobotFrameEvidence(
+                    sample_frame=frame_index,
+                    gripper_position=gripper,
+                    bounds_by_id={
+                        10: bounds(gripper, 0.015),
+                        11: bounds(moving_link, 0.015),
+                        12: bounds(static_base, 0.08),
+                    },
+                    centers_by_id={
+                        10: gripper,
+                        11: moving_link,
+                        12: static_base,
+                    },
+                    wrist_centroids_by_id={10: np.array([0.5, 0.5])},
+                )
+            )
+
+        detection = detect_robot_handles(12, frames)
+        self.assertEqual(detection.gripper_handles, (10,))
+        self.assertEqual(detection.arm_handles, (11, 12))
+
     def test_late_adjacency_cannot_expand_robot_chain(self):
         frames = []
         for frame_index in range(8):
@@ -140,6 +193,7 @@ class RLBenchRobotHandleDetectorTest(unittest.TestCase):
                     },
                     centers_by_id=centers,
                     wrist_centroids_by_id={10: np.array([0.5, 0.5])},
+                    gripper_open=1.0 if frame_index < 3 else 0.0,
                 )
             )
 
@@ -169,6 +223,7 @@ class RLBenchRobotHandleDetectorTest(unittest.TestCase):
                     },
                     centers_by_id=centers,
                     wrist_centroids_by_id={10: np.array([0.5, 0.5])},
+                    gripper_open=1.0 if frame_index < 3 else 0.0,
                 )
             )
 

@@ -120,7 +120,7 @@ python tools/augment_replay_with_oracle_objects.py \
     --task stack_blocks \
     --output-dir LPY/BridgeVLA_RLBench_TASK_OBJECT_Buffer \
     --detect-robot-handles \
-    --robot-detection-frames 8 \
+    --robot-detection-frames 16 \
     --temporal-id-matching \
     --task-detection-frames 16 \
     --task-prior-filter \
@@ -160,7 +160,7 @@ python tools/augment_replay_with_oracle_objects.py \
 | 时序任务 | `--task-detection-frames N` | `16` | 每个 episode 均匀抽取的最大检测帧数；长 episode 可提高到 `24` 或 `32`。 |
 | 时序匹配 | `--task-handle-cache-dir PATH` | `<output-dir>/<task>/task_handle_maps` | episode 稳定 slot 与 task handle JSON 缓存；显式 PATH 作为根目录并追加 task 名。 |
 | 时序任务 | `--refresh-task-handle-cache` | 关闭 | 忽略已有 task handle JSON 并重新检测。 |
-| 机器人 | `--detect-robot-handles` | 关闭 | 保守检测高置信度夹爪/机械臂 handle；使用 `gripper_open` 和闭合前后运动识别被抓物体，并将其加入 `grasped_handles` 保护集合。 |
+| 机器人 | `--detect-robot-handles` | 关闭 | 检测 wrist 稳定的夹爪 seed，并沿持续邻接的运动学链扩展到机械臂及静止底座；被抓物体加入 `grasped_handles` 保护集合。 |
 | 机器人 | `--robot-detection-frames N` | `8` | 每个 episode 均匀抽取的最大机器人检测帧数；长 episode 可设为 `12` 或 `16`，提高捕获夹爪闭合事件的概率。 |
 | 机器人 | `--robot-handle-cache-dir PATH` | `<output-dir>/<task>/robot_handle_maps` | episode robot handle JSON 缓存；显式 PATH 作为根目录并追加 task 名。 |
 | 机器人 | `--refresh-robot-handle-cache` | 关闭 | 忽略已有 robot handle JSON 并重新检测。 |
@@ -186,8 +186,10 @@ python tools/augment_replay_with_oracle_objects.py \
   temporal 模式删除。某个稳定 handle 在当前帧不可见时保留该 slot，写入
   `valid=False`；其他可见 handle 会使用剩余 slot。
 - Robot 检测只使用 raw observation 中的当前夹爪位姿与 `gripper_open`。夹爪 seed 以
-  wrist 图像稳定性为主，并允许夹爪旋转造成的世界坐标偏移及少量距离离群；arm 邻接
-  扩展仍要求从 episode 早期就持续可见、首帧相邻且已经随夹爪运动。夹爪张开阶段若
+  wrist 图像稳定性为主，并允许夹爪旋转造成的世界坐标偏移、部分遮挡及距离离群；严格
+  评分没有 seed 时会从 wrist 稳定候选恢复 seed。arm 扩展先确认紧邻夹爪的移动 link，
+  再沿 episode 早期已连接且持续邻接的运动学链扩展，因此可覆盖运动较少的机械臂底座。
+  夹爪张开阶段若
   夹爪持续运动而某实例基本静止，该实例不会判为机器人；某实例在夹爪闭合前不随动、
   闭合后开始跟随夹爪时，会加入 `grasped_handles`。`grasped_handles` 会从机器人硬删除
   集合中强制移除；早期静止或证据不足的实例也只进入 `ambiguous_handles`，不会加入
@@ -244,7 +246,7 @@ python tools/augment_replay_with_oracle_objects.py \
   `<output-dir>/<task>/robot_handle_maps/episode_NNNN.json`：只有
   `gripper_handles` 和
   `arm_handles` 会硬删除；`grasped_handles` 是被抓物体保护集合，
-  `ambiguous_handles` 仅供诊断。旧 v5 robot cache 会自动失效；重新生成 robot 结果后
+  `ambiguous_handles` 仅供诊断。旧 v6 robot cache 会自动失效；重新生成 robot 结果后
   也应刷新 task cache。
 - 图片标题切换到新的 `episode_idx` 时，会改用另一份 episode cache；这不是同一
   episode 内 ID 突变。`sentinel=True` 对应 `terminal == -1` 填充 transition，保存的

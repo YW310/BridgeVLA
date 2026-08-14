@@ -11,7 +11,7 @@ import numpy as np
 
 
 Bounds = Tuple[np.ndarray, np.ndarray]
-ROBOT_DETECTOR_METHOD = 'wrist_pose_temporal_adjacency_v6_grasp_protected'
+ROBOT_DETECTOR_METHOD = 'wrist_pose_temporal_adjacency_v7_kinematic_chain'
 
 
 @dataclass(frozen=True)
@@ -237,10 +237,10 @@ def detect_robot_handles(
     relative_offset_std: float = 0.12,
     min_visibility_ratio: float = 0.75,
     adjacency_distance: float = 0.05,
-    adjacency_ratio: float = 0.70,
+    adjacency_ratio: float = 0.60,
     min_link_motion: float = 0.008,
     min_hard_confidence: float = 0.75,
-    arm_min_visibility_ratio: float = 0.75,
+    arm_min_visibility_ratio: float = 0.50,
 ) -> RobotHandleDetection:
     '''Detect gripper seeds and expand persistent moving robot-link neighbors.'''
     if not frames:
@@ -411,11 +411,20 @@ def detect_robot_handles(
                 ambiguous_handles.add(object_id)
 
     if not gripper_handles:
-        # Low-confidence wrist-near candidates are diagnostic only. Hard
-        # exclusion is intentionally disabled because a grasped task object
-        # can look rigidly attached to the wrist after contact.
+        # Recover a wrist-stable gripper seed when strict scoring misses due to
+        # rotation, partial masks, or point-cloud offset noise. Grasped and
+        # static-before-grasp objects remain protected.
         candidates = []
         for object_id in all_ids:
+            if object_id in grasped_handles:
+                continue
+            object_pre_motion, gripper_pre_motion = pre_grasp_motion(object_id)
+            if (
+                gripper_pre_motion >= min_link_motion
+                and object_pre_motion < gripper_pre_motion * 0.25
+            ):
+                ambiguous_handles.add(object_id)
+                continue
             wrist_values = wrist_centroids.get(object_id, [])
             if (
                 first_seen.get(object_id) != 0
@@ -439,16 +448,45 @@ def detect_robot_handles(
                     )
                 )
             )
+            wrist_array = np.stack(wrist_values)
+            centroid_spread = float(
+                np.sqrt(
+                    np.mean(
+                        np.sum(
+                            (wrist_array - wrist_array.mean(0)) ** 2,
+                            axis=1,
+                        )
+                    )
+                )
+            )
             if (
                 first_distance <= gripper_radius * 1.5
                 and offset_spread <= relative_offset_std * 1.5
+                and centroid_spread <= wrist_centroid_std * 1.5
             ):
                 candidates.append(
-                    (float(np.median(distances[object_id])), object_id)
+                    (
+                        centroid_spread,
+                        offset_spread,
+                        float(np.median(distances[object_id])),
+                        object_id,
+                    )
                 )
-        for median_distance, object_id in sorted(candidates)[:2]:
+        for (
+            centroid_spread,
+            offset_spread,
+            median_distance,
+            object_id,
+        ) in sorted(candidates)[:2]:
             if median_distance <= gripper_radius * 1.5:
-                ambiguous_handles.add(object_id)
+                gripper_handles.append(object_id)
+                confidence[object_id] = max(
+                    0.55,
+                    0.75
+                    - 0.10 * centroid_spread / wrist_centroid_std
+                    - 0.10 * offset_spread / relative_offset_std,
+                )
+                ambiguous_handles.discard(object_id)
 
     motion: Dict[int, float] = {}
     for object_id, values in centers.items():
@@ -496,7 +534,8 @@ def detect_robot_handles(
                 adjacency[left_id].add(right_id)
                 adjacency[right_id].add(left_id)
 
-    robot_handles = set(gripper_handles)
+    gripper_set = set(gripper_handles)
+    robot_handles = set(gripper_set)
     queue = list(gripper_handles)
     early_limit = max(1, int(np.ceil(frame_count * 0.25)))
     minimum_arm_visible = min(
@@ -536,17 +575,34 @@ def detect_robot_handles(
                     first_frame.bounds_by_id[neighbor],
                 ) <= adjacency_distance
             )
-            hard_robot_evidence = (
+            first_bounds = first_frame.bounds_by_id.get(neighbor)
+            maximum_extent = float('inf')
+            if first_bounds is not None:
+                maximum_extent = float(
+                    np.max(first_bounds[1] - first_bounds[0])
+                )
+            persistent_chain_evidence = (
                 visibility[neighbor] >= minimum_arm_visible
-                and len(early_centers) == early_frame_count
+                and len(early_centers) >= minimum_early_co_visible
                 and first_adjacent
-                and motion[neighbor] >= min_link_motion
+                and maximum_extent <= 0.50
+            )
+            moving_link_evidence = (
+                motion[neighbor] >= min_link_motion
                 and early_motion >= min_link_motion * 0.5
+            )
+            # The first hop beside a gripper seed must already move; this
+            # protects a static task object that the open gripper approaches.
+            # Once a moving arm link is established, persistent adjacent links
+            # may be static (for example the robot base).
+            hard_robot_evidence = persistent_chain_evidence and (
+                moving_link_evidence or object_id not in gripper_set
             )
             object_pre_motion, gripper_pre_motion = pre_grasp_motion(neighbor)
             if (
                 gripper_pre_motion >= min_link_motion
                 and object_pre_motion < gripper_pre_motion * 0.25
+                and object_id in gripper_set
             ):
                 hard_robot_evidence = False
             if not hard_robot_evidence:
@@ -559,7 +615,6 @@ def detect_robot_handles(
             )
             queue.append(neighbor)
 
-    gripper_set = set(gripper_handles)
     gripper_set.difference_update(grasped_handles)
     robot_handles.difference_update(grasped_handles)
     arm_handles = sorted(robot_handles - gripper_set)

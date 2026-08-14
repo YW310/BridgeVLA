@@ -1786,15 +1786,26 @@ def _detect_task_robot_handles(
             if write_cache:
                 save_robot_handle_detection(cache_path, detection)
         handles_by_episode[episode_idx] = detection.robot_handles
+        observed_handles = sorted(
+            set(detection.robot_handles)
+            | set(detection.ambiguous_handles)
+            | set(detection.grasped_handles)
+        )
         tqdm.write(
             f'{task} episode={episode_idx}: detected robot handles='
             f'{list(detection.robot_handles)} gripper='
             f'{list(detection.gripper_handles)} arm='
             f'{list(detection.arm_handles)} ambiguous='
             f'{list(detection.ambiguous_handles)} grasped='
-            f'{list(detection.grasped_handles)} frames='
+            f'{list(detection.grasped_handles)} classified='
+            f'{len(observed_handles)} frames='
             f'{list(detection.sampled_frames)}',
         )
+        if not detection.gripper_handles:
+            tqdm.write(
+                f'{task} episode={episode_idx}: WARNING no gripper seed was '
+                'detected; no arm chain can be excluded for this episode'
+            )
     return handles_by_episode
 
 
