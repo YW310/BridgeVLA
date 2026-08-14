@@ -78,6 +78,8 @@ class OracleReplayAugmentationTest(unittest.TestCase):
         )
         self.assertTrue(args.temporal_task_filter)
         self.assertEqual(args.task_detection_frames, 24)
+        args = parser.parse_args(base + ['--temporal-id-matching'])
+        self.assertTrue(args.temporal_task_filter)
         args = parser.parse_args(
             base
             + [
@@ -488,6 +490,38 @@ class OracleReplayAugmentationTest(unittest.TestCase):
         self.assertEqual(oracle.ids.tolist(), [5, -1, -1, -1])
         self.assertEqual(oracle.temporal_filtered_objects, 1)
         self.assertEqual(oracle.temporal_filtered_object_ids, (7,))
+
+    def test_episode_slots_do_not_filter_and_keep_absent_slot_reserved(self):
+        transition = {'front_point_cloud': point_cloud(0)}
+        oracle = extract_oracle_objects(
+            transition,
+            {'front': np.array([[0, 7, 7], [9, 9, 0]], dtype=np.int32)},
+            cameras=('front',),
+            max_objects=4,
+            num_points=3,
+            excluded_ids=(0,),
+            slot_ids=(5, 7),
+            min_object_points=1,
+            rng=np.random.default_rng(0),
+        )
+        self.assertEqual(oracle.ids.tolist(), [-1, 7, 9, -1])
+        self.assertEqual(oracle.valid.tolist(), [False, True, True, False])
+        self.assertEqual(oracle.temporal_filtered_objects, 0)
+        self.assertEqual(oracle.temporal_filtered_object_ids, ())
+
+        next_oracle = extract_oracle_objects(
+            transition,
+            {'front': np.array([[5, 5, 0], [7, 7, 0]], dtype=np.int32)},
+            cameras=('front',),
+            max_objects=4,
+            num_points=3,
+            excluded_ids=(0,),
+            slot_ids=(5, 7),
+            min_object_points=1,
+            rng=np.random.default_rng(1),
+        )
+        self.assertEqual(next_oracle.ids.tolist(), [5, 7, -1, -1])
+        self.assertEqual(next_oracle.valid.tolist(), [True, True, False, False])
 
     def test_task_prior_filter_runs_during_oracle_extraction(self):
         transition = {'front_point_cloud': point_cloud(0)}

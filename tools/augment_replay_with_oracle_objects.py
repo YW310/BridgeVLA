@@ -296,6 +296,7 @@ def extract_oracle_objects(
     num_points: int = DEFAULT_NUM_POINTS,
     excluded_ids: Iterable[int] = (0,),
     included_ids: Optional[Iterable[int]] = None,
+    slot_ids: Optional[Sequence[int]] = None,
     min_object_points: int = 20,
     rng: Optional[np.random.Generator] = None,
     task_name: Optional[str] = None,
@@ -397,20 +398,72 @@ def extract_oracle_objects(
             before_prior_ids - after_prior_ids
         ))
         prior_filtered_objects = len(prior_filtered_object_ids)
-    # Fixed storage requires truncation. Prefer the strongest point support,
-    # then use handle ID as a deterministic tie breaker. Task-prior results
-    # are already ordered by action proximity and must retain that ordering.
-    if not task_prior_filter:
-        merged.sort(key=lambda item: (-len(item[1]), item[0]))
     discovered_objects = len(merged)
-    truncated_object_ids = tuple(
-        object_id for object_id, _ in merged[max_objects:]
-    )
-    merged = merged[:max_objects]
+
+    placements: List[Tuple[int, int, np.ndarray]] = []
+    if slot_ids is None:
+        # Fixed storage requires truncation. Prefer the strongest point
+        # support, then use handle ID as a deterministic tie breaker.
+        # Task-prior results are already ordered by action proximity.
+        if not task_prior_filter:
+            merged.sort(key=lambda item: (-len(item[1]), item[0]))
+        truncated_object_ids = tuple(
+            object_id for object_id, _ in merged[max_objects:]
+        )
+        placements = [
+            (slot, object_id, object_points)
+            for slot, (object_id, object_points) in enumerate(
+                merged[:max_objects]
+            )
+        ]
+    else:
+        # Temporal mode is an episode-local ID-to-slot association, not an
+        # object filter. Reserve the same slot even when its handle is absent
+        # in this frame; visible handles outside the sampled episode map fill
+        # remaining capacity without displacing known handles.
+        stable_ids = tuple(
+            dict.fromkeys(int(object_id) for object_id in slot_ids)
+        )
+        slot_by_id = {
+            object_id: slot
+            for slot, object_id in enumerate(stable_ids[:max_objects])
+        }
+        merged_by_id = dict(merged)
+        placed_ids = set()
+        for object_id, slot in slot_by_id.items():
+            object_points = merged_by_id.get(object_id)
+            if object_points is None:
+                continue
+            placements.append((slot, object_id, object_points))
+            placed_ids.add(object_id)
+
+        reserved_slots = set(slot_by_id.values())
+        free_slots = iter(
+            slot
+            for slot in range(max_objects)
+            if slot not in reserved_slots
+        )
+        for object_id, object_points in sorted(merged, key=lambda item: item[0]):
+            if object_id in placed_ids or object_id in slot_by_id:
+                continue
+            try:
+                slot = next(free_slots)
+            except StopIteration:
+                break
+            placements.append((slot, object_id, object_points))
+            placed_ids.add(object_id)
+        placements.sort(key=lambda item: item[0])
+        truncated_object_ids = tuple(
+            sorted(
+                object_id
+                for object_id, _ in merged
+                if object_id not in placed_ids
+            )
+        )
 
     padded = empty_oracle_objects(max_objects, num_points)
     raw_counts: List[int] = []
-    for slot, (object_id, object_points) in enumerate(merged):
+    for slot, object_id, object_points in placements:
         count = len(object_points)
         indices = rng.choice(count, size=num_points, replace=count < num_points)
         padded.points[slot] = object_points[indices].astype(np.float32, copy=False)
@@ -553,6 +606,7 @@ def augment_transition(
     excluded_ids: Iterable[int],
     seed: int,
     included_ids: Optional[Iterable[int]] = None,
+    slot_ids: Optional[Sequence[int]] = None,
     min_object_points: int = 20,
     frame_cache: Optional[OracleFrameCache] = None,
     task_prior_filter: bool = False,
@@ -603,6 +657,7 @@ def augment_transition(
                 num_points=num_points,
                 excluded_ids=excluded_ids,
                 included_ids=included_ids,
+                slot_ids=slot_ids,
                 min_object_points=min_object_points,
                 rng=_stable_frame_rng(
                     seed, task, episode_idx, sample_frame
@@ -618,7 +673,12 @@ def augment_transition(
 
         cache_key: Tuple[object, ...] = (task, episode_idx, sample_frame)
         if included_ids is not None:
-            cache_key += ('included-ids', tuple(sorted(int(value) for value in included_ids)))
+            cache_key += (
+                'included-ids',
+                tuple(sorted(int(value) for value in included_ids)),
+            )
+        if slot_ids is not None:
+            cache_key += ('slot-ids', tuple(int(value) for value in slot_ids))
         if task_prior_filter:
             assert action_position is not None
             cache_key += (
@@ -652,7 +712,7 @@ def _final_observation_oracle_for_visualization(
     excluded_ids: Iterable[int],
     seed: int,
     min_object_points: int,
-    included_ids_by_episode: Optional[Mapping[int, Sequence[int]]] = None,
+    slot_ids_by_episode: Optional[Mapping[int, Sequence[int]]] = None,
     task_prior_filter: bool = False,
     task_prior_radius: Optional[float] = None,
     task_prior_max_instances: Optional[int] = None,
@@ -689,9 +749,9 @@ def _final_observation_oracle_for_visualization(
         max_objects=max_objects,
         num_points=num_points,
         excluded_ids=effective_excluded_ids,
-        included_ids=(
-            included_ids_by_episode.get(episode_idx, ())
-            if included_ids_by_episode is not None
+        slot_ids=(
+            slot_ids_by_episode.get(episode_idx, ())
+            if slot_ids_by_episode is not None
             else None
         ),
         min_object_points=min_object_points,
@@ -1674,13 +1734,14 @@ def _detect_task_relevant_handles(
             )
             if write_cache:
                 save_task_handle_detection(cache_path, detection)
-        handles_by_episode[episode_idx] = detection.task_handles
+        handles_by_episode[episode_idx] = detection.slot_handles
         tqdm.write(
             f'{task} episode={episode_idx}: task handles='
             f'{list(detection.task_handles)} interaction='
             f'{list(detection.interaction_handles)} adjacent='
             f'{list(detection.adjacent_handles)} rejected_dynamic='
-            f'{list(detection.rejected_dynamic_handles)} frames='
+            f'{list(detection.rejected_dynamic_handles)} slots='
+            f'{list(detection.slot_handles)} frames='
             f'{list(detection.sampled_frames)}'
         )
     return handles_by_episode
@@ -1770,14 +1831,14 @@ def process_task(
             requested_episode_ids=requested_robot_episodes,
             show_progress=show_progress,
         )
-    task_handles_by_episode: Dict[int, Tuple[int, ...]] = {}
+    task_slot_ids_by_episode: Dict[int, Tuple[int, ...]] = {}
     if temporal_task_filter:
         requested_task_episodes = (
             _episode_ids_for_selected_files(files, previous_file_by_index)
             if dry_run
             else None
         )
-        task_handles_by_episode = _detect_task_relevant_handles(
+        task_slot_ids_by_episode = _detect_task_relevant_handles(
             task,
             all_files,
             raw_data_dir,
@@ -1805,7 +1866,7 @@ def process_task(
                 np.asarray(original.get('terminal', -1)).item()
             )
             effective_excluded_ids = list(excluded_ids)
-            included_ids = None
+            slot_ids = None
             if terminal != -1 and 'episode_idx' in original:
                 original_episode_idx = int(
                     np.asarray(original['episode_idx']).item()
@@ -1814,7 +1875,7 @@ def process_task(
                     robot_handles_by_episode.get(original_episode_idx, ())
                 )
                 if temporal_task_filter:
-                    included_ids = task_handles_by_episode.get(
+                    slot_ids = task_slot_ids_by_episode.get(
                         original_episode_idx, ()
                     )
             migrated, oracle, _ = augment_transition(
@@ -1827,7 +1888,7 @@ def process_task(
                 num_points,
                 effective_excluded_ids,
                 seed,
-                included_ids=included_ids,
+                slot_ids=slot_ids,
                 min_object_points=min_object_points,
                 frame_cache=frame_cache,
                 task_prior_filter=task_prior_filter,
@@ -1881,8 +1942,8 @@ def process_task(
                         excluded_ids,
                         seed,
                         min_object_points,
-                        included_ids_by_episode=(
-                            task_handles_by_episode
+                        slot_ids_by_episode=(
+                            task_slot_ids_by_episode
                             if temporal_task_filter
                             else None
                         ),
@@ -2116,17 +2177,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         '--temporal-task-filter',
+        '--temporal-id-matching',
+        dest='temporal_task_filter',
         action='store_true',
         help=(
-            'build one episode-level task-handle whitelist from the current '
-            'and next-action gripper trajectory'
+            'assign episode-local stable object slots from temporal handle '
+            'evidence without filtering visible objects'
         ),
     )
     parser.add_argument(
         '--task-handle-cache-dir',
         type=Path,
         default=Path('task_handle_maps'),
-        help='episode task-handle JSON cache directory',
+        help='episode stable-slot and task-handle JSON cache directory',
     )
     parser.add_argument(
         '--task-detection-frames',

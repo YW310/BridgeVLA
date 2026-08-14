@@ -122,7 +122,7 @@ python tools/augment_replay_with_oracle_objects.py \
     --detect-robot-handles \
     --robot-detection-frames 8 \
     --robot-handle-cache-dir robot_handle_maps \
-    --temporal-task-filter \
+    --temporal-id-matching \
     --task-detection-frames 16 \
     --task-handle-cache-dir task_handle_maps \
     --task-prior-filter \
@@ -158,9 +158,9 @@ python tools/augment_replay_with_oracle_objects.py \
 | 单帧先验 | `--task-prior-radius METRES` | 按任务 | 覆盖 18 个任务配置中的交互半径。 |
 | 单帧先验 | `--task-prior-max-instances N` | 高召回不限；strict 按任务 | 限制先验保留的 simulator handle 数。 |
 | 单帧先验 | `--task-prior-background-extent METRES` | `0.60` | 两个轴均达到该尺度时视为明显桌面/地面。 |
-| 时序任务 | `--temporal-task-filter` | 关闭 | 根据整个 episode 的当前/下一动作轨迹生成稳定 task handle 白名单。 |
+| 时序匹配 | `--temporal-id-matching`（兼容旧名 `--temporal-task-filter`） | 关闭 | 根据整个 episode 的 handle 证据建立稳定 `handle ID → slot`；不删除当前帧可见实例。 |
 | 时序任务 | `--task-detection-frames N` | `16` | 每个 episode 均匀抽取的最大检测帧数；长 episode 可提高到 `24` 或 `32`。 |
-| 时序任务 | `--task-handle-cache-dir PATH` | `task_handle_maps` | episode task handle JSON 缓存目录。 |
+| 时序匹配 | `--task-handle-cache-dir PATH` | `task_handle_maps` | episode 稳定 slot 与 task handle JSON 缓存目录。 |
 | 时序任务 | `--refresh-task-handle-cache` | 关闭 | 忽略已有 task handle JSON 并重新检测。 |
 | 机器人 | `--detect-robot-handles` | 关闭 | 用当前夹爪位姿、wrist mask 和时域几何检测并排除夹爪/机械臂 handle。 |
 | 机器人 | `--robot-detection-frames N` | `8` | 每个 episode 均匀抽取的最大机器人检测帧数。 |
@@ -179,12 +179,13 @@ python tools/augment_replay_with_oracle_objects.py \
 
 #### 关键行为与检查
 
-- 推荐同时启用 `--detect-robot-handles`、`--temporal-task-filter` 和
-  `--task-prior-filter`：先排除机器人，再生成 episode 级任务白名单，最后进行单帧
-  排序和背景清理。
-- 时序白名单保留曾靠近抓取、放置或操作位置的静止物体，也保留靠近夹爪/动作位置
-  的推、拉、按等未闭合夹爪交互。多帧移动但始终没有任何交互证据的 handle 会进入
-  `rejected_dynamic_handles`；持续邻接任务实例的静态目标或容器最多扩展一跳。
+- 推荐同时启用 `--detect-robot-handles`、`--temporal-id-matching` 和
+  `--task-prior-filter`：先排除机器人，再建立 episode 级稳定 slot，最后进行单帧
+  排序和背景清理。旧参数名 `--temporal-task-filter` 保持兼容，但不再执行硬过滤。
+- 时序检测会把交互/邻接 handle 排在 episode slot 映射前部，并把其他观测到的
+  handle 追加到稳定映射；`rejected_dynamic_handles` 仅作为诊断和优先级证据，不会由
+  temporal 模式删除。某个稳定 handle 在当前帧不可见时保留该 slot，写入
+  `valid=False`；其他可见 handle 会使用剩余 slot。
 - Robot 检测只使用 raw observation 中的当前夹爪位姿；task prior 和时序任务筛选会
   使用 replay 的下一关键动作，因此属于 action-conditioned Oracle 离线标注，不是
   无标签推理阶段的公平筛选器。整个流程不调用 Qwen 或 SAM。
@@ -199,8 +200,9 @@ python tools/augment_replay_with_oracle_objects.py \
   重新检测。
 - `dry-run` 会打印 `excluded_object_ids`、`no_finite_point_object_ids`、
   `small_object_ids`、`task_prior_filtered_object_ids`、
-  `temporal_filtered_object_ids` 和 `truncated_object_ids`。若缺失 ID 不在这些列表中，
-  说明它在当前帧所选相机的 GT mask 中不可见。
+  `temporal_filtered_object_ids` 和 `truncated_object_ids`。命令行时序匹配不再产生
+  `temporal_filtered_object_ids`；若缺失 ID 不在其他列表中，说明它在当前帧所选相机
+  的 GT mask 中不可见。
 - 每张可视化 PNG 使用两排八个面板：上排为 front、left shoulder、right shoulder、
   wrist RGB；下排为 3D、XY、XZ、YZ 点云。相同 episode/handle ID 跨帧颜色固定，
   上排利用同帧 GT mask 为下排实际保留的 ID 绘制同色框和 `ID` 标签；某个实例在
@@ -209,19 +211,18 @@ python tools/augment_replay_with_oracle_objects.py \
 - 默认先写 `.tmp`、回读验证后原子重命名，不覆盖原始数据。缓存会自动淘汰已完成的
   旧帧；进度条中的 `cache_hits`、`cache_misses` 和 `cache_entries` 可用于检查效果。
 
-**突然只剩一个物体时：**先比较启动日志中的 `task handles=[...]` 和图片标题里的
-`episode_idx/sample_frame`。`--max-objects 32` 只是容量上限，不会补回被筛选或当前帧
-不可见的实例。
+**突然只剩一个物体时：**先比较启动日志中的 `slots=[...]` 和图片标题里的
+`episode_idx/sample_frame`。`--max-objects 32` 是 episode 稳定映射的容量上限，不会
+补回当前帧不可见的实例。
 
-- 如果 `task handles` 本身只有一个，说明 episode 白名单过窄。当前保护逻辑只在
-  0 个候选时启用最近实例 fallback；恰好检测到 1 个候选时会直接保留这一个。常见
-  原因是 episode 合并后 16 个抽样帧仍漏过短暂交互，或交互半径偏小。旧版按分段
-  覆盖同一 episode 的问题已修复，旧 cache 会通过版本号自动失效。
-- 如果 `task handles` 有多个，但某个 replay 只剩一个，检查 dry-run 输出：
-  `excluded_object_ids` 表示被 robot/手工 ID 排除，`temporal_filtered_object_ids`
-  表示不在 episode 白名单，`small_object_ids` 表示点数不足，
-  `no_finite_point_object_ids` 表示 mask 可见但点云全为 NaN/Inf。缺失 ID 不在任何
-  列表时，说明它在当前帧所选相机的 GT mask 中不可见或被完全遮挡。
+- 如果 `task handles` 只有一个，但 `slots` 有多个，其他实例仍会保留；task handles
+  现在只决定容量不足时的优先级，不再构成白名单。旧版按白名单删除实例的 task cache
+  会通过版本号自动失效。
+- 如果某个 replay 只剩一个，检查 dry-run 输出：`excluded_object_ids` 表示被
+  robot/手工 ID 排除，`task_prior_filtered_object_ids` 表示被显式单帧先验删除，
+  `small_object_ids` 表示点数不足，`no_finite_point_object_ids` 表示 mask 可见但点云
+  全为 NaN/Inf。缺失 ID 不在任何列表时，说明它在当前帧所选相机的 GT mask 中不可见
+  或被完全遮挡；不再归因于 temporal 匹配。
 - 图片标题切换到新的 `episode_idx` 时，会改用另一份 episode cache；这不是同一
   episode 内 ID 突变。`sentinel=True` 对应 `terminal == -1` 填充 transition，保存的
   Oracle 张量为空是预期行为。
@@ -230,7 +231,7 @@ python tools/augment_replay_with_oracle_objects.py \
 移除 `--dry-run` 才会保存结果：
 
 ```bash
---temporal-task-filter \
+--temporal-id-matching \
 --task-detection-frames 32 \
 --task-prior-radius 0.30 \
 --refresh-task-handle-cache \
@@ -238,8 +239,8 @@ python tools/augment_replay_with_oracle_objects.py \
 --visualize-index 100
 ```
 
-若临时移除 `--temporal-task-filter` 后实例恢复，可以确认问题来自 episode 白名单，
-而不是 GT mask 解码或点云对齐。
+同一 `episode_idx` 的多个 replay 子序列共用 slot 映射；切换到新的 `episode_idx` 时
+使用独立映射。训练随机采样 replay 时不依赖上一条 transition。
 
 训练加载 Oracle replay 时，需要将
 finetune/RLBench/utils/peract_utils_rlbench.py 中的

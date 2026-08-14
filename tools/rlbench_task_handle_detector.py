@@ -16,7 +16,7 @@ except ModuleNotFoundError:  # Direct execution: python tools/<script>.py
 
 
 Bounds = Tuple[np.ndarray, np.ndarray]
-TASK_HANDLE_DETECTOR_METHOD = 'episode_action_trajectory_v2'
+TASK_HANDLE_DETECTOR_METHOD = 'episode_action_trajectory_v3_stable_slots'
 
 
 @dataclass(frozen=True)
@@ -33,16 +33,29 @@ class TaskFrameEvidence:
 class TaskHandleDetection:
     episode_idx: int
     task_handles: Tuple[int, ...]
+    observed_handles: Tuple[int, ...]
     interaction_handles: Tuple[int, ...]
     adjacent_handles: Tuple[int, ...]
     rejected_dynamic_handles: Tuple[int, ...]
     background_handles: Tuple[int, ...]
     sampled_frames: Tuple[int, ...]
 
+    @property
+    def slot_handles(self) -> Tuple[int, ...]:
+        '''Return a stable, high-recall episode ordering for Oracle slots.'''
+        task_handle_set = set(self.task_handles)
+        return self.task_handles + tuple(
+            handle
+            for handle in self.observed_handles
+            if handle not in task_handle_set
+        )
+
     def as_json(self) -> Dict[str, object]:
         return {
             'episode_idx': self.episode_idx,
             'task_handles': list(self.task_handles),
+            'observed_handles': list(self.observed_handles),
+            'slot_handles': list(self.slot_handles),
             'interaction_handles': list(self.interaction_handles),
             'adjacent_handles': list(self.adjacent_handles),
             'rejected_dynamic_handles': list(self.rejected_dynamic_handles),
@@ -273,6 +286,7 @@ def detect_task_handles(
     return TaskHandleDetection(
         episode_idx=int(episode_idx),
         task_handles=selected,
+        observed_handles=tuple(all_ids),
         interaction_handles=tuple(sorted(interaction & selected_set)),
         adjacent_handles=tuple(sorted(adjacent & selected_set)),
         rejected_dynamic_handles=tuple(sorted(rejected_dynamic)),
@@ -302,6 +316,9 @@ def load_task_handle_detection(path: Path) -> TaskHandleDetection:
     return TaskHandleDetection(
         episode_idx=int(payload['episode_idx']),
         task_handles=tuple(int(value) for value in payload['task_handles']),
+        observed_handles=tuple(
+            int(value) for value in payload['observed_handles']
+        ),
         interaction_handles=tuple(
             int(value) for value in payload['interaction_handles']
         ),

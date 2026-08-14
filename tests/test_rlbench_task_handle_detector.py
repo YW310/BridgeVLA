@@ -54,6 +54,8 @@ class RLBenchTaskHandleDetectorTest(unittest.TestCase):
         self.assertNotIn(20, detection.task_handles)
         self.assertIn(20, detection.rejected_dynamic_handles)
         self.assertNotIn(30, detection.task_handles)
+        self.assertEqual(detection.observed_handles, (10, 20, 30))
+        self.assertEqual(detection.slot_handles, (10, 20, 30))
 
     def test_keeps_ungrasped_object_moved_by_nearby_action(self):
         frames = []
@@ -120,7 +122,7 @@ class RLBenchTaskHandleDetectorTest(unittest.TestCase):
             'rejected_dynamic_handles': [],
             'background_handles': [],
             'sampled_frames': [0, 5],
-            'method': 'episode_action_trajectory_v1',
+            'method': 'episode_action_trajectory_v2',
         }
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / 'episode_0005.json'
