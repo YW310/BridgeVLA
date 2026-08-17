@@ -114,6 +114,8 @@ class OracleObjects:
     truncated_object_ids: Tuple[int, ...] = ()
     temporal_filtered_objects: int = 0
     temporal_filtered_object_ids: Tuple[int, ...] = ()
+    thin_plane_objects: int = 0
+    thin_plane_object_ids: Tuple[int, ...] = ()
 
     def as_replay_fields(self) -> Dict[str, np.ndarray]:
         return {
@@ -417,12 +419,17 @@ def extract_oracle_objects(
     task_prior_strict: bool = False,
     role_by_id: Optional[Mapping[int, int]] = None,
     group_by_id: Optional[Mapping[int, int]] = None,
+    filter_thin_planes: bool = False,
+    thin_plane_max_thickness: float = 0.005,
+    thin_plane_min_extent: float = 0.08,
 ) -> OracleObjects:
     '''Fuse decoded instance masks with the existing replay point clouds.'''
     if max_objects <= 0 or num_points <= 0 or min_object_points <= 0:
         raise ValueError(
             'max_objects, num_points, and min_object_points must be positive'
         )
+    if thin_plane_max_thickness <= 0 or thin_plane_min_extent <= 0:
+        raise ValueError('Thin-plane thresholds must be positive')
     rng = rng or np.random.default_rng()
     excluded = {int(value) for value in excluded_ids}
     included = (
@@ -466,7 +473,7 @@ def extract_oracle_objects(
                 and object_id not in included
             ):
                 continue
-            object_points = point_cloud[mask == object_id]
+            object_points = point_cloud[mask == raw_object_id]
             object_points = object_points[np.isfinite(object_points).all(axis=1)]
             if object_points.size:
                 points_by_id.setdefault(object_id, []).append(object_points)
@@ -498,6 +505,37 @@ def extract_oracle_objects(
         for object_id, object_points in merged
         if len(object_points) >= min_object_points
     ]
+    thin_plane_object_ids: Tuple[int, ...] = ()
+    if filter_thin_planes:
+        protected_roles = role_by_id or {}
+        thin_plane_object_ids = tuple(
+            sorted(
+                object_id
+                for object_id, object_points in merged
+                if int(
+                    protected_roles.get(object_id, ORACLE_ROLE_UNKNOWN)
+                )
+                == ORACLE_ROLE_UNKNOWN
+                and (
+                    lambda ordered: (
+                        ordered[0] <= thin_plane_max_thickness
+                        and ordered[1] >= thin_plane_min_extent
+                        and ordered[2] >= thin_plane_min_extent
+                    )
+                )(
+                    np.sort(
+                        np.max(object_points, axis=0)
+                        - np.min(object_points, axis=0)
+                    )
+                )
+            )
+        )
+        thin_plane_set = set(thin_plane_object_ids)
+        merged = [
+            (object_id, object_points)
+            for object_id, object_points in merged
+            if object_id not in thin_plane_set
+        ]
     prior_filtered_objects = 0
     prior_filtered_object_ids: Tuple[int, ...] = ()
     if task_prior_filter:
@@ -630,6 +668,8 @@ def extract_oracle_objects(
         truncated_object_ids=truncated_object_ids,
         temporal_filtered_objects=len(temporal_filtered_object_ids),
         temporal_filtered_object_ids=temporal_filtered_object_ids,
+        thin_plane_objects=len(thin_plane_object_ids),
+        thin_plane_object_ids=thin_plane_object_ids,
     )
     validate_oracle_objects(oracle, max_objects, num_points)
     return oracle
@@ -758,6 +798,9 @@ def augment_transition(
     task_prior_strict: bool = False,
     role_by_id: Optional[Mapping[int, int]] = None,
     group_by_id: Optional[Mapping[int, int]] = None,
+    filter_thin_planes: bool = False,
+    thin_plane_max_thickness: float = 0.005,
+    thin_plane_min_extent: float = 0.08,
 ) -> Tuple[Dict[str, object], OracleObjects, Optional[Path]]:
     existing_oracle_keys = set(ORACLE_KEYS).intersection(original)
     if existing_oracle_keys:
@@ -815,6 +858,9 @@ def augment_transition(
                 task_prior_strict=task_prior_strict,
                 role_by_id=role_by_id,
                 group_by_id=group_by_id,
+                filter_thin_planes=filter_thin_planes,
+                thin_plane_max_thickness=thin_plane_max_thickness,
+                thin_plane_min_extent=thin_plane_min_extent,
             )
 
         cache_key: Tuple[object, ...] = (task, episode_idx, sample_frame)
@@ -850,6 +896,12 @@ def augment_transition(
                     )
                 ),
             )
+        if filter_thin_planes:
+            cache_key += (
+                'thin-planes',
+                float(thin_plane_max_thickness),
+                float(thin_plane_min_extent),
+            )
         oracle = (
             frame_cache.get_or_compute(cache_key, build_oracle)
             if frame_cache is not None
@@ -882,6 +934,9 @@ def _final_observation_oracle_for_visualization(
     robot_handles_by_episode: Optional[Mapping[int, Sequence[int]]] = None,
     roles_by_episode: Optional[Mapping[int, Mapping[int, int]]] = None,
     groups_by_episode: Optional[Mapping[int, Mapping[int, int]]] = None,
+    filter_thin_planes: bool = False,
+    thin_plane_max_thickness: float = 0.005,
+    thin_plane_min_extent: float = 0.08,
 ) -> Optional[Tuple[OracleObjects, int, int]]:
     '''Recover a final observation's GT instances from prior alignment data.'''
     if previous_source is None or not previous_source.is_file():
@@ -940,6 +995,9 @@ def _final_observation_oracle_for_visualization(
             if groups_by_episode is not None
             else None
         ),
+        filter_thin_planes=filter_thin_planes,
+        thin_plane_max_thickness=thin_plane_max_thickness,
+        thin_plane_min_extent=thin_plane_min_extent,
     )
     return oracle, episode_idx, sample_frame
 
@@ -1057,6 +1115,7 @@ def _describe(
     print(f'  centers={oracle.centers[oracle.valid].tolist()}')
     print(f'  sizes={oracle.sizes[oracle.valid].tolist()}')
     print(f'  filtered_small_objects={oracle.filtered_objects}')
+    print(f'  filtered_thin_planes={oracle.thin_plane_objects}')
     print(f'  filtered_by_task_prior={oracle.prior_filtered_objects}')
     print(f'  excluded_by_id={oracle.excluded_objects}')
     print(f'  excluded_object_ids={list(oracle.excluded_object_ids)}')
@@ -1065,6 +1124,7 @@ def _describe(
         f'{list(oracle.no_finite_point_object_ids)}'
     )
     print(f'  small_object_ids={list(oracle.small_object_ids)}')
+    print(f'  thin_plane_object_ids={list(oracle.thin_plane_object_ids)}')
     print(
         '  task_prior_filtered_object_ids='
         f'{list(oracle.prior_filtered_object_ids)}'
@@ -2337,6 +2397,9 @@ def process_task(
     workers: int,
     cache_frames: int,
     min_object_points: int,
+    filter_thin_planes: bool,
+    thin_plane_max_thickness: float,
+    thin_plane_min_extent: float,
     task_prior_filter: bool,
     task_prior_radius: Optional[float],
     task_prior_max_instances: Optional[int],
@@ -2499,6 +2562,9 @@ def process_task(
                 task_prior_strict=task_prior_strict,
                 role_by_id=role_by_id,
                 group_by_id=group_by_id,
+                filter_thin_planes=filter_thin_planes,
+                thin_plane_max_thickness=thin_plane_max_thickness,
+                thin_plane_min_extent=thin_plane_min_extent,
             )
             if not dry_run:
                 assert destination_dir is not None
@@ -2568,6 +2634,9 @@ def process_task(
                             if temporal_task_filter
                             else None
                         ),
+                        filter_thin_planes=filter_thin_planes,
+                        thin_plane_max_thickness=thin_plane_max_thickness,
+                        thin_plane_min_extent=thin_plane_min_extent,
                     )
                     if recovered is not None:
                         (
@@ -2615,6 +2684,7 @@ def process_task(
     prior_filtered = 0
     excluded = 0
     temporal_filtered = 0
+    thin_planes = 0
     visualized = 0
     progress = tqdm(
         total=len(files),
@@ -2640,6 +2710,7 @@ def process_task(
             prior_filtered += oracle.prior_filtered_objects
             excluded += oracle.excluded_objects
             temporal_filtered += oracle.temporal_filtered_objects
+            thin_planes += oracle.thin_plane_objects
             cache_hits, cache_misses, _ = frame_cache.stats()
             progress.set_postfix(
                 objects=int(oracle.valid.sum()),
@@ -2648,6 +2719,7 @@ def process_task(
                 prior_filtered=prior_filtered,
                 excluded=excluded,
                 temporal_filtered=temporal_filtered,
+                thin_planes=thin_planes,
                 workers=workers,
                 cache_hits=cache_hits,
                 cache_misses=cache_misses,
@@ -2696,6 +2768,7 @@ def process_task(
         f'prior_filtered={prior_filtered}; '
         f'excluded={excluded}; '
         f'temporal_filtered={temporal_filtered}; '
+        f'thin_planes={thin_planes}; '
         f'visualized={visualized}; '
         f'cache_hits={cache_hits}; cache_misses={cache_misses}; '
         f'cache_entries={cache_entries}'
@@ -2799,6 +2872,26 @@ def build_parser() -> argparse.ArgumentParser:
             'reject obvious planar background spanning at least this many '
             'metres on two axes (default: 0.60)'
         ),
+    )
+    parser.add_argument(
+        '--filter-thin-planes',
+        action='store_true',
+        help=(
+            'discard unknown-role instances whose shortest extent is very '
+            'thin while both planar extents are large'
+        ),
+    )
+    parser.add_argument(
+        '--thin-plane-max-thickness',
+        type=float,
+        default=0.005,
+        help='maximum thin-plane thickness in metres (default: 0.005)',
+    )
+    parser.add_argument(
+        '--thin-plane-min-extent',
+        type=float,
+        default=0.08,
+        help='minimum size of both planar axes in metres (default: 0.08)',
     )
     parser.add_argument(
         '--temporal-task-filter',
@@ -3016,6 +3109,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         raise ValueError('--task-prior-max-instances must be positive')
     if args.task_prior_background_extent <= 0:
         raise ValueError('--task-prior-background-extent must be positive')
+    if args.thin_plane_max_thickness <= 0:
+        raise ValueError('--thin-plane-max-thickness must be positive')
+    if args.thin_plane_min_extent <= 0:
+        raise ValueError('--thin-plane-min-extent must be positive')
     if not args.dry_run and not args.in_place and args.output_dir is None:
         raise ValueError('Choose --output-dir or explicit --in-place')
 
@@ -3081,6 +3178,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             workers=args.workers,
             cache_frames=args.cache_frames,
             min_object_points=args.min_object_points,
+            filter_thin_planes=args.filter_thin_planes,
+            thin_plane_max_thickness=args.thin_plane_max_thickness,
+            thin_plane_min_extent=args.thin_plane_min_extent,
             task_prior_filter=args.task_prior_filter,
             task_prior_radius=args.task_prior_radius,
             task_prior_max_instances=args.task_prior_max_instances,

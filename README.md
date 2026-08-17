@@ -187,6 +187,7 @@ python tools/augment_replay_with_oracle_objects.py \
     --temporal-id-matching \
     --task-detection-frames 16 \
     --task-prior-filter \
+    --filter-thin-planes \
     --min-object-points 1 \
     --max-objects 32 \
     --num-points 512 \
@@ -212,6 +213,9 @@ python tools/augment_replay_with_oracle_objects.py \
 | 张量 | `--max-objects N` | `32` | 每帧固定的最大 instance 槽位数；超出部分会截断。 |
 | 张量 | `--num-points N` | `512` | 每个 instance 的固定采样点数；不足时有放回采样。 |
 | 张量 | `--min-object-points N` | `20` | 跨相机融合并移除 NaN/Inf 后少于该点数的实例会删除；高召回检查可设为 `1`。 |
+| 几何过滤 | `--filter-thin-planes` | 关闭 | 删除未知角色的超薄平面；target/reference 始终保留。建议与时序匹配同时启用。 |
+| 几何过滤 | `--thin-plane-max-thickness METRES` | `0.005` | 最短轴不超过该厚度时才可能判为薄平面。 |
+| 几何过滤 | `--thin-plane-min-extent METRES` | `0.08` | 另外两个轴都至少达到该尺寸时才删除，避免把细杆、小按钮当平面。 |
 | 张量 | `--camera NAME` | 四路相机 | 指定相机，可重复传入；默认 `front`、`left_shoulder`、`right_shoulder`、`wrist`。 |
 | 排除 | `--exclude-object-id ID` | `0` | 精确排除 decoded handle，可重复传入；`--exclude-robot-id` 是同义参数。 |
 | 单帧先验 | `--task-prior-filter` | 关闭 | 按下一关键动作距离排序，并删除明显大平面背景；默认高召回，不按半径删除远处实例。 |
@@ -326,7 +330,8 @@ python tools/augment_replay_with_oracle_objects.py \
   会通过版本号自动失效。
 - 如果某个 replay 只剩一个，检查 dry-run 输出：`excluded_object_ids` 表示被
   robot/手工 ID 排除，`task_prior_filtered_object_ids` 表示被显式单帧先验删除，
-  `small_object_ids` 表示点数不足，`no_finite_point_object_ids` 表示 mask 可见但点云
+  `small_object_ids` 表示点数不足，`thin_plane_object_ids` 表示被显式薄平面规则删除，
+  `no_finite_point_object_ids` 表示 mask 可见但点云
   全为 NaN/Inf。缺失 ID 不在任何列表时，说明它在当前帧所选相机的 GT mask 中不可见
   或被完全遮挡；不再归因于 temporal 匹配。
 - 若 robot 检测仍有疑似误判，检查

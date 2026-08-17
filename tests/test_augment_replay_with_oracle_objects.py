@@ -132,6 +132,19 @@ class OracleReplayAugmentationTest(unittest.TestCase):
         args = parser.parse_args(
             base
             + [
+                '--filter-thin-planes',
+                '--thin-plane-max-thickness',
+                '0.004',
+                '--thin-plane-min-extent',
+                '0.10',
+            ]
+        )
+        self.assertTrue(args.filter_thin_planes)
+        self.assertAlmostEqual(args.thin_plane_max_thickness, 0.004)
+        self.assertAlmostEqual(args.thin_plane_min_extent, 0.10)
+        args = parser.parse_args(
+            base
+            + [
                 '--temporal-task-filter',
                 '--task-detection-frames',
                 '24',
@@ -810,6 +823,45 @@ class OracleReplayAugmentationTest(unittest.TestCase):
         self.assertEqual(oracle.small_object_ids, (7,))
         self.assertEqual(oracle.discovered_objects, 1)
 
+    def test_filters_unknown_thin_plane_but_preserves_role_object(self):
+        rows, columns = np.meshgrid(
+            np.linspace(0.0, 0.1, 4, dtype=np.float32),
+            np.linspace(0.0, 0.1, 4, dtype=np.float32),
+            indexing='ij',
+        )
+        cloud = np.stack(
+            (columns, rows, np.zeros_like(rows)), axis=-1
+        )
+        mask = np.full((4, 4), 5, dtype=np.int32)
+        filtered = extract_oracle_objects(
+            {'front_point_cloud': cloud},
+            {'front': mask},
+            cameras=('front',),
+            max_objects=2,
+            num_points=4,
+            min_object_points=1,
+            filter_thin_planes=True,
+            rng=np.random.default_rng(0),
+        )
+        self.assertFalse(filtered.valid.any())
+        self.assertEqual(filtered.thin_plane_objects, 1)
+        self.assertEqual(filtered.thin_plane_object_ids, (5,))
+
+        protected = extract_oracle_objects(
+            {'front_point_cloud': cloud},
+            {'front': mask},
+            cameras=('front',),
+            max_objects=2,
+            num_points=4,
+            min_object_points=1,
+            filter_thin_planes=True,
+            role_by_id={5: 1},
+            rng=np.random.default_rng(0),
+        )
+        self.assertEqual(protected.ids.tolist(), [5, -1])
+        self.assertEqual(protected.roles.tolist(), [1, 0])
+        self.assertEqual(protected.thin_plane_object_ids, ())
+
     def test_reports_mask_instance_with_no_finite_point_cloud(self):
         cloud = point_cloud(0)
         cloud[:, 0, 1] = np.nan
@@ -896,6 +948,10 @@ class OracleReplayAugmentationTest(unittest.TestCase):
         self.assertEqual(oracle.valid.tolist(), [True, False, False, False])
         self.assertEqual(oracle.roles.tolist(), [1, 0, 0, 0])
         self.assertEqual(oracle.raw_point_counts, (4,))
+        np.testing.assert_allclose(
+            oracle.centers[0],
+            np.array([0.75, 0.25, 1.0], dtype=np.float32),
+        )
 
     def test_task_prior_filter_runs_during_oracle_extraction(self):
         transition = {'front_point_cloud': point_cloud(0)}
