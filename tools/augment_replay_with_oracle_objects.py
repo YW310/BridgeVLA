@@ -116,6 +116,7 @@ class OracleObjects:
     temporal_filtered_object_ids: Tuple[int, ...] = ()
     thin_plane_objects: int = 0
     thin_plane_object_ids: Tuple[int, ...] = ()
+    protected_thin_plane_object_ids: Tuple[int, ...] = ()
 
     def as_replay_fields(self) -> Dict[str, np.ndarray]:
         return {
@@ -399,6 +400,21 @@ def load_frame_rgb_images(
     return images
 
 
+def _robust_oriented_extents(points: np.ndarray) -> np.ndarray:
+    '''Return PCA-aligned 2%-98% extents, sorted from thin to long axis.'''
+    points = np.asarray(points, dtype=np.float64)
+    if len(points) < 3:
+        return np.sort(np.ptp(points, axis=0))
+    centered = points - np.median(points, axis=0)
+    try:
+        _, _, axes = np.linalg.svd(centered, full_matrices=False)
+        projected = centered @ axes.T
+        lower, upper = np.quantile(projected, (0.02, 0.98), axis=0)
+        return np.sort(upper - lower)
+    except np.linalg.LinAlgError:
+        return np.sort(np.ptp(points, axis=0))
+
+
 def extract_oracle_objects(
     transition: Mapping[str, object],
     masks: Mapping[str, np.ndarray],
@@ -422,6 +438,7 @@ def extract_oracle_objects(
     filter_thin_planes: bool = False,
     thin_plane_max_thickness: float = 0.005,
     thin_plane_min_extent: float = 0.08,
+    filter_thin_planes_all_roles: bool = False,
 ) -> OracleObjects:
     '''Fuse decoded instance masks with the existing replay point clouds.'''
     if max_objects <= 0 or num_points <= 0 or min_object_points <= 0:
@@ -506,28 +523,34 @@ def extract_oracle_objects(
         if len(object_points) >= min_object_points
     ]
     thin_plane_object_ids: Tuple[int, ...] = ()
+    protected_thin_plane_object_ids: Tuple[int, ...] = ()
     if filter_thin_planes:
         protected_roles = role_by_id or {}
-        thin_plane_object_ids = tuple(
+        thin_candidates = {
+            object_id
+            for object_id, object_points in merged
+            if (
+                lambda ordered: (
+                    ordered[0] <= thin_plane_max_thickness
+                    and ordered[1] >= thin_plane_min_extent
+                    and ordered[2] >= thin_plane_min_extent
+                )
+            )(_robust_oriented_extents(object_points))
+        }
+        protected_thin_plane_object_ids = tuple(
             sorted(
                 object_id
-                for object_id, object_points in merged
-                if int(
+                for object_id in thin_candidates
+                if not filter_thin_planes_all_roles
+                and int(
                     protected_roles.get(object_id, ORACLE_ROLE_UNKNOWN)
                 )
-                == ORACLE_ROLE_UNKNOWN
-                and (
-                    lambda ordered: (
-                        ordered[0] <= thin_plane_max_thickness
-                        and ordered[1] >= thin_plane_min_extent
-                        and ordered[2] >= thin_plane_min_extent
-                    )
-                )(
-                    np.sort(
-                        np.max(object_points, axis=0)
-                        - np.min(object_points, axis=0)
-                    )
-                )
+                != ORACLE_ROLE_UNKNOWN
+            )
+        )
+        thin_plane_object_ids = tuple(
+            sorted(
+                thin_candidates - set(protected_thin_plane_object_ids)
             )
         )
         thin_plane_set = set(thin_plane_object_ids)
@@ -670,6 +693,7 @@ def extract_oracle_objects(
         temporal_filtered_object_ids=temporal_filtered_object_ids,
         thin_plane_objects=len(thin_plane_object_ids),
         thin_plane_object_ids=thin_plane_object_ids,
+        protected_thin_plane_object_ids=protected_thin_plane_object_ids,
     )
     validate_oracle_objects(oracle, max_objects, num_points)
     return oracle
@@ -801,6 +825,7 @@ def augment_transition(
     filter_thin_planes: bool = False,
     thin_plane_max_thickness: float = 0.005,
     thin_plane_min_extent: float = 0.08,
+    filter_thin_planes_all_roles: bool = False,
 ) -> Tuple[Dict[str, object], OracleObjects, Optional[Path]]:
     existing_oracle_keys = set(ORACLE_KEYS).intersection(original)
     if existing_oracle_keys:
@@ -861,6 +886,7 @@ def augment_transition(
                 filter_thin_planes=filter_thin_planes,
                 thin_plane_max_thickness=thin_plane_max_thickness,
                 thin_plane_min_extent=thin_plane_min_extent,
+                filter_thin_planes_all_roles=filter_thin_planes_all_roles,
             )
 
         cache_key: Tuple[object, ...] = (task, episode_idx, sample_frame)
@@ -901,6 +927,7 @@ def augment_transition(
                 'thin-planes',
                 float(thin_plane_max_thickness),
                 float(thin_plane_min_extent),
+                bool(filter_thin_planes_all_roles),
             )
         oracle = (
             frame_cache.get_or_compute(cache_key, build_oracle)
@@ -937,6 +964,7 @@ def _final_observation_oracle_for_visualization(
     filter_thin_planes: bool = False,
     thin_plane_max_thickness: float = 0.005,
     thin_plane_min_extent: float = 0.08,
+    filter_thin_planes_all_roles: bool = False,
 ) -> Optional[Tuple[OracleObjects, int, int]]:
     '''Recover a final observation's GT instances from prior alignment data.'''
     if previous_source is None or not previous_source.is_file():
@@ -998,6 +1026,7 @@ def _final_observation_oracle_for_visualization(
         filter_thin_planes=filter_thin_planes,
         thin_plane_max_thickness=thin_plane_max_thickness,
         thin_plane_min_extent=thin_plane_min_extent,
+        filter_thin_planes_all_roles=filter_thin_planes_all_roles,
     )
     return oracle, episode_idx, sample_frame
 
@@ -1126,6 +1155,10 @@ def _describe(
     print(f'  small_object_ids={list(oracle.small_object_ids)}')
     print(f'  thin_plane_object_ids={list(oracle.thin_plane_object_ids)}')
     print(
+        '  protected_thin_plane_object_ids='
+        f'{list(oracle.protected_thin_plane_object_ids)}'
+    )
+    print(
         '  task_prior_filtered_object_ids='
         f'{list(oracle.prior_filtered_object_ids)}'
     )
@@ -1183,6 +1216,18 @@ def _instance_color(object_id: int) -> Tuple[float, float, float]:
     # Golden-ratio hue spacing keeps adjacent simulator handles visually apart.
     hue = (int(object_id) * 0.618033988749895) % 1.0
     return colorsys.hsv_to_rgb(hue, 0.72, 0.92)
+
+
+def _object_visualization_label(object_id: int, role: int) -> str:
+    role_prefix = {
+        ORACLE_ROLE_TARGET: 'T',
+        ORACLE_ROLE_REFERENCE: 'R',
+    }.get(int(role))
+    return (
+        f'{role_prefix}_{int(object_id)}'
+        if role_prefix is not None
+        else str(int(object_id))
+    )
 
 
 def _instance_boxes_for_mask(
@@ -1260,6 +1305,10 @@ def visualize_oracle_objects(
     camera_images = dict(camera_images or {})
     camera_masks = dict(camera_masks or {})
     retained_ids = [int(oracle.ids[slot]) for slot in np.flatnonzero(oracle.valid)]
+    role_by_object = {
+        int(oracle.ids[slot]): int(oracle.roles[slot])
+        for slot in np.flatnonzero(oracle.valid)
+    }
     camera_order = list(DEFAULT_CAMERAS)
     camera_order.extend(
         camera for camera in camera_images if camera not in camera_order
@@ -1283,6 +1332,10 @@ def visualize_oracle_objects(
                 )
                 for object_id, (x_min, y_min, x_max, y_max) in boxes.items():
                     color = _instance_color(object_id)
+                    label = _object_visualization_label(
+                        object_id,
+                        role_by_object.get(object_id, ORACLE_ROLE_UNKNOWN),
+                    )
                     image_axes_value.add_patch(
                         Rectangle(
                             (x_min, y_min),
@@ -1297,7 +1350,7 @@ def visualize_oracle_objects(
                     image_axes_value.text(
                         x_min,
                         max(0, y_min - 2),
-                        str(object_id),
+                        label,
                         color='black',
                         fontsize=8,
                         fontweight='bold',
@@ -1355,6 +1408,8 @@ def visualize_oracle_objects(
     for slot in np.flatnonzero(oracle.valid):
         points = oracle.points[slot]
         object_id = int(oracle.ids[slot])
+        role = int(oracle.roles[slot])
+        label = _object_visualization_label(object_id, role)
         color = _instance_color(object_id)
         axes.scatter(
             points[:, 0],
@@ -1362,19 +1417,36 @@ def visualize_oracle_objects(
             points[:, 2],
             c=[color],
             s=2,
-            label=str(object_id),
+            label=label,
         )
         object_style = {'c': [color], 's': 2}
         top_axes.scatter(points[:, 0], points[:, 1], **object_style)
         front_axes.scatter(points[:, 0], points[:, 2], **object_style)
         side_axes.scatter(points[:, 1], points[:, 2], **object_style)
+        center = oracle.centers[slot]
+        label_style = {
+            'color': color,
+            'fontsize': 7,
+            'bbox': {
+                'facecolor': 'white',
+                'edgecolor': color,
+                'alpha': 0.35,
+                'pad': 1.0,
+            },
+        }
+        axes.text(center[0], center[1], center[2], label, **label_style)
+        top_axes.text(center[0], center[1], label, **label_style)
+        front_axes.text(center[0], center[2], label, **label_style)
+        side_axes.text(center[1], center[2], label, **label_style)
     sentinel = terminal == -1
     alignment = ''
     if episode_idx is not None and sample_frame is not None:
         alignment = f' ep={episode_idx} frame={sample_frame}'
     figure.suptitle(
         f'{task} replay {replay_index}{alignment}: Oracle GT instances '
-        f'(valid={int(oracle.valid.sum())}'
+        f'(valid={int(oracle.valid.sum())}, '
+        f'target={int(np.sum(oracle.roles == ORACLE_ROLE_TARGET))}, '
+        f'reference={int(np.sum(oracle.roles == ORACLE_ROLE_REFERENCE))}'
         + (', final sentinel' if sentinel else '')
         + ')'
     )
@@ -1413,7 +1485,7 @@ def visualize_oracle_objects(
     side_axes.set_aspect('equal', adjustable='box')
     side_axes.grid(True, alpha=0.2)
     if scene_points.size or oracle.valid.any():
-        axes.legend(title='instance ID')
+        axes.legend(title='Num / role')
     else:
         reason = (
             'Final-observation sentinel:\nno scene or Oracle points available'
@@ -2400,6 +2472,7 @@ def process_task(
     filter_thin_planes: bool,
     thin_plane_max_thickness: float,
     thin_plane_min_extent: float,
+    filter_thin_planes_all_roles: bool,
     task_prior_filter: bool,
     task_prior_radius: Optional[float],
     task_prior_max_instances: Optional[int],
@@ -2565,6 +2638,7 @@ def process_task(
                 filter_thin_planes=filter_thin_planes,
                 thin_plane_max_thickness=thin_plane_max_thickness,
                 thin_plane_min_extent=thin_plane_min_extent,
+                filter_thin_planes_all_roles=filter_thin_planes_all_roles,
             )
             if not dry_run:
                 assert destination_dir is not None
@@ -2637,6 +2711,9 @@ def process_task(
                         filter_thin_planes=filter_thin_planes,
                         thin_plane_max_thickness=thin_plane_max_thickness,
                         thin_plane_min_extent=thin_plane_min_extent,
+                        filter_thin_planes_all_roles=(
+                            filter_thin_planes_all_roles
+                        ),
                     )
                     if recovered is not None:
                         (
@@ -2892,6 +2969,14 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=0.08,
         help='minimum size of both planar axes in metres (default: 0.08)',
+    )
+    parser.add_argument(
+        '--filter-thin-planes-all-roles',
+        action='store_true',
+        help=(
+            'also discard geometrically thin target/reference instances; '
+            'use only after visually verifying role false positives'
+        ),
     )
     parser.add_argument(
         '--temporal-task-filter',
@@ -3181,6 +3266,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             filter_thin_planes=args.filter_thin_planes,
             thin_plane_max_thickness=args.thin_plane_max_thickness,
             thin_plane_min_extent=args.thin_plane_min_extent,
+            filter_thin_planes_all_roles=args.filter_thin_planes_all_roles,
             task_prior_filter=args.task_prior_filter,
             task_prior_radius=args.task_prior_radius,
             task_prior_max_instances=args.task_prior_max_instances,

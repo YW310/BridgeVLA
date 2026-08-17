@@ -216,6 +216,7 @@ python tools/augment_replay_with_oracle_objects.py \
 | 几何过滤 | `--filter-thin-planes` | 关闭 | 删除未知角色的超薄平面；target/reference 始终保留。建议与时序匹配同时启用。 |
 | 几何过滤 | `--thin-plane-max-thickness METRES` | `0.005` | 最短轴不超过该厚度时才可能判为薄平面。 |
 | 几何过滤 | `--thin-plane-min-extent METRES` | `0.08` | 另外两个轴都至少达到该尺寸时才删除，避免把细杆、小按钮当平面。 |
+| 几何过滤 | `--filter-thin-planes-all-roles` | 关闭 | 同时删除被标为 target/reference 的薄平面；仅用于确认角色误判后的强制清理。 |
 | 张量 | `--camera NAME` | 四路相机 | 指定相机，可重复传入；默认 `front`、`left_shoulder`、`right_shoulder`、`wrist`。 |
 | 排除 | `--exclude-object-id ID` | `0` | 精确排除 decoded handle，可重复传入；`--exclude-robot-id` 是同义参数。 |
 | 单帧先验 | `--task-prior-filter` | 关闭 | 按下一关键动作距离排序，并删除明显大平面背景；默认高召回，不按半径删除远处实例。 |
@@ -314,8 +315,10 @@ python tools/augment_replay_with_oracle_objects.py \
   的 GT mask 中不可见。
 - 每张可视化 PNG 使用两排八个面板：上排为 front、left shoulder、right shoulder、
   wrist RGB；下排为 3D、XY、XZ、YZ 点云。相同 episode/handle ID 跨帧颜色固定，
-  上排利用同帧 GT mask 为下排实际保留的 ID 绘制半透明同色框和纯数字标签（例如
-  `17`，不再显示 `ID 17`）；某个实例在当前相机不可见时不画框。点云使用固定米制
+  上排利用同帧 GT mask 为下排实际保留的 ID 绘制半透明同色框：unknown 只显示数字
+  （例如 `17`），target/reference 分别简写为 `T_17` / `R_23`，不显示 `ID 17`。
+  3D 图例和三个正交视图采用相同标签；某个实例在当前相机不可见时不画框。
+  点云使用固定米制
   场景边界；缺失 RGB 显示
   `RGB unavailable`，不会中断生成。
 - 默认先写 `.tmp`、回读验证后原子重命名，不覆盖原始数据。缓存会自动淘汰已完成的
@@ -331,6 +334,7 @@ python tools/augment_replay_with_oracle_objects.py \
 - 如果某个 replay 只剩一个，检查 dry-run 输出：`excluded_object_ids` 表示被
   robot/手工 ID 排除，`task_prior_filtered_object_ids` 表示被显式单帧先验删除，
   `small_object_ids` 表示点数不足，`thin_plane_object_ids` 表示被显式薄平面规则删除，
+  `protected_thin_plane_object_ids` 表示几何上是薄平面但因 target/reference 角色而保留，
   `no_finite_point_object_ids` 表示 mask 可见但点云
   全为 NaN/Inf。缺失 ID 不在任何列表时，说明它在当前帧所选相机的 GT mask 中不可见
   或被完全遮挡；不再归因于 temporal 匹配。

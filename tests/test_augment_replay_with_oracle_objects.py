@@ -28,6 +28,7 @@ from tools.augment_replay_with_oracle_objects import (
     _final_observation_oracle_for_visualization,
     _instance_color,
     _instance_boxes_for_mask,
+    _object_visualization_label,
     _episode_detection_sources,
     _episode_ids_for_selected_files,
     _detect_task_relevant_handles,
@@ -137,11 +138,13 @@ class OracleReplayAugmentationTest(unittest.TestCase):
                 '0.004',
                 '--thin-plane-min-extent',
                 '0.10',
+                '--filter-thin-planes-all-roles',
             ]
         )
         self.assertTrue(args.filter_thin_planes)
         self.assertAlmostEqual(args.thin_plane_max_thickness, 0.004)
         self.assertAlmostEqual(args.thin_plane_min_extent, 0.10)
+        self.assertTrue(args.filter_thin_planes_all_roles)
         args = parser.parse_args(
             base
             + [
@@ -704,6 +707,9 @@ class OracleReplayAugmentationTest(unittest.TestCase):
             group_by_id={5: 5, 7: 5},
         )
         self.assertEqual(grouped_boxes, {5: (1, 0, 3, 2)})
+        self.assertEqual(_object_visualization_label(5, 0), '5')
+        self.assertEqual(_object_visualization_label(5, 1), 'T_5')
+        self.assertEqual(_object_visualization_label(7, 2), 'R_7')
 
     def test_visualization_combines_camera_images_and_point_cloud_views(self):
         transition = {'front_point_cloud': point_cloud(0)}
@@ -714,6 +720,7 @@ class OracleReplayAugmentationTest(unittest.TestCase):
             max_objects=2,
             num_points=3,
             min_object_points=1,
+            role_by_id={5: 1},
             rng=np.random.default_rng(0),
         )
         camera_images = {
@@ -861,6 +868,23 @@ class OracleReplayAugmentationTest(unittest.TestCase):
         self.assertEqual(protected.ids.tolist(), [5, -1])
         self.assertEqual(protected.roles.tolist(), [1, 0])
         self.assertEqual(protected.thin_plane_object_ids, ())
+        self.assertEqual(protected.protected_thin_plane_object_ids, (5,))
+
+        forced = extract_oracle_objects(
+            {'front_point_cloud': cloud},
+            {'front': mask},
+            cameras=('front',),
+            max_objects=2,
+            num_points=4,
+            min_object_points=1,
+            filter_thin_planes=True,
+            filter_thin_planes_all_roles=True,
+            role_by_id={5: 1},
+            rng=np.random.default_rng(0),
+        )
+        self.assertFalse(forced.valid.any())
+        self.assertEqual(forced.thin_plane_object_ids, (5,))
+        self.assertEqual(forced.protected_thin_plane_object_ids, ())
 
     def test_reports_mask_instance_with_no_finite_point_cloud(self):
         cloud = point_cloud(0)
