@@ -161,8 +161,10 @@ oracle_object_roles    [MAX_OBJECTS]                 int8
 ```
 
 `oracle_object_roles` 与 ID/valid 使用相同 slot：`0=unknown/padding`、
-`1=target`、`2=reference`。角色按当前帧重新计算，同一 object ID 在不同帧可以从
-target/reference 变为 unknown，或在 target/reference 之间切换；reference 是可选角色。
+`1=target`、`2=reference`。启用时序匹配后，角色按夹爪抓取周期计算：闭爪位置附近被
+抓取的 object 是 `target`，松爪/放置位置附近除 target 外最近的 object 是
+`reference`。同一抓取周期内 T/R 的稳定 object ID 固定不变，只在下一个抓取周期重新
+选择；放置位置附近没有有效候选时 reference 为空。
 启用时序匹配后，同一刚性物体的多个 raw mask handle 会先合并点云，再占用一个 slot；
 `oracle_object_ids` 使用组内最小 handle ID 作为稳定代表，原始成员保存在 task handle
 JSON 的 `object_groups` 和 `group_by_handle` 中。
@@ -228,8 +230,8 @@ python tools/augment_replay_with_oracle_objects.py \
 | 单帧先验 | `--task-prior-radius METRES` | 按任务 | 覆盖 18 个任务配置中的交互半径。 |
 | 单帧先验 | `--task-prior-max-instances N` | 高召回不限；strict 按任务 | 限制先验保留的 simulator handle 数。 |
 | 单帧先验 | `--task-prior-background-extent METRES` | `0.60` | 两个轴均达到该尺度时视为明显桌面/地面。 |
-| 时序匹配 | `--temporal-id-matching`（兼容旧名 `--temporal-task-filter`） | 关闭 | 建立稳定 `handle ID → object group → slot`，合并持续邻接且相对距离稳定的 handle，并利用夹爪开闭及物体受影响运动生成 target/reference 角色；不删除当前帧可见实例。 |
-| 时序任务 | `--task-detection-frames N` | `16` | 每个 episode 均匀抽取的最大检测帧数；长 episode 可提高到 `24` 或 `32`。 |
+| 时序匹配 | `--temporal-id-matching`（兼容旧名 `--temporal-task-filter`） | 关闭 | 建立稳定 `handle ID → object group → slot`；以闭爪处物体为 T、松爪放置位置最近的其他物体为 R，并在同一抓取周期固定 T/R；不删除当前帧可见实例。 |
+| 时序任务 | `--task-detection-frames N` | `16` | 每个 episode 均匀抽取的最大检测帧数；需覆盖闭爪和松爪边界，长 episode 建议提高到 `24` 或 `32`。 |
 | 时序匹配 | `--task-handle-cache-dir PATH` | `<output-dir>/<task>/task_handle_maps` | episode 稳定 slot 与 task handle JSON 缓存；显式 PATH 作为根目录并追加 task 名。 |
 | 时序任务 | `--refresh-task-handle-cache` | 关闭 | 忽略已有 task handle JSON 并重新检测。 |
 | 机器人 | `--detect-robot-handles` | 关闭 | 检测 wrist 稳定的夹爪 seed，并沿持续邻接的运动学链扩展到机械臂及静止底座；只使用第一次闭合前的前缀，避免把被抓物体当作机器人。 |
@@ -264,13 +266,16 @@ python tools/augment_replay_with_oracle_objects.py \
   `valid=False`；其他可见 handle 会使用剩余 slot。
 - 时序流程先按持续空间邻接和多帧相对位姿合并 raw handle；`max_instances` 限制的是 group
   数而不是 raw handle 数。episode 内其他帧的夹爪开闭、物体随动、动作邻近和静态接触会
-  形成 task group 及 T/R 时序先验，但不会把一个 episode 标签机械复制到所有 replay 帧。
-  每个 replay 帧把该时序先验与 raw `low_dim_obs.pkl` 中的当前夹爪位置、当前帧点云共同使用：
-  先在当前交互半径内保留具有多帧 target 证据的 group，再按当前距离确定此刻 active target；
-  当前帧最多选择一个 `reference`：优先使用具有多帧 reference 证据且与 target 邻接的候选，
-  否则选择离 target 最近的邻接候选，其余为 unknown。若时序证据没有明确 target，才在当前
-  交互候选中回退。这样输出表达“当前状态下的 T/R”，但没有丢弃其他帧提供的因果信息。
-  low-dim observation 使用最多 8 个 episode 的 LRU 缓存并自动淘汰。
+  形成 task group 及 `role_cycles`。每个周期在闭爪时选择附近被抓取的 group 作为 T，
+  在后续松爪时选择离夹爪放置位置最近的其他 group 作为 R；从该周期开始到松爪帧，所有
+  replay observation 都查询同一组 T/R，不会因夹爪移动或当前帧距离变化而切换。周期外或
+  未检测到完整开闭事件时，才使用时序先验与当前帧几何的兼容回退；reference 始终可选且
+  每周期最多一个。检测结果保存在 task handle JSON 的 `role_cycles` 字段，运行日志中的
+  `cycles=` 依次显示 `[start_frame, end_frame, target_id, reference_id]`，其中
+  `reference_id=-1` 表示没有 R。若抓取任务日志为 `cycles=[]`，可使用
+  `--task-detection-frames 32`（长 episode 可继续提高）并添加
+  `--refresh-task-handle-cache` 重新检测。low-dim observation 使用最多 8 个 episode 的
+  LRU 缓存并自动淘汰。
 - 刚性分组要求两个 handle 在至少 75% 的共同可见证据中可用、80% 以上持续邻接，且
   多帧中心间距离标准差不超过 1 cm。方向和幅度一致的共同运动可以合并；若两者一直静止，
   边界长期紧密接触也可以合并。所有持续兼容关系最终按连接图的连通分量合并，因此支架的

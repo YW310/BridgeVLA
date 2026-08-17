@@ -112,6 +112,34 @@ class RLBenchTaskHandleDetectorTest(unittest.TestCase):
         self.assertEqual(detection.role_by_handle[10], 1)
         self.assertEqual(detection.role_by_handle[20], 2)
 
+    def test_grasp_cycle_keeps_target_and_placement_reference_fixed(self):
+        gripper_x = [0.00, 0.00, 0.08, 0.16, 0.20, 0.20]
+        openings = [1.0, 0.0, 0.0, 0.0, 1.0, 1.0]
+        frames = []
+        for index, (position, opening) in enumerate(
+            zip(gripper_x, openings)
+        ):
+            frames.append(
+                frame(
+                    index,
+                    gripper=[position, 0.0, 0.8],
+                    action=[position, 0.0, 0.8],
+                    centers={
+                        10: [position + 0.01, 0.0, 0.8],
+                        20: [0.23, 0.0, 0.8],
+                        30: [0.34, 0.0, 0.8],
+                    },
+                    gripper_open=opening,
+                )
+            )
+        detection = detect_task_handles(
+            'place_cups',
+            14,
+            frames,
+            interaction_radius=0.12,
+        )
+        self.assertEqual(detection.role_cycles, ((0, 4, 10, 20),))
+
     def test_reference_is_optional(self):
         frames = [
             frame(

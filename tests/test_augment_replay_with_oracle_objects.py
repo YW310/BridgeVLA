@@ -87,7 +87,7 @@ class OracleReplayAugmentationTest(unittest.TestCase):
                     return_value={3: []},
                 ),
             ):
-                slots, roles, groups = _detect_task_relevant_handles(
+                slots, roles, groups, cycles = _detect_task_relevant_handles(
                     'stack_blocks',
                     [],
                     Path('raw'),
@@ -106,6 +106,7 @@ class OracleReplayAugmentationTest(unittest.TestCase):
         self.assertEqual(slots, {3: (10,)})
         self.assertEqual(roles, {3: {10: 1}})
         self.assertEqual(groups, {3: {10: 10, 11: 10}})
+        self.assertEqual(cycles, {3: ()})
 
     def test_visualization_output_directory_defaults_and_override(self):
         parser = build_parser()
@@ -844,6 +845,15 @@ class OracleReplayAugmentationTest(unittest.TestCase):
         )
         self.assertEqual(near_five.roles.tolist(), [1, 2])
         self.assertEqual(near_seven.roles.tolist(), [2, 1])
+
+        cycle_fixed = extract_oracle_objects(
+            **common,
+            current_gripper_position=np.array([0.06, 0.0, 0.8]),
+            role_cycles=((0, 4, 5, 7),),
+            sample_frame=3,
+            rng=np.random.default_rng(0),
+        )
+        self.assertEqual(cycle_fixed.roles.tolist(), [1, 2])
 
         temporal_prior = dict(common)
         temporal_prior['role_by_id'] = {5: 1, 7: 2}

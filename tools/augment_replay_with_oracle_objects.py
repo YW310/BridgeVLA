@@ -1159,6 +1159,9 @@ def _final_observation_oracle_for_visualization(
     robot_handles_by_episode: Optional[Mapping[int, Sequence[int]]] = None,
     roles_by_episode: Optional[Mapping[int, Mapping[int, int]]] = None,
     groups_by_episode: Optional[Mapping[int, Mapping[int, int]]] = None,
+    role_cycles_by_episode: Optional[
+        Mapping[int, Sequence[Tuple[int, int, int, int]]]
+    ] = None,
     filter_thin_planes: bool = False,
     thin_plane_max_thickness: float = 0.010,
     thin_plane_min_extent: float = 0.10,
@@ -1235,6 +1238,12 @@ def _final_observation_oracle_for_visualization(
             if groups_by_episode is not None
             else None
         ),
+        role_cycles=(
+            role_cycles_by_episode.get(episode_idx, ())
+            if role_cycles_by_episode is not None
+            else ()
+        ),
+        sample_frame=sample_frame,
         current_gripper_position=current_gripper_position,
         frame_role_radius=frame_role_radius,
         filter_thin_planes=filter_thin_planes,
@@ -2955,6 +2964,11 @@ def process_task(
                         ),
                         groups_by_episode=(
                             task_groups_by_episode
+                            if temporal_task_filter
+                            else None
+                        ),
+                        role_cycles_by_episode=(
+                            task_role_cycles_by_episode
                             if temporal_task_filter
                             else None
                         ),
