@@ -374,9 +374,11 @@ python tools/augment_replay_with_oracle_objects.py \
   `temporal_filtered_object_ids`；若缺失 ID 不在其他列表中，说明它在当前帧所选相机
   的 GT mask 中不可见。
 - 每张可视化 PNG 使用两排八个面板：上排为 front、left shoulder、right shoulder、
-  wrist RGB；下排为 3D、XY、XZ、YZ 点云。相同 episode/handle ID 跨帧颜色固定，
-  上排利用同帧 GT mask 为下排实际保留的 ID 绘制半透明同色框：unknown 只显示数字
-  （例如 `17`），target/reference 分别简写为 `T_17` / `R_23`，不显示 `ID 17`。
+  wrist RGB；下排为 3D、XY、XZ、YZ 点云。相同 episode/handle ID 跨帧颜色固定；图中
+  不直接显示可能达到千万级的 simulator handle，而按 episode 稳定 slot 映射为从 `1`
+  开始的连续小编号。上排利用同帧 GT mask 为下排实际保留的 ID 绘制半透明同色框：
+  unknown 只显示小编号（例如 `3`），target/reference 分别简写为 `T_3` / `R_4`。
+  底层 `oracle_object_ids` 和 handle 缓存仍保留真实 ID，不影响跨帧匹配与训练数据。
   3D 图例和三个正交视图采用相同标签；某个实例在当前相机不可见时不画框。
   点云使用固定米制
   场景边界；缺失 RGB 显示

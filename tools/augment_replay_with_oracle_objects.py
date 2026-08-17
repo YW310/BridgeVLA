@@ -1442,15 +1442,35 @@ def _instance_color(object_id: int) -> Tuple[float, float, float]:
     return colorsys.hsv_to_rgb(hue, 0.72, 0.92)
 
 
-def _object_visualization_label(object_id: int, role: int) -> str:
+def _compact_visualization_id_map(
+    object_ids: Iterable[int],
+    stable_object_ids: Iterable[int] = (),
+) -> Dict[int, int]:
+    '''Map sparse simulator handles to stable episode-local display numbers.'''
+    retained = {int(value) for value in object_ids if int(value) >= 0}
+    ordered = []
+    for value in stable_object_ids:
+        object_id = int(value)
+        if object_id >= 0 and object_id not in ordered:
+            ordered.append(object_id)
+    ordered.extend(sorted(retained - set(ordered)))
+    return {object_id: index + 1 for index, object_id in enumerate(ordered)}
+
+
+def _object_visualization_label(
+    object_id: int,
+    role: int,
+    display_id: Optional[int] = None,
+) -> str:
     role_prefix = {
         ORACLE_ROLE_TARGET: 'T',
         ORACLE_ROLE_REFERENCE: 'R',
     }.get(int(role))
+    visible_id = int(object_id) if display_id is None else int(display_id)
     return (
-        f'{role_prefix}_{int(object_id)}'
+        f'{role_prefix}_{visible_id}'
         if role_prefix is not None
-        else str(int(object_id))
+        else str(visible_id)
     )
 
 
@@ -1503,6 +1523,7 @@ def visualize_oracle_objects(
     camera_images: Optional[Mapping[str, np.ndarray]] = None,
     camera_masks: Optional[Mapping[str, np.ndarray]] = None,
     group_by_id: Optional[Mapping[int, int]] = None,
+    stable_object_ids: Sequence[int] = (),
 ) -> Path:
     try:
         import matplotlib
@@ -1529,6 +1550,10 @@ def visualize_oracle_objects(
     camera_images = dict(camera_images or {})
     camera_masks = dict(camera_masks or {})
     retained_ids = [int(oracle.ids[slot]) for slot in np.flatnonzero(oracle.valid)]
+    display_id_by_object = _compact_visualization_id_map(
+        retained_ids,
+        stable_object_ids,
+    )
     role_by_object = {
         int(oracle.ids[slot]): int(oracle.roles[slot])
         for slot in np.flatnonzero(oracle.valid)
@@ -1559,6 +1584,7 @@ def visualize_oracle_objects(
                     label = _object_visualization_label(
                         object_id,
                         role_by_object.get(object_id, ORACLE_ROLE_UNKNOWN),
+                        display_id_by_object.get(object_id),
                     )
                     image_axes_value.add_patch(
                         Rectangle(
@@ -1633,7 +1659,11 @@ def visualize_oracle_objects(
         points = oracle.points[slot]
         object_id = int(oracle.ids[slot])
         role = int(oracle.roles[slot])
-        label = _object_visualization_label(object_id, role)
+        label = _object_visualization_label(
+            object_id,
+            role,
+            display_id_by_object.get(object_id),
+        )
         color = _instance_color(object_id)
         axes.scatter(
             points[:, 0],
@@ -3095,6 +3125,16 @@ def process_task(
                             and visualization_episode_idx is not None
                         )
                         else None
+                    ),
+                    stable_object_ids=(
+                        task_slot_ids_by_episode.get(
+                            visualization_episode_idx, ()
+                        )
+                        if (
+                            temporal_task_filter
+                            and visualization_episode_idx is not None
+                        )
+                        else ()
                     ),
                 )
                 visualized += 1

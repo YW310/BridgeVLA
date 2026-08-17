@@ -28,6 +28,7 @@ from tools.augment_replay_with_oracle_objects import (
     _final_observation_oracle_for_visualization,
     _instance_color,
     _instance_boxes_for_mask,
+    _compact_visualization_id_map,
     _object_visualization_label,
     _episode_detection_sources,
     _episode_ids_for_selected_files,
@@ -600,6 +601,15 @@ class OracleReplayAugmentationTest(unittest.TestCase):
     def test_instance_color_is_stable_by_handle_id(self):
         self.assertEqual(_instance_color(42), _instance_color(42))
         self.assertNotEqual(_instance_color(42), _instance_color(43))
+
+    def test_visualization_uses_compact_stable_episode_ids(self):
+        mapping = _compact_visualization_id_map(
+            (12_345_678, 9_876_543),
+            (9_876_543, 12_345_678, 7_654_321),
+        )
+        self.assertEqual(mapping[9_876_543], 1)
+        self.assertEqual(mapping[12_345_678], 2)
+        self.assertEqual(_object_visualization_label(12_345_678, 1, 2), 'T_2')
 
     def test_frame_cache_single_flight_reuses_one_result(self):
         cache = OracleFrameCache(capacity=2)
