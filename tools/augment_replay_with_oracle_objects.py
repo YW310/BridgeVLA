@@ -16,6 +16,7 @@ import shutil
 from collections import OrderedDict
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from threading import Lock
 from typing import Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
@@ -26,9 +27,15 @@ from PIL import Image
 from tqdm import tqdm
 
 try:
-    from tools.rlbench_task_object_priors import select_task_relevant_instances
+    from tools.rlbench_task_object_priors import (
+        get_task_object_prior,
+        select_task_relevant_instances,
+    )
 except ModuleNotFoundError:  # Direct execution: python tools/<script>.py
-    from rlbench_task_object_priors import select_task_relevant_instances
+    from rlbench_task_object_priors import (
+        get_task_object_prior,
+        select_task_relevant_instances,
+    )
 try:
     from tools.rlbench_task_handle_detector import (
         TaskHandleDetection,
@@ -400,19 +407,112 @@ def load_frame_rgb_images(
     return images
 
 
-def _robust_oriented_extents(points: np.ndarray) -> np.ndarray:
-    '''Return PCA-aligned 2%-98% extents, sorted from thin to long axis.'''
+def _noisy_plane_geometry(
+    points: np.ndarray,
+    distance_threshold: float,
+) -> Tuple[float, np.ndarray]:
+    '''Return robust plane-inlier ratio and its two in-plane extents.'''
     points = np.asarray(points, dtype=np.float64)
     if len(points) < 3:
-        return np.sort(np.ptp(points, axis=0))
+        return 0.0, np.zeros(2, dtype=np.float64)
     centered = points - np.median(points, axis=0)
     try:
         _, _, axes = np.linalg.svd(centered, full_matrices=False)
-        projected = centered @ axes.T
+        # Refit on the 80% closest points so sparse depth spikes do not rotate
+        # the plane normal away from the dominant surface.
+        for _ in range(2):
+            normal = axes[-1]
+            residuals = np.abs(centered @ normal)
+            cutoff = float(np.quantile(residuals, 0.80))
+            core = centered[residuals <= max(cutoff, 1e-9)]
+            if len(core) < 3:
+                break
+            _, _, axes = np.linalg.svd(core, full_matrices=False)
+        normal = axes[-1]
+        residuals = np.abs(centered @ normal)
+        inliers = residuals <= distance_threshold
+        inlier_ratio = float(np.mean(inliers))
+        if int(np.sum(inliers)) < 3:
+            return inlier_ratio, np.zeros(2, dtype=np.float64)
+        projected = centered[inliers] @ axes[:2].T
         lower, upper = np.quantile(projected, (0.02, 0.98), axis=0)
-        return np.sort(upper - lower)
+        return inlier_ratio, np.sort(upper - lower)
     except np.linalg.LinAlgError:
-        return np.sort(np.ptp(points, axis=0))
+        return 0.0, np.zeros(2, dtype=np.float64)
+
+
+def _distance_to_points_aabb(point: np.ndarray, points: np.ndarray) -> float:
+    minimum = np.min(points, axis=0)
+    maximum = np.max(points, axis=0)
+    outside = np.maximum(np.maximum(minimum - point, point - maximum), 0.0)
+    return float(np.linalg.norm(outside))
+
+
+def _points_aabb_distance(left: np.ndarray, right: np.ndarray) -> float:
+    left_minimum = np.min(left, axis=0)
+    left_maximum = np.max(left, axis=0)
+    right_minimum = np.min(right, axis=0)
+    right_maximum = np.max(right, axis=0)
+    outside = np.maximum(
+        np.maximum(left_minimum - right_maximum, right_minimum - left_maximum),
+        0.0,
+    )
+    return float(np.linalg.norm(outside))
+
+
+def infer_current_frame_roles(
+    instances: Sequence[Tuple[int, np.ndarray]],
+    temporal_role_priors: Mapping[int, int],
+    current_gripper_position: np.ndarray,
+    interaction_radius: float,
+) -> Dict[int, int]:
+    '''Combine episode temporal priors with the current frame state.'''
+    position = np.asarray(current_gripper_position, dtype=np.float64).reshape(-1)
+    if position.size < 3 or not np.isfinite(position[:3]).all():
+        raise ValueError('current_gripper_position must contain 3 finite values')
+    if interaction_radius <= 0:
+        raise ValueError('frame role interaction radius must be positive')
+    visible = {
+        int(object_id): np.asarray(points, dtype=np.float64)
+        for object_id, points in instances
+        if int(object_id) in temporal_role_priors
+    }
+    if not visible:
+        return {}
+    distances = {
+        object_id: _distance_to_points_aabb(position[:3], points)
+        for object_id, points in visible.items()
+    }
+    current_candidates = [
+        object_id
+        for object_id, distance in distances.items()
+        if distance <= interaction_radius
+    ]
+    if not current_candidates:
+        return {}
+    temporal_targets = [
+        object_id
+        for object_id in current_candidates
+        if int(
+            temporal_role_priors.get(object_id, ORACLE_ROLE_UNKNOWN)
+        ) == ORACLE_ROLE_TARGET
+    ]
+    # Multi-frame grasp/motion evidence narrows the target pool. Current-frame
+    # distance resolves which temporally plausible target is active now.
+    target_pool = temporal_targets or current_candidates
+    target_id = min(
+        target_pool,
+        key=lambda object_id: (distances[object_id], object_id),
+    )
+    roles = {target_id: ORACLE_ROLE_TARGET}
+    reference_radius = max(0.04, interaction_radius * 0.5)
+    target_points = visible[target_id]
+    for object_id, points in visible.items():
+        if object_id == target_id:
+            continue
+        if _points_aabb_distance(target_points, points) <= reference_radius:
+            roles[object_id] = ORACLE_ROLE_REFERENCE
+    return roles
 
 
 def extract_oracle_objects(
@@ -435,9 +535,12 @@ def extract_oracle_objects(
     task_prior_strict: bool = False,
     role_by_id: Optional[Mapping[int, int]] = None,
     group_by_id: Optional[Mapping[int, int]] = None,
+    current_gripper_position: Optional[np.ndarray] = None,
+    frame_role_radius: Optional[float] = None,
     filter_thin_planes: bool = False,
     thin_plane_max_thickness: float = 0.010,
-    thin_plane_min_extent: float = 0.05,
+    thin_plane_min_extent: float = 0.10,
+    thin_plane_min_inlier_ratio: float = 0.80,
     filter_thin_planes_all_roles: bool = True,
 ) -> OracleObjects:
     '''Fuse decoded instance masks with the existing replay point clouds.'''
@@ -447,6 +550,14 @@ def extract_oracle_objects(
         )
     if thin_plane_max_thickness <= 0 or thin_plane_min_extent <= 0:
         raise ValueError('Thin-plane thresholds must be positive')
+    if not 0 < thin_plane_min_inlier_ratio <= 1:
+        raise ValueError('thin_plane_min_inlier_ratio must be in (0, 1]')
+    if current_gripper_position is not None and (
+        frame_role_radius is None or frame_role_radius <= 0
+    ):
+        raise ValueError(
+            'frame_role_radius must be positive with current frame roles'
+        )
     rng = rng or np.random.default_rng()
     excluded = {int(value) for value in excluded_ids}
     included = (
@@ -526,17 +637,18 @@ def extract_oracle_objects(
     protected_thin_plane_object_ids: Tuple[int, ...] = ()
     if filter_thin_planes:
         protected_roles = role_by_id or {}
-        thin_candidates = {
-            object_id
-            for object_id, object_points in merged
+        thin_candidates = set()
+        for object_id, object_points in merged:
+            inlier_ratio, planar_extents = _noisy_plane_geometry(
+                object_points,
+                thin_plane_max_thickness,
+            )
             if (
-                lambda ordered: (
-                    ordered[0] <= thin_plane_max_thickness
-                    and ordered[1] >= thin_plane_min_extent
-                    and ordered[2] >= thin_plane_min_extent
-                )
-            )(_robust_oriented_extents(object_points))
-        }
+                inlier_ratio >= thin_plane_min_inlier_ratio
+                and planar_extents[0] >= thin_plane_min_extent
+                and planar_extents[1] >= thin_plane_min_extent
+            ):
+                thin_candidates.add(object_id)
         protected_thin_plane_object_ids = tuple(
             sorted(
                 object_id
@@ -583,6 +695,15 @@ def extract_oracle_objects(
             before_prior_ids - after_prior_ids
         ))
         prior_filtered_objects = len(prior_filtered_object_ids)
+    effective_role_by_id = role_by_id
+    if current_gripper_position is not None and role_by_id is not None:
+        assert frame_role_radius is not None
+        effective_role_by_id = infer_current_frame_roles(
+            merged,
+            role_by_id,
+            current_gripper_position,
+            frame_role_radius,
+        )
     discovered_objects = len(merged)
 
     placements: List[Tuple[int, int, np.ndarray]] = []
@@ -666,9 +787,9 @@ def extract_oracle_objects(
         ).astype(np.float32)
         padded.ids[slot] = object_id
         padded.valid[slot] = True
-        if role_by_id is not None:
+        if effective_role_by_id is not None:
             padded.roles[slot] = int(
-                role_by_id.get(object_id, ORACLE_ROLE_UNKNOWN)
+                effective_role_by_id.get(object_id, ORACLE_ROLE_UNKNOWN)
             )
         raw_counts.append(count)
 
@@ -824,7 +945,8 @@ def augment_transition(
     group_by_id: Optional[Mapping[int, int]] = None,
     filter_thin_planes: bool = False,
     thin_plane_max_thickness: float = 0.010,
-    thin_plane_min_extent: float = 0.05,
+    thin_plane_min_extent: float = 0.10,
+    thin_plane_min_inlier_ratio: float = 0.80,
     filter_thin_planes_all_roles: bool = True,
 ) -> Tuple[Dict[str, object], OracleObjects, Optional[Path]]:
     existing_oracle_keys = set(ORACLE_KEYS).intersection(original)
@@ -858,6 +980,19 @@ def augment_transition(
                     'Replay task-prior filtering requires gripper_pose'
                 )
             action_position = np.asarray(original['gripper_pose']).reshape(-1)[:3]
+        current_gripper_position = None
+        frame_role_radius = None
+        if role_by_id is not None:
+            positions, _ = _load_current_gripper_states(
+                episode_dir,
+                (sample_frame,),
+            )
+            current_gripper_position = positions[sample_frame]
+            frame_role_radius = (
+                get_task_object_prior(task).interaction_radius
+                if task_prior_radius is None
+                else float(task_prior_radius)
+            )
 
         def build_oracle() -> OracleObjects:
             masks = load_frame_masks(episode_dir, sample_frame, cameras)
@@ -883,9 +1018,12 @@ def augment_transition(
                 task_prior_strict=task_prior_strict,
                 role_by_id=role_by_id,
                 group_by_id=group_by_id,
+                current_gripper_position=current_gripper_position,
+                frame_role_radius=frame_role_radius,
                 filter_thin_planes=filter_thin_planes,
                 thin_plane_max_thickness=thin_plane_max_thickness,
                 thin_plane_min_extent=thin_plane_min_extent,
+                thin_plane_min_inlier_ratio=thin_plane_min_inlier_ratio,
                 filter_thin_planes_all_roles=filter_thin_planes_all_roles,
             )
 
@@ -911,6 +1049,14 @@ def augment_transition(
             cache_key += (
                 'roles',
                 tuple(sorted((int(key), int(value)) for key, value in role_by_id.items())),
+                'current-gripper',
+                tuple(
+                    np.round(
+                        np.asarray(current_gripper_position, dtype=np.float64),
+                        6,
+                    )
+                ),
+                float(frame_role_radius),
             )
         if group_by_id is not None:
             cache_key += (
@@ -927,6 +1073,7 @@ def augment_transition(
                 'thin-planes',
                 float(thin_plane_max_thickness),
                 float(thin_plane_min_extent),
+                float(thin_plane_min_inlier_ratio),
                 bool(filter_thin_planes_all_roles),
             )
         oracle = (
@@ -963,7 +1110,8 @@ def _final_observation_oracle_for_visualization(
     groups_by_episode: Optional[Mapping[int, Mapping[int, int]]] = None,
     filter_thin_planes: bool = False,
     thin_plane_max_thickness: float = 0.010,
-    thin_plane_min_extent: float = 0.05,
+    thin_plane_min_extent: float = 0.10,
+    thin_plane_min_inlier_ratio: float = 0.80,
     filter_thin_planes_all_roles: bool = True,
 ) -> Optional[Tuple[OracleObjects, int, int]]:
     '''Recover a final observation's GT instances from prior alignment data.'''
@@ -982,6 +1130,19 @@ def _final_observation_oracle_for_visualization(
     if task_prior_filter and 'gripper_pose' not in final_transition:
         return None
     episode_dir = resolve_episode_dir(raw_data_dir, task, episode_idx)
+    current_gripper_position = None
+    frame_role_radius = None
+    if roles_by_episode is not None:
+        positions, _ = _load_current_gripper_states(
+            episode_dir,
+            (sample_frame,),
+        )
+        current_gripper_position = positions[sample_frame]
+        frame_role_radius = (
+            get_task_object_prior(task).interaction_radius
+            if task_prior_radius is None
+            else float(task_prior_radius)
+        )
     masks = load_frame_masks(episode_dir, sample_frame, cameras)
     effective_excluded_ids = list(excluded_ids)
     if robot_handles_by_episode is not None:
@@ -1023,9 +1184,12 @@ def _final_observation_oracle_for_visualization(
             if groups_by_episode is not None
             else None
         ),
+        current_gripper_position=current_gripper_position,
+        frame_role_radius=frame_role_radius,
         filter_thin_planes=filter_thin_planes,
         thin_plane_max_thickness=thin_plane_max_thickness,
         thin_plane_min_extent=thin_plane_min_extent,
+        thin_plane_min_inlier_ratio=thin_plane_min_inlier_ratio,
         filter_thin_planes_all_roles=filter_thin_planes_all_roles,
     )
     return oracle, episode_idx, sample_frame
@@ -1966,6 +2130,7 @@ def _episode_ids_for_selected_files(
     return tuple(sorted(episode_ids))
 
 
+@lru_cache(maxsize=8)
 def _load_low_dim_observations(episode_dir: Path) -> Sequence[object]:
     low_dim_path = episode_dir / 'low_dim_obs.pkl'
     if not low_dim_path.is_file():
@@ -2430,15 +2595,27 @@ def _detect_task_relevant_handles(
             if write_cache:
                 save_task_handle_detection(cache_path, detection)
         handles_by_episode[episode_idx] = detection.grouped_slot_handles
-        roles_by_episode[episode_idx] = detection.role_by_group
+        # Preserve multi-frame role evidence as a prior, while also including
+        # task groups without a confident episode role. Final T/R is recomputed
+        # from this prior and the current frame inside extract_oracle_objects().
+        group_by_handle = detection.group_by_handle
+        temporal_role_priors = detection.role_by_group
+        roles_by_episode[episode_idx] = {
+            group_id: temporal_role_priors.get(
+                group_id,
+                ORACLE_ROLE_UNKNOWN,
+            )
+            for handle in detection.task_handles
+            for group_id in (group_by_handle.get(handle, handle),)
+        }
         groups_by_episode[episode_idx] = detection.group_by_handle
         tqdm.write(
             f'{task} episode={episode_idx}: task handles='
             f'{list(detection.task_handles)} interaction='
             f'{list(detection.interaction_handles)} adjacent='
             f'{list(detection.adjacent_handles)} rejected_dynamic='
-            f'{list(detection.rejected_dynamic_handles)} target='
-            f'{list(detection.target_handles)} reference='
+            f'{list(detection.rejected_dynamic_handles)} candidate_target='
+            f'{list(detection.target_handles)} candidate_reference='
             f'{list(detection.reference_handles)} groups='
             f'{[list(group) for group in detection.object_groups if len(group) > 1]} '
             f'slots={list(detection.grouped_slot_handles)} frames='
@@ -2472,6 +2649,7 @@ def process_task(
     filter_thin_planes: bool,
     thin_plane_max_thickness: float,
     thin_plane_min_extent: float,
+    thin_plane_min_inlier_ratio: float,
     filter_thin_planes_all_roles: bool,
     task_prior_filter: bool,
     task_prior_radius: Optional[float],
@@ -2638,6 +2816,7 @@ def process_task(
                 filter_thin_planes=filter_thin_planes,
                 thin_plane_max_thickness=thin_plane_max_thickness,
                 thin_plane_min_extent=thin_plane_min_extent,
+                thin_plane_min_inlier_ratio=thin_plane_min_inlier_ratio,
                 filter_thin_planes_all_roles=filter_thin_planes_all_roles,
             )
             if not dry_run:
@@ -2711,6 +2890,9 @@ def process_task(
                         filter_thin_planes=filter_thin_planes,
                         thin_plane_max_thickness=thin_plane_max_thickness,
                         thin_plane_min_extent=thin_plane_min_extent,
+                        thin_plane_min_inlier_ratio=(
+                            thin_plane_min_inlier_ratio
+                        ),
                         filter_thin_planes_all_roles=(
                             filter_thin_planes_all_roles
                         ),
@@ -2954,21 +3136,33 @@ def build_parser() -> argparse.ArgumentParser:
         '--filter-thin-planes',
         action='store_true',
         help=(
-            'discard unknown-role instances whose shortest extent is very '
-            'thin while both planar extents are large'
+            'discard large dominant planes using a robust noisy-plane inlier '
+            'test, independent of the frame-local object role'
         ),
     )
     parser.add_argument(
         '--thin-plane-max-thickness',
         type=float,
         default=0.010,
-        help='maximum thin-plane thickness in metres (default: 0.010)',
+        help=(
+            'maximum orthogonal point-to-plane inlier distance in metres '
+            '(default: 0.010)'
+        ),
     )
     parser.add_argument(
         '--thin-plane-min-extent',
         type=float,
-        default=0.05,
-        help='minimum size of both planar axes in metres (default: 0.05)',
+        default=0.10,
+        help='minimum size of both planar axes in metres (default: 0.10)',
+    )
+    parser.add_argument(
+        '--thin-plane-min-inlier-ratio',
+        type=float,
+        default=0.80,
+        help=(
+            'minimum fraction of points within the noisy plane distance band '
+            '(default: 0.80)'
+        ),
     )
     parser.add_argument(
         '--filter-thin-planes-all-roles',
@@ -3208,6 +3402,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         raise ValueError('--thin-plane-max-thickness must be positive')
     if args.thin_plane_min_extent <= 0:
         raise ValueError('--thin-plane-min-extent must be positive')
+    if not 0 < args.thin_plane_min_inlier_ratio <= 1:
+        raise ValueError('--thin-plane-min-inlier-ratio must be in (0, 1]')
     if not args.dry_run and not args.in_place and args.output_dir is None:
         raise ValueError('Choose --output-dir or explicit --in-place')
 
@@ -3276,6 +3472,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             filter_thin_planes=args.filter_thin_planes,
             thin_plane_max_thickness=args.thin_plane_max_thickness,
             thin_plane_min_extent=args.thin_plane_min_extent,
+            thin_plane_min_inlier_ratio=args.thin_plane_min_inlier_ratio,
             filter_thin_planes_all_roles=args.filter_thin_planes_all_roles,
             task_prior_filter=args.task_prior_filter,
             task_prior_radius=args.task_prior_radius,

@@ -120,6 +120,8 @@ class OracleReplayAugmentationTest(unittest.TestCase):
             args.visualize_output_dir, Path('oracle_visualizations')
         )
         self.assertTrue(args.filter_thin_planes_all_roles)
+        self.assertAlmostEqual(args.thin_plane_min_extent, 0.10)
+        self.assertAlmostEqual(args.thin_plane_min_inlier_ratio, 0.80)
         args = parser.parse_args(
             base + ['--visualize-output-dir', 'custom_visualizations']
         )
@@ -808,6 +810,52 @@ class OracleReplayAugmentationTest(unittest.TestCase):
         )
         self.assertTrue(np.isfinite(oracle.points).all())
 
+    def test_roles_are_recomputed_from_only_the_current_frame_geometry(self):
+        cloud = np.array(
+            [[
+                [0.00, 0.00, 0.80],
+                [0.01, 0.00, 0.80],
+                [0.05, 0.00, 0.80],
+                [0.06, 0.00, 0.80],
+            ]],
+            dtype=np.float32,
+        )
+        mask = np.array([[5, 5, 7, 7]], dtype=np.int32)
+        common = dict(
+            transition={'front_point_cloud': cloud},
+            masks={'front': mask},
+            cameras=('front',),
+            max_objects=2,
+            num_points=2,
+            slot_ids=(5, 7),
+            min_object_points=1,
+            role_by_id={5: 1, 7: 1},
+            frame_role_radius=0.10,
+        )
+        near_five = extract_oracle_objects(
+            **common,
+            current_gripper_position=np.array([0.0, 0.0, 0.8]),
+            rng=np.random.default_rng(0),
+        )
+        near_seven = extract_oracle_objects(
+            **common,
+            current_gripper_position=np.array([0.06, 0.0, 0.8]),
+            rng=np.random.default_rng(0),
+        )
+        self.assertEqual(near_five.roles.tolist(), [1, 2])
+        self.assertEqual(near_seven.roles.tolist(), [2, 1])
+
+        temporal_prior = dict(common)
+        temporal_prior['role_by_id'] = {5: 1, 7: 2}
+        prior_guided = extract_oracle_objects(
+            **temporal_prior,
+            current_gripper_position=np.array([0.06, 0.0, 0.8]),
+            rng=np.random.default_rng(0),
+        )
+        # Even though 7 is closer in this frame, multi-frame evidence says it
+        # is the reference while 5 remains within the current interaction area.
+        self.assertEqual(prior_guided.roles.tolist(), [1, 2])
+
     def test_filters_instances_below_minimum_fused_point_count(self):
         transition = {
             f'{camera}_point_cloud': point_cloud(index)
@@ -835,8 +883,8 @@ class OracleReplayAugmentationTest(unittest.TestCase):
 
     def test_filters_thin_plane_regardless_of_role_by_default(self):
         rows, columns = np.meshgrid(
-            np.linspace(0.0, 0.1, 4, dtype=np.float32),
-            np.linspace(0.0, 0.1, 4, dtype=np.float32),
+            np.linspace(0.0, 0.12, 4, dtype=np.float32),
+            np.linspace(0.0, 0.12, 4, dtype=np.float32),
             indexing='ij',
         )
         cloud = np.stack(
@@ -856,6 +904,20 @@ class OracleReplayAugmentationTest(unittest.TestCase):
         self.assertFalse(filtered.valid.any())
         self.assertEqual(filtered.thin_plane_objects, 1)
         self.assertEqual(filtered.thin_plane_object_ids, (5,))
+
+        small_cloud = cloud * np.float32(0.5)
+        small = extract_oracle_objects(
+            {'front_point_cloud': small_cloud},
+            {'front': mask},
+            cameras=('front',),
+            max_objects=2,
+            num_points=4,
+            min_object_points=1,
+            filter_thin_planes=True,
+            rng=np.random.default_rng(0),
+        )
+        self.assertEqual(small.ids.tolist(), [5, -1])
+        self.assertEqual(small.thin_plane_object_ids, ())
 
         role_filtered = extract_oracle_objects(
             {'front_point_cloud': cloud},
@@ -888,6 +950,43 @@ class OracleReplayAugmentationTest(unittest.TestCase):
         self.assertEqual(protected.roles.tolist(), [1, 0])
         self.assertEqual(protected.thin_plane_object_ids, ())
         self.assertEqual(protected.protected_thin_plane_object_ids, (5,))
+
+    def test_noisy_plane_uses_dominant_inlier_support(self):
+        rows, columns = np.meshgrid(
+            np.linspace(0.0, 0.12, 10, dtype=np.float32),
+            np.linspace(0.0, 0.12, 10, dtype=np.float32),
+            indexing='ij',
+        )
+        depth_noise = np.zeros_like(rows)
+        outlier_indices = np.linspace(0, depth_noise.size - 1, 15, dtype=int)
+        depth_noise.reshape(-1)[outlier_indices] = np.float32(0.08)
+        cloud = np.stack((columns, rows, depth_noise), axis=-1)
+        mask = np.full(rows.shape, 5, dtype=np.int32)
+        filtered = extract_oracle_objects(
+            {'front_point_cloud': cloud},
+            {'front': mask},
+            cameras=('front',),
+            max_objects=2,
+            num_points=8,
+            min_object_points=1,
+            filter_thin_planes=True,
+            rng=np.random.default_rng(0),
+        )
+        self.assertFalse(filtered.valid.any())
+        self.assertEqual(filtered.thin_plane_object_ids, (5,))
+
+        strict = extract_oracle_objects(
+            {'front_point_cloud': cloud},
+            {'front': mask},
+            cameras=('front',),
+            max_objects=2,
+            num_points=8,
+            min_object_points=1,
+            filter_thin_planes=True,
+            thin_plane_min_inlier_ratio=0.90,
+            rng=np.random.default_rng(0),
+        )
+        self.assertEqual(strict.ids.tolist(), [5, -1])
 
     def test_reports_mask_instance_with_no_finite_point_cloud(self):
         cloud = point_cloud(0)

@@ -161,7 +161,8 @@ oracle_object_roles    [MAX_OBJECTS]                 int8
 ```
 
 `oracle_object_roles` 与 ID/valid 使用相同 slot：`0=unknown/padding`、
-`1=target`、`2=reference`。reference 是可选角色，一个 episode 可以没有 reference。
+`1=target`、`2=reference`。角色按当前帧重新计算，同一 object ID 在不同帧可以从
+target/reference 变为 unknown，或在 target/reference 之间切换；reference 是可选角色。
 启用时序匹配后，同一刚性物体的多个 raw mask handle 会先合并点云，再占用一个 slot；
 `oracle_object_ids` 使用组内最小 handle ID 作为稳定代表，原始成员保存在 task handle
 JSON 的 `object_groups` 和 `group_by_handle` 中。
@@ -213,9 +214,10 @@ python tools/augment_replay_with_oracle_objects.py \
 | 张量 | `--max-objects N` | `32` | 每帧固定的最大 instance 槽位数；超出部分会截断。 |
 | 张量 | `--num-points N` | `512` | 每个 instance 的固定采样点数；不足时有放回采样。 |
 | 张量 | `--min-object-points N` | `20` | 跨相机融合并移除 NaN/Inf 后少于该点数的实例会删除；高召回检查可设为 `1`。 |
-| 几何过滤 | `--filter-thin-planes` | 关闭 | 删除超薄平面；几何判定优先于可能误判的 target/reference 角色。建议与时序匹配同时启用。 |
-| 几何过滤 | `--thin-plane-max-thickness METRES` | `0.010` | PCA 最短轴不超过该厚度时才可能判为薄平面；1 cm 容差可吸收多相机深度噪声。 |
-| 几何过滤 | `--thin-plane-min-extent METRES` | `0.05` | 另外两个轴都至少达到该尺寸时才删除，避免把细杆、小按钮当平面。 |
+| 几何过滤 | `--filter-thin-planes` | 关闭 | 用抗噪主平面内点比例删除大薄平面；几何判定优先于当前帧 target/reference。 |
+| 几何过滤 | `--thin-plane-max-thickness METRES` | `0.010` | 点到拟合平面的最大内点距离；默认允许主体平面具有约 1 cm 深度噪声。 |
+| 几何过滤 | `--thin-plane-min-extent METRES` | `0.10` | 平面内两个方向都至少达到该尺寸时才删除；小于约 10 cm 的薄片默认保留。 |
+| 几何过滤 | `--thin-plane-min-inlier-ratio RATIO` | `0.80` | 至少该比例的点落在平面距离带内才删除；默认允许最多约 20% 深度离群点。提高该值会更保守。 |
 | 几何过滤 | `--filter-thin-planes-all-roles` | 默认行为 | 兼容旧命令；现在 target/reference 薄平面也默认删除。 |
 | 几何过滤 | `--preserve-role-thin-planes` | 关闭 | 仅当任务确实包含薄片状相关物体时，选择保留 target/reference 薄平面。 |
 | 张量 | `--camera NAME` | 四路相机 | 指定相机，可重复传入；默认 `front`、`left_shoulder`、`right_shoulder`、`wrist`。 |
@@ -259,18 +261,19 @@ python tools/augment_replay_with_oracle_objects.py \
   handle 追加到稳定映射；`rejected_dynamic_handles` 仅作为诊断和优先级证据，不会由
   temporal 模式删除。某个稳定 handle 在当前帧不可见时保留该 slot，写入
   `valid=False`；其他可见 handle 会使用剩余 slot。
-- 时序流程先按持续空间邻接和多帧相对位姿合并 raw handle，再以合并后的 object group
-  判定角色；`max_instances` 限制的也是 group 数而不是 raw handle 数。角色检测把夹爪由开到闭
-  时接触、闭合后随夹爪运动，或在实际夹爪附近产生方向/幅度一致位移的 group 标为
-  `target`。剩余静态 group 只有在与 target 持续邻接或形成放置接触时才标为 `reference`；
-  没有这种证据时 reference 为空。静态 reach/press 类任务没有明显位移时，会把最强的直接
-  交互 group 回退为 target。task handle JSON 同时保存 `target_handles` 和
-  `reference_handles`。
+- 时序流程先按持续空间邻接和多帧相对位姿合并 raw handle；`max_instances` 限制的是 group
+  数而不是 raw handle 数。episode 内其他帧的夹爪开闭、物体随动、动作邻近和静态接触会
+  形成 task group 及 T/R 时序先验，但不会把一个 episode 标签机械复制到所有 replay 帧。
+  每个 replay 帧把该时序先验与 raw `low_dim_obs.pkl` 中的当前夹爪位置、当前帧点云共同使用：
+  先在当前交互半径内保留具有多帧 target 证据的 group，再按当前距离确定此刻 active target；
+  当前帧与它空间邻接的其他候选标为 `reference`，其余为 unknown。若时序证据没有明确
+  target，才在当前交互候选中回退。这样输出表达“当前状态下的 T/R”，但没有丢弃其他帧
+  提供的因果信息。low-dim observation 使用最多 8 个 episode 的 LRU 缓存并自动淘汰。
 - 刚性分组要求两个 handle 在至少 75% 的共同可见证据中可用、80% 以上持续邻接，且
   多帧中心间距离标准差不超过 1 cm。方向和幅度一致的共同运动可以合并；若两者一直静止，
   边界长期紧密接触也可以合并。分组采用 complete-link：组内任意两个 handle 都必须满足
-  兼容条件，因此 A-B、B-C 相邻但 A-C 不兼容时不会把三个对象链式合并。角色只在分组完成
-  后按整组计算，不再先给 raw handle 标角色再传播。
+  兼容条件，因此 A-B、B-C 相邻但 A-C 不兼容时不会把三个对象链式合并。逐帧角色只对
+  分组后的 object group 计算，不对 raw handle 单独赋值。
 - Robot 检测使用 raw observation 中的当前夹爪位姿、`gripper_open`、GT mask 和 raw
   depth。depth 会用同帧相机内外参重建世界坐标点云，与 mask 像素严格对齐。夹爪 seed 以
   wrist 图像稳定性为主，并允许夹爪旋转造成的世界坐标偏移、部分遮挡及距离离群；夹爪
