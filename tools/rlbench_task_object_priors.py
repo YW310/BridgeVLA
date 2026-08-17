@@ -22,6 +22,7 @@ class TaskObjectPrior:
     action_family: str
     interaction_radius: float
     max_instances: int
+    structural_group_distance: float = 0.02
 
 
 # max_instances counts simulator shape handles, not semantic/logical objects.
@@ -31,7 +32,9 @@ TASK_OBJECT_PRIORS: Dict[str, TaskObjectPrior] = {
     'insert_onto_square_peg': TaskObjectPrior('insert', 0.18, 8),
     'meat_off_grill': TaskObjectPrior('pick', 0.20, 8),
     'open_drawer': TaskObjectPrior('articulate', 0.16, 8),
-    'place_cups': TaskObjectPrior('multi_place', 0.22, 12),
+    'place_cups': TaskObjectPrior(
+        'multi_place', 0.22, 12, structural_group_distance=0.08
+    ),
     'place_wine_at_rack_location': TaskObjectPrior('place', 0.22, 10),
     'push_buttons': TaskObjectPrior('press', 0.12, 8),
     'put_groceries_in_cupboard': TaskObjectPrior('multi_place', 0.25, 16),

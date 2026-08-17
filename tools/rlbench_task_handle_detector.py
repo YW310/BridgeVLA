@@ -16,7 +16,7 @@ except ModuleNotFoundError:  # Direct execution: python tools/<script>.py
 
 
 Bounds = Tuple[np.ndarray, np.ndarray]
-TASK_HANDLE_DETECTOR_METHOD = 'episode_action_trajectory_v8_structural_components'
+TASK_HANDLE_DETECTOR_METHOD = 'episode_action_trajectory_v9_static_structures'
 
 
 @dataclass(frozen=True)
@@ -212,6 +212,7 @@ def _detect_rigid_groups(
     adjacency_ratio: float,
     relative_distance_std: float,
     motion_threshold: float,
+    static_adjacency_distance: float,
 ) -> Tuple[Tuple[int, ...], ...]:
     '''Merge persistently touching handles with stable relative geometry.'''
     excluded = {int(value) for value in excluded_ids}
@@ -260,8 +261,6 @@ def _detect_rigid_groups(
             bounds_distances = np.asarray(
                 [record[2] for record in records], dtype=np.float32
             )
-            if float(np.mean(bounds_distances <= adjacency_distance)) < adjacency_ratio:
-                continue
             relative_distances = np.asarray(
                 [
                     np.linalg.norm(right_center - left_center)
@@ -270,6 +269,26 @@ def _detect_rigid_groups(
                 dtype=np.float32,
             )
             if float(np.std(relative_distances)) > relative_distance_std:
+                continue
+            left_centers = np.stack([record[0] for record in records])
+            right_centers = np.stack([record[1] for record in records])
+            left_origin = np.median(left_centers, axis=0)
+            right_origin = np.median(right_centers, axis=0)
+            both_static = bool(
+                np.max(np.linalg.norm(left_centers - left_origin, axis=1))
+                <= motion_threshold
+                and np.max(np.linalg.norm(right_centers - right_origin, axis=1))
+                <= motion_threshold
+            )
+            pair_adjacency_distance = (
+                static_adjacency_distance if both_static else adjacency_distance
+            )
+            if (
+                float(
+                    np.mean(bounds_distances <= pair_adjacency_distance)
+                )
+                < adjacency_ratio
+            ):
                 continue
             shared_motion = 0.0
             for left_record, right_record in zip(records, records[1:]):
@@ -285,12 +304,9 @@ def _detect_rigid_groups(
                 ):
                     continue
                 shared_motion += min(left_motion, right_motion)
-            tightly_connected_while_static = bool(
-                np.max(bounds_distances) <= min(0.005, adjacency_distance)
-            )
             if (
                 shared_motion < motion_threshold * 0.5
-                and not tightly_connected_while_static
+                and not both_static
             ):
                 continue
             compatible_pairs.add((min(left_id, right_id), max(left_id, right_id)))
@@ -363,6 +379,8 @@ def detect_task_handles(
         raise ValueError('adjacency ratios must be in (0, 1]')
 
     prior = get_task_object_prior(task_name)
+    if prior.structural_group_distance <= 0:
+        raise ValueError('task structural group distance must be positive')
     radius = prior.interaction_radius if interaction_radius is None else float(
         interaction_radius
     )
@@ -459,6 +477,7 @@ def detect_task_handles(
         adjacency_ratio=group_adjacency_ratio,
         relative_distance_std=group_relative_distance_std,
         motion_threshold=motion_threshold,
+        static_adjacency_distance=prior.structural_group_distance,
     )
     group_by_handle = {
         handle: min(group)

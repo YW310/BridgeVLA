@@ -4,6 +4,7 @@ import numpy as np
 
 from tools.rlbench_task_object_priors import (
     TASK_OBJECT_PRIORS,
+    get_task_object_prior,
     select_task_relevant_instances,
 )
 
@@ -11,6 +12,10 @@ from tools.rlbench_task_object_priors import (
 class RLBenchTaskObjectPriorsTest(unittest.TestCase):
     def test_all_bridgevla_tasks_have_priors(self):
         self.assertEqual(len(TASK_OBJECT_PRIORS), 18)
+        self.assertAlmostEqual(
+            get_task_object_prior('place_cups').structural_group_distance,
+            0.08,
+        )
 
     def test_selects_near_action_and_rejects_large_planar_background(self):
         near = np.array(
