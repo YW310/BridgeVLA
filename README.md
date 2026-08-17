@@ -84,6 +84,48 @@ bash train.sh --exp_cfg_path  configs/rlbench_config.yaml \
               --pretrain_path  LPY/BridgeVLA/checkpoints/RLBench/model_80.pth 
 ```
 
+### RLBench fine-tuning on one 8 x 40 GB node
+
+The reduced-hardware profiles keep the paper-scale effective batch size of
+192 with gradient accumulation. The recommended profile uses batch size 2 per
+GPU on 8 GPUs and accumulates 12 micro-batches before each optimizer update.
+
+Run the four-task trend reproduction (20,000 optimizer steps):
+
+```bash
+cd finetune/RLBench
+GPUS_PER_NODE=8 bash train_8x40.sh \
+    --exp_cfg_path configs/rlbench_trend_8x40.yaml \
+    --exp_note trend_seed0 \
+    --freeze_vision_tower \
+    --log_dir exp/RLBench \
+    --load_pretrain \
+    --pretrain_path PATH_TO_2D_HEATMAP_PRETRAINED_MODEL \
+    --save_initial_checkpoint \
+    --save_optimizer_state
+```
+
+For the full 18-task, 83,300-step schedule, replace the config with
+`configs/rlbench_full_8x40.yaml`. Checkpoints include the completed optimizer
+step when `--save_optimizer_state` is enabled, so the same command can resume
+with `--resume /path/to/model_last.pth`. Prebuilt replay buffers are strongly
+recommended; replay generation is not part of the distributed training run.
+
+Evaluate all 18 tasks with one isolated simulator process per GPU:
+
+```bash
+python eval_parallel.py \
+    --model-folder PATH_TO_CHECKPOINT_FOLDER \
+    --eval-datafolder PATH_TO_RLBENCH_EVAL_DATA \
+    --model-name model_80.pth \
+    --gpus 0,1,2,3,4,5,6,7 \
+    --eval-episodes 25
+```
+
+The runner creates a unique run directory, merges the 18 task CSV files, and
+writes `summary.json` with the macro success rate. It does not record videos.
+
+
 ### RLBench Raw → Replay 独立生成
 
 `tools/generate_rlbench_replay.py` 使用与训练入口完全相同的

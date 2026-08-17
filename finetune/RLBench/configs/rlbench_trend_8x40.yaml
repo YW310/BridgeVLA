@@ -1,0 +1,26 @@
+exp_id: rlbench_trend_8x40
+tasks: insert_onto_square_peg,open_drawer,place_wine_at_rack_location,light_bulb_in
+bs: 2
+num_workers: 3
+epochs: 100
+# 38,400 samples / 192 global batch = 200 optimizer steps per epoch.
+train_iter: 38400
+global_batch_size: 192
+max_optimizer_steps: 20000
+gradient_checkpointing: True
+efficient_paligemma_forward: True
+checkpoint_every_epochs: 10
+seed: 0
+sample_distribution_mode: task_uniform
+use_scheduler: False
+use_oracle_objects: False
+oracle_max_objects: 32
+oracle_num_points: 512
+peract:
+  lr: 8e-5
+  optimizer_type: adamw
+  transform_augmentation_xyz: [0.125, 0.125, 0.125]
+  transform_augmentation_rpy: [0.0, 0.0, 45.0]
+rvt:
+  place_with_mean: False
+  img_aug: 0.0

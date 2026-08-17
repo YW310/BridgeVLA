@@ -15,6 +15,15 @@ _C.num_workers = 0
 _C.sample_distribution_mode = 'transition_uniform'
 _C.train_iter = 16 * 10000
 _C.use_scheduler = True
+# Effective batch across all ranks and gradient-accumulation micro-steps.
+# Zero keeps the historical one-update-per-DDP-batch behavior.
+_C.global_batch_size = 0
+# Optional optimizer-step cap. Zero means epochs * steps_per_epoch.
+_C.max_optimizer_steps = 0
+_C.gradient_checkpointing = False
+_C.efficient_paligemma_forward = False
+_C.seed = 0
+_C.checkpoint_every_epochs = 10
 # Oracle object experiment: opt in only when loading an augmented replay copy.
 _C.use_oracle_objects = False
 _C.oracle_max_objects = 32

@@ -1,0 +1,26 @@
+exp_id: rlbench_full_8x40
+tasks: all
+bs: 2
+num_workers: 3
+epochs: 100
+# floor(160,000 / 192) = 833 optimizer steps per epoch.
+train_iter: 160000
+global_batch_size: 192
+max_optimizer_steps: 83300
+gradient_checkpointing: True
+efficient_paligemma_forward: True
+checkpoint_every_epochs: 10
+seed: 0
+sample_distribution_mode: task_uniform
+use_scheduler: False
+use_oracle_objects: False
+oracle_max_objects: 32
+oracle_num_points: 512
+peract:
+  lr: 8e-5
+  optimizer_type: adamw
+  transform_augmentation_xyz: [0.125, 0.125, 0.125]
+  transform_augmentation_rpy: [0.0, 0.0, 45.0]
+rvt:
+  place_with_mean: False
+  img_aug: 0.0

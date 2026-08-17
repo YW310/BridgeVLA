@@ -17,6 +17,7 @@ Author: Peiyan Li
 Email: peiyan.li@cripac.ia.ac.cn
 '''
 import os
+import random
 import subprocess
 import time
 import tqdm
@@ -24,7 +25,8 @@ import yaml
 import argparse
 import time
 from collections import defaultdict
-from contextlib import redirect_stdout
+from contextlib import nullcontext, redirect_stdout
+import numpy as np
 import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -46,6 +48,7 @@ from utils.peract_utils_rlbench import (
     DATA_FOLDER,
     TRAIN_REPLAY_STORAGE_DIR,
 )
+from training_utils import build_batch_plan, optimizer_steps_per_epoch
 
 def _scalar_metrics(values):
     metrics = {}
@@ -149,7 +152,129 @@ def train(
                 )
     return log
 
-def save_agent(agent, path, epoch, include_optimizer=False):
+
+def train_with_accumulation(
+    agent,
+    dataset,
+    optimizer_steps,
+    epoch,
+    gradient_accumulation_steps,
+    global_step_offset=0,
+    rank=0,
+    writer=None,
+    wandb_run=None,
+    loss_print_interval=10,
+):
+    agent.train()
+    data_iter = iter(dataset)
+    progress = tqdm.tqdm(
+        range(optimizer_steps), disable=(rank != 0), position=0, leave=True
+    )
+
+    for optimizer_step_index in progress:
+        agent.zero_grad()
+        metric_totals = defaultdict(float)
+        metric_counts = defaultdict(int)
+
+        for micro_step in range(gradient_accumulation_steps):
+            raw_batch = next(data_iter)
+            batch = {
+                key: value.to(agent._device)
+                for key, value in raw_batch.items()
+                if type(value) == torch.Tensor
+            }
+            batch['tasks'] = raw_batch['tasks']
+            batch['lang_goal'] = raw_batch['lang_goal']
+
+            synchronize = micro_step == gradient_accumulation_steps - 1
+            if isinstance(agent._network, DDP) and not synchronize:
+                sync_context = agent._network.no_sync()
+            else:
+                sync_context = nullcontext()
+
+            with sync_context:
+                out = agent.update(
+                    replay_sample=batch,
+                    backprop=True,
+                    reset_log=(optimizer_step_index == 0 and micro_step == 0),
+                    loss_scale=1.0 / gradient_accumulation_steps,
+                    reset_gradients=False,
+                    step_optimizer=False,
+                )
+
+            for key, value in _scalar_metrics(out).items():
+                metric_totals[key] += value
+                metric_counts[key] += 1
+
+        agent.optimizer_step()
+        metrics = {
+            key: total / metric_counts[key]
+            for key, total in metric_totals.items()
+        }
+        global_step = global_step_offset + optimizer_step_index
+
+        if rank == 0:
+            if writer is not None:
+                for key, value in metrics.items():
+                    writer.add_scalar(f'train/{key}', value, global_step)
+                writer.add_scalar(
+                    'train/learning_rate',
+                    agent._optimizer.param_groups[0]['lr'],
+                    global_step,
+                )
+                writer.add_scalar(
+                    'system/max_memory_allocated_gib',
+                    torch.cuda.max_memory_allocated(agent._device) / (1024 ** 3),
+                    global_step,
+                )
+            if wandb_run is not None:
+                wandb_metrics = {
+                    f'train/{key}': value for key, value in metrics.items()
+                }
+                wandb_metrics['train/learning_rate'] = (
+                    agent._optimizer.param_groups[0]['lr']
+                )
+                wandb_metrics['system/max_memory_allocated_gib'] = (
+                    torch.cuda.max_memory_allocated(agent._device) / (1024 ** 3)
+                )
+                wandb_run.log(wandb_metrics, step=global_step)
+
+            visible_losses = {
+                key: f'{metrics[key]:.4f}'
+                for key in (
+                    'total_loss',
+                    'trans_loss',
+                    'rot_loss_x',
+                    'rot_loss_y',
+                    'rot_loss_z',
+                    'grip_loss',
+                    'collision_loss',
+                )
+                if key in metrics
+            }
+            progress.set_postfix(visible_losses, refresh=False)
+            if (
+                loss_print_interval > 0
+                and (
+                    global_step % loss_print_interval == 0
+                    or optimizer_step_index == optimizer_steps - 1
+                )
+            ):
+                loss_text = ' '.join(
+                    f'{key}={value:.6f}'
+                    for key, value in metrics.items()
+                    if 'loss' in key
+                )
+                tqdm.tqdm.write(
+                    f'[train] epoch={epoch} optimizer_step={global_step} '
+                    f'{loss_text}'
+                )
+
+    return global_step_offset + optimizer_steps
+
+def save_agent(
+    agent, path, epoch, optimizer_step=None, include_optimizer=False
+):
     model = agent._network
 
     if isinstance(model, DDP):
@@ -161,6 +286,8 @@ def save_agent(agent, path, epoch, include_optimizer=False):
         "epoch": epoch,
         "model_state": model_state,
     }
+    if optimizer_step is not None:
+        checkpoint['optimizer_step'] = int(optimizer_step)
     if include_optimizer:
         checkpoint["optimizer_state"] = agent._optimizer.state_dict()
 
@@ -184,7 +311,7 @@ def load_training_checkpoint(agent, path):
     if optimizer_state is None:
         print(
             "WARNING: the checkpoint has no optimizer state; "
-            "model weights were restored but Adam starts fresh.",
+            "model weights were restored but the optimizer starts fresh.",
             flush=True,
         )
     else:
@@ -192,7 +319,8 @@ def load_training_checkpoint(agent, path):
 
     checkpoint_epoch = int(checkpoint["epoch"])
     print(f"Resumed training from {path} (completed epoch {checkpoint_epoch}).", flush=True)
-    return checkpoint_epoch + 1
+    optimizer_step = checkpoint.get('optimizer_step')
+    return checkpoint_epoch + 1, optimizer_step
 
 
 
@@ -298,6 +426,27 @@ def setup_distributed(backend="nccl", port=None):
 
 
 
+def set_training_seed(seed, rank):
+    rank_seed = int(seed) + int(rank)
+    random.seed(rank_seed)
+    np.random.seed(rank_seed)
+    torch.manual_seed(rank_seed)
+    torch.cuda.manual_seed_all(rank_seed)
+
+
+def freeze_backbone_modules(backbone, freeze_vision_tower):
+    freeze_names = ['lm_head', 'embed_tokens']
+    if freeze_vision_tower:
+        freeze_names.append('vision_tower')
+
+    frozen = 0
+    for name, parameter in backbone.named_parameters():
+        if any(freeze_name in name for freeze_name in freeze_names):
+            parameter.requires_grad = False
+            frozen += parameter.numel()
+    return frozen
+
+
 def experiment(cmd_args):
     if cmd_args.loss_print_interval < 0:
         raise ValueError('--loss_print_interval must be >= 0')
@@ -327,16 +476,35 @@ def experiment(cmd_args):
         exp_cfg.exp_id += f"_{cmd_args.exp_cfg_opts}"
     if cmd_args.mvt_cfg_opts != "":
         exp_cfg.exp_id += f"_{cmd_args.mvt_cfg_opts}"
+    reduced_hardware_mode = exp_cfg.global_batch_size > 0
+    if reduced_hardware_mode and exp_cfg.checkpoint_every_epochs <= 0:
+        raise ValueError('checkpoint_every_epochs must be > 0')
     exp_cfg.freeze()
+    if reduced_hardware_mode:
+        set_training_seed(exp_cfg.seed, dist.get_rank())
 
     BATCH_SIZE_TRAIN = exp_cfg.bs
+    batch_plan = build_batch_plan(
+        per_device_batch_size=exp_cfg.bs,
+        world_size=dist.get_world_size(),
+        target_global_batch_size=exp_cfg.global_batch_size,
+    )
+    OPTIMIZER_STEPS_PER_EPOCH = optimizer_steps_per_epoch(
+        exp_cfg.train_iter, batch_plan.target_global_batch_size
+    )
     if local_rank == 0:
         print(f"dict(exp_cfg)={dict(exp_cfg)}")
         print(f"BATCH_SIZE_TRAIN={BATCH_SIZE_TRAIN}")
+        print(
+            "Batch plan: "
+            f"micro_global={batch_plan.micro_global_batch_size}, "
+            f"target_global={batch_plan.target_global_batch_size}, "
+            "gradient_accumulation_steps="
+            f"{batch_plan.gradient_accumulation_steps}, "
+            f"optimizer_steps_per_epoch={OPTIMIZER_STEPS_PER_EPOCH}"
+        )
 
     NUM_TRAIN = 100
-    # to match peract, iterations per epoch
-    TRAINING_ITERATIONS = int(exp_cfg.train_iter // (exp_cfg.bs * dist.get_world_size()))
 
     if exp_cfg.epochs!=cmd_args.epochs:
         print(f"cmd args epochs != exp cfg epochs You are using {cmd_args.epochs}")
@@ -390,6 +558,17 @@ def experiment(cmd_args):
         pretrain_path=cmd_args.pretrain_path,
         **mvt_cfg,
     )
+    if exp_cfg.efficient_paligemma_forward:
+        backbone.mvt1.enable_efficient_paligemma_forward()
+    if exp_cfg.gradient_checkpointing:
+        backbone.mvt1.enable_gradient_checkpointing()
+    if reduced_hardware_mode:
+        frozen_params = freeze_backbone_modules(
+            backbone, cmd_args.freeze_vision_tower
+        )
+        if cmd_args.freeze_vision_tower:
+            print("Freeze vision tower")
+        print(f"Frozen parameters: {frozen_params / 1e9:.2f} billion")
     backbone=backbone.to(local_rank)
     # if ddp:
     backbone = DDP(backbone, device_ids=[local_rank],find_unused_parameters=True)
@@ -406,18 +585,18 @@ def experiment(cmd_args):
         **exp_cfg.rvt,
     )
 
-    freeze_names=["lm_head","embed_tokens"]
-    if cmd_args.freeze_vision_tower:
-        freeze_names.append("vision_tower")
-        print("Freeze vision tower")
+    if not reduced_hardware_mode:
+        freeze_names = ["lm_head", "embed_tokens"]
+        if cmd_args.freeze_vision_tower:
+            freeze_names.append("vision_tower")
+            print("Freeze vision tower")
+        for name, module in agent._network.named_modules():
+            for freeze_name in freeze_names:
+                if freeze_name in name:
+                    for param in module.parameters():
+                        param.requires_grad = False
+                    break
 
-    for name, module in agent._network.named_modules():
-        for freeze_name in freeze_names:
-            if freeze_name in name:
-                for param in module.parameters():
-                    param.requires_grad = False
-                break
-    
     total_params = sum(p.numel() for p in agent._network.parameters() if p.requires_grad)
     total_params_billion = total_params / 1e9  
     print(f'Total trainable parameters: {total_params_billion:.2f} billion')
@@ -425,13 +604,45 @@ def experiment(cmd_args):
 
     agent.build(training=True, device=device_id)
     start_epoch = 0
+    start_optimizer_step = 0
+    if (
+        dist.get_rank() == 0
+        and reduced_hardware_mode
+        and cmd_args.save_initial_checkpoint
+        and not cmd_args.resume_checkpoint
+    ):
+        save_agent(
+            agent,
+            f'{log_dir}/model_step_0.pth',
+            epoch=-1,
+            optimizer_step=0,
+            include_optimizer=cmd_args.save_optimizer_state,
+        )
+    dist.barrier()
     if cmd_args.resume_checkpoint:
         if not os.path.isfile(cmd_args.resume_checkpoint):
             raise FileNotFoundError(
                 f"Resume checkpoint does not exist: {cmd_args.resume_checkpoint}"
             )
-        start_epoch = load_training_checkpoint(agent, cmd_args.resume_checkpoint)
+        start_epoch, checkpoint_step = load_training_checkpoint(
+            agent, cmd_args.resume_checkpoint
+        )
+        start_optimizer_step = (
+            checkpoint_step
+            if checkpoint_step is not None
+            else start_epoch * OPTIMIZER_STEPS_PER_EPOCH
+        )
     end_epoch = EPOCHS
+    target_optimizer_steps = (
+        exp_cfg.max_optimizer_steps
+        if exp_cfg.max_optimizer_steps > 0
+        else EPOCHS * OPTIMIZER_STEPS_PER_EPOCH
+    )
+    if start_optimizer_step >= target_optimizer_steps:
+        raise ValueError(
+            "Checkpoint has already reached the configured optimizer-step target: "
+            f"{start_optimizer_step} >= {target_optimizer_steps}"
+        )
 
     if dist.get_rank() == 0:
         ## logging unchanged values to reproduce the same setting
@@ -492,35 +703,74 @@ def experiment(cmd_args):
         else:
             print('Metric backend disabled; tqdm/text loss remains enabled.')
 
-    print("Start training ...", flush=True)
+    print(
+        f"Start training at optimizer step {start_optimizer_step}; "
+        f"target={target_optimizer_steps}",
+        flush=True,
+    )
     i = start_epoch
-    while i < end_epoch:
+    global_optimizer_step = start_optimizer_step
+    while i < end_epoch and global_optimizer_step < target_optimizer_steps:
 
         print(f"Rank [{dist.get_rank()}], Epoch [{i}]: Training on train dataset")
 
-        out = train(
-            agent,
-            train_dataset,
-            TRAINING_ITERATIONS,
-            epoch=i,
-            rank=dist.get_rank(),
-            writer=writer,
-            wandb_run=wandb_run,
-            loss_print_interval=cmd_args.loss_print_interval,
+        steps_this_epoch = min(
+            OPTIMIZER_STEPS_PER_EPOCH,
+            target_optimizer_steps - global_optimizer_step,
         )
+        if reduced_hardware_mode:
+            global_optimizer_step = train_with_accumulation(
+                agent,
+                train_dataset,
+                steps_this_epoch,
+                epoch=i,
+                gradient_accumulation_steps=(
+                    batch_plan.gradient_accumulation_steps
+                ),
+                global_step_offset=global_optimizer_step,
+                rank=dist.get_rank(),
+                writer=writer,
+                wandb_run=wandb_run,
+                loss_print_interval=cmd_args.loss_print_interval,
+            )
+        else:
+            train(
+                agent,
+                train_dataset,
+                steps_this_epoch,
+                epoch=i,
+                rank=dist.get_rank(),
+                writer=writer,
+                wandb_run=wandb_run,
+                loss_print_interval=cmd_args.loss_print_interval,
+            )
+            global_optimizer_step += steps_this_epoch
 
-        if dist.get_rank()==0 and (i %10==0 or i == end_epoch-1):
-            # TODO: add logic to only save some models
+        if reduced_hardware_mode:
+            should_save = (
+                (i + 1) % exp_cfg.checkpoint_every_epochs == 0
+                or i == end_epoch - 1
+                or global_optimizer_step == target_optimizer_steps
+            )
+        else:
+            should_save = i % 10 == 0 or i == end_epoch - 1
+        if dist.get_rank() == 0 and should_save:
             save_agent(
                 agent,
                 f"{log_dir}/model_{i}.pth",
                 i,
+                optimizer_step=(
+                    global_optimizer_step if reduced_hardware_mode else None
+                ),
                 include_optimizer=cmd_args.save_optimizer_state,
             )
             save_agent(
                 agent,
                 f"{log_dir}/model_last.pth",
                 i,
+                optimizer_step=(
+                    global_optimizer_step if reduced_hardware_mode else None
+                ),
                 include_optimizer=cmd_args.save_optimizer_state,
             )
         i += 1
@@ -603,9 +853,14 @@ if __name__ == "__main__":
         "--save_optimizer_state",
         action="store_true",
         help=(
-            "Include Adam state in checkpoints for exact training resume. "
+            "Include optimizer state for optimizer-continuous training resume. "
             "Disabled by default to keep evaluation/inference checkpoints small."
         ),
+    )
+    parser.add_argument(
+        '--save_initial_checkpoint',
+        action='store_true',
+        help='Save the initialized RLBench policy before optimizer step 1.',
     )
     cmd_args = parser.parse_args()
     experiment(cmd_args)

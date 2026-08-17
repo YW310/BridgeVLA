@@ -248,6 +248,49 @@ class MVT(nn.Module):
             print("You are loading original paligemma model!")
 
         global select_feat_from_hm
+        self.use_efficient_paligemma_forward = False
+
+    def enable_gradient_checkpointing(self):
+        self.model.config.use_cache = False
+        self.model.gradient_checkpointing_enable(
+            gradient_checkpointing_kwargs={'use_reentrant': False}
+        )
+        print('Enabled PaliGemma gradient checkpointing')
+
+    def enable_efficient_paligemma_forward(self):
+        self.use_efficient_paligemma_forward = True
+        print('Enabled memory-efficient PaliGemma forward')
+
+    def _forward_efficient_paligemma(self, model_inputs):
+        # PaliGemma 4.51.3 performs multimodal token merging in the conditional
+        # generation wrapper, so keep that path but capture only the final
+        # normalized hidden state. Limiting logits to one token avoids the
+        # otherwise unused [batch, sequence, vocabulary] allocation, while not
+        # requesting every hidden layer preserves activation checkpointing.
+        captured_hidden_states = []
+
+        def capture_final_hidden_state(module, inputs, output):
+            captured_hidden_states.append(output)
+
+        hook = self.model.language_model.model.norm.register_forward_hook(
+            capture_final_hidden_state
+        )
+        try:
+            self.model(
+                **model_inputs,
+                use_cache=False,
+                output_hidden_states=False,
+                logits_to_keep=1,
+                return_dict=True,
+            )
+        finally:
+            hook.remove()
+        if len(captured_hidden_states) != 1:
+            raise RuntimeError(
+                'Expected one final PaliGemma hidden state, got '
+                f'{len(captured_hidden_states)}'
+            )
+        return captured_hidden_states[0]
 
     def get_pt_loc_on_img(self, pt, dyn_cam_info):
         """
@@ -311,11 +354,11 @@ class MVT(nn.Module):
         assert len(prompts)==len(images)
         model_inputs = self.processor(text=prompts, images=images, return_tensors="pt",padding="longest")
         model_inputs = model_inputs.to(self.model.dtype).to(self.model.device)
-        outputs = self.model(**model_inputs, output_hidden_states=True)
-
-        hidden_states = outputs.hidden_states  
-
-        x = hidden_states[-1]  # get the features of the last layer
+        if self.use_efficient_paligemma_forward:
+            x = self._forward_efficient_paligemma(model_inputs)
+        else:
+            outputs = self.model(**model_inputs, output_hidden_states=True)
+            x = outputs.hidden_states[-1]
 
 
         # get image tokens
@@ -485,6 +528,3 @@ class MVT(nn.Module):
         """
         print("Freeing up some memory")
         self.renderer.free_mem()
-
-
-

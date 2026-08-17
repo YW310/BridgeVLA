@@ -458,11 +458,27 @@ class RVTAgent:
         self._device = device
         params_to_optimize = filter(lambda p: p.requires_grad, self._network.parameters())
 
-        self._optimizer = torch.optim.Adam(
+        optimizer_name = self._optimizer_type.lower()
+        if optimizer_name == 'adam':
+            optimizer_class = torch.optim.Adam
+        elif optimizer_name == 'adamw':
+            optimizer_class = torch.optim.AdamW
+        else:
+            raise ValueError(
+                f'Unsupported optimizer_type: {self._optimizer_type}'
+            )
+
+        self._optimizer = optimizer_class(
             params_to_optimize,
             lr=self._lr,
             weight_decay=self._lambda_weight_l2,
         )
+
+    def zero_grad(self):
+        self._optimizer.zero_grad(set_to_none=True)
+
+    def optimizer_step(self):
+        self._optimizer.step()
 
 
     def _get_one_hot_expert_actions(
@@ -583,6 +599,9 @@ class RVTAgent:
         replay_sample: dict,
         backprop: bool = True,
         reset_log: bool = False,
+        loss_scale: float = 1.0,
+        reset_gradients: bool = True,
+        step_optimizer: bool = True,
     ) -> dict:
         assert replay_sample["rot_grip_action_indicies"].shape[1:] == (1, 4)
         assert replay_sample["ignore_collisions"].shape[1:] == (1, 1)
@@ -766,10 +785,12 @@ class RVTAgent:
             )
 
 
-            self._optimizer.zero_grad(set_to_none=True)
-            
-            total_loss.backward() 
-            self._optimizer.step()
+            if reset_gradients:
+                self.zero_grad()
+
+            (total_loss * loss_scale).backward()
+            if step_optimizer:
+                self.optimizer_step()
 
 
             loss_log = {
