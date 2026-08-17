@@ -277,8 +277,9 @@ python tools/augment_replay_with_oracle_objects.py \
   多个末端区域即使彼此不直接接触，只要都稳定连接到同一中心/底座，也会形成一个 object
   group。仅在任务后期才接触支架的杯子不满足全时段持续邻接要求，不会并入支架。逐帧角色
   只对分组后的 object group 计算，不对 raw handle 单独赋值。
-  `place_cups` 对双方都保持静止且相对位姿稳定的支架区域使用 8 cm 结构连接范围；通用任务
-  仍使用 2 cm，避免把普通场景物体过度合并。
+  普通第一阶段始终使用 2 cm，避免把静止邻近物体在整幅场景中误合并。`place_cups` 只有在
+  多帧证据先找到 reference 支架种子后，才允许从该种子向其他静止、相对位姿稳定的区域做
+  6 cm 二阶段结构扩展；target 和发生明显运动的杯子不会进入该扩展。
 - Robot 检测使用 raw observation 中的当前夹爪位姿、`gripper_open`、GT mask 和 raw
   depth。depth 会用同帧相机内外参重建世界坐标点云，与 mask 像素严格对齐。夹爪 seed 以
   wrist 图像稳定性为主，并允许夹爪旋转造成的世界坐标偏移、部分遮挡及距离离群；夹爪

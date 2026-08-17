@@ -14,7 +14,11 @@ class RLBenchTaskObjectPriorsTest(unittest.TestCase):
         self.assertEqual(len(TASK_OBJECT_PRIORS), 18)
         self.assertAlmostEqual(
             get_task_object_prior('place_cups').structural_group_distance,
-            0.08,
+            0.02,
+        )
+        self.assertAlmostEqual(
+            get_task_object_prior('place_cups').reference_structure_distance,
+            0.06,
         )
 
     def test_selects_near_action_and_rejects_large_planar_background(self):

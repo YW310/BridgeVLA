@@ -16,7 +16,7 @@ except ModuleNotFoundError:  # Direct execution: python tools/<script>.py
 
 
 Bounds = Tuple[np.ndarray, np.ndarray]
-TASK_HANDLE_DETECTOR_METHOD = 'episode_action_trajectory_v9_static_structures'
+TASK_HANDLE_DETECTOR_METHOD = 'episode_action_trajectory_v10_reference_structures'
 
 
 @dataclass(frozen=True)
@@ -203,6 +203,42 @@ def _is_planar_background(sizes: Sequence[np.ndarray], extent: float) -> bool:
     return bool(ordered[-1] >= extent and ordered[-2] >= extent)
 
 
+def _merge_group_collections(
+    object_ids: Sequence[int],
+    groups_to_merge: Iterable[Sequence[int]],
+) -> Tuple[Tuple[int, ...], ...]:
+    parent = {object_id: object_id for object_id in object_ids}
+
+    def find(object_id: int) -> int:
+        while parent[object_id] != object_id:
+            parent[object_id] = parent[parent[object_id]]
+            object_id = parent[object_id]
+        return object_id
+
+    def union(left_id: int, right_id: int) -> None:
+        left_root = find(left_id)
+        right_root = find(right_id)
+        if left_root == right_root:
+            return
+        representative = min(left_root, right_root)
+        parent[left_root] = representative
+        parent[right_root] = representative
+
+    for group in groups_to_merge:
+        members = tuple(group)
+        if not members:
+            continue
+        for member in members[1:]:
+            union(members[0], member)
+    merged: Dict[int, List[int]] = {}
+    for object_id in object_ids:
+        merged.setdefault(find(object_id), []).append(object_id)
+    return tuple(
+        tuple(sorted(group))
+        for group in sorted(merged.values(), key=lambda value: min(value))
+    )
+
+
 def _detect_rigid_groups(
     object_ids: Sequence[int],
     frames: Sequence[TaskFrameEvidence],
@@ -316,32 +352,7 @@ def _detect_rigid_groups(
     # Connected components recover that one logical object. Late task-object
     # contacts do not qualify because pair compatibility already requires
     # persistent co-visibility, adjacency and stable relative geometry.
-    parent = {object_id: object_id for object_id in object_ids}
-
-    def find(object_id: int) -> int:
-        while parent[object_id] != object_id:
-            parent[object_id] = parent[parent[object_id]]
-            object_id = parent[object_id]
-        return object_id
-
-    def union(left_id: int, right_id: int) -> None:
-        left_root = find(left_id)
-        right_root = find(right_id)
-        if left_root == right_root:
-            return
-        representative = min(left_root, right_root)
-        parent[left_root] = representative
-        parent[right_root] = representative
-
-    for left_id, right_id in sorted(compatible_pairs):
-        union(left_id, right_id)
-    groups: Dict[int, set] = {}
-    for object_id in object_ids:
-        groups.setdefault(find(object_id), set()).add(object_id)
-    return tuple(
-        tuple(sorted(group))
-        for group in sorted(groups.values(), key=lambda value: min(value))
-    )
+    return _merge_group_collections(object_ids, sorted(compatible_pairs))
 
 
 def detect_task_handles(
@@ -379,7 +390,10 @@ def detect_task_handles(
         raise ValueError('adjacency ratios must be in (0, 1]')
 
     prior = get_task_object_prior(task_name)
-    if prior.structural_group_distance <= 0:
+    if min(
+        prior.structural_group_distance,
+        prior.reference_structure_distance,
+    ) <= 0:
         raise ValueError('task structural group distance must be positive')
     radius = prior.interaction_radius if interaction_radius is None else float(
         interaction_radius
@@ -715,6 +729,37 @@ def detect_task_handles(
         for group_id in reference_groups
         for handle in members_by_group[group_id]
     }
+
+    # Some reference assemblies (notably the place_cups stand) have separated
+    # mask regions. Use the wider task-specific distance only after temporal
+    # evidence has provided a reference anchor; never apply it scene-wide.
+    if (
+        reference
+        and prior.reference_structure_distance
+        > prior.structural_group_distance
+    ):
+        structural_candidates = tuple(sorted(selected_set - target))
+        candidate_groups = _detect_rigid_groups(
+            structural_candidates,
+            frames,
+            excluded_ids=(),
+            adjacency_distance=group_adjacency_distance,
+            adjacency_ratio=group_adjacency_ratio,
+            relative_distance_std=group_relative_distance_std,
+            motion_threshold=motion_threshold,
+            static_adjacency_distance=prior.reference_structure_distance,
+        )
+        anchored_groups = tuple(
+            group for group in candidate_groups if set(group).intersection(reference)
+        )
+        if anchored_groups:
+            reference.update(
+                handle for group in anchored_groups for handle in group
+            )
+            object_groups = _merge_group_collections(
+                all_ids,
+                (*object_groups, *anchored_groups),
+            )
 
     return TaskHandleDetection(
         episode_idx=int(episode_idx),

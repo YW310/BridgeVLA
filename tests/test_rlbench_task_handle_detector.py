@@ -248,22 +248,27 @@ class RLBenchTaskHandleDetectorTest(unittest.TestCase):
         self.assertIn((10, 20, 30), detection.object_groups)
 
     def test_place_cups_merges_separated_static_rack_regions(self):
-        frames = [
-            frame(
-                index,
-                gripper=[0.0, -0.10, 0.8],
-                action=[0.0, -0.10, 0.8],
-                centers={
-                    10: [0.00, 0.0, 0.8],
-                    20: [0.06, 0.0, 0.8],
-                    30: [0.12, 0.0, 0.8],
-                },
+        frames = []
+        for index in range(5):
+            target_x = index * 0.04
+            frames.append(
+                frame(
+                    index,
+                    gripper=[target_x, 0.0, 0.8],
+                    action=[target_x, 0.0, 0.8],
+                    centers={
+                        5: [target_x + 0.01, 0.0, 0.8],
+                        10: [0.20, 0.0, 0.8],
+                        20: [0.26, 0.0, 0.8],
+                        30: [0.32, 0.0, 0.8],
+                    },
+                )
             )
-            for index in range(4)
-        ]
         rack = detect_task_handles('place_cups', 13, frames)
         ordinary = detect_task_handles('stack_blocks', 13, frames)
         self.assertIn((10, 20, 30), rack.object_groups)
+        self.assertEqual(rack.group_by_handle[5], 5)
+        self.assertEqual(rack.target_handles, (5,))
         self.assertNotEqual(
             ordinary.group_by_handle[10],
             ordinary.group_by_handle[20],
