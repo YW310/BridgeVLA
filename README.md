@@ -213,10 +213,11 @@ python tools/augment_replay_with_oracle_objects.py \
 | 张量 | `--max-objects N` | `32` | 每帧固定的最大 instance 槽位数；超出部分会截断。 |
 | 张量 | `--num-points N` | `512` | 每个 instance 的固定采样点数；不足时有放回采样。 |
 | 张量 | `--min-object-points N` | `20` | 跨相机融合并移除 NaN/Inf 后少于该点数的实例会删除；高召回检查可设为 `1`。 |
-| 几何过滤 | `--filter-thin-planes` | 关闭 | 删除未知角色的超薄平面；target/reference 始终保留。建议与时序匹配同时启用。 |
-| 几何过滤 | `--thin-plane-max-thickness METRES` | `0.005` | 最短轴不超过该厚度时才可能判为薄平面。 |
-| 几何过滤 | `--thin-plane-min-extent METRES` | `0.08` | 另外两个轴都至少达到该尺寸时才删除，避免把细杆、小按钮当平面。 |
-| 几何过滤 | `--filter-thin-planes-all-roles` | 关闭 | 同时删除被标为 target/reference 的薄平面；仅用于确认角色误判后的强制清理。 |
+| 几何过滤 | `--filter-thin-planes` | 关闭 | 删除超薄平面；几何判定优先于可能误判的 target/reference 角色。建议与时序匹配同时启用。 |
+| 几何过滤 | `--thin-plane-max-thickness METRES` | `0.010` | PCA 最短轴不超过该厚度时才可能判为薄平面；1 cm 容差可吸收多相机深度噪声。 |
+| 几何过滤 | `--thin-plane-min-extent METRES` | `0.05` | 另外两个轴都至少达到该尺寸时才删除，避免把细杆、小按钮当平面。 |
+| 几何过滤 | `--filter-thin-planes-all-roles` | 默认行为 | 兼容旧命令；现在 target/reference 薄平面也默认删除。 |
+| 几何过滤 | `--preserve-role-thin-planes` | 关闭 | 仅当任务确实包含薄片状相关物体时，选择保留 target/reference 薄平面。 |
 | 张量 | `--camera NAME` | 四路相机 | 指定相机，可重复传入；默认 `front`、`left_shoulder`、`right_shoulder`、`wrist`。 |
 | 排除 | `--exclude-object-id ID` | `0` | 精确排除 decoded handle，可重复传入；`--exclude-robot-id` 是同义参数。 |
 | 单帧先验 | `--task-prior-filter` | 关闭 | 按下一关键动作距离排序，并删除明显大平面背景；默认高召回，不按半径删除远处实例。 |
@@ -258,15 +259,18 @@ python tools/augment_replay_with_oracle_objects.py \
   handle 追加到稳定映射；`rejected_dynamic_handles` 仅作为诊断和优先级证据，不会由
   temporal 模式删除。某个稳定 handle 在当前帧不可见时保留该 slot，写入
   `valid=False`；其他可见 handle 会使用剩余 slot。
-- 角色检测把夹爪由开到闭时接触、闭合后随夹爪运动，或在夹爪/下一动作附近发生可解释
-  位移的实例标为 `target`。剩余静态实例只有在与 target 持续邻接或形成放置接触时才标为
-  `reference`；没有这种证据时 reference 为空。静态 reach/press 类任务没有明显位移时，
-  会把最强的直接交互 handle 回退为 target。task handle JSON 同时保存
-  `target_handles` 和 `reference_handles`。
+- 时序流程先按持续空间邻接和多帧相对位姿合并 raw handle，再以合并后的 object group
+  判定角色；`max_instances` 限制的也是 group 数而不是 raw handle 数。角色检测把夹爪由开到闭
+  时接触、闭合后随夹爪运动，或在实际夹爪附近产生方向/幅度一致位移的 group 标为
+  `target`。剩余静态 group 只有在与 target 持续邻接或形成放置接触时才标为 `reference`；
+  没有这种证据时 reference 为空。静态 reach/press 类任务没有明显位移时，会把最强的直接
+  交互 group 回退为 target。task handle JSON 同时保存 `target_handles` 和
+  `reference_handles`。
 - 刚性分组要求两个 handle 在至少 75% 的共同可见证据中可用、80% 以上持续邻接，且
-  多帧中心间距离标准差不超过 1 cm。移动实例需要表现出共同运动；静止实例只有边界长期
-  紧密接触时才合并。只在放置后才接触的 target/reference 不会合并。分组角色按整组传播：
-  任一成员为 target 时整组为 target，否则 reference 证据传播到整组。
+  多帧中心间距离标准差不超过 1 cm。方向和幅度一致的共同运动可以合并；若两者一直静止，
+  边界长期紧密接触也可以合并。分组采用 complete-link：组内任意两个 handle 都必须满足
+  兼容条件，因此 A-B、B-C 相邻但 A-C 不兼容时不会把三个对象链式合并。角色只在分组完成
+  后按整组计算，不再先给 raw handle 标角色再传播。
 - Robot 检测使用 raw observation 中的当前夹爪位姿、`gripper_open`、GT mask 和 raw
   depth。depth 会用同帧相机内外参重建世界坐标点云，与 mask 像素严格对齐。夹爪 seed 以
   wrist 图像稳定性为主，并允许夹爪旋转造成的世界坐标偏移、部分遮挡及距离离群；夹爪

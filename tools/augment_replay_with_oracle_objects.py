@@ -436,9 +436,9 @@ def extract_oracle_objects(
     role_by_id: Optional[Mapping[int, int]] = None,
     group_by_id: Optional[Mapping[int, int]] = None,
     filter_thin_planes: bool = False,
-    thin_plane_max_thickness: float = 0.005,
-    thin_plane_min_extent: float = 0.08,
-    filter_thin_planes_all_roles: bool = False,
+    thin_plane_max_thickness: float = 0.010,
+    thin_plane_min_extent: float = 0.05,
+    filter_thin_planes_all_roles: bool = True,
 ) -> OracleObjects:
     '''Fuse decoded instance masks with the existing replay point clouds.'''
     if max_objects <= 0 or num_points <= 0 or min_object_points <= 0:
@@ -823,9 +823,9 @@ def augment_transition(
     role_by_id: Optional[Mapping[int, int]] = None,
     group_by_id: Optional[Mapping[int, int]] = None,
     filter_thin_planes: bool = False,
-    thin_plane_max_thickness: float = 0.005,
-    thin_plane_min_extent: float = 0.08,
-    filter_thin_planes_all_roles: bool = False,
+    thin_plane_max_thickness: float = 0.010,
+    thin_plane_min_extent: float = 0.05,
+    filter_thin_planes_all_roles: bool = True,
 ) -> Tuple[Dict[str, object], OracleObjects, Optional[Path]]:
     existing_oracle_keys = set(ORACLE_KEYS).intersection(original)
     if existing_oracle_keys:
@@ -962,9 +962,9 @@ def _final_observation_oracle_for_visualization(
     roles_by_episode: Optional[Mapping[int, Mapping[int, int]]] = None,
     groups_by_episode: Optional[Mapping[int, Mapping[int, int]]] = None,
     filter_thin_planes: bool = False,
-    thin_plane_max_thickness: float = 0.005,
-    thin_plane_min_extent: float = 0.08,
-    filter_thin_planes_all_roles: bool = False,
+    thin_plane_max_thickness: float = 0.010,
+    thin_plane_min_extent: float = 0.05,
+    filter_thin_planes_all_roles: bool = True,
 ) -> Optional[Tuple[OracleObjects, int, int]]:
     '''Recover a final observation's GT instances from prior alignment data.'''
     if previous_source is None or not previous_source.is_file():
@@ -2961,21 +2961,31 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         '--thin-plane-max-thickness',
         type=float,
-        default=0.005,
-        help='maximum thin-plane thickness in metres (default: 0.005)',
+        default=0.010,
+        help='maximum thin-plane thickness in metres (default: 0.010)',
     )
     parser.add_argument(
         '--thin-plane-min-extent',
         type=float,
-        default=0.08,
-        help='minimum size of both planar axes in metres (default: 0.08)',
+        default=0.05,
+        help='minimum size of both planar axes in metres (default: 0.05)',
     )
     parser.add_argument(
         '--filter-thin-planes-all-roles',
         action='store_true',
+        default=True,
         help=(
-            'also discard geometrically thin target/reference instances; '
-            'use only after visually verifying role false positives'
+            'discard geometrically thin target/reference instances too; '
+            'this is now the default and the flag remains for compatibility'
+        ),
+    )
+    parser.add_argument(
+        '--preserve-role-thin-planes',
+        dest='filter_thin_planes_all_roles',
+        action='store_false',
+        help=(
+            'preserve geometrically thin target/reference instances; opt-in '
+            'escape hatch for tasks with a genuinely planar relevant object'
         ),
     )
     parser.add_argument(

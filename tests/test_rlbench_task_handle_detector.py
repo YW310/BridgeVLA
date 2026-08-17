@@ -128,6 +128,30 @@ class RLBenchTaskHandleDetectorTest(unittest.TestCase):
         self.assertEqual(detection.target_handles, (10,))
         self.assertEqual(detection.reference_handles, ())
 
+    def test_nearby_independent_motion_does_not_make_every_object_target(self):
+        frames = []
+        for index in range(4):
+            gripper_x = index * 0.04
+            frames.append(
+                frame(
+                    index,
+                    gripper=[gripper_x, 0.0, 0.8],
+                    action=[gripper_x, 0.0, 0.8],
+                    centers={
+                        10: [gripper_x + 0.01, 0.0, 0.8],
+                        20: [0.06, index * 0.04 + 0.06, 0.8],
+                    },
+                )
+            )
+        detection = detect_task_handles(
+            'stack_blocks',
+            10,
+            frames,
+            interaction_radius=0.20,
+        )
+        self.assertEqual(detection.target_handles, (10,))
+        self.assertNotIn(20, detection.target_handles)
+
     def test_persistent_rigid_neighbors_merge_and_share_target_role(self):
         frames = []
         for index in range(5):
@@ -180,6 +204,47 @@ class RLBenchTaskHandleDetectorTest(unittest.TestCase):
             detection.group_by_handle[10],
             detection.group_by_handle[20],
         )
+
+    def test_static_touching_handles_merge_before_role_assignment(self):
+        frames = [
+            frame(
+                index,
+                gripper=[0.0, 0.0, 0.8],
+                action=[0.0, 0.0, 0.8],
+                centers={10: [0.0, 0.0, 0.8], 20: [0.02, 0.0, 0.8]},
+            )
+            for index in range(4)
+        ]
+        detection = detect_task_handles(
+            'stack_blocks', 11, frames, interaction_radius=0.03
+        )
+        self.assertEqual(
+            detection.group_by_handle[10],
+            detection.group_by_handle[20],
+        )
+        self.assertEqual(detection.target_handles, (10, 20))
+        self.assertEqual(detection.role_by_group, {10: 1})
+
+    def test_static_contact_chain_does_not_merge_incompatible_endpoints(self):
+        frames = [
+            frame(
+                index,
+                gripper=[0.0, 0.0, 0.8],
+                action=[0.0, 0.0, 0.8],
+                centers={
+                    10: [0.0, 0.0, 0.8],
+                    20: [0.02, 0.0, 0.8],
+                    30: [0.04, 0.0, 0.8],
+                },
+            )
+            for index in range(4)
+        ]
+        detection = detect_task_handles(
+            'stack_blocks', 12, frames, interaction_radius=0.05
+        )
+        self.assertEqual(detection.group_by_handle[10], 10)
+        self.assertEqual(detection.group_by_handle[20], 10)
+        self.assertEqual(detection.group_by_handle[30], 30)
 
     def test_keeps_static_handle_persistently_adjacent_to_interaction_seed(self):
         frames = [
