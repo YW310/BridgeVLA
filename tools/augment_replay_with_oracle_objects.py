@@ -507,11 +507,31 @@ def infer_current_frame_roles(
     roles = {target_id: ORACLE_ROLE_TARGET}
     reference_radius = max(0.04, interaction_radius * 0.5)
     target_points = visible[target_id]
+    reference_distances = {}
     for object_id, points in visible.items():
         if object_id == target_id:
             continue
-        if _points_aabb_distance(target_points, points) <= reference_radius:
-            roles[object_id] = ORACLE_ROLE_REFERENCE
+        distance = _points_aabb_distance(target_points, points)
+        if distance <= reference_radius:
+            reference_distances[object_id] = distance
+    temporal_references = [
+        object_id
+        for object_id in reference_distances
+        if int(
+            temporal_role_priors.get(object_id, ORACLE_ROLE_UNKNOWN)
+        ) == ORACLE_ROLE_REFERENCE
+    ]
+    reference_pool = temporal_references or list(reference_distances)
+    if reference_pool:
+        reference_id = min(
+            reference_pool,
+            key=lambda object_id: (
+                reference_distances[object_id],
+                distances[object_id],
+                object_id,
+            ),
+        )
+        roles[reference_id] = ORACLE_ROLE_REFERENCE
     return roles
 
 

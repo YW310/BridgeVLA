@@ -16,7 +16,7 @@ except ModuleNotFoundError:  # Direct execution: python tools/<script>.py
 
 
 Bounds = Tuple[np.ndarray, np.ndarray]
-TASK_HANDLE_DETECTOR_METHOD = 'episode_action_trajectory_v7_group_first_roles'
+TASK_HANDLE_DETECTOR_METHOD = 'episode_action_trajectory_v8_structural_components'
 
 
 @dataclass(frozen=True)
@@ -295,25 +295,36 @@ def _detect_rigid_groups(
                 continue
             compatible_pairs.add((min(left_id, right_id), max(left_id, right_id)))
 
-    # Complete-link merging permits static adjacent parts, but prevents an
-    # A-B, B-C contact chain from swallowing C when A and C are incompatible.
-    groups = [{object_id} for object_id in object_ids]
+    # A simulator assembly can be a branching structure: two rack tips may
+    # never touch each other, while both remain rigidly attached to one base.
+    # Connected components recover that one logical object. Late task-object
+    # contacts do not qualify because pair compatibility already requires
+    # persistent co-visibility, adjacency and stable relative geometry.
+    parent = {object_id: object_id for object_id in object_ids}
+
+    def find(object_id: int) -> int:
+        while parent[object_id] != object_id:
+            parent[object_id] = parent[parent[object_id]]
+            object_id = parent[object_id]
+        return object_id
+
+    def union(left_id: int, right_id: int) -> None:
+        left_root = find(left_id)
+        right_root = find(right_id)
+        if left_root == right_root:
+            return
+        representative = min(left_root, right_root)
+        parent[left_root] = representative
+        parent[right_root] = representative
+
     for left_id, right_id in sorted(compatible_pairs):
-        left_group = next(group for group in groups if left_id in group)
-        right_group = next(group for group in groups if right_id in group)
-        if left_group is right_group:
-            continue
-        if not all(
-            (min(left, right), max(left, right)) in compatible_pairs
-            for left in left_group
-            for right in right_group
-        ):
-            continue
-        left_group.update(right_group)
-        groups.remove(right_group)
+        union(left_id, right_id)
+    groups: Dict[int, set] = {}
+    for object_id in object_ids:
+        groups.setdefault(find(object_id), set()).add(object_id)
     return tuple(
         tuple(sorted(group))
-        for group in sorted(groups, key=lambda value: min(value))
+        for group in sorted(groups.values(), key=lambda value: min(value))
     )
 
 

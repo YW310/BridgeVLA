@@ -856,6 +856,32 @@ class OracleReplayAugmentationTest(unittest.TestCase):
         # is the reference while 5 remains within the current interaction area.
         self.assertEqual(prior_guided.roles.tolist(), [1, 2])
 
+        three_cloud = np.array(
+            [[
+                [0.00, 0.00, 0.80],
+                [0.01, 0.00, 0.80],
+                [0.035, 0.00, 0.80],
+                [0.040, 0.00, 0.80],
+                [0.055, 0.00, 0.80],
+                [0.060, 0.00, 0.80],
+            ]],
+            dtype=np.float32,
+        )
+        one_reference = extract_oracle_objects(
+            {'front_point_cloud': three_cloud},
+            {'front': np.array([[5, 5, 7, 7, 9, 9]], dtype=np.int32)},
+            cameras=('front',),
+            max_objects=3,
+            num_points=2,
+            slot_ids=(5, 7, 9),
+            min_object_points=1,
+            role_by_id={5: 1, 7: 2, 9: 2},
+            current_gripper_position=np.array([0.0, 0.0, 0.8]),
+            frame_role_radius=0.10,
+            rng=np.random.default_rng(0),
+        )
+        self.assertEqual(one_reference.roles.tolist(), [1, 2, 0])
+
     def test_filters_instances_below_minimum_fused_point_count(self):
         transition = {
             f'{camera}_point_cloud': point_cloud(index)

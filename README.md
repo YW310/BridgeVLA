@@ -197,6 +197,7 @@ python tools/augment_replay_with_oracle_objects.py \
     --visualize-every 100 \
     --visualize-output-dir oracle_visualizations \
     --visualize-objects-only \
+    --thin-plane-max-thickness 0.02 \
     --dry-run
 ```
 
@@ -266,14 +267,16 @@ python tools/augment_replay_with_oracle_objects.py \
   形成 task group 及 T/R 时序先验，但不会把一个 episode 标签机械复制到所有 replay 帧。
   每个 replay 帧把该时序先验与 raw `low_dim_obs.pkl` 中的当前夹爪位置、当前帧点云共同使用：
   先在当前交互半径内保留具有多帧 target 证据的 group，再按当前距离确定此刻 active target；
-  当前帧与它空间邻接的其他候选标为 `reference`，其余为 unknown。若时序证据没有明确
-  target，才在当前交互候选中回退。这样输出表达“当前状态下的 T/R”，但没有丢弃其他帧
-  提供的因果信息。low-dim observation 使用最多 8 个 episode 的 LRU 缓存并自动淘汰。
+  当前帧最多选择一个 `reference`：优先使用具有多帧 reference 证据且与 target 邻接的候选，
+  否则选择离 target 最近的邻接候选，其余为 unknown。若时序证据没有明确 target，才在当前
+  交互候选中回退。这样输出表达“当前状态下的 T/R”，但没有丢弃其他帧提供的因果信息。
+  low-dim observation 使用最多 8 个 episode 的 LRU 缓存并自动淘汰。
 - 刚性分组要求两个 handle 在至少 75% 的共同可见证据中可用、80% 以上持续邻接，且
   多帧中心间距离标准差不超过 1 cm。方向和幅度一致的共同运动可以合并；若两者一直静止，
-  边界长期紧密接触也可以合并。分组采用 complete-link：组内任意两个 handle 都必须满足
-  兼容条件，因此 A-B、B-C 相邻但 A-C 不兼容时不会把三个对象链式合并。逐帧角色只对
-  分组后的 object group 计算，不对 raw handle 单独赋值。
+  边界长期紧密接触也可以合并。所有持续兼容关系最终按连接图的连通分量合并，因此支架的
+  多个末端区域即使彼此不直接接触，只要都稳定连接到同一中心/底座，也会形成一个 object
+  group。仅在任务后期才接触支架的杯子不满足全时段持续邻接要求，不会并入支架。逐帧角色
+  只对分组后的 object group 计算，不对 raw handle 单独赋值。
 - Robot 检测使用 raw observation 中的当前夹爪位姿、`gripper_open`、GT mask 和 raw
   depth。depth 会用同帧相机内外参重建世界坐标点云，与 mask 像素严格对齐。夹爪 seed 以
   wrist 图像稳定性为主，并允许夹爪旋转造成的世界坐标偏移、部分遮挡及距离离群；夹爪

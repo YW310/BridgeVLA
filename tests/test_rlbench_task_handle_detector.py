@@ -225,7 +225,7 @@ class RLBenchTaskHandleDetectorTest(unittest.TestCase):
         self.assertEqual(detection.target_handles, (10, 20))
         self.assertEqual(detection.role_by_group, {10: 1})
 
-    def test_static_contact_chain_does_not_merge_incompatible_endpoints(self):
+    def test_static_structural_chain_merges_as_one_assembly(self):
         frames = [
             frame(
                 index,
@@ -244,7 +244,8 @@ class RLBenchTaskHandleDetectorTest(unittest.TestCase):
         )
         self.assertEqual(detection.group_by_handle[10], 10)
         self.assertEqual(detection.group_by_handle[20], 10)
-        self.assertEqual(detection.group_by_handle[30], 30)
+        self.assertEqual(detection.group_by_handle[30], 10)
+        self.assertIn((10, 20, 30), detection.object_groups)
 
     def test_keeps_static_handle_persistently_adjacent_to_interaction_seed(self):
         frames = [
