@@ -535,6 +535,20 @@ def infer_current_frame_roles(
     return roles
 
 
+def roles_for_grasp_cycle(
+    role_cycles: Sequence[Tuple[int, int, int, int]],
+    sample_frame: int,
+) -> Optional[Dict[int, int]]:
+    '''Return stable role IDs for the grasp cycle containing sample_frame.'''
+    for start_frame, end_frame, target_id, reference_id in role_cycles:
+        if int(start_frame) <= sample_frame <= int(end_frame):
+            roles = {int(target_id): ORACLE_ROLE_TARGET}
+            if int(reference_id) >= 0 and int(reference_id) != int(target_id):
+                roles[int(reference_id)] = ORACLE_ROLE_REFERENCE
+            return roles
+    return None
+
+
 def extract_oracle_objects(
     transition: Mapping[str, object],
     masks: Mapping[str, np.ndarray],
@@ -555,6 +569,8 @@ def extract_oracle_objects(
     task_prior_strict: bool = False,
     role_by_id: Optional[Mapping[int, int]] = None,
     group_by_id: Optional[Mapping[int, int]] = None,
+    role_cycles: Sequence[Tuple[int, int, int, int]] = (),
+    sample_frame: Optional[int] = None,
     current_gripper_position: Optional[np.ndarray] = None,
     frame_role_radius: Optional[float] = None,
     filter_thin_planes: bool = False,
@@ -716,7 +732,14 @@ def extract_oracle_objects(
         ))
         prior_filtered_objects = len(prior_filtered_object_ids)
     effective_role_by_id = role_by_id
-    if current_gripper_position is not None and role_by_id is not None:
+    cycle_roles = (
+        roles_for_grasp_cycle(role_cycles, int(sample_frame))
+        if role_cycles and sample_frame is not None
+        else None
+    )
+    if cycle_roles is not None:
+        effective_role_by_id = cycle_roles
+    elif current_gripper_position is not None and role_by_id is not None:
         assert frame_role_radius is not None
         effective_role_by_id = infer_current_frame_roles(
             merged,
@@ -963,6 +986,7 @@ def augment_transition(
     task_prior_strict: bool = False,
     role_by_id: Optional[Mapping[int, int]] = None,
     group_by_id: Optional[Mapping[int, int]] = None,
+    role_cycles: Sequence[Tuple[int, int, int, int]] = (),
     filter_thin_planes: bool = False,
     thin_plane_max_thickness: float = 0.010,
     thin_plane_min_extent: float = 0.10,
@@ -1038,6 +1062,8 @@ def augment_transition(
                 task_prior_strict=task_prior_strict,
                 role_by_id=role_by_id,
                 group_by_id=group_by_id,
+                role_cycles=role_cycles,
+                sample_frame=sample_frame,
                 current_gripper_position=current_gripper_position,
                 frame_role_radius=frame_role_radius,
                 filter_thin_planes=filter_thin_planes,
@@ -1077,6 +1103,11 @@ def augment_transition(
                     )
                 ),
                 float(frame_role_radius),
+            )
+        if role_cycles:
+            cache_key += (
+                'role-cycles',
+                tuple(tuple(int(value) for value in cycle) for cycle in role_cycles),
             )
         if group_by_id is not None:
             cache_key += (
@@ -2500,6 +2531,7 @@ def _detect_task_relevant_handles(
     Dict[int, Tuple[int, ...]],
     Dict[int, Dict[int, int]],
     Dict[int, Dict[int, int]],
+    Dict[int, Tuple[Tuple[int, int, int, int], ...]],
 ]:
     '''Detect one stable task-handle whitelist per episode.'''
     requested_episode_set = (
@@ -2550,6 +2582,9 @@ def _detect_task_relevant_handles(
     handles_by_episode: Dict[int, Tuple[int, ...]] = {}
     roles_by_episode: Dict[int, Dict[int, int]] = {}
     groups_by_episode: Dict[int, Dict[int, int]] = {}
+    role_cycles_by_episode: Dict[
+        int, Tuple[Tuple[int, int, int, int], ...]
+    ] = {}
     progress = tqdm(
         sorted(selected.items()),
         desc=f'{task}: task handle detection',
@@ -2629,6 +2664,7 @@ def _detect_task_relevant_handles(
             for group_id in (group_by_handle.get(handle, handle),)
         }
         groups_by_episode[episode_idx] = detection.group_by_handle
+        role_cycles_by_episode[episode_idx] = detection.role_cycles
         tqdm.write(
             f'{task} episode={episode_idx}: task handles='
             f'{list(detection.task_handles)} interaction='
@@ -2639,9 +2675,15 @@ def _detect_task_relevant_handles(
             f'{list(detection.reference_handles)} groups='
             f'{[list(group) for group in detection.object_groups if len(group) > 1]} '
             f'slots={list(detection.grouped_slot_handles)} frames='
-            f'{list(detection.sampled_frames)}'
+            f'{list(detection.sampled_frames)} cycles='
+            f'{[list(cycle) for cycle in detection.role_cycles]}'
         )
-    return handles_by_episode, roles_by_episode, groups_by_episode
+    return (
+        handles_by_episode,
+        roles_by_episode,
+        groups_by_episode,
+        role_cycles_by_episode,
+    )
 
 
 def process_task(
@@ -2753,6 +2795,9 @@ def process_task(
     task_slot_ids_by_episode: Dict[int, Tuple[int, ...]] = {}
     task_roles_by_episode: Dict[int, Dict[int, int]] = {}
     task_groups_by_episode: Dict[int, Dict[int, int]] = {}
+    task_role_cycles_by_episode: Dict[
+        int, Tuple[Tuple[int, int, int, int], ...]
+    ] = {}
     if temporal_task_filter:
         requested_task_episodes = (
             _episode_ids_for_selected_files(files, previous_file_by_index)
@@ -2763,6 +2808,7 @@ def process_task(
             task_slot_ids_by_episode,
             task_roles_by_episode,
             task_groups_by_episode,
+            task_role_cycles_by_episode,
         ) = _detect_task_relevant_handles(
             task,
             all_files,
@@ -2796,6 +2842,7 @@ def process_task(
             slot_ids = None
             role_by_id = None
             group_by_id = None
+            role_cycles = ()
             if terminal != -1 and 'episode_idx' in original:
                 original_episode_idx = int(
                     np.asarray(original['episode_idx']).item()
@@ -2812,6 +2859,9 @@ def process_task(
                     )
                     group_by_id = task_groups_by_episode.get(
                         original_episode_idx, {}
+                    )
+                    role_cycles = task_role_cycles_by_episode.get(
+                        original_episode_idx, ()
                     )
             migrated, oracle, _ = augment_transition(
                 original,
@@ -2833,6 +2883,7 @@ def process_task(
                 task_prior_strict=task_prior_strict,
                 role_by_id=role_by_id,
                 group_by_id=group_by_id,
+                role_cycles=role_cycles,
                 filter_thin_planes=filter_thin_planes,
                 thin_plane_max_thickness=thin_plane_max_thickness,
                 thin_plane_min_extent=thin_plane_min_extent,

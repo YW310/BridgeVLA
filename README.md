@@ -182,7 +182,7 @@ python tools/augment_replay_with_oracle_objects.py \
     --robot-detection-frames 128 \
     --robot-detection-stride 5 \
     --robot-detection-window 200 \
-    --robot-motion-threshold 0.02 \
+    --robot-motion-threshold 0.1 \
     --robot-link-motion-threshold 0.001 \
     --robot-adjacency-distance 0.10 \
     --temporal-id-matching \

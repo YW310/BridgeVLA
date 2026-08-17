@@ -16,7 +16,7 @@ except ModuleNotFoundError:  # Direct execution: python tools/<script>.py
 
 
 Bounds = Tuple[np.ndarray, np.ndarray]
-TASK_HANDLE_DETECTOR_METHOD = 'episode_action_trajectory_v10_reference_structures'
+TASK_HANDLE_DETECTOR_METHOD = 'episode_action_trajectory_v11_grasp_role_cycles'
 
 
 @dataclass(frozen=True)
@@ -43,6 +43,7 @@ class TaskHandleDetection:
     target_handles: Tuple[int, ...] = ()
     reference_handles: Tuple[int, ...] = ()
     object_groups: Tuple[Tuple[int, ...], ...] = ()
+    role_cycles: Tuple[Tuple[int, int, int, int], ...] = ()
 
     @property
     def slot_handles(self) -> Tuple[int, ...]:
@@ -107,6 +108,16 @@ class TaskHandleDetection:
             },
             'grouped_slot_handles': list(self.grouped_slot_handles),
             'sampled_frames': list(self.sampled_frames),
+            'role_cycles': [
+                {
+                    'start_frame': start_frame,
+                    'end_frame': end_frame,
+                    'target_id': target_id,
+                    'reference_id': reference_id,
+                }
+                for start_frame, end_frame, target_id, reference_id
+                in self.role_cycles
+            ],
             'method': TASK_HANDLE_DETECTOR_METHOD,
         }
 
@@ -237,6 +248,121 @@ def _merge_group_collections(
         tuple(sorted(group))
         for group in sorted(merged.values(), key=lambda value: min(value))
     )
+
+
+def _detect_grasp_role_cycles(
+    frames: Sequence[TaskFrameEvidence],
+    selected_handles: Iterable[int],
+    object_groups: Sequence[Sequence[int]],
+    temporal_target_handles: Iterable[int],
+    interaction_radius: float,
+) -> Tuple[Tuple[int, int, int, int], ...]:
+    '''Assign stable T/R IDs from grasp close through placement release.'''
+    group_by_handle = {
+        handle: min(group)
+        for group in object_groups
+        for handle in group
+    }
+    members_by_group = {
+        min(group): tuple(group)
+        for group in object_groups
+    }
+    candidate_groups = tuple(dict.fromkeys(
+        group_by_handle.get(handle, handle)
+        for handle in selected_handles
+    ))
+    temporal_target_groups = {
+        group_by_handle.get(handle, handle)
+        for handle in temporal_target_handles
+    }
+
+    def group_distance(frame_index: int, group_id: int) -> float:
+        frame = frames[frame_index]
+        bounds = [
+            frame.bounds_by_id[handle]
+            for handle in members_by_group[group_id]
+            if handle in frame.bounds_by_id
+        ]
+        if not bounds:
+            return float('inf')
+        minimum = np.min(np.stack([value[0] for value in bounds]), axis=0)
+        maximum = np.max(np.stack([value[1] for value in bounds]), axis=0)
+        return _point_to_bounds_distance(
+            frame.gripper_position,
+            (minimum, maximum),
+        )
+
+    close_indices = [
+        index
+        for index, frame in enumerate(frames)
+        if frame.gripper_open < 0.5
+        and (index == 0 or frames[index - 1].gripper_open >= 0.5)
+    ]
+    cycles = []
+    previous_release = -1
+    for close_index in close_indices:
+        if close_index <= previous_release:
+            continue
+        release_index = next(
+            (
+                index
+                for index in range(close_index + 1, len(frames))
+                if frames[index - 1].gripper_open < 0.5
+                and frames[index].gripper_open >= 0.5
+            ),
+            len(frames) - 1,
+        )
+        visible_at_close = [
+            group_id
+            for group_id in candidate_groups
+            if np.isfinite(group_distance(close_index, group_id))
+        ]
+        preferred_targets = [
+            group_id
+            for group_id in visible_at_close
+            if group_id in temporal_target_groups
+            and group_distance(close_index, group_id) <= interaction_radius
+        ]
+        target_pool = preferred_targets or [
+            group_id
+            for group_id in visible_at_close
+            if group_distance(close_index, group_id) <= interaction_radius
+        ]
+        if not target_pool:
+            previous_release = release_index
+            continue
+        target_id = min(
+            target_pool,
+            key=lambda group_id: (group_distance(close_index, group_id), group_id),
+        )
+        reference_pool = [
+            group_id
+            for group_id in candidate_groups
+            if group_id != target_id
+            and group_distance(release_index, group_id) <= interaction_radius
+        ]
+        reference_id = (
+            min(
+                reference_pool,
+                key=lambda group_id: (
+                    group_distance(release_index, group_id),
+                    group_id,
+                ),
+            )
+            if reference_pool
+            else -1
+        )
+        start_index = previous_release + 1
+        cycles.append(
+            (
+                int(frames[start_index].sample_frame),
+                int(frames[release_index].sample_frame),
+                int(target_id),
+                int(reference_id),
+            )
+        )
+        previous_release = release_index
+    return tuple(cycles)
 
 
 def _detect_rigid_groups(
@@ -761,6 +887,14 @@ def detect_task_handles(
                 (*object_groups, *anchored_groups),
             )
 
+    role_cycles = _detect_grasp_role_cycles(
+        frames,
+        selected,
+        object_groups,
+        target,
+        radius,
+    )
+
     return TaskHandleDetection(
         episode_idx=int(episode_idx),
         task_handles=selected,
@@ -773,6 +907,7 @@ def detect_task_handles(
         target_handles=tuple(sorted(target)),
         reference_handles=tuple(sorted(reference)),
         object_groups=object_groups,
+        role_cycles=role_cycles,
     )
 
 
@@ -818,5 +953,14 @@ def load_task_handle_detection(path: Path) -> TaskHandleDetection:
         object_groups=tuple(
             tuple(int(value) for value in group)
             for group in payload['object_groups']
+        ),
+        role_cycles=tuple(
+            (
+                int(cycle['start_frame']),
+                int(cycle['end_frame']),
+                int(cycle['target_id']),
+                int(cycle['reference_id']),
+            )
+            for cycle in payload.get('role_cycles', ())
         ),
     )
