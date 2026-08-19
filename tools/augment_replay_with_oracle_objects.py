@@ -575,7 +575,7 @@ def extract_oracle_objects(
     frame_role_radius: Optional[float] = None,
     filter_thin_planes: bool = False,
     thin_plane_max_thickness: float = 0.010,
-    thin_plane_min_extent: float = 0.20,
+    thin_plane_min_extent: float = 0.30,
     thin_plane_min_inlier_ratio: float = 0.80,
     filter_thin_planes_all_roles: bool = True,
 ) -> OracleObjects:
@@ -989,7 +989,7 @@ def augment_transition(
     role_cycles: Sequence[Tuple[int, int, int, int]] = (),
     filter_thin_planes: bool = False,
     thin_plane_max_thickness: float = 0.010,
-    thin_plane_min_extent: float = 0.20,
+    thin_plane_min_extent: float = 0.30,
     thin_plane_min_inlier_ratio: float = 0.80,
     filter_thin_planes_all_roles: bool = True,
 ) -> Tuple[Dict[str, object], OracleObjects, Optional[Path]]:
@@ -1164,7 +1164,7 @@ def _final_observation_oracle_for_visualization(
     ] = None,
     filter_thin_planes: bool = False,
     thin_plane_max_thickness: float = 0.010,
-    thin_plane_min_extent: float = 0.20,
+    thin_plane_min_extent: float = 0.30,
     thin_plane_min_inlier_ratio: float = 0.80,
     filter_thin_planes_all_roles: bool = True,
 ) -> Optional[Tuple[OracleObjects, int, int]]:
@@ -3277,8 +3277,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         '--thin-plane-min-extent',
         type=float,
-        default=0.20,
-        help='minimum size of both planar axes in metres (default: 0.20)',
+        default=0.30,
+        help='minimum size of both planar axes in metres (default: 0.30)',
     )
     parser.add_argument(
         '--thin-plane-min-inlier-ratio',

@@ -261,7 +261,7 @@ python tools/augment_replay_with_oracle_objects.py \
 | 张量 | `--min-object-points N` | `20` | 跨相机融合并移除 NaN/Inf 后少于该点数的实例会删除；高召回检查可设为 `1`。 |
 | 几何过滤 | `--filter-thin-planes` | 关闭 | 用抗噪主平面内点比例删除大薄平面；几何判定优先于当前帧 target/reference。 |
 | 几何过滤 | `--thin-plane-max-thickness METRES` | `0.010` | 点到拟合平面的最大内点距离；默认允许主体平面具有约 1 cm 深度噪声。 |
-| 几何过滤 | `--thin-plane-min-extent METRES` | `0.20` | 平面内两个方向都至少达到该尺寸时才删除；小于约 20 cm 的托盘、支架面等小型平面默认保留。 |
+| 几何过滤 | `--thin-plane-min-extent METRES` | `0.30` | 平面内两个方向都至少达到该尺寸时才删除；小于约 30 cm 的托盘、支架面等中小型平面默认保留。 |
 | 几何过滤 | `--thin-plane-min-inlier-ratio RATIO` | `0.80` | 至少该比例的点落在平面距离带内才删除；默认允许最多约 20% 深度离群点。提高该值会更保守。 |
 | 几何过滤 | `--filter-thin-planes-all-roles` | 默认行为 | 兼容旧命令；现在 target/reference 薄平面也默认删除。 |
 | 几何过滤 | `--preserve-role-thin-planes` | 关闭 | 仅当任务确实包含薄片状相关物体时，选择保留 target/reference 薄平面。 |
