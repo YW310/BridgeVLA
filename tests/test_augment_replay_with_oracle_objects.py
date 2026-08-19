@@ -122,7 +122,7 @@ class OracleReplayAugmentationTest(unittest.TestCase):
             args.visualize_output_dir, Path('oracle_visualizations')
         )
         self.assertTrue(args.filter_thin_planes_all_roles)
-        self.assertAlmostEqual(args.thin_plane_min_extent, 0.10)
+        self.assertAlmostEqual(args.thin_plane_min_extent, 0.20)
         self.assertAlmostEqual(args.thin_plane_min_inlier_ratio, 0.80)
         args = parser.parse_args(
             base + ['--visualize-output-dir', 'custom_visualizations']
@@ -929,8 +929,8 @@ class OracleReplayAugmentationTest(unittest.TestCase):
 
     def test_filters_thin_plane_regardless_of_role_by_default(self):
         rows, columns = np.meshgrid(
-            np.linspace(0.0, 0.12, 4, dtype=np.float32),
-            np.linspace(0.0, 0.12, 4, dtype=np.float32),
+            np.linspace(0.0, 0.24, 4, dtype=np.float32),
+            np.linspace(0.0, 0.24, 4, dtype=np.float32),
             indexing='ij',
         )
         cloud = np.stack(
@@ -951,6 +951,7 @@ class OracleReplayAugmentationTest(unittest.TestCase):
         self.assertEqual(filtered.thin_plane_objects, 1)
         self.assertEqual(filtered.thin_plane_object_ids, (5,))
 
+        # A 12 cm planar task component is not a table/background plane.
         small_cloud = cloud * np.float32(0.5)
         small = extract_oracle_objects(
             {'front_point_cloud': small_cloud},
@@ -999,8 +1000,8 @@ class OracleReplayAugmentationTest(unittest.TestCase):
 
     def test_noisy_plane_uses_dominant_inlier_support(self):
         rows, columns = np.meshgrid(
-            np.linspace(0.0, 0.12, 10, dtype=np.float32),
-            np.linspace(0.0, 0.12, 10, dtype=np.float32),
+            np.linspace(0.0, 0.24, 10, dtype=np.float32),
+            np.linspace(0.0, 0.24, 10, dtype=np.float32),
             indexing='ij',
         )
         depth_noise = np.zeros_like(rows)
