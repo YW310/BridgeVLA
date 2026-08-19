@@ -62,6 +62,7 @@ class MVT(nn.Module):
         renderer_device,
         load_pretrain=False,
         pretrain_path=None,
+        flash_attention_2=False,
     ):
         super().__init__()
 
