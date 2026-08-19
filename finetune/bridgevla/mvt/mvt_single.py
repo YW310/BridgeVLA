@@ -61,6 +61,7 @@ class MVT(nn.Module):
         no_feat=False,
         load_pretrain=False,
         pretrain_path=None,
+        flash_attention_2=False,
     ):
         super().__init__()
         self.depth = depth
@@ -215,10 +216,15 @@ class MVT(nn.Module):
 
 
         model_id = "google/paligemma-3b-pt-224"
+        model_kwargs = {"torch_dtype": torch.bfloat16}
+        if flash_attention_2:
+            model_kwargs["attn_implementation"] = "flash_attention_2"
         if load_pretrain:
             assert pretrain_path is not None
 
-            self.model = PaliGemmaForConditionalGeneration.from_pretrained(model_id, torch_dtype=torch.bfloat16)
+            self.model = PaliGemmaForConditionalGeneration.from_pretrained(
+                model_id, **model_kwargs
+            )
             self.processor = PaliGemmaProcessor.from_pretrained(model_id) 
             pretrained_dir=pretrain_path
             print("The pretrained path is:",pretrained_dir)
@@ -243,9 +249,20 @@ class MVT(nn.Module):
             
         else:
 
-            self.model = PaliGemmaForConditionalGeneration.from_pretrained(model_id, torch_dtype=torch.bfloat16)
+            self.model = PaliGemmaForConditionalGeneration.from_pretrained(
+                model_id, **model_kwargs
+            )
             self.processor = PaliGemmaProcessor.from_pretrained(model_id)   
             print("You are loading original paligemma model!")
+
+        if flash_attention_2:
+            attention_backend = self.model.config.text_config._attn_implementation
+            if attention_backend != "flash_attention_2":
+                raise RuntimeError(
+                    "FlashAttention 2 was requested but PaliGemma loaded "
+                    f"attention backend {attention_backend!r}."
+                )
+            print("Enabled PaliGemma FlashAttention 2")
 
         global select_feat_from_hm
         self.use_efficient_paligemma_forward = False

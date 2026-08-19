@@ -22,6 +22,7 @@ _C.global_batch_size = 0
 _C.max_optimizer_steps = 0
 _C.gradient_checkpointing = False
 _C.efficient_paligemma_forward = False
+_C.flash_attention_2 = False
 _C.seed = 0
 _C.checkpoint_every_epochs = 10
 # Oracle object experiment: opt in only when loading an augmented replay copy.

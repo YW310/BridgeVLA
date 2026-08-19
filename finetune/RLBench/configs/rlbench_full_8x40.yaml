@@ -9,6 +9,7 @@ global_batch_size: 192
 max_optimizer_steps: 83300
 gradient_checkpointing: True
 efficient_paligemma_forward: True
+flash_attention_2: True
 checkpoint_every_epochs: 10
 seed: 0
 sample_distribution_mode: task_uniform

@@ -556,6 +556,7 @@ def experiment(cmd_args):
         renderer_device=device_id,
         load_pretrain=cmd_args.load_pretrain,
         pretrain_path=cmd_args.pretrain_path,
+        flash_attention_2=exp_cfg.flash_attention_2,
         **mvt_cfg,
     )
     if exp_cfg.efficient_paligemma_forward:
