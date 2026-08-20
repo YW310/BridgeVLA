@@ -34,6 +34,20 @@ class RLBenchReducedModeIsolationTest(unittest.TestCase):
             ['rlbench_full_8x40.yaml', 'rlbench_trend_8x40.yaml'],
         )
 
+    def test_8x40_profiles_use_gemma_prefix_freezing_and_layerwise_lr(self):
+        defaults = (ROOT / 'finetune/bridgevla/config.py').read_text()
+        self.assertIn('_C.freeze_gemma_prefix_layers = 0', defaults)
+        self.assertIn('_C.freeze_multimodal_projector = False', defaults)
+        self.assertIn('_C.peract.gemma_lr = 0.0', defaults)
+        self.assertIn('_C.peract.gemma_layer_lr_decay = 1.0', defaults)
+        for name in ('rlbench_trend_8x40.yaml', 'rlbench_full_8x40.yaml'):
+            profile = (ROOT / 'finetune/RLBench/configs' / name).read_text()
+            self.assertIn('gradient_checkpointing: False', profile)
+            self.assertIn('freeze_gemma_prefix_layers: 9', profile)
+            self.assertIn('freeze_multimodal_projector: False', profile)
+            self.assertIn('gemma_lr: 2e-5', profile)
+            self.assertIn('gemma_layer_lr_decay: 0.9', profile)
+
     def test_new_checkpoint_policy_is_guarded_by_global_batch_mode(self):
         source = (ROOT / 'finetune/RLBench/train.py').read_text()
         self.assertIn(

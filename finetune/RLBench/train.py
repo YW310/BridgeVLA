@@ -468,6 +468,7 @@ def set_training_seed(seed, rank):
 
 def freeze_backbone_modules(
     backbone, freeze_vision_tower, freeze_language_model=False,
+    freeze_gemma_prefix_layers=0, freeze_multimodal_projector=False,
 ):
     freeze_names = ['lm_head', 'embed_tokens']
     if freeze_vision_tower:
@@ -478,8 +479,27 @@ def freeze_backbone_modules(
     frozen = 0
     for name, parameter in backbone.named_parameters():
         if any(freeze_name in name for freeze_name in freeze_names):
-            parameter.requires_grad = False
-            frozen += parameter.numel()
+            if parameter.requires_grad:
+                parameter.requires_grad = False
+                frozen += parameter.numel()
+
+    gemma_layers = backbone.mvt1.model.language_model.model.layers
+    prefix_layers = int(freeze_gemma_prefix_layers)
+    if not 0 <= prefix_layers <= len(gemma_layers):
+        raise ValueError(
+            'freeze_gemma_prefix_layers must be between 0 and '
+            f'{len(gemma_layers)}, got {prefix_layers}'
+        )
+    for layer in gemma_layers[:prefix_layers]:
+        for parameter in layer.parameters():
+            if parameter.requires_grad:
+                parameter.requires_grad = False
+                frozen += parameter.numel()
+    if freeze_multimodal_projector:
+        for parameter in backbone.mvt1.model.multi_modal_projector.parameters():
+            if parameter.requires_grad:
+                parameter.requires_grad = False
+                frozen += parameter.numel()
     return frozen
 
 
@@ -636,7 +656,16 @@ def experiment(cmd_args):
         frozen_params = freeze_backbone_modules(
             backbone, cmd_args.freeze_vision_tower,
             cmd_args.freeze_language_model,
+            exp_cfg.freeze_gemma_prefix_layers,
+            exp_cfg.freeze_multimodal_projector,
         )
+        if exp_cfg.freeze_gemma_prefix_layers:
+            print(
+                'Freeze first '
+                f'{exp_cfg.freeze_gemma_prefix_layers} Gemma layers'
+            )
+        if exp_cfg.freeze_multimodal_projector:
+            print('Freeze PaliGemma multimodal projector weights')
         if cmd_args.freeze_language_model:
             print('Freeze Gemma language model')
         if cmd_args.freeze_vision_tower:

@@ -36,6 +36,7 @@ from bridgevla.models.oracle_prior import (
     select_active_instance_points,
     validate_oracle_prior_config,
 )
+from bridgevla.models.optimizer_utils import parameter_learning_rate
 from yarr.agents.agent import ActResult
 from PIL import Image, ImageDraw
 import torch
@@ -426,6 +427,8 @@ class RVTAgent:
         place_with_mean: bool = True,
         transform_augmentation_rot_resolution: int = 5,
         optimizer_type: str = "lamb",
+        gemma_lr: float = 0.0,
+        gemma_layer_lr_decay: float = 1.0,
         gt_hm_sigma: float = 1.5,
         img_aug: bool = False,
         add_rgc_loss: bool = False,
@@ -455,6 +458,8 @@ class RVTAgent:
             transform_augmentation_rot_resolution
         )
         self._optimizer_type = optimizer_type
+        self._gemma_lr = float(gemma_lr)
+        self._gemma_layer_lr_decay = float(gemma_layer_lr_decay)
         self.gt_hm_sigma = gt_hm_sigma
         self.img_aug = img_aug
         self.add_rgc_loss = add_rgc_loss
@@ -487,7 +492,43 @@ class RVTAgent:
     def build(self, training: bool, device: torch.device = None):
         self._training = training
         self._device = device
-        params_to_optimize = filter(lambda p: p.requires_grad, self._network.parameters())
+        trainable_parameters = [
+            (name, parameter)
+            for name, parameter in self._network.named_parameters()
+            if parameter.requires_grad
+        ]
+        if self._gemma_lr > 0:
+            num_gemma_layers = (
+                self._net_mod.mvt1.model.config.text_config.num_hidden_layers
+            )
+            parameters_by_lr = {}
+            for name, parameter in trainable_parameters:
+                parameter_lr = parameter_learning_rate(
+                    name,
+                    self._lr,
+                    self._gemma_lr,
+                    self._gemma_layer_lr_decay,
+                    num_gemma_layers,
+                )
+                parameters_by_lr.setdefault(parameter_lr, []).append(parameter)
+            learning_rates = []
+            if self._lr in parameters_by_lr:
+                learning_rates.append(self._lr)
+            learning_rates.extend(
+                sorted(lr for lr in parameters_by_lr if lr != self._lr)
+            )
+            params_to_optimize = [
+                {'params': parameters_by_lr[lr], 'lr': lr}
+                for lr in learning_rates
+            ]
+            print(
+                'Optimizer learning rates: '
+                + ', '.join(f'{lr:.3e}' for lr in learning_rates)
+            )
+        else:
+            params_to_optimize = [
+                parameter for _, parameter in trainable_parameters
+            ]
 
         optimizer_name = self._optimizer_type.lower()
         if optimizer_name == 'adam':

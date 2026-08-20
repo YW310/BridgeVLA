@@ -23,6 +23,10 @@ _C.max_optimizer_steps = 0
 _C.gradient_checkpointing = False
 _C.efficient_paligemma_forward = False
 _C.flash_attention_2 = False
+# Number of leading Gemma decoder layers whose weights are frozen.
+_C.freeze_gemma_prefix_layers = 0
+# Freeze weights only; the projector always remains in the forward path.
+_C.freeze_multimodal_projector = False
 _C.seed = 0
 _C.checkpoint_every_epochs = 10
 # Oracle object experiment: opt in only when loading an augmented replay copy.
@@ -37,6 +41,9 @@ _C.peract.lambda_weight_l2 = 1e-6
 # lr should be thought on per sample basis
 # effective lr is multiplied by bs * num_devices
 _C.peract.lr = 2.5e-5
+# Zero preserves the historical single-learning-rate optimizer.
+_C.peract.gemma_lr = 0.0
+_C.peract.gemma_layer_lr_decay = 1.0
 _C.peract.optimizer_type =  "adam" # "lamb"
 _C.peract.add_rgc_loss = True
 _C.peract.num_rotation_classes = 72

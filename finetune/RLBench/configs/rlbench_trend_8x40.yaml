@@ -7,9 +7,11 @@ epochs: 100
 train_iter: 38400
 global_batch_size: 192
 max_optimizer_steps: 20000
-gradient_checkpointing: True
+gradient_checkpointing: False
 efficient_paligemma_forward: True
 flash_attention_2: True
+freeze_gemma_prefix_layers: 9
+freeze_multimodal_projector: False
 checkpoint_every_epochs: 10
 seed: 0
 sample_distribution_mode: task_uniform
@@ -19,6 +21,8 @@ oracle_max_objects: 32
 oracle_num_points: 512
 peract:
   lr: 8e-5
+  gemma_lr: 2e-5
+  gemma_layer_lr_decay: 0.9
   optimizer_type: adamw
   transform_augmentation_xyz: [0.125, 0.125, 0.125]
   transform_augmentation_rpy: [0.0, 0.0, 45.0]
