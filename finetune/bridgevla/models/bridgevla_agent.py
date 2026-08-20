@@ -31,6 +31,11 @@ import GemBench.utils.peract_utils_gembench as gembench_utils
 import bridgevla.mvt.utils as mvt_utils
 import bridgevla.utils.rvt_utils as rvt_utils
 from bridgevla.mvt.augmentation import apply_se3_aug_con, aug_utils
+from bridgevla.models.oracle_prior import (
+    latest_replay_value,
+    select_active_instance_points,
+    validate_oracle_prior_config,
+)
 from yarr.agents.agent import ActResult
 from PIL import Image, ImageDraw
 import torch
@@ -80,77 +85,91 @@ def save_point_cloud_with_color(filename, points, colors, keypoint=None):
 
 
 def visualize_images(
-    color_tensor: torch.Tensor,  #  (3, 3, 224, 224) 
-    gray_tensor: torch.Tensor,   #  (224, 224, 3) 
+    color_tensor: torch.Tensor,
+    heatmap_tensor: torch.Tensor,
     save_dir: str = "/opt/tiger/3D_OpenVLA/3d_policy/RVT/rvt_our/debug"
 ) -> None:
-    """
-    1. original_0.png, original_1.png, original_2.png   (original image)
-    2. gray_0.png, gray_1.png, gray_2.png              (gray image)
-    3. overlay_0.png, overlay_1.png, overlay_2.png     (transparent image + annotation)
-    """
+    """Save rendered views, the final heatmap, and its argmax overlay."""
     os.makedirs(save_dir, exist_ok=True)
-    
-    color_imgs = color_tensor.cpu().numpy().transpose(0, 2, 3, 1) 
-    gray_imgs = gray_tensor.cpu().numpy().transpose(2, 0, 1)     
-    
-    for i in range(3):
-
+    color_imgs = color_tensor.detach().float().cpu().numpy().transpose(0, 2, 3, 1)
+    heatmaps = heatmap_tensor.detach().float().cpu().numpy()
+    if heatmaps.ndim != 3 or heatmaps.shape[0] != color_imgs.shape[0]:
+        raise ValueError(
+            'heatmap_tensor must have shape [V, H, W] matching color_tensor'
+        )
+    for i in range(color_imgs.shape[0]):
         original_img = np.clip(color_imgs[i], 0, 1) * 255
         original_img = original_img.astype(np.uint8)
         Image.fromarray(original_img).save(os.path.join(save_dir, f"original_{i}.png"))
-        
-
-        gray_img = np.clip(gray_imgs[i], 0, 1) * 255
-        gray_img = gray_img.astype(np.uint8)
+        normalized = _normalize_heatmap(heatmaps[i])
+        gray_img = (normalized * 255).astype(np.uint8)
         Image.fromarray(gray_img, mode="L").save(os.path.join(save_dir, f"gray_{i}.png"))
-        
-
         rgba = np.zeros((*original_img.shape[:2], 4), dtype=np.uint8)
-        rgba[..., :3] = original_img  
-        rgba[..., 3] = 77            
-        
-    
+        rgba[..., :3] = original_img
+        rgba[..., 3] = 77
         overlay_img = Image.fromarray(rgba, mode="RGBA")
         draw = ImageDraw.Draw(overlay_img)
-        
-        
-        max_pos = np.unravel_index(gray_imgs[i].argmax(), gray_imgs[i].shape)
-        x = max_pos[1]  
-        y = max_pos[0]  
-        
-      
+        max_pos = np.unravel_index(normalized.argmax(), normalized.shape)
+        x = max_pos[1]
+        y = max_pos[0]
         point_radius = 5
         draw.ellipse(
             [x-point_radius, y-point_radius, x+point_radius, y+point_radius],
-            fill=(255, 0, 0, 255)  
+            fill=(255, 0, 0, 255)
         )
-        
         overlay_img.save(os.path.join(save_dir, f"overlay_{i}.png"))
 
 
-def apply_channel_wise_softmax(gray_tensor):
-    """
-    Apply softmax normalization independently to each grayscale channel
-    Input shape: (H, W, C) -> Output shape: (H, W, C)
-    All elements in each channel are processed by softmax and sum to 1
-    """
-    # Convert to PyTorch tensor (if not already)
-    if not isinstance(gray_tensor, torch.Tensor):
-        gray_tensor = torch.tensor(gray_tensor, dtype=torch.float32)
-    
-    # Separate each channel (C, H, W)
-    channels = gray_tensor.permute(2, 0, 1)
-    
-    # Apply softmax to each channel and flatten
-    softmax_channels = []
-    for c in range(channels.shape[0]):
-        channel = channels[c].flatten()
-        softmax_channel = torch.softmax(channel, dim=0)
-        softmax_channels.append(softmax_channel.view_as(channels[c]))
-    
-    # Merge channels and restore original shape (H, W, C)
-    return torch.stack(softmax_channels, dim=2)
+def _normalize_heatmap(heatmap: np.ndarray) -> np.ndarray:
+    heatmap = np.nan_to_num(
+        np.asarray(heatmap, dtype=np.float32),
+        nan=0.0,
+        posinf=0.0,
+        neginf=0.0,
+    )
+    minimum = float(heatmap.min())
+    maximum = float(heatmap.max())
+    if maximum <= minimum:
+        return np.zeros_like(heatmap)
+    return (heatmap - minimum) / (maximum - minimum)
+
+
+def translation_heatmap_probabilities(logits: torch.Tensor) -> torch.Tensor:
+    """Convert [V, H, W] translation logits to per-view probabilities."""
+    if logits.ndim != 3:
+        raise ValueError('translation logits must have shape [V, H, W]')
+    views, height, width = logits.shape
+    return torch.softmax(
+        logits.float().reshape(views, height * width), dim=-1
+    ).reshape(views, height, width)
+
+
+def save_heatmap_views(
+    heatmap_tensor: torch.Tensor,
+    save_dir: str,
+    prefix: str,
+    color_tensor: torch.Tensor,
+) -> None:
+    """Save one grayscale map and red heatmap overlay for every MVT view."""
+    os.makedirs(save_dir, exist_ok=True)
+    heatmaps = heatmap_tensor.detach().float().cpu().numpy()
+    color_imgs = color_tensor.detach().float().cpu().numpy().transpose(0, 2, 3, 1)
+    if heatmaps.ndim != 3 or heatmaps.shape[0] != color_imgs.shape[0]:
+        raise ValueError('heatmap and color view counts must match')
+    for index in range(heatmaps.shape[0]):
+        normalized = _normalize_heatmap(heatmaps[index])
+        gray = (normalized * 255).astype(np.uint8)
+        Image.fromarray(gray, mode='L').save(
+            os.path.join(save_dir, f'{prefix}_{index}.png')
+        )
+        original = (np.clip(color_imgs[index], 0, 1) * 255).astype(np.float32)
+        alpha = (0.65 * normalized)[..., None]
+        red = np.zeros_like(original)
+        red[..., 0] = 255
+        overlay = np.clip(original * (1 - alpha) + red * alpha, 0, 255)
+        Image.fromarray(overlay.astype(np.uint8)).save(
+            os.path.join(save_dir, f'{prefix}_overlay_{index}.png')
+        )
 
 
 def eval_con(gt, pred):
@@ -414,6 +433,10 @@ class RVTAgent:
         cameras: list = rlbench_utils.CAMERAS,
         rot_ver: int = 0,
         rot_x_y_aug: int = 2,
+        oracle_prior_mode: str = 'none',
+        oracle_prior_sigma: float = 2.0,
+        oracle_prior_active_role: str = 'auto',
+        oracle_prior_strict: bool = False,
         log_dir="",
     ):
         self._network = network
@@ -439,6 +462,14 @@ class RVTAgent:
         self.log_dir = log_dir
         self.scene_bounds = scene_bounds
         self.cameras = cameras
+        validate_oracle_prior_config(
+            oracle_prior_mode, oracle_prior_sigma, oracle_prior_active_role,
+        )
+        self.oracle_prior_mode = oracle_prior_mode
+        self.oracle_prior_sigma = oracle_prior_sigma
+        self.oracle_prior_active_role = oracle_prior_active_role
+        self.oracle_prior_strict = oracle_prior_strict
+        self._oracle_missing_warning_shown = False
 
         print("Cameras:",self.cameras)
         self.move_pc_in_bound = move_pc_in_bound
@@ -480,6 +511,69 @@ class RVTAgent:
     def optimizer_step(self):
         self._optimizer.step()
 
+    @property
+    def oracle_prior_enabled(self):
+        return self.oracle_prior_mode == 'o2_gt_instance'
+
+    def _select_oracle_prior_points(self, replay_sample, allow_missing=False):
+        if not self.oracle_prior_enabled:
+            return None, None, None
+        if 'oracle_active_object_points' in replay_sample:
+            points = latest_replay_value(
+                replay_sample['oracle_active_object_points'], 3,
+            ).float()
+            valid = replay_sample.get('oracle_active_object_valid')
+            if valid is None:
+                valid = torch.ones(
+                    points.shape[0], device=points.device, dtype=torch.bool
+                )
+            else:
+                valid = latest_replay_value(valid, 1).bool()
+            slots = torch.full(
+                (points.shape[0],), -1, device=points.device, dtype=torch.long
+            )
+            return points, valid, slots
+        required = (
+            'oracle_object_points', 'oracle_object_valid',
+            'oracle_object_roles', 'low_dim_state',
+        )
+        missing = [key for key in required if key not in replay_sample]
+        if missing:
+            if allow_missing and not self.oracle_prior_strict:
+                if not self._oracle_missing_warning_shown:
+                    print(
+                        'WARNING: O2 Oracle fields are unavailable during act(); '
+                        'falling back to raw BridgeVLA logits. Missing: '
+                        + ', '.join(missing),
+                        flush=True,
+                    )
+                    self._oracle_missing_warning_shown = True
+                return None, None, None
+            raise KeyError('O2 Oracle fields are missing: ' + ', '.join(missing))
+        points = latest_replay_value(
+            replay_sample['oracle_object_points'], 4,
+        ).float()
+        valid = latest_replay_value(
+            replay_sample['oracle_object_valid'], 2,
+        ).bool()
+        roles = latest_replay_value(
+            replay_sample['oracle_object_roles'], 2,
+        ).long()
+        low_dim = latest_replay_value(replay_sample['low_dim_state'], 2)
+        return select_active_instance_points(
+            points, valid, roles, gripper_open=low_dim[:, 0],
+            active_role=self.oracle_prior_active_role,
+            strict=self.oracle_prior_strict,
+        )
+
+    def _oracle_network_kwargs(self, points, valid):
+        if points is None:
+            return {}
+        return {
+            'oracle_prior_points': points,
+            'oracle_prior_valid': valid,
+            'oracle_prior_sigma': self.oracle_prior_sigma,
+        }
 
     def _get_one_hot_expert_actions(
         self,
@@ -592,6 +686,22 @@ class RVTAgent:
 
         return q_trans, rot_q, grip_q, collision_q, y_q, pts
 
+    def get_raw_q_trans(self, out, dims):
+        """Return detached pre-fusion translation logits when O2 is active."""
+        bs, nc, h, w = dims
+        if 'trans_raw' not in out:
+            return None
+        raw = out['trans_raw'].view(bs, nc, h * w).transpose(1, 2)
+        if self.stage_two:
+            stage_two_out = out['mvt2']
+            if 'trans_raw' not in stage_two_out:
+                return None
+            raw2 = stage_two_out['trans_raw'].view(
+                bs, nc, h * w
+            ).transpose(1, 2)
+            raw = torch.cat((raw, raw2), dim=2)
+        return raw
+
 
 
     def update(
@@ -619,8 +729,15 @@ class RVTAgent:
         # rotation in quaternion xyzw
         action_rot = action_gripper_pose[:, 3:7]  # (b, 4)
         action_grip = action_rot_grip[:, -1]  # (b,)
+        oracle_points, oracle_valid, oracle_slots = (
+            self._select_oracle_prior_points(replay_sample)
+        )
         tasks = replay_sample["tasks"]
         return_out = {}
+        if oracle_valid is not None:
+            return_out['oracle_prior_coverage'] = (
+                oracle_valid.float().mean().item()
+            )
 
         obs, pcd = rlbench_utils._preprocess_inputs(replay_sample, self.cameras)
         
@@ -629,6 +746,15 @@ class RVTAgent:
                 obs,
                 pcd,
             )
+
+            oracle_scene_point_count = None
+            if (
+                oracle_points is not None
+                and self._transform_augmentation
+                and backprop
+            ):
+                oracle_scene_point_count = pc.shape[1]
+                pc = torch.cat((pc, oracle_points.to(pc.device)), dim=1)
 
             if self._transform_augmentation and backprop:
                 action_trans_con, action_rot, pc = apply_se3_aug_con(
@@ -640,6 +766,9 @@ class RVTAgent:
                 )
                 action_trans_con = torch.tensor(action_trans_con).to(pc.device)
                 action_rot = torch.tensor(action_rot).to(pc.device)
+                if oracle_scene_point_count is not None:
+                    oracle_points = pc[:, oracle_scene_point_count:]
+                    pc = pc[:, :oracle_scene_point_count]
 
             # TODO: vectorize
             action_rot = action_rot.cpu().numpy()
@@ -667,6 +796,20 @@ class RVTAgent:
                 rev_trans.append(b)
 
             wpt_local = torch.cat(wpt_local, axis=0)
+
+            if oracle_points is not None:
+                oracle_points = torch.stack([
+                    mvt_utils.place_pc_in_cube(
+                        scene_pc,
+                        app_pc=instance_points.to(
+                            device=scene_pc.device, dtype=scene_pc.dtype
+                        ),
+                        with_mean_or_bounds=self._place_with_mean,
+                        scene_bounds=None if self._place_with_mean
+                        else self.scene_bounds,
+                    )[0]
+                    for scene_pc, instance_points in zip(pc, oracle_points)
+                ])
 
             # TODO: Vectorize
             pc = [
@@ -721,6 +864,7 @@ class RVTAgent:
             img_aug=img_aug,
             wpt_local=wpt_local if self._network.training else None,
             rot_x_y=rot_x_y if self.rot_ver == 1 else None,
+            **self._oracle_network_kwargs(oracle_points, oracle_valid),
             language_goal=replay_sample["lang_goal"]  
         )
         
@@ -731,12 +875,17 @@ class RVTAgent:
         action_trans = self.get_action_trans(
             wpt_local, pts, out, dyn_cam_info, dims=(bs, nc, h, w)
         )
+        raw_q_trans = self.get_raw_q_trans(out, dims=(bs, nc, h, w))
 
 
         loss_log = {}
         if backprop:
             # cross-entropy loss
             trans_loss = self._cross_entropy_loss(q_trans, action_trans).mean()    # Soft-label cross-entropy loss. The target has the same shape as the input and is no longer one-hot encoded, but represented by class probabilities.
+            raw_trans_loss = (
+                self._cross_entropy_loss(raw_q_trans, action_trans).mean()
+                if raw_q_trans is not None else None
+            )
             rot_loss_x = rot_loss_y = rot_loss_z = 0.0
             grip_loss = 0.0
             collision_loss = 0.0
@@ -803,6 +952,8 @@ class RVTAgent:
                 "collision_loss": collision_loss.item(),
                 "lr": self._optimizer.param_groups[0]["lr"],
             }
+            if raw_trans_loss is not None:
+                loss_log['trans_loss_raw'] = raw_trans_loss.item()
             manage_loss_log(self, loss_log, reset_log=reset_log)
             return_out.update(loss_log)
 
@@ -1018,8 +1169,12 @@ class RVTAgent:
 
     @torch.no_grad()
     def act(
-        self, step: int, observation: dict,visualize=False,visualize_save_dir="", return_gembench_action=False,
+        self, step: int, observation: dict, deterministic=False,
+        visualize=False, visualize_save_dir="", return_gembench_action=False,
     ) -> ActResult:
+        oracle_points, oracle_valid, oracle_slots = (
+            self._select_oracle_prior_points(observation, allow_missing=True)
+        )
         language_goal =observation["language_goal"]
         obs, pcd = rlbench_utils._preprocess_inputs(observation, self.cameras)
         pc, img_feat = rvt_utils.get_pc_img_feat(
@@ -1034,7 +1189,8 @@ class RVTAgent:
         # TODO: Vectorize
         pc_new = []
         rev_trans = []
-        for _pc in pc:
+        oracle_points_local = [] if oracle_points is not None else None
+        for batch_index, _pc in enumerate(pc):
             a, b = mvt_utils.place_pc_in_cube(
                 _pc,
                 with_mean_or_bounds=self._place_with_mean,
@@ -1042,7 +1198,21 @@ class RVTAgent:
             )
             pc_new.append(a)
             rev_trans.append(b)
+            if oracle_points_local is not None:
+                oracle_points_local.append(
+                    mvt_utils.place_pc_in_cube(
+                        _pc,
+                        app_pc=oracle_points[batch_index].to(
+                            device=_pc.device, dtype=_pc.dtype
+                        ),
+                        with_mean_or_bounds=self._place_with_mean,
+                        scene_bounds=None if self._place_with_mean
+                        else self.scene_bounds,
+                    )[0]
+                )
         pc = pc_new
+        if oracle_points_local is not None:
+            oracle_points = torch.stack(oracle_points_local)
 
         bs = len(pc)
         nc = self._net_mod.num_img
@@ -1052,6 +1222,7 @@ class RVTAgent:
             pc=pc,
             img_feat=img_feat,
             img_aug=0,  # no img augmentation while acting
+            **self._oracle_network_kwargs(oracle_points, oracle_valid),
             language_goal=language_goal,
         )
         if visualize:
@@ -1074,14 +1245,46 @@ class RVTAgent:
             if not os.path.exists(save_dir):
                 os.makedirs(save_dir)
 
-            mvt1_img=out["mvt1_ori_img"][0,:,3:6]
-            mvt2_img=out["mvt2_ori_img"][0,:,3:6]
-            q_trans_1=q_trans[0,:,:3].clone().view(224,224,3)
-            q_trans_2=q_trans[0,:,3:6].clone().view(224,224,3)
-            q_trans_1=apply_channel_wise_softmax(q_trans_1)*100
-            q_trans_2=apply_channel_wise_softmax(q_trans_2)*100
-            visualize_images(mvt1_img,q_trans_1,save_dir=os.path.join(save_dir,"mvt1"))
-            visualize_images(mvt2_img,q_trans_2,save_dir=os.path.join(save_dir,"mvt2"))
+            stage_outputs = [
+                ('mvt1', out, out['mvt1_ori_img'][0, :, 3:6]),
+            ]
+            if self.stage_two and 'mvt2' in out:
+                stage_outputs.append(
+                    ('mvt2', out['mvt2'], out['mvt2_ori_img'][0, :, 3:6])
+                )
+            for stage_name, stage_out, stage_img in stage_outputs:
+                stage_dir = os.path.join(save_dir, stage_name)
+                fused = translation_heatmap_probabilities(stage_out['trans'][0])
+                visualize_images(stage_img, fused, save_dir=stage_dir)
+                if (
+                    'trans_raw' in stage_out
+                    and 'oracle_instance_prior' in stage_out
+                ):
+                    raw = translation_heatmap_probabilities(
+                        stage_out['trans_raw'][0]
+                    )
+                    save_heatmap_views(
+                        stage_out['oracle_instance_prior'][0],
+                        stage_dir,
+                        'o2_prior',
+                        stage_img,
+                    )
+                    save_heatmap_views(
+                        raw, stage_dir, 'o2_raw', stage_img,
+                    )
+                    save_heatmap_views(
+                        fused, stage_dir, 'o2_fused', stage_img,
+                    )
+                elif self.oracle_prior_enabled:
+                    with open(
+                        os.path.join(stage_dir, 'o2_unavailable.txt'),
+                        'w',
+                        encoding='utf-8',
+                    ) as stream:
+                        stream.write(
+                            'Oracle prior unavailable; this step used raw '
+                            'BridgeVLA translation logits.\\n'
+                        )
             save_point_cloud_with_color(os.path.join(save_dir,"point_cloud.ply"), pc_ori.cpu().numpy(), img_feat_ori.cpu().numpy(), pred_wpt[0].cpu().numpy())
         continuous_action = np.concatenate(
             (

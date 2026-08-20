@@ -29,6 +29,7 @@ _C.checkpoint_every_epochs = 10
 _C.use_oracle_objects = False
 _C.oracle_max_objects = 32
 _C.oracle_num_points = 512
+_C.oracle_prior_hidden_channels = 16
 # arguments present in both peract and rvt
 # some of them donot support every possible combination in peract
 _C.peract = CN()
@@ -49,6 +50,11 @@ _C.rvt.gt_hm_sigma = 1.5
 _C.rvt.img_aug = 0.1
 _C.rvt.place_with_mean = True
 _C.rvt.move_pc_in_bound = True
+# Optional privileged O2 prior. Defaults preserve the historical forward path.
+_C.rvt.oracle_prior_mode = 'none'
+_C.rvt.oracle_prior_sigma = 2.0
+_C.rvt.oracle_prior_active_role = 'auto'
+_C.rvt.oracle_prior_strict = False
 
 # arguments present in peract official
 _C.peract_official = CN()

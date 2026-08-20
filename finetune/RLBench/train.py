@@ -48,7 +48,11 @@ from utils.peract_utils_rlbench import (
     DATA_FOLDER,
     TRAIN_REPLAY_STORAGE_DIR,
 )
-from training_utils import build_batch_plan, optimizer_steps_per_epoch
+from training_utils import (
+    build_batch_plan,
+    freeze_for_oracle_fusion,
+    optimizer_steps_per_epoch,
+)
 
 def _scalar_metrics(values):
     metrics = {}
@@ -125,6 +129,7 @@ def train(
                 for key in (
                     'total_loss',
                     'trans_loss',
+                    'trans_loss_raw',
                     'rot_loss_x',
                     'rot_loss_y',
                     'rot_loss_z',
@@ -244,6 +249,7 @@ def train_with_accumulation(
                 for key in (
                     'total_loss',
                     'trans_loss',
+                    'trans_loss_raw',
                     'rot_loss_x',
                     'rot_loss_y',
                     'rot_loss_z',
@@ -321,6 +327,32 @@ def load_training_checkpoint(agent, path):
     print(f"Resumed training from {path} (completed epoch {checkpoint_epoch}).", flush=True)
     optimizer_step = checkpoint.get('optimizer_step')
     return checkpoint_epoch + 1, optimizer_step
+
+
+def load_initial_model_checkpoint(agent, path):
+    """Initialize O2 from a baseline model without restoring its optimizer."""
+    checkpoint = torch.load(path, map_location='cpu')
+    model = agent._network
+    if isinstance(model, DDP):
+        model = model.module
+    incompatible = model.load_state_dict(
+        checkpoint['model_state'], strict=False
+    )
+    unexpected = list(incompatible.unexpected_keys)
+    disallowed_missing = [
+        key for key in incompatible.missing_keys
+        if 'oracle_prior_fusion' not in key
+        and not key.endswith('language_model.lm_head.weight')
+    ]
+    if unexpected or disallowed_missing:
+        raise RuntimeError(
+            'Baseline checkpoint is incompatible with O2 initialization: '
+            f'missing={disallowed_missing}, unexpected={unexpected}'
+        )
+    print(
+        f'Initialized model weights from baseline checkpoint: {path}',
+        flush=True,
+    )
 
 
 
@@ -434,10 +466,14 @@ def set_training_seed(seed, rank):
     torch.cuda.manual_seed_all(rank_seed)
 
 
-def freeze_backbone_modules(backbone, freeze_vision_tower):
+def freeze_backbone_modules(
+    backbone, freeze_vision_tower, freeze_language_model=False,
+):
     freeze_names = ['lm_head', 'embed_tokens']
     if freeze_vision_tower:
         freeze_names.append('vision_tower')
+    if freeze_language_model:
+        freeze_names.append('language_model')
 
     frozen = 0
     for name, parameter in backbone.named_parameters():
@@ -452,6 +488,18 @@ def experiment(cmd_args):
         raise ValueError('--loss_print_interval must be >= 0')
     if cmd_args.tensorboard_flush_secs <= 0:
         raise ValueError('--tensorboard_flush_secs must be > 0')
+    if cmd_args.init_checkpoint and cmd_args.resume_checkpoint:
+        raise ValueError(
+            '--init_checkpoint and --resume_checkpoint are mutually exclusive.'
+        )
+    if (
+        cmd_args.train_oracle_fusion_only
+        and not (cmd_args.init_checkpoint or cmd_args.resume_checkpoint)
+    ):
+        raise ValueError(
+            'Fusion-only training requires --init_checkpoint with a trained '
+            'baseline, or --resume_checkpoint with an O2 checkpoint.'
+        )
 
     setup_distributed()
     local_rank = int(os.environ["LOCAL_RANK"])
@@ -476,6 +524,13 @@ def experiment(cmd_args):
         exp_cfg.exp_id += f"_{cmd_args.exp_cfg_opts}"
     if cmd_args.mvt_cfg_opts != "":
         exp_cfg.exp_id += f"_{cmd_args.mvt_cfg_opts}"
+    if (
+        exp_cfg.rvt.oracle_prior_mode != 'none'
+        and not exp_cfg.use_oracle_objects
+    ):
+        raise ValueError(
+            'O2 prior requires use_oracle_objects=True and an augmented replay.'
+        )
     reduced_hardware_mode = exp_cfg.global_batch_size > 0
     if reduced_hardware_mode and exp_cfg.checkpoint_every_epochs <= 0:
         raise ValueError('checkpoint_every_epochs must be > 0')
@@ -557,16 +612,33 @@ def experiment(cmd_args):
         load_pretrain=cmd_args.load_pretrain,
         pretrain_path=cmd_args.pretrain_path,
         flash_attention_2=exp_cfg.flash_attention_2,
+        oracle_prior_fusion=(
+            exp_cfg.rvt.oracle_prior_mode == 'o2_gt_instance'
+        ),
+        oracle_prior_hidden_channels=exp_cfg.oracle_prior_hidden_channels,
         **mvt_cfg,
     )
+    if cmd_args.train_oracle_fusion_only:
+        if exp_cfg.rvt.oracle_prior_mode != 'o2_gt_instance':
+            raise ValueError(
+                '--train_oracle_fusion_only requires O2 mode.'
+            )
+        fusion_params = freeze_for_oracle_fusion(backbone)
+        print(
+            'Freeze original BridgeVLA; train Oracle fusion only: '
+            f'{fusion_params / 1e6:.3f} million parameters'
+        )
     if exp_cfg.efficient_paligemma_forward:
         backbone.mvt1.enable_efficient_paligemma_forward()
     if exp_cfg.gradient_checkpointing:
         backbone.mvt1.enable_gradient_checkpointing()
     if reduced_hardware_mode:
         frozen_params = freeze_backbone_modules(
-            backbone, cmd_args.freeze_vision_tower
+            backbone, cmd_args.freeze_vision_tower,
+            cmd_args.freeze_language_model,
         )
+        if cmd_args.freeze_language_model:
+            print('Freeze Gemma language model')
         if cmd_args.freeze_vision_tower:
             print("Freeze vision tower")
         print(f"Frozen parameters: {frozen_params / 1e9:.2f} billion")
@@ -591,6 +663,9 @@ def experiment(cmd_args):
         if cmd_args.freeze_vision_tower:
             freeze_names.append("vision_tower")
             print("Freeze vision tower")
+        if cmd_args.freeze_language_model:
+            freeze_names.append('language_model')
+            print('Freeze Gemma language model')
         for name, module in agent._network.named_modules():
             for freeze_name in freeze_names:
                 if freeze_name in name:
@@ -604,6 +679,12 @@ def experiment(cmd_args):
 
 
     agent.build(training=True, device=device_id)
+    if cmd_args.init_checkpoint:
+        if not os.path.isfile(cmd_args.init_checkpoint):
+            raise FileNotFoundError(
+                f'Initial checkpoint does not exist: {cmd_args.init_checkpoint}'
+            )
+        load_initial_model_checkpoint(agent, cmd_args.init_checkpoint)
     start_epoch = 0
     start_optimizer_step = 0
     if (
@@ -790,6 +871,14 @@ def experiment(cmd_args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument(
+        '--freeze_language_model', action='store_true',
+        help='Freeze Gemma language-model parameters while training other heads.',
+    )
+    parser.add_argument(
+        '--train_oracle_fusion_only', action='store_true',
+        help='Freeze original BridgeVLA and train only O2 fusion heads.',
+    )
     parser.set_defaults(entry=lambda cmd_args: parser.print_help())
     parser.add_argument("--refresh_replay", action="store_true", default=False)
     parser.add_argument("--mvt_cfg_path", type=str, default="../bridgevla/mvt/configs/rvt2.yaml")
@@ -838,6 +927,15 @@ if __name__ == "__main__":
         type=int,
         default=10,
         help='How often TensorBoard event data is flushed to disk.',
+    )
+    parser.add_argument(
+        '--init_checkpoint',
+        type=str,
+        default=None,
+        help=(
+            'Initialize model weights from a baseline checkpoint without '
+            'restoring epoch or optimizer state.'
+        ),
     )
     parser.add_argument(
         "--resume",

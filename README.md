@@ -444,8 +444,82 @@ TRAIN_REPLAY_STORAGE_DIR 指向 Oracle 输出目录，并启用与数据准备�
         [其他训练参数]
 
 use_oracle_objects 默认为 False，因此原始非 Oracle replay 的加载行为保持不变。
-当前改动负责准备和加载 Oracle 字段（包括 target/reference 角色），不包含将这些字段
-转换为 object tokens 或角色监督损失的策略网络结构。
+
+### O2：训练当前应操作实例 GT
+
+O2 不把 GT heatmap 作为固定 mask 或手工 logit 约束。程序先保留 BridgeVLA 原始
+trans_raw，再将 trans_raw 和 GT 实例三视角 heatmap 输入一个小型、可训练的
+residual fusion head；最终 trans 参与原有 translation loss。fusion 最后一层为
+零初始化，因此训练开始时 trans 与 trans_raw 相等。Oracle 无效时也强制回退
+trans_raw。
+
+推荐先冻结整个原 BridgeVLA，只训练新增 fusion head：
+
+    bash train.sh --exp_cfg_path configs/rlbench_o2_gt_instance.yaml --init_checkpoint /path/to/baseline_model.pth --train_oracle_fusion_only
+
+如果希望联合训练动作相关模块、但不 fine-tune Gemma，改用：
+
+    bash train.sh --exp_cfg_path configs/rlbench_o2_gt_instance.yaml --init_checkpoint /path/to/baseline_model.pth --freeze_language_model
+
+专用配置文件为
+`finetune/RLBench/configs/rlbench_o2_gt_instance.yaml`，集中配置 Oracle replay
+shape、O2 fusion 模式、active role 和 heatmap sigma。checkpoint 路径以及
+`--train_oracle_fusion_only` / `--freeze_language_model` 属于单次运行策略，
+仍通过命令行指定。临时修改单个值时，仍可在配置文件之后使用
+`--exp_cfg_opts 'tasks stack_blocks rvt.oracle_prior_strict True'` 覆盖。
+
+init_checkpoint 只初始化模型权重，fusion 保持零初始化，epoch 和 optimizer 从头开始；
+继续已开始的 O2 训练则使用 resume_checkpoint。两者不能同时指定。
+
+auto 在当前夹爪打开时选择 role T，闭合时选择 role R。评估器也可以直接提供
+oracle_active_object_points [B,P,3] 和可选的
+oracle_active_object_valid [B]，此时不经过 T/R 自动选择。训练日志同时记录
+trans_loss（fused）和 trans_loss_raw（原 heatmap），便于判断 fusion 是改善还是
+伤害原预测。oracle_prior_strict 默认为 False：当前 role 缺失或存在多个候选时，
+该样本回退 trans_raw；oracle_prior_coverage 用于监控实际有效比例。数据审计时可
+显式设置 rvt.oracle_prior_strict True，使异常样本直接报错。
+
+use_oracle_objects=False、rvt.oracle_prior_mode=none 均为默认值；此时不创建
+fusion 参数、不要求 Oracle 字段，旧 replay、旧 checkpoint 和原始前向路径保持
+不变。O2 在训练和评估时均使用 GT 实例，属于 privileged Oracle 上界，不应作为
+无 GT 的部署结果报告。
+
+O2 评估可视化需要同时启用开关和输出目录：
+
+    python eval.py [原评估参数] --visualize --visualize_root_dir exp/RLBench_O2_vis
+
+每个 step 的 `mvt1/` 和 `mvt2/` 目录会保存：
+
+- `original_N.png`、`gray_N.png`、`overlay_N.png`：输入视图、最终 fused
+  translation heatmap 和其最大值位置；
+- `o2_prior_N.png`、`o2_prior_overlay_N.png`：GT instance prior；
+- `o2_raw_N.png`、`o2_raw_overlay_N.png`：原始 BridgeVLA heatmap；
+- `o2_fused_N.png`、`o2_fused_overlay_N.png`：融合后 heatmap。
+
+完整路径为
+`<visualize_root_dir>/<task>/episode_<N>/<language_goal>/step<N>/{mvt1,mvt2}/`。
+只设置 `--visualize_root_dir` 不会启用可视化。online observation 未提供 Oracle
+字段时，默认非严格模式会打印警告、回退原始 logits，并写入
+`o2_unavailable.txt`；这种结果不是有效 O2 评测。设置
+`rvt.oracle_prior_strict True` 可改为立即报错。
+
+#### O2 训练代码测试
+
+在服务器的 `bridgevla` 环境、仓库根目录运行：
+
+    python -m unittest tests.test_oracle_prior tests.test_rlbench_training_utils -v
+
+`tests.test_oracle_prior` 检查当前实例选择、完整实例点投影、零初始化 identity、
+无效 prior 回退以及 fusion 反向梯度；`tests.test_rlbench_training_utils` 检查
+fusion-only 冻结范围和 batch/optimizer-step 规划。
+
+确认专用 YAML 能被项目 YACS 配置系统加载：
+
+    PYTHONPATH=finetune python -c "from bridgevla.config import get_cfg_defaults; c=get_cfg_defaults(); c.merge_from_file('finetune/RLBench/configs/rlbench_o2_gt_instance.yaml'); assert c.use_oracle_objects and c.rvt.oracle_prior_mode == 'o2_gt_instance'; print(c)"
+
+上述测试属于代码级检查；正式训练前仍应在 GPU 上运行一个真实 replay batch 的
+forward/backward，并确认 `oracle_prior_coverage`、`trans_loss_raw` 和
+`trans_loss` 均能正常输出。
 
 训练默认只在 `model_*.pth` 中保存 `epoch` 和 `model_state`，适用于评估与
 推理，不保存体积较大的 Adam optimizer state。如果需要完整恢复优化器以继续
