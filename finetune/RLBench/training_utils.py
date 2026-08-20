@@ -63,3 +63,17 @@ def optimizer_steps_per_epoch(train_samples: int, global_batch_size: int) -> int
             "train_samples must contain at least one complete global batch"
         )
     return steps
+
+
+def freeze_for_oracle_fusion(backbone) -> int:
+    """Freeze all parameters except modules named oracle_prior_fusion."""
+    for parameter in backbone.parameters():
+        parameter.requires_grad = False
+    trainable = 0
+    for name, parameter in backbone.named_parameters():
+        if 'oracle_prior_fusion' in name:
+            parameter.requires_grad = True
+            trainable += parameter.numel()
+    if trainable == 0:
+        raise ValueError('No Oracle fusion parameters were created.')
+    return trainable

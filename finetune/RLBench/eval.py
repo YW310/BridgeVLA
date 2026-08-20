@@ -106,6 +106,10 @@ def load_agent(
 
     rvt = MVT(
         renderer_device=device,
+        oracle_prior_fusion=(
+            exp_cfg.rvt.oracle_prior_mode == 'o2_gt_instance'
+        ),
+        oracle_prior_hidden_channels=exp_cfg.oracle_prior_hidden_channels,
         **mvt_cfg,
     )
 

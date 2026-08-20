@@ -1,6 +1,6 @@
 # BridgeVLA Oracle Prior Coding 交接文档（精简版）
 
-> 更新时间：2026-08-06  
+> 更新时间：2026-08-20
 > 目标分支：BridgeVLA 官方仓库 `bridgevla` 分支  
 > 目标：用 RLBench 真值 entity/site prior 测量 BridgeVLA 的性能上限
 
@@ -13,10 +13,51 @@
 1. 从 RLBench segmentation mask 获取 simulator handle truth；
 2. 将 handle 映射为 `target/reference/site`；
 3. 为点云附加 role，并投影到 BridgeVLA 相同的三个正交视图；
-4. 冻结 BridgeVLA，只给 translation heatmap 加 soft prior；
+4. 保留原 translation heatmap，用零初始化的轻量 fusion head 学习 GT prior；
 5. 先跑离线 keyframe replay，再跑 paired online evaluation。
 
 首版不运行 Qwen/SAM，不改 rotation、gripper、collision heads，不实现完整 world repair。
+
+### 当前最小实现状态（2026-08-20）
+
+本轮先完成 O2 训练闭环，原则是尽量不改变原 BridgeVLA：
+
+- 新增模式默认关闭；`rvt.oracle_prior_mode=none` 时不创建 fusion 参数，也不读取
+  Oracle replay 字段，旧 replay、旧 checkpoint 和原前向路径保持不变；
+- O2 使用当前 GT 实例的完整点云，而不是物体中心；点云经过与场景相同的 SE(3)
+  增强、立方体归一化和 MVT 三视图投影；
+- 第一、二阶段均保留原 translation logits，并通过零初始化的轻量 residual fusion
+  head 学习实例 heatmap；最终 fused logits 继续使用原 translation loss；
+- 推荐从已训练 baseline checkpoint 初始化，冻结原 BridgeVLA（包括 Gemma），只训练
+  新增 fusion head；
+- O2 参数集中在
+  `finetune/RLBench/configs/rlbench_o2_gt_instance.yaml`；checkpoint 和冻结模式
+  仍作为运行时命令行参数；
+- 日志同时输出 `trans_loss_raw`、`trans_loss` 和 `oracle_prior_coverage`；当前 role 缺失
+  或存在多个候选时，该样本回退原始 logits；
+- 已完成 Python 语法检查、补丁格式检查和不依赖 PyTorch 的训练工具回归测试。
+
+最小版本暂不处理以下复杂情况：
+
+- 不加入 prior dropout、错误实例扰动、置信度 gate 或不确定性建模；
+- 不训练 Qwen/SAM/predicted-instance provider，也不把 Oracle 结果当作部署结果；
+- 不实现复杂的抓取周期状态机、多 target/reference 消歧和 interaction-site prior；
+- 不修改 Gemma、vision tower、rotation、gripper、collision 等原网络分支；
+- 不在本地 Windows 环境完成 PyTorch 前向/反向和 RLBench online smoke test。本地缺少
+  PyTorch；对应测试已编写，需在服务器 `bridgevla` 环境执行；
+- online evaluation 仍需评估器在每个时刻提供正确的
+  `oracle_active_object_points`；当前代码保留这一注入接口。默认非严格模式在
+  字段缺失时会警告并回退 baseline，严格模式继续报错，因此缺少 provider 的结果
+  不能作为 O2 指标。
+
+上述项目是后续增强，不阻塞当前 fusion-only O2 训练。若最小实验没有稳定收益，不应
+提前增加这些复杂机制。
+
+当前 eval 可视化已经支持逐视角保存 `o2_prior`、`o2_raw` 和 `o2_fused` 及其
+RGB overlay，目录为
+`<visualize_root_dir>/<task>/episode_<N>/<language_goal>/step<N>/{mvt1,mvt2}/`。
+必须显式传入 `--visualize`；若该 step 没有 Oracle 输入，会保存
+`o2_unavailable.txt`，而不是伪造 prior 图。
 
 ## 2. Oracle 等级与泄漏边界
 
@@ -47,10 +88,10 @@ BridgeVLA 原有 preprocessing
 同一 renderer、同一三视图像素坐标
         ┌────────┴────────┐
         ↓                 ↓
-BridgeVLA RGB views   Oracle soft prior
+BridgeVLA raw logits  Oracle instance heatmap
         └────────┬────────┘
                  ↓
-translation logits + prior bias
+zero-init learned residual fusion
                  ↓
 BridgeVLA 原 action decoder
 ```
@@ -171,11 +212,17 @@ P_v(x)=\exp\left(-\frac{d(x,M_v)^2}{2\sigma^2}\right)
 
 ## 8. Translation heatmap 融合
 
-设原 logits 为 `L`，active prior 为 `P`：`Q = floor + (1-floor)P`，然后在 decode 前计算 `L' = L + alpha * log(Q + eps)`。
+设原 logits 为 `L_raw`，GT instance heatmap 为 `P`。不再使用固定
+`alpha/floor` 约束，而训练轻量 residual head：
 
-核心要求：`alpha=0` 原样返回 logits；prior 与 logits shape 必须一致；prior 转到相同 device/dtype 并截断到 `[0,1]`；`floor>0` 防止 mask 外概率被清零。
+    L_fused = L_raw + F_theta([L_raw, P])
 
-validation sweep：`alpha={0,0.5,1,2,4}`、`floor={0.05,0.10,0.20}`、`sigma_px={4,8,16}`。只能在 validation seeds 上选参数，其他 action heads 保持不变。
+`F_theta` 的最后一层必须零初始化，因此启用 O2 后的初始输出严格等于
+`L_raw`；Oracle 无效样本的 residual 必须强制为零。训练输出同时保留
+`trans_raw`、`oracle_instance_prior` 和实际参与 loss/decode 的 `trans`。
+
+推荐主实验冻结原 BridgeVLA，只训练 fusion head；补充实验可冻结 Gemma、联合训练
+动作 head 与 fusion。两种设置必须分开报告，不能把重新微调整网的收益归因于 prior。
 
 ## 9. 评测 protocol
 
@@ -214,11 +261,12 @@ pilot 每任务 25 个 paired episodes；正式建议至少 `25 episodes × 3 se
 - point attributes 经过 crop/sample 后仍对齐；
 - 合成 cube/plane 三视图投影正确；
 - prior 范围正确，空 prior 无 NaN；
-- `alpha=0` 返回原 logits，uniform prior 不改变 softmax；
+- fusion 零初始化时 fused logits 与 raw logits 完全一致；
+- fusion 最后一层在第一个训练 step 能收到非零梯度；
 - `evidence_time <= action_time`，O4 必须显式授权；
 - 一个 replay batch 可生成 RGB/prior views；
 - 三视图 overlay 对齐；
-- `alpha=0` action 差异 `<=1e-6`；
+- O2 关闭时 action 与旧 baseline 差异 `<=1e-6`；
 - online 两 episode smoke test 可完成；
 - prior 关闭后 baseline 独立运行。
 
@@ -229,8 +277,8 @@ Go/No-Go 建议：hard-task 离线 error 相对下降 ≥10% 或 PCK@5cm 提升 
 1. 固定 BridgeVLA commit、checkpoint、RLBench 环境和 baseline seeds；
 2. 实现 handle mask、registry 和 O1；
 3. 实现 point roles 与三视图 renderer，人工验证对齐；
-4. 插入 frozen logit fusion，验证 `alpha=0` parity；
-5. 跑 offline paired evaluation 并选参数；
+4. 插入 zero-init learned fusion，验证初始 parity；
+5. 先只训练 fusion head，再跑 offline paired evaluation；
 6. 跑 online B0/O1/O2；
 7. 扩展 O3-V/O3-F；
 8. 最后加入隔离的 O4。
@@ -246,6 +294,11 @@ SimulatorOracleProvider
 
 结果解释：O1 提升说明相关实体选择有价值；只有 O3 提升说明应重点做 interaction-site；O3-F 显著高于 O3-V 说明需要持久世界记忆；translation 改善但 success 不变，则瓶颈已转移到 rotation/gripper/collision。
 
-## 12. 后续可学习融合方案
+## 12. 从 Oracle 训练迁移到可部署 prior
 
-Oracle logit fusion 只用于验证信息上限。若 O1/O3-V 达到 Go 标准，后续不再重复注入 object-center，而采用 `target/reference/site` 三角色热图、末端关系 token 和 zero-init gated adapter；训练时混合 truth、noisy、predicted prior，并使用 `30%~50%` prior dropout。具体设计见 [`BRIDGEVLA_ROLE_RELATION_PRIOR_DESIGN_CN.md`](BRIDGEVLA_ROLE_RELATION_PRIOR_DESIGN_CN.md)。
+当前 O2 已采用 learned fusion，但训练和评估输入仍是 GT instance，因此仍属于
+privileged Oracle 上界。验证信息有价值后，保持 fusion 接口不变，把 provider
+依次替换为 predicted instance；再混合 truth、noisy、predicted prior，并使用
+`30%~50%` prior dropout 提升容错。可进一步扩展
+`target/reference/site` 三角色热图与末端关系 token。具体设计见
+[`BRIDGEVLA_ROLE_RELATION_PRIOR_DESIGN_CN.md`](BRIDGEVLA_ROLE_RELATION_PRIOR_DESIGN_CN.md)。

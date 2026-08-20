@@ -25,6 +25,10 @@ from torch import nn
 import bridgevla.mvt.utils as mvt_utils
 from bridgevla.mvt.mvt_single import MVT as MVTSingle
 from bridgevla.mvt.config import get_cfg_defaults
+from bridgevla.models.oracle_prior import (
+    OraclePriorFusion,
+    rasterize_instance_points,
+)
 
 class MVT(nn.Module):
     def __init__(
@@ -63,6 +67,8 @@ class MVT(nn.Module):
         load_pretrain=False,
         pretrain_path=None,
         flash_attention_2=False,
+        oracle_prior_fusion=False,
+        oracle_prior_hidden_channels=16,
     ):
         super().__init__()
 
@@ -79,6 +85,8 @@ class MVT(nn.Module):
         del args["st_wpt_loc_aug"]
         del args["st_wpt_loc_inp_no_noise"]
         del args["img_aug_2"]
+        del args["oracle_prior_fusion"]
+        del args["oracle_prior_hidden_channels"]
 
         self.rot_ver = rot_ver
         self.num_rot = num_rot
@@ -87,6 +95,14 @@ class MVT(nn.Module):
         self.st_wpt_loc_aug = st_wpt_loc_aug
         self.st_wpt_loc_inp_no_noise = st_wpt_loc_inp_no_noise
         self.img_aug_2 = img_aug_2
+        self.oracle_prior_fusion1 = (
+            OraclePriorFusion(oracle_prior_hidden_channels)
+            if oracle_prior_fusion else None
+        )
+        self.oracle_prior_fusion2 = (
+            OraclePriorFusion(oracle_prior_hidden_channels)
+            if oracle_prior_fusion and stage_two else None
+        )
 
         # for verifying the input
         self.feat_ver = feat_ver
@@ -155,6 +171,28 @@ class MVT(nn.Module):
             wpt = out["rev_trans"](wpt)
 
         return wpt
+
+    def _apply_oracle_instance_prior(
+        self, stage_out, points, valid, first_stage, full_out,
+        sigma,
+    ):
+        fusion = (
+            self.oracle_prior_fusion1
+            if first_stage else self.oracle_prior_fusion2
+        )
+        if points is None or fusion is None:
+            return
+        projected = self.get_pt_loc_on_img(
+            points, mvt1_or_mvt2=first_stage, dyn_cam_info=None,
+            out=None if first_stage else full_out,
+        )
+        prior = rasterize_instance_points(
+            projected, valid, (self.img_size, self.img_size), sigma,
+        )
+        raw_logits = stage_out['trans']
+        stage_out['trans_raw'] = raw_logits.detach()
+        stage_out['trans'] = fusion(raw_logits, prior, valid)
+        stage_out['oracle_instance_prior'] = prior.detach()
 
 
 
@@ -302,6 +340,9 @@ class MVT(nn.Module):
         wpt_local=None,
         rot_x_y=None,
         language_goal=None,
+        oracle_prior_points=None,
+        oracle_prior_valid=None,
+        oracle_prior_sigma=2.0,
         **kwargs,
     ):
         """
@@ -353,6 +394,10 @@ class MVT(nn.Module):
             forward_no_feat=True,
             # forward_no_feat=False,
             **kwargs,
+        )
+        self._apply_oracle_instance_prior(
+            out, oracle_prior_points, oracle_prior_valid, True, None,
+            oracle_prior_sigma,
         )
         out["mvt1_ori_img"]=img.clone().detach()
         def visualize_tensor(tensor, save_path=None):
@@ -436,6 +481,8 @@ class MVT(nn.Module):
                     dyn_cam_info=None,
                 )
         
+            out['wpt_local1'] = wpt_local_stage_one_noisy
+            out['rev_trans'] = rev_trans
             out_mvt2 = self.mvt1(
                 img=img,
                 wpt_local=wpt_local2,
@@ -443,6 +490,10 @@ class MVT(nn.Module):
                 language_goal=language_goal,
                 forward_no_feat=False,
                 **kwargs,
+            )
+            self._apply_oracle_instance_prior(
+                out_mvt2, oracle_prior_points, oracle_prior_valid, False, out,
+                oracle_prior_sigma,
             )
 
             out["wpt_local1"] = wpt_local_stage_one_noisy
