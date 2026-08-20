@@ -15,13 +15,35 @@ class RLBenchReducedModeIsolationTest(unittest.TestCase):
     def test_efficient_forward_defaults_off_and_is_enabled_in_8x40_profiles(self):
         defaults = (ROOT / 'finetune/bridgevla/config.py').read_text()
         self.assertIn('_C.efficient_paligemma_forward = False', defaults)
+        self.assertIn('_C.gpu_paligemma_preprocessing = False', defaults)
         self.assertIn('_C.flash_attention_2 = False', defaults)
         for name in ('rlbench_trend_8x40.yaml', 'rlbench_full_8x40.yaml'):
             profile = (
                 ROOT / 'finetune/RLBench/configs' / name
             ).read_text()
             self.assertIn('efficient_paligemma_forward: True', profile)
+            self.assertIn('gpu_paligemma_preprocessing: True', profile)
             self.assertIn('flash_attention_2: True', profile)
+
+    def test_gpu_preprocessing_is_only_enabled_in_8x40_profiles(self):
+        config_dir = ROOT / 'finetune/RLBench/configs'
+        enabled = []
+        for path in config_dir.glob('*.yaml'):
+            if 'gpu_paligemma_preprocessing: True' in path.read_text():
+                enabled.append(path.name)
+        self.assertEqual(
+            sorted(enabled),
+            ['rlbench_full_8x40.yaml', 'rlbench_trend_8x40.yaml'],
+        )
+
+    def test_gpu_preprocessing_keeps_images_on_device(self):
+        source = (
+            ROOT / 'finetune/bridgevla/mvt/mvt_single.py'
+        ).read_text()
+        self.assertIn('def _prepare_paligemma_inputs_gpu', source)
+        self.assertIn('pixel_values = F.interpolate(', source)
+        self.assertIn('text_inputs = tokenizer(', source)
+        self.assertIn('if self.use_gpu_paligemma_preprocessing:', source)
 
     def test_flash_attention_is_only_enabled_in_8x40_profiles(self):
         config_dir = ROOT / 'finetune/RLBench/configs'
@@ -32,6 +54,15 @@ class RLBenchReducedModeIsolationTest(unittest.TestCase):
         self.assertEqual(
             sorted(enabled),
             ['rlbench_full_8x40.yaml', 'rlbench_trend_8x40.yaml'],
+        )
+
+    def test_flash_attention_loads_paligemma_on_the_local_cuda_device(self):
+        source = (
+            ROOT / 'finetune/bridgevla/mvt/mvt_single.py'
+        ).read_text()
+        self.assertIn('flash_device = torch.device(renderer_device)', source)
+        self.assertIn(
+            'model_kwargs["device_map"] = {"": str(flash_device)}', source
         )
 
     def test_8x40_profiles_use_gemma_prefix_freezing_and_layerwise_lr(self):

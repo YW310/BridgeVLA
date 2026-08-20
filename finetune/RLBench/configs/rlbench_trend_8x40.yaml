@@ -9,6 +9,7 @@ global_batch_size: 192
 max_optimizer_steps: 20000
 gradient_checkpointing: False
 efficient_paligemma_forward: True
+gpu_paligemma_preprocessing: True
 flash_attention_2: True
 freeze_gemma_prefix_layers: 9
 freeze_multimodal_projector: False

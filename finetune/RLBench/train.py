@@ -650,6 +650,8 @@ def experiment(cmd_args):
         )
     if exp_cfg.efficient_paligemma_forward:
         backbone.mvt1.enable_efficient_paligemma_forward()
+    if exp_cfg.gpu_paligemma_preprocessing:
+        backbone.mvt1.enable_gpu_paligemma_preprocessing()
     if exp_cfg.gradient_checkpointing:
         backbone.mvt1.enable_gradient_checkpointing()
     if reduced_hardware_mode:

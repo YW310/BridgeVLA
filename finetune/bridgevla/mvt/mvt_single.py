@@ -18,6 +18,7 @@ Email: peiyan.li@cripac.ia.ac.cn
 '''
 import torch
 from torch import nn
+from torch.nn import functional as F
 from einops import rearrange
 import bridgevla.mvt.utils as mvt_utils
 from bridgevla.mvt.attn import (
@@ -218,7 +219,17 @@ class MVT(nn.Module):
         model_id = "google/paligemma-3b-pt-224"
         model_kwargs = {"torch_dtype": torch.bfloat16}
         if flash_attention_2:
+            flash_device = torch.device(renderer_device)
+            if flash_device.type != "cuda":
+                raise ValueError(
+                    "FlashAttention 2 requires a CUDA renderer_device, got "
+                    f"{renderer_device!r}."
+                )
             model_kwargs["attn_implementation"] = "flash_attention_2"
+            # torchrun sets renderer_device to this process's LOCAL_RANK. Load
+            # PaliGemma there directly so Transformers validates FA2 against a
+            # CUDA-initialized model instead of warning during a CPU load.
+            model_kwargs["device_map"] = {"": str(flash_device)}
         if load_pretrain:
             assert pretrain_path is not None
 
@@ -266,6 +277,7 @@ class MVT(nn.Module):
 
         global select_feat_from_hm
         self.use_efficient_paligemma_forward = False
+        self.use_gpu_paligemma_preprocessing = False
 
     def enable_gradient_checkpointing(self):
         self.model.config.use_cache = False
@@ -277,6 +289,100 @@ class MVT(nn.Module):
     def enable_efficient_paligemma_forward(self):
         self.use_efficient_paligemma_forward = True
         print('Enabled memory-efficient PaliGemma forward')
+
+    def enable_gpu_paligemma_preprocessing(self):
+        image_processor = self.processor.image_processor
+        required_operations = {
+            'resize': image_processor.do_resize,
+            'rescale': image_processor.do_rescale,
+            'normalize': image_processor.do_normalize,
+        }
+        disabled = [name for name, enabled in required_operations.items() if not enabled]
+        if disabled:
+            raise RuntimeError(
+                'GPU PaliGemma preprocessing requires the standard resize, '
+                'rescale, and normalize operations; disabled: '
+                + ', '.join(disabled)
+            )
+        size = image_processor.size
+        if 'height' not in size or 'width' not in size:
+            raise RuntimeError(
+                'GPU PaliGemma preprocessing requires explicit image height '
+                f'and width, got {size!r}.'
+            )
+        self.use_gpu_paligemma_preprocessing = True
+        print('Enabled GPU-native PaliGemma preprocessing')
+
+    @staticmethod
+    def _build_paligemma_input_strings(
+        prompts, image_token, image_seq_length, num_images, bos_token
+    ):
+        image_prefix = image_token * (image_seq_length * num_images)
+        return [f'{image_prefix}{bos_token}{prompt}\n' for prompt in prompts]
+
+    def _prepare_paligemma_inputs_gpu(self, prompts, images):
+        if images.ndim != 5 or images.shape[2] != 3:
+            raise ValueError(
+                'Expected RGB images shaped [batch, views, 3, height, width], '
+                f'got {tuple(images.shape)}.'
+            )
+        batch_size, num_images = images.shape[:2]
+        if len(prompts) != batch_size:
+            raise ValueError(
+                f'Received {len(prompts)} prompts for batch size {batch_size}.'
+            )
+
+        image_processor = self.processor.image_processor
+        target_size = (
+            image_processor.size['height'],
+            image_processor.size['width'],
+        )
+        # Match the legacy Tensor -> NumPy uint8 -> PIL conversion on GPU.
+        pixel_values = (images.flatten(0, 1) * 255).to(torch.uint8)
+        pixel_values = F.interpolate(
+            pixel_values.float(),
+            size=target_size,
+            mode='bicubic',
+            align_corners=False,
+            antialias=True,
+        )
+        # PIL resize returns uint8 pixels. Round before applying the processor's
+        # rescale and normalize constants to retain the same value domain.
+        pixel_values = pixel_values.round().clamp_(0, 255)
+        pixel_values.mul_(float(image_processor.rescale_factor))
+        mean = torch.as_tensor(
+            image_processor.image_mean,
+            device=pixel_values.device,
+            dtype=pixel_values.dtype,
+        ).view(1, -1, 1, 1)
+        std = torch.as_tensor(
+            image_processor.image_std,
+            device=pixel_values.device,
+            dtype=pixel_values.dtype,
+        ).view(1, -1, 1, 1)
+        pixel_values.sub_(mean).div_(std)
+        pixel_values = pixel_values.to(dtype=self.model.dtype)
+
+        tokenizer = self.processor.tokenizer
+        input_strings = self._build_paligemma_input_strings(
+            prompts=prompts,
+            image_token='<image>',
+            image_seq_length=self.processor.image_seq_length,
+            num_images=num_images,
+            bos_token=tokenizer.bos_token,
+        )
+        text_inputs = tokenizer(
+            input_strings,
+            padding='longest',
+            return_token_type_ids=False,
+            return_tensors='pt',
+        )
+        model_device = self.model.device
+        model_inputs = {
+            key: value.to(model_device) for key, value in text_inputs.items()
+        }
+        model_inputs['pixel_values'] = pixel_values.to(model_device)
+        return model_inputs
 
     def _forward_efficient_paligemma(self, model_inputs):
         # PaliGemma 4.51.3 performs multimodal token merging in the conditional
@@ -364,13 +470,21 @@ class MVT(nn.Module):
 
 
         prompts =[ text[0][0] for text in language_goal]# ["text1","text2"...]
-        # print("The prompts:",prompts)
-        images = [[MVT.trans_cuda_tensor_2_PIL(example)for example in examples] for examples in img]# bs,3
-
-
-        assert len(prompts)==len(images)
-        model_inputs = self.processor(text=prompts, images=images, return_tensors="pt",padding="longest")
-        model_inputs = model_inputs.to(self.model.dtype).to(self.model.device)
+        if self.use_gpu_paligemma_preprocessing:
+            model_inputs = self._prepare_paligemma_inputs_gpu(prompts, img)
+        else:
+            images = [
+                [MVT.trans_cuda_tensor_2_PIL(example) for example in examples]
+                for examples in img
+            ]
+            assert len(prompts) == len(images)
+            model_inputs = self.processor(
+                text=prompts,
+                images=images,
+                return_tensors='pt',
+                padding='longest',
+            )
+            model_inputs = model_inputs.to(self.model.dtype).to(self.model.device)
         if self.use_efficient_paligemma_forward:
             x = self._forward_efficient_paligemma(model_inputs)
         else:

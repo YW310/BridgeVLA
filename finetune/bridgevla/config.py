@@ -22,6 +22,7 @@ _C.global_batch_size = 0
 _C.max_optimizer_steps = 0
 _C.gradient_checkpointing = False
 _C.efficient_paligemma_forward = False
+_C.gpu_paligemma_preprocessing = False
 _C.flash_attention_2 = False
 # Number of leading Gemma decoder layers whose weights are frozen.
 _C.freeze_gemma_prefix_layers = 0

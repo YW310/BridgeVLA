@@ -7,6 +7,7 @@ cd "${SCRIPT_DIR}"
 export PYTHONWARNINGS="${PYTHONWARNINGS:-ignore}"
 GPUS_PER_NODE="${GPUS_PER_NODE:-8}"
 MASTER_PORT="${MASTER_PORT:-29500}"
+export TRANSFORMERS_VERBOSITY=error
 
 torchrun \
     --standalone \
