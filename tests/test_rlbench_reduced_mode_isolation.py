@@ -12,7 +12,7 @@ class RLBenchReducedModeIsolationTest(unittest.TestCase):
         self.assertIn('GPUS_PER_NODE=2', original)
         self.assertIn('GPUS_PER_NODE="${GPUS_PER_NODE:-8}"', reduced)
 
-    def test_efficient_forward_defaults_off_and_is_enabled_in_8x40_profiles(self):
+    def test_safe_paligemma_optimization_profile_for_8x40(self):
         defaults = (ROOT / 'finetune/bridgevla/config.py').read_text()
         self.assertIn('_C.efficient_paligemma_forward = False', defaults)
         self.assertIn('_C.gpu_paligemma_preprocessing = False', defaults)
@@ -22,7 +22,7 @@ class RLBenchReducedModeIsolationTest(unittest.TestCase):
                 ROOT / 'finetune/RLBench/configs' / name
             ).read_text()
             self.assertIn('efficient_paligemma_forward: True', profile)
-            self.assertIn('gpu_paligemma_preprocessing: True', profile)
+            self.assertIn('gpu_paligemma_preprocessing: False', profile)
 
     def test_gpu_preprocessing_is_only_enabled_in_8x40_profiles(self):
         config_dir = ROOT / 'finetune/RLBench/configs'
@@ -32,7 +32,7 @@ class RLBenchReducedModeIsolationTest(unittest.TestCase):
                 enabled.append(path.name)
         self.assertEqual(
             sorted(enabled),
-            ['rlbench_full_8x40.yaml', 'rlbench_trend_8x40.yaml'],
+            [],
         )
 
     def test_gpu_preprocessing_keeps_images_on_device(self):
