@@ -298,6 +298,7 @@ python tools/augment_replay_with_oracle_objects.py \
 | 机器人 | `--robot-handle-cache-dir PATH` | `<output-dir>/<task>/robot_handle_maps` | episode robot handle JSON 缓存；显式 PATH 作为根目录并追加 task 名。 |
 | 机器人 | `--refresh-robot-handle-cache` | 关闭 | 忽略已有 robot handle JSON 并重新检测。 |
 | 性能 | `--refresh-replay-metadata-cache` | 关闭 | 强制重建 replay 元数据索引；仅在同名 `.replay` 被原地改写时使用，日常运行不要添加。 |
+| 容错 | `--skip-invalid-frames` | 关闭 | raw 帧越界时保留 replay 并写入 `valid=False` 的空 Oracle；进度条和最终汇总输出忽略的唯一帧数及 replay 数。O2 非 strict 配置会对这些样本退回原始 heatmap。 |
 | 性能 | `--workers N` | `1` | replay 线程数；建议从 `4` 或 `8` 测试，过高会增加内存和网络盘竞争。 |
 | 性能 | `--cache-frames N` | `128` | 相同 raw 帧 Oracle 结果的 LRU 容量；`0` 禁用，内存有限时降低。 |
 | 性能 | `--seed N` | `0` | 控制确定性点采样和 dry-run 抽样。 |
@@ -373,13 +374,21 @@ python tools/augment_replay_with_oracle_objects.py \
   修改这些参数时会自动失效。修改 task 检测帧数、半径或实例限制后仍应使用
   `--refresh-task-handle-cache`；修复前生成的旧版 task/robot 缓存也会自动失效。
 - 缺少可用的 `replay_info.npy` 时，首次运行必须读取每个 `.replay` 的 metadata，并写入
-  `.oracle_replay_metadata_v1.npz`。提供 `--output-dir` 时，缓存位于对应的输出 task
+  `.oracle_replay_metadata_v2.npz`。缓存会根据 replay 文件名、大小和修改时间自动失效；
+  提供 `--output-dir` 时，缓存位于对应的输出 task
   目录（包括 dry-run）；未提供输出目录或使用 `--in-place` 时才写入输入 replay 目录。
   以后运行会显示
   `replay metadata disk cache hit`，同一次运行中 robot/task 共用索引时显示
   `memory cache hit`。新增、删除或重命名 replay 会自动使索引失效；若原地改写同名文件，
   使用一次 `--refresh-replay-metadata-cache`。如果日志提示无法保存索引，需要检查 replay
   目录写权限，否则下次仍会全量扫描。
+- 如果提示 `Cannot read current gripper_pose for frame N`，且 raw episode 中也没有
+  第 `N` 帧，先使用一次 `--refresh-replay-metadata-cache`。若刷新后仍报错，则对应
+  `.replay` 的 `sample_frame`/`next_keypoint_frame` 与 raw episode 不匹配，通常表示
+  replay 与 raw data 来自不同版本或 raw episode 不完整；不要把越界帧强行截到最后一帧，
+  否则会造成图像、点云、夹爪状态和动作监督错位。若允许这些少量异常样本退回
+  baseline，可添加 `--skip-invalid-frames`：程序保留 replay 的连续结构、写入空 Oracle，
+  并输出 `ignored_invalid_frames` 与 `ignored_invalid_replays`。
 - `dry-run` 会打印 `excluded_object_ids`、`no_finite_point_object_ids`、
   `small_object_ids`、`task_prior_filtered_object_ids`、
   `temporal_filtered_object_ids` 和 `truncated_object_ids`。命令行时序匹配不再产生
@@ -495,6 +504,37 @@ use_oracle_objects=False、rvt.oracle_prior_mode=none 均为默认值；此时�
 fusion 参数、不要求 Oracle 字段，旧 replay、旧 checkpoint 和原始前向路径保持
 不变。O2 在训练和评估时均使用 GT 实例，属于 privileged Oracle 上界，不应作为
 无 GT 的部署结果报告。
+
+#### O2 代码插入位置
+
+O2 不进入 Gemma 或视觉编码器，而是插在 MVT translation head 输出之后、
+translation loss 和坐标 decode 之前。核心实现位于
+`finetune/bridgevla/mvt/mvt.py::_apply_oracle_instance_prior`：
+
+    raw_logits = stage_out['trans']
+    stage_out['trans_raw'] = raw_logits.detach()
+    stage_out['trans'] = fusion(raw_logits, prior, valid)
+
+完整执行路径如下：
+
+1. `finetune/RLBench/utils/dataset.py::create_replay` 注册 Oracle points、
+   valid、roles 等 replay 字段；
+2. `finetune/bridgevla/models/bridgevla_agent.py::_select_oracle_prior_points`
+   根据当前夹爪状态选择唯一 Target 或 Reference；
+3. `bridgevla_agent.py::update` 临时把 instance points 拼入场景点云，使其和
+   场景及动作标签执行相同 SE(3) augmentation，完成后立即拆开；
+4. `mvt.py::_apply_oracle_instance_prior` 将完整实例点投影成三视图 prior，
+   再由 `OraclePriorFusion` 学习 residual；
+5. MVT1 在第一次 `self._apply_oracle_instance_prior(..., True, ...)` 调用处
+   融合，MVT2 在第二次 `self._apply_oracle_instance_prior(..., False, ...)`
+   调用处融合；
+6. `bridgevla_agent.py::update` 中的 `trans_loss` 使用 fused
+   `q_trans`，而 `trans_loss_raw` 仅用于监控原始预测。
+
+Fusion head 定义在
+`finetune/bridgevla/models/oracle_prior.py::OraclePriorFusion`，结构为
+`Conv(2→hidden) → GELU → Conv(hidden→1)`，最后一层零初始化。因此启用 O2
+后的初始 translation 输出与 baseline 完全相同。
 
 O2 评估可视化需要同时启用开关和输出目录：
 

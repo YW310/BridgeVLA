@@ -23,7 +23,6 @@ class RLBenchReducedModeIsolationTest(unittest.TestCase):
             ).read_text()
             self.assertIn('efficient_paligemma_forward: True', profile)
             self.assertIn('gpu_paligemma_preprocessing: True', profile)
-            self.assertIn('flash_attention_2: True', profile)
 
     def test_gpu_preprocessing_is_only_enabled_in_8x40_profiles(self):
         config_dir = ROOT / 'finetune/RLBench/configs'
@@ -45,7 +44,7 @@ class RLBenchReducedModeIsolationTest(unittest.TestCase):
         self.assertIn('text_inputs = tokenizer(', source)
         self.assertIn('if self.use_gpu_paligemma_preprocessing:', source)
 
-    def test_flash_attention_is_only_enabled_in_8x40_profiles(self):
+    def test_flash_attention_is_disabled_in_all_profiles(self):
         config_dir = ROOT / 'finetune/RLBench/configs'
         enabled = []
         for path in config_dir.glob('*.yaml'):
@@ -53,8 +52,11 @@ class RLBenchReducedModeIsolationTest(unittest.TestCase):
                 enabled.append(path.name)
         self.assertEqual(
             sorted(enabled),
-            ['rlbench_full_8x40.yaml', 'rlbench_trend_8x40.yaml'],
+            [],
         )
+        for name in ('rlbench_trend_8x40.yaml', 'rlbench_full_8x40.yaml'):
+            profile = (config_dir / name).read_text()
+            self.assertIn('flash_attention_2: False', profile)
 
     def test_flash_attention_loads_paligemma_on_the_local_cuda_device(self):
         source = (

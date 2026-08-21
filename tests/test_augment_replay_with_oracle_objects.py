@@ -1,3 +1,4 @@
+import os
 import pickle
 import tempfile
 import unittest
@@ -111,6 +112,54 @@ class OracleReplayAugmentationTest(unittest.TestCase):
         self.assertEqual(groups, {3: {10: 10, 11: 10}})
         self.assertEqual(cycles, {3: ()})
 
+    def test_task_detection_skips_out_of_range_raw_frame(self):
+        observations = [
+            SimpleNamespace(
+                gripper_pose=[0.1, 0.2, 0.3, 0.0, 0.0, 0.0, 1.0],
+                gripper_open=1.0,
+            )
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            episode_dir = (
+                root / 'raw' / 'stack_blocks' / 'all_variations'
+                / 'episodes' / 'episode3'
+            )
+            episode_dir.mkdir(parents=True)
+            with (episode_dir / 'low_dim_obs.pkl').open('wb') as stream:
+                pickle.dump(observations, stream)
+            replay_source = root / '7.replay'
+            ignored = set()
+            with patch(
+                'tools.augment_replay_with_oracle_objects.'
+                '_episode_detection_sources',
+                return_value={3: [(1, replay_source)]},
+            ):
+                slots, roles, groups, cycles = _detect_task_relevant_handles(
+                    'stack_blocks',
+                    [replay_source],
+                    root / 'raw',
+                    CAMERAS,
+                    (0,),
+                    {},
+                    16,
+                    root / 'cache',
+                    False,
+                    False,
+                    None,
+                    None,
+                    0.60,
+                    show_progress=False,
+                    skip_invalid_frames=True,
+                    ignored_frame_keys=ignored,
+                )
+
+        self.assertEqual(slots, {3: ()})
+        self.assertEqual(roles, {3: {}})
+        self.assertEqual(groups, {3: {}})
+        self.assertEqual(cycles, {3: ()})
+        self.assertEqual(ignored, {(3, 1)})
+
     def test_visualization_output_directory_defaults_and_override(self):
         parser = build_parser()
         base = [
@@ -193,6 +242,8 @@ class OracleReplayAugmentationTest(unittest.TestCase):
         self.assertAlmostEqual(args.robot_link_motion_threshold, 0.002)
         self.assertAlmostEqual(args.robot_adjacency_distance, 0.08)
         self.assertTrue(args.refresh_replay_metadata_cache)
+        args = parser.parse_args(base + ['--skip-invalid-frames'])
+        self.assertTrue(args.skip_invalid_frames)
 
     def test_resume_parser_and_pending_files(self):
         parser = build_parser()
@@ -358,6 +409,25 @@ class OracleReplayAugmentationTest(unittest.TestCase):
         np.testing.assert_allclose(positions[0], [0.1, 0.2, 0.3])
         np.testing.assert_allclose(positions[1], [0.4, 0.5, 0.6])
         self.assertEqual(openings, {1: 0.0, 0: 1.0})
+
+    def test_load_current_gripper_states_reports_raw_frame_range(self):
+        observations = [
+            SimpleNamespace(
+                gripper_pose=[0.1, 0.2, 0.3, 0.0, 0.0, 0.0, 1.0],
+                gripper_open=1.0,
+            )
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            episode_dir = Path(temporary)
+            with (episode_dir / 'low_dim_obs.pkl').open('wb') as stream:
+                pickle.dump(observations, stream)
+            with self.assertRaises(ValueError) as context:
+                _load_current_gripper_states(episode_dir, [1])
+
+        message = str(context.exception)
+        self.assertIn('frame 1', message)
+        self.assertIn('has 1 observations', message)
+        self.assertIn('valid frame range: 0..0', message)
 
     def test_adaptive_robot_sampling_extends_static_initial_window(self):
         observations = [
@@ -563,6 +633,35 @@ class OracleReplayAugmentationTest(unittest.TestCase):
             self.assertEqual(
                 [frame for frame, _ in rebuilt[4]], [0, 1, 9]
             )
+
+    def test_fallback_metadata_cache_invalidates_rewritten_replay(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / '0.replay'
+            with source.open('wb') as stream:
+                pickle.dump(
+                    {'terminal': 0, 'episode_idx': 4, 'sample_frame': 1},
+                    stream,
+                )
+            first = _episode_detection_sources(
+                [source], frames_per_episode=10, show_progress=False
+            )
+            self.assertEqual(first[4][0][0], 1)
+
+            original_mtime_ns = source.stat().st_mtime_ns
+            with source.open('wb') as stream:
+                pickle.dump(
+                    {'terminal': 0, 'episode_idx': 4, 'sample_frame': 9},
+                    stream,
+                )
+            changed_mtime_ns = original_mtime_ns + 2_000_000_000
+            os.utime(source, ns=(changed_mtime_ns, changed_mtime_ns))
+            _REPLAY_METADATA_MEMORY_CACHE.clear()
+
+            rebuilt = _episode_detection_sources(
+                [source], frames_per_episode=10, show_progress=False
+            )
+            self.assertEqual(rebuilt[4][0][0], 9)
 
     def test_fallback_metadata_cache_can_live_in_output_directory(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from threading import Lock
-from typing import Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 from zipfile import BadZipFile
 
 import numpy as np
@@ -75,8 +75,8 @@ DEFAULT_CAMERAS = ('front', 'left_shoulder', 'right_shoulder', 'wrist')
 DEFAULT_MAX_OBJECTS = 32
 DEFAULT_NUM_POINTS = 512
 RLBENCH_DEPTH_SCALE = 2**24 - 1
-REPLAY_METADATA_CACHE_VERSION = 1
-REPLAY_METADATA_CACHE_NAME = '.oracle_replay_metadata_v1.npz'
+REPLAY_METADATA_CACHE_VERSION = 2
+REPLAY_METADATA_CACHE_NAME = '.oracle_replay_metadata_v2.npz'
 MAX_VISUALIZATION_SCENE_POINTS = 30000
 # Same metric workspace used by finetune/RLBench/utils/peract_utils_rlbench.py.
 # Fixed limits prevent per-frame Matplotlib autoscaling from changing apparent
@@ -1167,6 +1167,8 @@ def _final_observation_oracle_for_visualization(
     thin_plane_min_extent: float = 0.30,
     thin_plane_min_inlier_ratio: float = 0.80,
     filter_thin_planes_all_roles: bool = True,
+    skip_invalid_frame: bool = False,
+    on_ignored_frame: Optional[Callable[[int, int], None]] = None,
 ) -> Optional[Tuple[OracleObjects, int, int]]:
     '''Recover a final observation's GT instances from prior alignment data.'''
     if previous_source is None or not previous_source.is_file():
@@ -1184,6 +1186,12 @@ def _final_observation_oracle_for_visualization(
     if task_prior_filter and 'gripper_pose' not in final_transition:
         return None
     episode_dir = resolve_episode_dir(raw_data_dir, task, episode_idx)
+    if skip_invalid_frame:
+        observation_count = len(_load_low_dim_observations(episode_dir))
+        if sample_frame < 0 or sample_frame >= observation_count:
+            if on_ignored_frame is not None:
+                on_ignored_frame(episode_idx, sample_frame)
+            return None
     current_gripper_position = None
     frame_role_radius = None
     if roles_by_episode is not None:
@@ -1807,7 +1815,7 @@ def _copy_metadata(
         if (
             source.is_dir()
             or source.suffix == '.replay'
-            or source.name == REPLAY_METADATA_CACHE_NAME
+            or source.name.startswith('.oracle_replay_metadata_v')
             or source.name.endswith('.tmp')
         ):
             continue
@@ -1923,10 +1931,16 @@ def _bounded_thread_map(function, items: Sequence[Path], workers: int):
         executor.shutdown(wait=True, cancel_futures=True)
 
 
-def _replay_file_name_fingerprint(files: Sequence[Path]) -> str:
+def _replay_file_fingerprint(files: Sequence[Path]) -> str:
+    '''Fingerprint replay identity and cheap indicators of in-place rewrites.'''
     digest = hashlib.sha256()
     for source in files:
+        stat = source.stat()
         digest.update(source.name.encode('utf-8'))
+        digest.update(bytes((0,)))
+        digest.update(str(stat.st_size).encode('ascii'))
+        digest.update(bytes((0,)))
+        digest.update(str(stat.st_mtime_ns).encode('ascii'))
         digest.update(b'\0')
     return digest.hexdigest()
 
@@ -1944,7 +1958,7 @@ def _load_or_scan_replay_metadata(
         return empty, empty.copy(), empty.copy(), empty.copy()
 
     source_dir = files[0].parent
-    fingerprint = _replay_file_name_fingerprint(files)
+    fingerprint = _replay_file_fingerprint(files)
     memory_key = (str(source_dir.resolve()), fingerprint)
     memory_cached = _REPLAY_METADATA_MEMORY_CACHE.get(memory_key)
     if memory_cached is not None:
@@ -1961,7 +1975,7 @@ def _load_or_scan_replay_metadata(
             with np.load(cache_path, allow_pickle=False) as payload:
                 version = int(np.asarray(payload['version']).item())
                 cached_fingerprint = str(
-                    np.asarray(payload['file_name_fingerprint']).item()
+                    np.asarray(payload['file_fingerprint']).item()
                 )
                 file_count = int(np.asarray(payload['file_count']).item())
                 if (
@@ -2038,7 +2052,7 @@ def _load_or_scan_replay_metadata(
             np.savez_compressed(
                 stream,
                 version=np.asarray(REPLAY_METADATA_CACHE_VERSION),
-                file_name_fingerprint=np.asarray(fingerprint),
+                file_fingerprint=np.asarray(fingerprint),
                 file_count=np.asarray(len(files)),
                 terminal=terminal,
                 episode_idx=episode_idx,
@@ -2296,7 +2310,23 @@ def _gripper_states_from_observations(
 ) -> Tuple[Dict[int, np.ndarray], Dict[int, float]]:
     positions: Dict[int, np.ndarray] = {}
     openings: Dict[int, float] = {}
+    observation_count = len(observations)
     for sample_frame in sample_frames:
+        if sample_frame < 0 or sample_frame >= observation_count:
+            valid_range = (
+                'empty'
+                if observation_count == 0
+                else f'0..{observation_count - 1}'
+            )
+            raise ValueError(
+                f'Cannot read current gripper_pose for frame {sample_frame} '
+                f'from {source_name}: raw episode has {observation_count} '
+                f'observations (valid frame range: {valid_range}). The replay '
+                'sample_frame does not match this raw episode; verify that '
+                '--replay-dir and --raw-data-dir come from the same dataset. '
+                'If replay files were replaced in place, rerun once with '
+                '--refresh-replay-metadata-cache.'
+            )
         try:
             observation = observations[sample_frame]
             pose = np.asarray(observation.gripper_pose).reshape(-1)
@@ -2617,6 +2647,8 @@ def _detect_task_relevant_handles(
     show_progress: bool = True,
     refresh_metadata_cache: bool = False,
     metadata_cache_dir: Optional[Path] = None,
+    skip_invalid_frames: bool = False,
+    ignored_frame_keys: Optional[Set[Tuple[int, int]]] = None,
 ) -> Tuple[
     Dict[int, Tuple[int, ...]],
     Dict[int, Dict[int, int]],
@@ -2692,8 +2724,60 @@ def _detect_task_relevant_handles(
                 )
             episode_dir = resolve_episode_dir(raw_data_dir, task, episode_idx)
             sample_frames = [frame for frame, _ in frame_sources]
-            gripper_positions, gripper_openings = _load_current_gripper_states(
-                episode_dir, sample_frames
+            observations = _load_low_dim_observations(episode_dir)
+            observation_count = len(observations)
+            invalid_frame_sources = [
+                (frame, source)
+                for frame, source in frame_sources
+                if frame < 0 or frame >= observation_count
+            ]
+            if invalid_frame_sources:
+                if skip_invalid_frames:
+                    if ignored_frame_keys is not None:
+                        ignored_frame_keys.update(
+                            (episode_idx, int(frame))
+                            for frame, _ in invalid_frame_sources
+                        )
+                    tqdm.write(
+                        f'{task} episode={episode_idx}: ignoring '
+                        f'{len(invalid_frame_sources)} task-detection frame(s) '
+                        'outside the raw episode'
+                    )
+                    frame_sources = [
+                        (frame, source)
+                        for frame, source in frame_sources
+                        if 0 <= frame < observation_count
+                    ]
+                    sample_frames = [frame for frame, _ in frame_sources]
+                else:
+                    invalid_frame, invalid_source = invalid_frame_sources[0]
+                    valid_range = (
+                        'empty'
+                        if observation_count == 0
+                        else f'0..{observation_count - 1}'
+                    )
+                    raise ValueError(
+                        f'Replay/raw frame mismatch for task={task}, '
+                        f'episode_idx={episode_idx}: {invalid_source} declares '
+                        f'sample_frame={invalid_frame}, but {episode_dir} contains '
+                        f'{observation_count} low-dimensional observations '
+                        f'(valid frame range: {valid_range}). Use replay and raw '
+                        'data generated from the same RLBench demonstrations. If '
+                        'the replay files were replaced in place, rerun once with '
+                        '--refresh-replay-metadata-cache.'
+                    )
+            if not frame_sources:
+                handles_by_episode[episode_idx] = ()
+                roles_by_episode[episode_idx] = {}
+                groups_by_episode[episode_idx] = {}
+                role_cycles_by_episode[episode_idx] = ()
+                continue
+            gripper_positions, gripper_openings = (
+                _gripper_states_from_observations(
+                    observations,
+                    sample_frames,
+                    episode_dir / 'low_dim_obs.pkl',
+                )
             )
             effective_excluded_ids = list(excluded_ids)
             effective_excluded_ids.extend(
@@ -2823,6 +2907,7 @@ def process_task(
     refresh_robot_handle_cache: bool,
     refresh_replay_metadata_cache: bool,
     replay_metadata_cache_dir: Optional[Path],
+    skip_invalid_frames: bool = False,
     resume: bool = False,
 ) -> int:
     all_files = _numeric_replay_files(source_dir)
@@ -2877,6 +2962,30 @@ def process_task(
     replay_metadata_cache_dir = (
         replay_metadata_cache_dir or destination_dir or source_dir
     )
+    ignored_frame_keys: Set[Tuple[int, int]] = set()
+    ignored_frame_lock = Lock()
+    raw_episode_info: Dict[int, Tuple[Path, int]] = {}
+
+    def get_raw_episode_info(episode_idx: int) -> Tuple[Path, int]:
+        with ignored_frame_lock:
+            cached = raw_episode_info.get(episode_idx)
+            if cached is None:
+                episode_dir = resolve_episode_dir(raw_data_dir, task, episode_idx)
+                observation_count = len(
+                    _load_low_dim_observations(episode_dir)
+                )
+                cached = episode_dir, observation_count
+                raw_episode_info[episode_idx] = cached
+            return cached
+
+    def record_ignored_frame(episode_idx: int, sample_frame: int) -> None:
+        with ignored_frame_lock:
+            ignored_frame_keys.add((episode_idx, sample_frame))
+
+    def ignored_frame_count() -> int:
+        with ignored_frame_lock:
+            return len(ignored_frame_keys)
+
     robot_handles_by_episode: Dict[int, Tuple[int, ...]] = {}
     if auto_detect_robot_handles:
         requested_robot_episodes = (
@@ -2939,6 +3048,8 @@ def process_task(
             show_progress=show_progress,
             refresh_metadata_cache=refresh_replay_metadata_cache,
             metadata_cache_dir=replay_metadata_cache_dir,
+            skip_invalid_frames=skip_invalid_frames,
+            ignored_frame_keys=ignored_frame_keys,
         )
     frame_cache = OracleFrameCache(cache_frames)
 
@@ -2955,6 +3066,7 @@ def process_task(
             role_by_id = None
             group_by_id = None
             role_cycles = ()
+            ignored_alignment = False
             if terminal != -1 and 'episode_idx' in original:
                 original_episode_idx = int(
                     np.asarray(original['episode_idx']).item()
@@ -2975,33 +3087,53 @@ def process_task(
                     role_cycles = task_role_cycles_by_episode.get(
                         original_episode_idx, ()
                     )
-            migrated, oracle, _ = augment_transition(
-                original,
-                raw_data_dir,
-                task,
-                replay_index,
-                cameras,
-                max_objects,
-                num_points,
-                effective_excluded_ids,
-                seed,
-                slot_ids=slot_ids,
-                min_object_points=min_object_points,
-                frame_cache=frame_cache,
-                task_prior_filter=task_prior_filter,
-                task_prior_radius=task_prior_radius,
-                task_prior_max_instances=task_prior_max_instances,
-                task_prior_background_extent=task_prior_background_extent,
-                task_prior_strict=task_prior_strict,
-                role_by_id=role_by_id,
-                group_by_id=group_by_id,
-                role_cycles=role_cycles,
-                filter_thin_planes=filter_thin_planes,
-                thin_plane_max_thickness=thin_plane_max_thickness,
-                thin_plane_min_extent=thin_plane_min_extent,
-                thin_plane_min_inlier_ratio=thin_plane_min_inlier_ratio,
-                filter_thin_planes_all_roles=filter_thin_planes_all_roles,
-            )
+                if skip_invalid_frames and 'sample_frame' in original:
+                    original_sample_frame = int(
+                        np.asarray(original['sample_frame']).item()
+                    )
+                    _, observation_count = get_raw_episode_info(
+                        original_episode_idx
+                    )
+                    ignored_alignment = not (
+                        0 <= original_sample_frame < observation_count
+                    )
+                    if ignored_alignment:
+                        record_ignored_frame(
+                            original_episode_idx, original_sample_frame
+                        )
+            if ignored_alignment:
+                oracle = empty_oracle_objects(max_objects, num_points)
+                migrated = dict(original)
+                migrated.update(oracle.as_replay_fields())
+                validate_migrated_transition(original, migrated, oracle)
+            else:
+                migrated, oracle, _ = augment_transition(
+                    original,
+                    raw_data_dir,
+                    task,
+                    replay_index,
+                    cameras,
+                    max_objects,
+                    num_points,
+                    effective_excluded_ids,
+                    seed,
+                    slot_ids=slot_ids,
+                    min_object_points=min_object_points,
+                    frame_cache=frame_cache,
+                    task_prior_filter=task_prior_filter,
+                    task_prior_radius=task_prior_radius,
+                    task_prior_max_instances=task_prior_max_instances,
+                    task_prior_background_extent=task_prior_background_extent,
+                    task_prior_strict=task_prior_strict,
+                    role_by_id=role_by_id,
+                    group_by_id=group_by_id,
+                    role_cycles=role_cycles,
+                    filter_thin_planes=filter_thin_planes,
+                    thin_plane_max_thickness=thin_plane_max_thickness,
+                    thin_plane_min_extent=thin_plane_min_extent,
+                    thin_plane_min_inlier_ratio=thin_plane_min_inlier_ratio,
+                    filter_thin_planes_all_roles=filter_thin_planes_all_roles,
+                )
             if not dry_run:
                 assert destination_dir is not None
                 atomic_write_replay(
@@ -3030,7 +3162,7 @@ def process_task(
                 if 'sample_frame' in original and terminal != -1
                 else None
             )
-            if replay_index in visualization_indices:
+            if replay_index in visualization_indices and not ignored_alignment:
                 if not visualize_objects_only:
                     scene_points = _scene_points_for_visualization(
                         original, cameras
@@ -3084,6 +3216,8 @@ def process_task(
                         filter_thin_planes_all_roles=(
                             filter_thin_planes_all_roles
                         ),
+                        skip_invalid_frame=skip_invalid_frames,
+                        on_ignored_frame=record_ignored_frame,
                     )
                     if recovered is not None:
                         (
@@ -3120,6 +3254,7 @@ def process_task(
                 camera_masks,
                 visualization_episode_idx,
                 visualization_sample_frame,
+                ignored_alignment,
             )
         except Exception as exc:
             raise RuntimeError(
@@ -3133,6 +3268,7 @@ def process_task(
     temporal_filtered = 0
     thin_planes = 0
     visualized = 0
+    ignored_invalid_replays = 0
     progress = tqdm(
         total=len(files),
         desc=f'{task}: Oracle replay',
@@ -3151,7 +3287,9 @@ def process_task(
             camera_masks,
             visualization_episode_idx,
             visualization_sample_frame,
+            ignored_alignment,
         ) in _bounded_thread_map(process_one, files, workers):
+            ignored_invalid_replays += int(ignored_alignment)
             truncated += int(oracle.discovered_objects > max_objects)
             filtered += oracle.filtered_objects
             prior_filtered += oracle.prior_filtered_objects
@@ -3167,6 +3305,8 @@ def process_task(
                 excluded=excluded,
                 temporal_filtered=temporal_filtered,
                 thin_planes=thin_planes,
+                ignored_frames=ignored_frame_count(),
+                ignored_replays=ignored_invalid_replays,
                 workers=workers,
                 cache_hits=cache_hits,
                 cache_misses=cache_misses,
@@ -3175,7 +3315,7 @@ def process_task(
             progress.update(1)
             if dry_run:
                 _describe(task, replay_index, alignment, oracle)
-            if replay_index in visualization_indices:
+            if replay_index in visualization_indices and not ignored_alignment:
                 visualize_oracle_objects(
                     visualization_oracle,
                     task,
@@ -3232,6 +3372,8 @@ def process_task(
         f'excluded={excluded}; '
         f'temporal_filtered={temporal_filtered}; '
         f'thin_planes={thin_planes}; '
+        f'ignored_invalid_frames={ignored_frame_count()}; '
+        f'ignored_invalid_replays={ignored_invalid_replays}; '
         f'visualized={visualized}; '
         f'cache_hits={cache_hits}; cache_misses={cache_misses}; '
         f'cache_entries={cache_entries}'
@@ -3257,7 +3399,7 @@ def _preflight_output(
     for task, source_dir in task_directories:
         destination_dir = output_dir if direct_input else output_dir / task
         for source in source_dir.iterdir():
-            if source.name == REPLAY_METADATA_CACHE_NAME:
+            if source.name.startswith('.oracle_replay_metadata_v'):
                 continue
             if source.is_file() and (destination_dir / source.name).exists():
                 conflicts.append(destination_dir / source.name)
@@ -3499,6 +3641,14 @@ def build_parser() -> argparse.ArgumentParser:
             'replay files again'
         ),
     )
+    parser.add_argument(
+        '--skip-invalid-frames',
+        action='store_true',
+        help=(
+            'keep replay alignment slots whose raw frame is out of range, write '
+            'an empty Oracle target, and report ignored frame/replay counts'
+        ),
+    )
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument(
         '--workers',
@@ -3716,6 +3866,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 args.refresh_replay_metadata_cache
             ),
             replay_metadata_cache_dir=replay_metadata_cache_dir,
+            skip_invalid_frames=args.skip_invalid_frames,
             resume=args.resume,
         )
     print(f'Done: {total} replay files')

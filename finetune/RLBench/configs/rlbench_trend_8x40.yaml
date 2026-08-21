@@ -10,7 +10,7 @@ max_optimizer_steps: 20000
 gradient_checkpointing: False
 efficient_paligemma_forward: True
 gpu_paligemma_preprocessing: False
-flash_attention_2: True
+flash_attention_2: False
 freeze_gemma_prefix_layers: 6
 freeze_multimodal_projector: True
 checkpoint_every_epochs: 10
