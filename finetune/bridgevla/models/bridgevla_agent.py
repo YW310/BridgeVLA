@@ -32,6 +32,7 @@ import bridgevla.mvt.utils as mvt_utils
 import bridgevla.utils.rvt_utils as rvt_utils
 from bridgevla.mvt.augmentation import apply_se3_aug_con, aug_utils
 from bridgevla.models.oracle_prior import (
+    build_training_visualization_payload,
     latest_replay_value,
     select_active_instance_points,
     validate_oracle_prior_config,
@@ -753,6 +754,7 @@ class RVTAgent:
         loss_scale: float = 1.0,
         reset_gradients: bool = True,
         step_optimizer: bool = True,
+        return_visualization: bool = False,
     ) -> dict:
         assert replay_sample["rot_grip_action_indicies"].shape[1:] == (1, 4)
         assert replay_sample["ignore_collisions"].shape[1:] == (1, 1)
@@ -997,6 +999,17 @@ class RVTAgent:
                 loss_log['trans_loss_raw'] = raw_trans_loss.item()
             manage_loss_log(self, loss_log, reset_log=reset_log)
             return_out.update(loss_log)
+            if return_visualization:
+                return_out['train_visualization'] = (
+                    build_training_visualization_payload(
+                        out,
+                        action_trans,
+                        num_views=nc,
+                        height=h,
+                        width=w,
+                        stage_two=self.stage_two,
+                    )
+                )
 
 
         return return_out

@@ -219,9 +219,9 @@ JSON 的 `object_groups` 和 `group_by_handle` 中。
 
 ```bash
 python tools/augment_replay_with_oracle_objects.py \
-    --replay-dir LPY/BridgeVLA_RLBench_TINY_Buffer \
-    --raw-data-dir LPY/BridgeVLA_RLBench_TINY_DATA/train \
-    --output-dir LPY/BridgeVLA_RLBench_TINY_TASK_OBJECT_Buffer \
+    --replay-dir LPY/BridgeVLA_RLBench_TRAIN_Buffer \
+    --raw-data-dir LPY/BridgeVLA_RLBench_TRAIN_DATA/train \
+    --output-dir LPY/BridgeVLA_RLBench_TRAIN_TASK_OBJECT_Buffer \
     --detect-robot-handles \
     --robot-detection-frames 128 \
     --robot-detection-stride 5 \
@@ -515,15 +515,39 @@ O2 评估可视化需要同时启用开关和输出目录：
 `o2_unavailable.txt`；这种结果不是有效 O2 评测。设置
 `rvt.oracle_prior_strict True` 可改为立即报错。
 
+#### O2 训练中间可视化
+
+训练样本可视化由实验 YAML 控制，默认配置关闭；O2 配置示例已开启：
+
+    train_visualization:
+      enabled: True
+      interval: 500
+      save_png: True
+      tensorboard: True
+      output_dir: train_visualizations
+
+interval 使用 optimizer step，而不是梯度累积的 micro-step。每次只采集 rank 0
+最后一个 micro-batch 的第一个样本，并分别生成 MVT1/MVT2 拼图。每张拼图包含
+Input、经过当前 SE(3) 增强和投影后的 GT translation heatmap、
+Oracle prior、Raw pred 和 Fused pred。
+
+当 save_png=True 时，图片保存到
+`<log_dir>/<output_dir>/step_XXXXXXXX/{mvt1,mvt2}.png`。当
+tensorboard=True 时，必须同时使用 --log_backend tensorboard，图片显示在
+TensorBoard 的 train_visualization/mvt1 和 train_visualization/mvt2 下。
+两种输出可以独立关闭；可视化未命中的 step 不会拷贝训练张量到 CPU。
+
 #### O2 训练代码测试
 
 在服务器的 `bridgevla` 环境、仓库根目录运行：
 
-    python -m unittest tests.test_oracle_prior tests.test_rlbench_training_utils -v
+    python -m unittest tests.test_oracle_prior tests.test_rlbench_training_utils tests.test_rlbench_training_visualization -v
 
 `tests.test_oracle_prior` 检查当前实例选择、完整实例点投影、零初始化 identity、
-无效 prior 回退以及 fusion 反向梯度；`tests.test_rlbench_training_utils` 检查
-fusion-only 冻结范围和 batch/optimizer-step 规划。
+无效 prior 回退、fusion 反向梯度和训练 GT/pred 张量拆分；
+`tests.test_rlbench_training_utils` 检查 fusion-only 冻结范围和
+batch/optimizer-step 规划；`tests.test_rlbench_training_visualization` 检查
+PNG 与 TensorBoard 拼图输出。
 
 确认专用 YAML 能被项目 YACS 配置系统加载：
 

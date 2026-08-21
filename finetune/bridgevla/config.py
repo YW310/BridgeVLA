@@ -30,6 +30,14 @@ _C.freeze_gemma_prefix_layers = 0
 _C.freeze_multimodal_projector = False
 _C.seed = 0
 _C.checkpoint_every_epochs = 10
+# Optional rank-0 training sample visualization. Images are collected only on
+# matching optimizer steps, so the disabled default has no training overhead.
+_C.train_visualization = CN()
+_C.train_visualization.enabled = False
+_C.train_visualization.interval = 500
+_C.train_visualization.save_png = True
+_C.train_visualization.tensorboard = True
+_C.train_visualization.output_dir = "train_visualizations"
 # Oracle object experiment: opt in only when loading an augmented replay copy.
 _C.use_oracle_objects = False
 _C.oracle_max_objects = 32

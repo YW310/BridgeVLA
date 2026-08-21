@@ -9,6 +9,14 @@ num_workers: 3
 epochs: 100
 train_iter: 160000
 sample_distribution_mode: task_uniform
+gpu_paligemma_preprocessing: False
+
+train_visualization:
+  enabled: True
+  interval: 500
+  save_png: True
+  tensorboard: True
+  output_dir: train_visualizations
 
 use_oracle_objects: True
 oracle_max_objects: 32

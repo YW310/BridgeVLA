@@ -4,6 +4,7 @@ import torch
 
 from finetune.bridgevla.models.oracle_prior import (
     OraclePriorFusion,
+    build_training_visualization_payload,
     rasterize_instance_points,
     select_active_instance_points,
 )
@@ -81,6 +82,54 @@ class OraclePriorTest(unittest.TestCase):
         self.assertEqual(prior[0, 0, 1, 1].item(), 1.0)
         self.assertEqual(prior[0, 0, 3, 3].item(), 1.0)
         self.assertEqual(prior[0, 0, 2, 2].item(), 0.0)
+
+    def test_training_visualization_payload_splits_processed_stage_gt(self):
+        batch_size, views, height, width = 1, 3, 4, 4
+        stage_one = {
+            'trans': torch.randn(batch_size, views, height, width),
+            'trans_raw': torch.randn(batch_size, views, height, width),
+            'oracle_instance_prior': torch.rand(
+                batch_size, views, height, width
+            ),
+        }
+        stage_two = {
+            'trans': torch.randn(batch_size, views, height, width),
+            'trans_raw': torch.randn(batch_size, views, height, width),
+            'oracle_instance_prior': torch.rand(
+                batch_size, views, height, width
+            ),
+        }
+        output = {
+            **stage_one,
+            'mvt1_ori_img': torch.rand(
+                batch_size, views, 7, height, width
+            ),
+            'mvt2': stage_two,
+            'mvt2_ori_img': torch.rand(
+                batch_size, views, 7, height, width
+            ),
+        }
+        processed_gt = torch.arange(
+            batch_size * height * width * views * 2,
+            dtype=torch.float32,
+        ).reshape(batch_size, height * width, views * 2)
+        payload = build_training_visualization_payload(
+            output,
+            processed_gt,
+            num_views=views,
+            height=height,
+            width=width,
+            stage_two=True,
+        )
+        self.assertEqual(tuple(payload), ('mvt1', 'mvt2'))
+        self.assertEqual(payload['mvt1']['gt'].shape, (views, height, width))
+        self.assertEqual(payload['mvt2']['gt'].shape, (views, height, width))
+        self.assertTrue(
+            torch.allclose(
+                payload['mvt1']['pred'].sum(dim=(-2, -1)),
+                torch.ones(views),
+            )
+        )
 
 
 if __name__ == '__main__':

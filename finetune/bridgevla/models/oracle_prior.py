@@ -8,7 +8,7 @@ points after MVT projection for a small trainable fusion head.
 from __future__ import annotations
 
 import math
-from typing import Optional, Tuple
+from typing import Dict, Mapping, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -234,3 +234,80 @@ class OraclePriorFusion(nn.Module):
             residual.dtype
         )
         return raw_logits + residual
+
+
+def _translation_probabilities(logits: torch.Tensor) -> torch.Tensor:
+    """Convert one sample of [V, H, W] logits to per-view probabilities."""
+    if logits.ndim != 3:
+        raise ValueError("translation logits must have shape [V, H, W]")
+    views, height, width = logits.shape
+    return torch.softmax(
+        logits.float().reshape(views, height * width), dim=-1
+    ).reshape(views, height, width)
+
+
+def build_training_visualization_payload(
+    output: Mapping[str, torch.Tensor],
+    action_translation: torch.Tensor,
+    *,
+    num_views: int,
+    height: int,
+    width: int,
+    stage_two: bool,
+) -> Dict[str, Dict[str, torch.Tensor]]:
+    """Collect the first processed training sample without retaining its graph.
+
+    The GT tensor is the final translation heatmap after the same augmentation
+    and projection used for the loss. Predictions are per-view probabilities.
+    """
+    expected_stages = 2 if stage_two else 1
+    expected_channels = num_views * expected_stages
+    if action_translation.ndim != 3:
+        raise ValueError(
+            "action_translation must have shape [B, H*W, V*stages]"
+        )
+    if action_translation.shape[1:] != (
+        height * width,
+        expected_channels,
+    ):
+        raise ValueError(
+            "action_translation shape does not match visualization dimensions: "
+            f"{tuple(action_translation.shape)}"
+        )
+
+    gt_views = action_translation[0].transpose(0, 1).reshape(
+        expected_channels, height, width
+    )
+    stages = [("mvt1", output, output.get("mvt1_ori_img"))]
+    if stage_two:
+        if "mvt2" not in output:
+            raise KeyError("stage-two output is missing mvt2")
+        stages.append(("mvt2", output["mvt2"], output.get("mvt2_ori_img")))
+
+    payload: Dict[str, Dict[str, torch.Tensor]] = {}
+    for stage_index, (stage_name, stage_output, rendered) in enumerate(stages):
+        if rendered is None:
+            raise KeyError(f"{stage_name} rendered input is unavailable")
+        if rendered.ndim != 5 or rendered.shape[2] < 6:
+            raise ValueError(
+                f"{stage_name} rendered input must have shape [B,V,C,H,W] "
+                "with at least six channels"
+            )
+        start = stage_index * num_views
+        end = start + num_views
+        stage_payload = {
+            "input": rendered[0, :, 3:6],
+            "gt": gt_views[start:end],
+            "pred": _translation_probabilities(stage_output["trans"][0]),
+        }
+        if "trans_raw" in stage_output:
+            stage_payload["raw_pred"] = _translation_probabilities(
+                stage_output["trans_raw"][0]
+            )
+        if "oracle_instance_prior" in stage_output:
+            stage_payload["prior"] = stage_output["oracle_instance_prior"][0]
+        payload[stage_name] = {
+            key: value.detach().float().cpu()
+            for key, value in stage_payload.items()
+        }
+    return payload

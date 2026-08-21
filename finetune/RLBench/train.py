@@ -26,6 +26,7 @@ import argparse
 import time
 from collections import defaultdict
 from contextlib import nullcontext, redirect_stdout
+from pathlib import Path
 import numpy as np
 import torch
 import torch.distributed as dist
@@ -53,6 +54,10 @@ from training_utils import (
     freeze_for_oracle_fusion,
     optimizer_steps_per_epoch,
 )
+from training_visualization import (
+    record_training_visualization,
+    visualization_due,
+)
 
 def _scalar_metrics(values):
     metrics = {}
@@ -66,6 +71,12 @@ def _scalar_metrics(values):
     return metrics
 
 
+def _first_sample_text(value):
+    if isinstance(value, (list, tuple, np.ndarray)):
+        return str(value[0]) if len(value) else ""
+    return str(value)
+
+
 def train(
     agent,
     dataset,
@@ -75,6 +86,11 @@ def train(
     writer=None,
     wandb_run=None,
     loss_print_interval=10,
+    visualization_enabled=False,
+    visualization_interval=500,
+    visualization_output_dir=None,
+    visualization_save_png=True,
+    visualization_tensorboard=True,
 ):
     agent.train()
     log = defaultdict(list)
@@ -88,6 +104,15 @@ def train(
     for iteration in progress:
 
         raw_batch = next(data_iter)
+        step = epoch * training_iterations + iteration
+        capture_visualization = (
+            rank == 0
+            and visualization_due(
+                visualization_enabled,
+                visualization_interval,
+                step,
+            )
+        )
         dist.barrier()
         batch = {
             k: v.to(agent._device)
@@ -100,11 +125,11 @@ def train(
                 "replay_sample": batch,
                 "backprop": True,
                 "reset_log": (iteration == 0),
+                "return_visualization": capture_visualization,
             }
         out=agent.update(**update_args)
         dist.barrier()
         if rank == 0:
-            step=epoch*training_iterations+iteration
             metrics = _scalar_metrics(out)
             if writer is not None:
                 for key, value in metrics.items():
@@ -113,6 +138,17 @@ def train(
                     'train/learning_rate',
                     agent._optimizer.param_groups[0]['lr'],
                     step,
+                )
+            if capture_visualization:
+                record_training_visualization(
+                    out["train_visualization"],
+                    step=step,
+                    output_dir=Path(visualization_output_dir),
+                    task=_first_sample_text(raw_batch["tasks"]),
+                    language_goal=_first_sample_text(raw_batch["lang_goal"]),
+                    save_png=visualization_save_png,
+                    writer=writer,
+                    write_tensorboard=visualization_tensorboard,
                 )
             if wandb_run is not None:
                 wandb_metrics = {
@@ -169,6 +205,11 @@ def train_with_accumulation(
     writer=None,
     wandb_run=None,
     loss_print_interval=10,
+    visualization_enabled=False,
+    visualization_interval=500,
+    visualization_output_dir=None,
+    visualization_save_png=True,
+    visualization_tensorboard=True,
 ):
     agent.train()
     data_iter = iter(dataset)
@@ -180,6 +221,17 @@ def train_with_accumulation(
         agent.zero_grad()
         metric_totals = defaultdict(float)
         metric_counts = defaultdict(int)
+        global_step = global_step_offset + optimizer_step_index
+        capture_visualization = (
+            rank == 0
+            and visualization_due(
+                visualization_enabled,
+                visualization_interval,
+                global_step,
+            )
+        )
+        visualization_payload = None
+        visualization_batch = None
 
         for micro_step in range(gradient_accumulation_steps):
             raw_batch = next(data_iter)
@@ -205,7 +257,14 @@ def train_with_accumulation(
                     loss_scale=1.0 / gradient_accumulation_steps,
                     reset_gradients=False,
                     step_optimizer=False,
+                    return_visualization=(
+                        capture_visualization
+                        and micro_step == gradient_accumulation_steps - 1
+                    ),
                 )
+            if "train_visualization" in out:
+                visualization_payload = out["train_visualization"]
+                visualization_batch = raw_batch
 
             for key, value in _scalar_metrics(out).items():
                 metric_totals[key] += value
@@ -216,8 +275,6 @@ def train_with_accumulation(
             key: total / metric_counts[key]
             for key, total in metric_totals.items()
         }
-        global_step = global_step_offset + optimizer_step_index
-
         if rank == 0:
             if writer is not None:
                 for key, value in metrics.items():
@@ -231,6 +288,23 @@ def train_with_accumulation(
                     'system/max_memory_allocated_gib',
                     torch.cuda.max_memory_allocated(agent._device) / (1024 ** 3),
                     global_step,
+                )
+            if capture_visualization:
+                if visualization_payload is None or visualization_batch is None:
+                    raise RuntimeError(
+                        "Training visualization was requested but not returned"
+                    )
+                record_training_visualization(
+                    visualization_payload,
+                    step=global_step,
+                    output_dir=Path(visualization_output_dir),
+                    task=_first_sample_text(visualization_batch["tasks"]),
+                    language_goal=_first_sample_text(
+                        visualization_batch["lang_goal"]
+                    ),
+                    save_png=visualization_save_png,
+                    writer=writer,
+                    write_tensorboard=visualization_tensorboard,
                 )
             if wandb_run is not None:
                 wandb_metrics = {
@@ -554,6 +628,25 @@ def experiment(cmd_args):
     reduced_hardware_mode = exp_cfg.global_batch_size > 0
     if reduced_hardware_mode and exp_cfg.checkpoint_every_epochs <= 0:
         raise ValueError('checkpoint_every_epochs must be > 0')
+    visualization_cfg = exp_cfg.train_visualization
+    if visualization_cfg.enabled:
+        if visualization_cfg.interval <= 0:
+            raise ValueError('train_visualization.interval must be > 0')
+        if not (
+            visualization_cfg.save_png
+            or visualization_cfg.tensorboard
+        ):
+            raise ValueError(
+                'Training visualization requires save_png or tensorboard'
+            )
+        if (
+            visualization_cfg.tensorboard
+            and cmd_args.log_backend != 'tensorboard'
+        ):
+            raise ValueError(
+                'train_visualization.tensorboard=True requires '
+                '--log_backend tensorboard'
+            )
     exp_cfg.freeze()
     if reduced_hardware_mode:
         set_training_seed(exp_cfg.seed, dist.get_rank())
@@ -587,6 +680,25 @@ def experiment(cmd_args):
 
     data_folder=DATA_FOLDER        
     log_dir = get_logdir(cmd_args, exp_cfg,dist)
+    visualization_output_dir = Path(visualization_cfg.output_dir)
+    if not visualization_output_dir.is_absolute():
+        visualization_output_dir = Path(log_dir) / visualization_output_dir
+    visualization_kwargs = {
+        'visualization_enabled': visualization_cfg.enabled,
+        'visualization_interval': visualization_cfg.interval,
+        'visualization_output_dir': visualization_output_dir,
+        'visualization_save_png': visualization_cfg.save_png,
+        'visualization_tensorboard': visualization_cfg.tensorboard,
+    }
+    if local_rank == 0 and visualization_cfg.enabled:
+        print(
+            'Training visualization: '
+            f'every {visualization_cfg.interval} optimizer steps; '
+            f'png={visualization_cfg.save_png}; '
+            f'tensorboard={visualization_cfg.tensorboard}; '
+            f'output={visualization_output_dir}',
+            flush=True,
+        )
     tasks = get_tasks(exp_cfg)
     print("Training on {} tasks: {}".format(len(tasks), tasks))
     t_start = time.time()
@@ -845,6 +957,7 @@ def experiment(cmd_args):
                 writer=writer,
                 wandb_run=wandb_run,
                 loss_print_interval=cmd_args.loss_print_interval,
+                **visualization_kwargs,
             )
         else:
             train(
@@ -856,6 +969,7 @@ def experiment(cmd_args):
                 writer=writer,
                 wandb_run=wandb_run,
                 loss_print_interval=cmd_args.loss_print_interval,
+                **visualization_kwargs,
             )
             global_optimizer_step += steps_this_epoch
 
