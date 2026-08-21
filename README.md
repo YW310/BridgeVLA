@@ -245,6 +245,17 @@ python tools/augment_replay_with_oracle_objects.py \
     --dry-run
 ```
 
+如果多任务生成中断，不要添加 `--overwrite`。使用与原来完全相同的参数重新运行，
+仅在末尾增加 `--resume`（并确保没有 `--dry-run`）：
+
+    python tools/augment_replay_with_oracle_objects.py [原来的全部参数] --resume
+
+工具的正式 replay 使用临时文件校验后原子改名，因此 `--resume` 会跳过输出目录中
+已完成的 `*.replay`；只留下 `*.replay.tmp` 或尚未生成正式文件的条目会重新处理。
+已完整完成的 task 会在 episode detection 前直接跳过，部分完成的 task 也只检测和处理
+剩余 replay 所涉及的 episode。续跑必须保持原 replay、raw data 和过滤参数不变；
+如果需要修改生成参数，应改用新的输出目录或显式 `--overwrite` 全量重建。
+
 #### 参数表
 
 | 类别 | 参数 | 默认值 | 说明 |
@@ -254,7 +265,8 @@ python tools/augment_replay_with_oracle_objects.py \
 | 输入 | `--task NAME` | `all` | 任务名、逗号分隔任务名或 `all`；可重复传入。 |
 | 输出 | `--output-dir PATH` | 无 | 写入新的 Oracle replay 目录；非 dry-run 时必须与 `--in-place` 二选一。 |
 | 输出 | `--in-place` | 关闭 | 原地修改 replay；与 `--output-dir` 互斥，建议优先使用新目录。 |
-| 输出 | `--overwrite` | 关闭 | 允许覆盖已有输出 replay/元数据。 |
+| 输出 | `--resume` | 关闭 | 断点续跑：跳过已原子写完的正式 replay，只生成缺失文件；与 `--overwrite` 互斥。 |
+| 输出 | `--overwrite` | 关闭 | 重新处理并覆盖已有输出 replay/元数据；与 `--resume` 互斥。 |
 | 输出 | `--durable-write` | 关闭 | 临时文件重命名前执行 `fsync`；更安全，但网络盘上更慢。 |
 | 张量 | `--max-objects N` | `32` | 每帧固定的最大 instance 槽位数；超出部分会截断。 |
 | 张量 | `--num-points N` | `512` | 每个 instance 的固定采样点数；不足时有放回采样。 |

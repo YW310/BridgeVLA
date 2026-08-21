@@ -1435,6 +1435,22 @@ def _scene_points_for_visualization(
     return scene_points.astype(np.float32, copy=False)
 
 
+def _points_within_visualization_bounds(
+    points: np.ndarray,
+    bounds: Sequence[float] = VISUALIZATION_SCENE_BOUNDS,
+) -> np.ndarray:
+    '''Keep finite XYZ points inside the fixed visualization workspace.'''
+    points = np.asarray(points)
+    if points.ndim != 2 or points.shape[1] != 3:
+        raise ValueError(f'Visualization points must be [N, 3]; got {points.shape}')
+    x_min, y_min, z_min, x_max, y_max, z_max = bounds
+    within = np.isfinite(points).all(axis=1)
+    within &= (points[:, 0] >= x_min) & (points[:, 0] <= x_max)
+    within &= (points[:, 1] >= y_min) & (points[:, 1] <= y_max)
+    within &= (points[:, 2] >= z_min) & (points[:, 2] <= z_max)
+    return points[within]
+
+
 def _instance_color(object_id: int) -> Tuple[float, float, float]:
     '''Return a deterministic categorical color for a decoded handle ID.'''
     # Golden-ratio hue spacing keeps adjacent simulator handles visually apart.
@@ -1630,6 +1646,7 @@ def visualize_oracle_objects(
         if scene_points is not None
         else np.empty((0, 3), dtype=np.float32)
     )
+    scene_points = _points_within_visualization_bounds(scene_points)
     if scene_points.size:
         axes.scatter(
             scene_points[:, 0],
@@ -1656,7 +1673,9 @@ def visualize_oracle_objects(
             scene_points[:, 1], scene_points[:, 2], **scene_style
         )
     for slot in np.flatnonzero(oracle.valid):
-        points = oracle.points[slot]
+        points = _points_within_visualization_bounds(oracle.points[slot])
+        if not points.size:
+            continue
         object_id = int(oracle.ids[slot])
         role = int(oracle.roles[slot])
         label = _object_visualization_label(
@@ -1677,10 +1696,13 @@ def visualize_oracle_objects(
         top_axes.scatter(points[:, 0], points[:, 1], **object_style)
         front_axes.scatter(points[:, 0], points[:, 2], **object_style)
         side_axes.scatter(points[:, 1], points[:, 2], **object_style)
-        center = oracle.centers[slot]
+        # Use the visible portion for label placement. An original instance
+        # center can be outside the workspace even when part of it is visible.
+        center = np.median(points, axis=0)
         label_style = {
             'color': color,
             'fontsize': 7,
+            'clip_on': True,
             'bbox': {
                 'facecolor': 'white',
                 'edgecolor': color,
@@ -1764,14 +1786,20 @@ def visualize_oracle_objects(
                 va='center',
             )
     figure.subplots_adjust(top=0.90, bottom=0.06, left=0.04, right=0.98)
-    figure.savefig(output_path, dpi=200, bbox_inches='tight')
+    # Keep every PNG at the requested figure size. Tight bounding boxes expand
+    # the saved canvas for artists outside an axes and can make the fixed
+    # RLBench workspace appear arbitrarily small.
+    figure.savefig(output_path, dpi=200)
     plt.close(figure)
     print(f'Oracle visualization saved: {output_path}', flush=True)
     return output_path
 
 
 def _copy_metadata(
-    source_dir: Path, destination_dir: Path, overwrite: bool
+    source_dir: Path,
+    destination_dir: Path,
+    overwrite: bool,
+    resume: bool = False,
 ) -> None:
     if source_dir.resolve() == destination_dir.resolve():
         return
@@ -1784,12 +1812,35 @@ def _copy_metadata(
         ):
             continue
         destination = destination_dir / source.name
-        if destination.exists() and not overwrite:
-            raise FileExistsError(
-                f'Output metadata exists: {destination}; use --overwrite'
-            )
+        if destination.exists():
+            if resume:
+                continue
+            if not overwrite:
+                raise FileExistsError(
+                    f'Output metadata exists: {destination}; use --overwrite '
+                    'or --resume'
+                )
         destination_dir.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, destination)
+
+
+def _pending_resume_files(
+    files: Sequence[Path], destination_dir: Path
+) -> Tuple[List[Path], int]:
+    """Return missing replay outputs; completed atomic destinations are skipped."""
+    pending: List[Path] = []
+    skipped = 0
+    for source in files:
+        destination = destination_dir / source.name
+        if destination.is_file():
+            skipped += 1
+        elif destination.exists():
+            raise FileExistsError(
+                f'Resume destination is not a file: {destination}'
+            )
+        else:
+            pending.append(source)
+    return pending, skipped
 
 
 def _select_dry_run_files(
@@ -2772,6 +2823,7 @@ def process_task(
     refresh_robot_handle_cache: bool,
     refresh_replay_metadata_cache: bool,
     replay_metadata_cache_dir: Optional[Path],
+    resume: bool = False,
 ) -> int:
     all_files = _numeric_replay_files(source_dir)
     if not all_files:
@@ -2789,6 +2841,13 @@ def process_task(
         for previous, current in zip(all_files, all_files[1:])
     }
     files = all_files
+    skipped_existing = 0
+    if resume and not dry_run:
+        if destination_dir is None:
+            raise ValueError('--resume requires an output destination')
+        files, skipped_existing = _pending_resume_files(
+            all_files, destination_dir
+        )
     if dry_run:
         if visualize_every > 0:
             # Interval visualization is itself the dry-run selection. Skipped
@@ -2799,6 +2858,20 @@ def process_task(
                 files, seed, dry_run_samples, visualize_index
             )
 
+    if resume and not files:
+        assert destination_dir is not None
+        _copy_metadata(
+            source_dir,
+            destination_dir,
+            overwrite=False,
+            resume=True,
+        )
+        print(
+            f'{task}: resume found all {skipped_existing} replay files '
+            'complete; nothing to process'
+        )
+        return len(all_files)
+
     cameras = tuple(cameras)
     excluded_ids = tuple(excluded_ids)
     replay_metadata_cache_dir = (
@@ -2808,7 +2881,7 @@ def process_task(
     if auto_detect_robot_handles:
         requested_robot_episodes = (
             _episode_ids_for_selected_files(files, previous_file_by_index)
-            if dry_run
+            if dry_run or resume
             else None
         )
         robot_handles_by_episode = _detect_task_robot_handles(
@@ -2840,7 +2913,7 @@ def process_task(
     if temporal_task_filter:
         requested_task_episodes = (
             _episode_ids_for_selected_files(files, previous_file_by_index)
-            if dry_run
+            if dry_run or resume
             else None
         )
         (
@@ -3143,11 +3216,17 @@ def process_task(
 
     if not dry_run:
         assert destination_dir is not None
-        _copy_metadata(source_dir, destination_dir, overwrite)
+        _copy_metadata(
+            source_dir,
+            destination_dir,
+            overwrite,
+            resume=resume,
+        )
     mode = 'validated' if dry_run else 'migrated'
     cache_hits, cache_misses, cache_entries = frame_cache.stats()
     print(
-        f'{task}: {mode} {len(files)} replay files; truncated={truncated}; '
+        f'{task}: {mode} {len(files)} replay files; '
+        f'skipped_existing={skipped_existing}; truncated={truncated}; '
         f'filtered={filtered}; '
         f'prior_filtered={prior_filtered}; '
         f'excluded={excluded}; '
@@ -3157,7 +3236,7 @@ def process_task(
         f'cache_hits={cache_hits}; cache_misses={cache_misses}; '
         f'cache_entries={cache_entries}'
     )
-    return len(files)
+    return len(all_files) if resume else len(files)
 
 
 def _preflight_output(
@@ -3166,12 +3245,13 @@ def _preflight_output(
     output_dir: Path,
     direct_input: bool,
     overwrite: bool,
+    resume: bool = False,
 ) -> None:
     if output_dir == replay_dir:
         raise ValueError(
             '--output-dir must differ from --replay-dir; use --in-place'
         )
-    if overwrite:
+    if overwrite or resume:
         return
     conflicts: List[Path] = []
     for task, source_dir in task_directories:
@@ -3183,7 +3263,8 @@ def _preflight_output(
                 conflicts.append(destination_dir / source.name)
     if conflicts:
         raise FileExistsError(
-            f'Output already contains {conflicts[0]}; use --overwrite'
+            f'Output already contains {conflicts[0]}; use --overwrite '
+            'or --resume'
         )
 
 
@@ -3459,7 +3540,16 @@ def build_parser() -> argparse.ArgumentParser:
             'point cloud'
         ),
     )
-    parser.add_argument('--overwrite', action='store_true')
+    write_policy = parser.add_mutually_exclusive_group()
+    write_policy.add_argument('--overwrite', action='store_true')
+    write_policy.add_argument(
+        '--resume',
+        action='store_true',
+        help=(
+            'resume an interrupted output directory: skip completed atomic '
+            '*.replay files and generate only missing files'
+        ),
+    )
     parser.add_argument(
         '--durable-write',
         action='store_true',
@@ -3531,6 +3621,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         raise ValueError('--thin-plane-min-inlier-ratio must be in (0, 1]')
     if not args.dry_run and not args.in_place and args.output_dir is None:
         raise ValueError('Choose --output-dir or explicit --in-place')
+    if args.resume and (args.dry_run or args.in_place):
+        raise ValueError('--resume requires --output-dir and cannot use --dry-run')
 
     task_directories = discover_task_directories(
         replay_dir, args.task or ['all']
@@ -3543,6 +3635,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             output_dir,
             direct_input,
             args.overwrite,
+            args.resume,
         )
 
     total = 0
@@ -3623,6 +3716,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 args.refresh_replay_metadata_cache
             ),
             replay_metadata_cache_dir=replay_metadata_cache_dir,
+            resume=args.resume,
         )
     print(f'Done: {total} replay files')
     return 0

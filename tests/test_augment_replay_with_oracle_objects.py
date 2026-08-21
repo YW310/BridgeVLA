@@ -25,6 +25,7 @@ from tools.augment_replay_with_oracle_objects import (
     _select_dry_run_files,
     _select_visualization_files,
     _scene_points_for_visualization,
+    _points_within_visualization_bounds,
     _final_observation_oracle_for_visualization,
     _instance_color,
     _instance_boxes_for_mask,
@@ -36,6 +37,7 @@ from tools.augment_replay_with_oracle_objects import (
     _load_current_gripper_states,
     _limit_episode_candidates,
     _open_gripper_prefix,
+    _pending_resume_files,
     _REPLAY_METADATA_MEMORY_CACHE,
     _resolve_task_cache_directory,
     _select_adaptive_robot_frames,
@@ -191,6 +193,41 @@ class OracleReplayAugmentationTest(unittest.TestCase):
         self.assertAlmostEqual(args.robot_link_motion_threshold, 0.002)
         self.assertAlmostEqual(args.robot_adjacency_distance, 0.08)
         self.assertTrue(args.refresh_replay_metadata_cache)
+
+    def test_resume_parser_and_pending_files(self):
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                '--replay-dir',
+                'replay',
+                '--raw-data-dir',
+                'raw',
+                '--output-dir',
+                'output',
+                '--resume',
+            ]
+        )
+        self.assertTrue(args.resume)
+        self.assertFalse(args.overwrite)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / 'source'
+            destination = root / 'destination'
+            source.mkdir()
+            destination.mkdir()
+            files = []
+            for index in range(3):
+                path = source / f'{index}.replay'
+                path.write_bytes(b'source')
+                files.append(path)
+            (destination / '0.replay').write_bytes(b'complete')
+            (destination / '1.replay.tmp').write_bytes(b'interrupted')
+            pending, skipped = _pending_resume_files(files, destination)
+            self.assertEqual(skipped, 1)
+            self.assertEqual(
+                [path.name for path in pending],
+                ['1.replay', '2.replay'],
+            )
 
     def test_robot_sampling_defaults_cover_raw_frames_zero_through_100(self):
         args = build_parser().parse_args(
@@ -597,6 +634,20 @@ class OracleReplayAugmentationTest(unittest.TestCase):
         self.assertEqual(points.shape, (3, 3))
         self.assertTrue(np.isfinite(points).all())
         self.assertTrue(np.any(points != 0, axis=1).all())
+
+    def test_visualization_points_clip_outliers_to_fixed_workspace(self):
+        points = np.array(
+            [
+                [0.0, 0.0, 1.0],
+                [-0.3, -0.5, 0.6],
+                [0.7, 0.5, 1.6],
+                [99.0, 0.0, 1.0],
+                [0.0, np.nan, 1.0],
+            ],
+            dtype=np.float32,
+        )
+        clipped = _points_within_visualization_bounds(points)
+        np.testing.assert_array_equal(clipped, points[:3])
 
     def test_instance_color_is_stable_by_handle_id(self):
         self.assertEqual(_instance_color(42), _instance_color(42))
