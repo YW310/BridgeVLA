@@ -625,6 +625,24 @@ def experiment(cmd_args):
         raise ValueError(
             'O2 prior requires use_oracle_objects=True and an augmented replay.'
         )
+    if exp_cfg.use_oracle_objects and not cmd_args.train_replay_storage_dir:
+        raise ValueError(
+            'Oracle replay training requires an explicit '
+            '--train_replay_storage_dir pointing to the augmented replay root.'
+        )
+    train_replay_storage_dir = os.path.abspath(
+        os.path.expanduser(
+            cmd_args.train_replay_storage_dir or TRAIN_REPLAY_STORAGE_DIR
+        )
+    )
+    if (
+        exp_cfg.use_oracle_objects
+        and not os.path.isdir(train_replay_storage_dir)
+    ):
+        raise FileNotFoundError(
+            'Oracle replay root does not exist: '
+            f'{train_replay_storage_dir}'
+        )
     reduced_hardware_mode = exp_cfg.global_batch_size > 0
     if reduced_hardware_mode and exp_cfg.checkpoint_every_epochs <= 0:
         raise ValueError('checkpoint_every_epochs must be > 0')
@@ -700,13 +718,18 @@ def experiment(cmd_args):
             flush=True,
         )
     tasks = get_tasks(exp_cfg)
+    if local_rank == 0:
+        print(
+            f'Train replay storage: {train_replay_storage_dir}',
+            flush=True,
+        )
     print("Training on {} tasks: {}".format(len(tasks), tasks))
     t_start = time.time()
     get_dataset_func = lambda: get_dataset(
         tasks,
         BATCH_SIZE_TRAIN,
         None,
-        TRAIN_REPLAY_STORAGE_DIR,
+        train_replay_storage_dir,
         None,
         data_folder,
         NUM_TRAIN,
@@ -1023,6 +1046,18 @@ if __name__ == "__main__":
     parser.add_argument(
         '--train_oracle_fusion_only', action='store_true',
         help='Freeze original BridgeVLA and train only O2 fusion heads.',
+    )
+    parser.add_argument(
+        '--train_replay_storage_dir',
+        '--train-replay-storage-dir',
+        dest='train_replay_storage_dir',
+        type=str,
+        default=None,
+        help=(
+            'Training replay root. Required explicitly when '
+            'use_oracle_objects=True; otherwise defaults to the legacy '
+            'TRAIN_REPLAY_STORAGE_DIR.'
+        ),
     )
     parser.set_defaults(entry=lambda cmd_args: parser.print_help())
     parser.add_argument("--refresh_replay", action="store_true", default=False)

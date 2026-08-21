@@ -476,11 +476,11 @@ trans_raw。
 
 推荐先冻结整个原 BridgeVLA，只训练新增 fusion head：
 
-    bash train.sh --exp_cfg_path configs/rlbench_o2_gt_instance.yaml --init_checkpoint /path/to/baseline_model.pth --train_oracle_fusion_only
+    bash train.sh --exp_cfg_path configs/rlbench_o2_gt_instance.yaml --train_replay_storage_dir /path/to/augmented_replay --init_checkpoint /path/to/baseline_model.pth --train_oracle_fusion_only
 
 如果希望联合训练动作相关模块、但不 fine-tune Gemma，改用：
 
-    bash train.sh --exp_cfg_path configs/rlbench_o2_gt_instance.yaml --init_checkpoint /path/to/baseline_model.pth --freeze_language_model
+    bash train.sh --exp_cfg_path configs/rlbench_o2_gt_instance.yaml --train_replay_storage_dir /path/to/augmented_replay --init_checkpoint /path/to/baseline_model.pth --freeze_language_model
 
 专用配置文件为
 `finetune/RLBench/configs/rlbench_o2_gt_instance.yaml`，集中配置 Oracle replay

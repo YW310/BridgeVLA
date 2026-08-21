@@ -1,6 +1,6 @@
 # Minimal O2 experiment: train a GT-instance translation fusion head.
 # Use with --init_checkpoint and --train_oracle_fusion_only.
-# TRAIN_REPLAY_STORAGE_DIR must point to the augmented Oracle replay directory.
+# Pass the augmented Oracle replay root with --train_replay_storage_dir.
 
 exp_id: rlbench_o2_gt_instance
 tasks: all

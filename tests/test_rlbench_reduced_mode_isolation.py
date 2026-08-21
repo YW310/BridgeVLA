@@ -81,6 +81,25 @@ class RLBenchReducedModeIsolationTest(unittest.TestCase):
             self.assertIn('gemma_lr: 2e-5', profile)
             self.assertIn('gemma_layer_lr_decay: 0.9', profile)
 
+    def test_oracle_replay_root_is_an_explicit_training_argument(self):
+        source = (ROOT / 'finetune/RLBench/train.py').read_text()
+        self.assertIn(
+            '--train_replay_storage_dir', source
+        )
+        self.assertIn(
+            'exp_cfg.use_oracle_objects '
+            'and not cmd_args.train_replay_storage_dir',
+            source,
+        )
+        self.assertIn(
+            'cmd_args.train_replay_storage_dir or '
+            'TRAIN_REPLAY_STORAGE_DIR',
+            source,
+        )
+        self.assertIn(
+            'train_replay_storage_dir,', source
+        )
+
     def test_new_checkpoint_policy_is_guarded_by_global_batch_mode(self):
         source = (ROOT / 'finetune/RLBench/train.py').read_text()
         self.assertIn(
