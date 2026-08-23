@@ -215,7 +215,9 @@ JSON 的 `object_groups` 和 `group_by_handle` 中。
 对齐。`terminal == -1` 是 YARR final-observation sentinel，写入全 invalid 的填充张量；
 可视化时会通过上一条 replay 的 `next_keypoint_frame` 恢复最终 raw 帧。
 
-推荐先在命令末尾保留 `--dry-run` 检查结果，确认后移除它进行正式写入：
+推荐先在命令末尾保留 `--dry-run` 检查结果，确认后移除它进行正式写入。以下示例还
+包含 `--skip-invalid-frames`，适用于已经确认只有少量 replay/raw 越界样本、并接受这些
+样本退回 baseline 的情况；若要求严格校验整套数据，应移除该参数并修复数据配对：
 
 ```bash
 python tools/augment_replay_with_oracle_objects.py \
@@ -242,6 +244,7 @@ python tools/augment_replay_with_oracle_objects.py \
     --visualize-output-dir oracle_visualizations \
     --visualize-objects-only \
     --thin-plane-max-thickness 0.02 \
+    --skip-invalid-frames \
     --dry-run
 ```
 
@@ -382,13 +385,24 @@ python tools/augment_replay_with_oracle_objects.py \
   `memory cache hit`。新增、删除或重命名 replay 会自动使索引失效；若原地改写同名文件，
   使用一次 `--refresh-replay-metadata-cache`。如果日志提示无法保存索引，需要检查 replay
   目录写权限，否则下次仍会全量扫描。
-- 如果提示 `Cannot read current gripper_pose for frame N`，且 raw episode 中也没有
-  第 `N` 帧，先使用一次 `--refresh-replay-metadata-cache`。若刷新后仍报错，则对应
-  `.replay` 的 `sample_frame`/`next_keypoint_frame` 与 raw episode 不匹配，通常表示
-  replay 与 raw data 来自不同版本或 raw episode 不完整；不要把越界帧强行截到最后一帧，
-  否则会造成图像、点云、夹爪状态和动作监督错位。若允许这些少量异常样本退回
-  baseline，可添加 `--skip-invalid-frames`：程序保留 replay 的连续结构、写入空 Oracle，
-  并输出 `ignored_invalid_frames` 与 `ignored_invalid_replays`。
+- 如果日志显示 `episode detection: replay segments`，说明当前目录存在长度匹配的
+  `replay_info.npy`。程序只用它划分 replay segment，并直接从选中的 `.replay` 读取
+  `episode_idx`、`sample_frame` 和 `next_keypoint_frame`；这条路径不读取
+  `.oracle_replay_metadata_v2.npz`，所以 `--refresh-replay-metadata-cache` 不会修复这里的
+  帧越界。注意 `85.replay` 中的 `85` 只是 replay 写入序号，实际 raw episode 仍由文件内的
+  `episode_idx` 决定。
+- 如果提示 `Replay/raw frame mismatch` 或
+  `Cannot read current gripper_pose for frame N`，且 raw episode 中确实没有第 `N` 帧：仅当
+  前面的日志是 `replay metadata disk cache hit` 或 `memory cache hit` 时，先使用一次
+  `--refresh-replay-metadata-cache`；如果日志是 `replay segments`，或者刷新后仍然越界，则
+  对应 `.replay` 与 raw episode 确实不匹配。这通常表示 replay 与 raw data 来自不同版本，
+  或 raw episode 不完整。应改用生成 replay 时的同一批 RLBench demonstrations，或基于当前
+  raw data 重新生成 replay。不要把越界帧强行截到最后一帧，也不要直接改写
+  `sample_frame`，否则会造成图像、点云、夹爪状态和动作监督错位。
+- 若确认只有少量异常样本，并允许它们退回 baseline，可添加
+  `--skip-invalid-frames`：程序保留 replay 的连续结构，为越界样本写入
+  `valid=False` 的空 Oracle，并输出 `ignored_invalid_frames` 与
+  `ignored_invalid_replays`。这属于容错绕过，不会修复数据配对关系。
 - `dry-run` 会打印 `excluded_object_ids`、`no_finite_point_object_ids`、
   `small_object_ids`、`task_prior_filtered_object_ids`、
   `temporal_filtered_object_ids` 和 `truncated_object_ids`。命令行时序匹配不再产生
@@ -476,11 +490,11 @@ trans_raw。
 
 推荐先冻结整个原 BridgeVLA，只训练新增 fusion head：
 
-    bash train.sh --exp_cfg_path configs/rlbench_o2_gt_instance.yaml --train_replay_storage_dir /path/to/augmented_replay --init_checkpoint /path/to/baseline_model.pth --train_oracle_fusion_only
+    bash train.sh --exp_cfg_path configs/rlbench_o2_gt_instance.yaml --train_replay_storage_dir /home/yiwei/project/BridgeVLA/LPY/BridgeVLA_RLBench_TRAIN_TASK_OBJECT_Buffer --init_checkpoint /home/yiwei/project/BridgeVLA/LPY/BridgeVLA/checkpoints/RLBench/model_80.pth --train_oracle_fusion_only
 
 如果希望联合训练动作相关模块、但不 fine-tune Gemma，改用：
 
-    bash train.sh --exp_cfg_path configs/rlbench_o2_gt_instance.yaml --train_replay_storage_dir /path/to/augmented_replay --init_checkpoint /path/to/baseline_model.pth --freeze_language_model
+    bash train.sh --exp_cfg_path configs/rlbench_o2_gt_instance.yaml --train_replay_storage_dir /home/yiwei/project/BridgeVLA/LPY/BridgeVLA_RLBench_TRAIN_TASK_OBJECT_Buffer --init_checkpoint /home/yiwei/project/BridgeVLA/LPY/BridgeVLA/checkpoints/RLBench/model_80.pth --freeze_language_model --freeze_vision_tower
 
 专用配置文件为
 `finetune/RLBench/configs/rlbench_o2_gt_instance.yaml`，集中配置 Oracle replay

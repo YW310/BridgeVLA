@@ -4,6 +4,7 @@ export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$COPPELIASIM_ROOT
 export QT_QPA_PLATFORM_PLUGIN_PATH=$COPPELIASIM_ROOT
 export DISPLAY="109.105.4.172:0.0"
 export PYTHONWARNINGS="ignore"
+export TRANSFORMERS_VERBOSITY=error
 
 cd /home/yiwei/project/BridgeVLA/finetune/RLBench
 

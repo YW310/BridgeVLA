@@ -6,8 +6,17 @@ exp_id: rlbench_o2_gt_instance
 tasks: all
 bs: 4
 num_workers: 3
-epochs: 100
-train_iter: 160000
+epochs: 50
+train_iter: 38400
+global_batch_size: 192
+
+gradient_checkpointing: False
+efficient_paligemma_forward: True
+gpu_paligemma_preprocessing: False
+flash_attention_2: False
+freeze_gemma_prefix_layers: 18
+freeze_multimodal_projector: True
+
 sample_distribution_mode: task_uniform
 gpu_paligemma_preprocessing: False
 
@@ -24,7 +33,7 @@ oracle_num_points: 512
 oracle_prior_hidden_channels: 16
 
 peract:
-  lr: 8e-5
+  lr: 4e-5
   transform_augmentation_xyz: [0.125, 0.125, 0.125]
   transform_augmentation_rpy: [0.0, 0.0, 45.0]
 

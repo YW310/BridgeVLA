@@ -1,5 +1,5 @@
 exp_id: rlbench_trend_8x40
-tasks: insert_onto_square_peg,open_drawer,place_wine_at_rack_location,light_bulb_in
+tasks: all #insert_onto_square_peg,open_drawer,place_wine_at_rack_location,light_bulb_in
 bs: 4
 num_workers: 3
 epochs: 100
