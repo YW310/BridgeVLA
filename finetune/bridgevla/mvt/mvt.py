@@ -26,6 +26,7 @@ import bridgevla.mvt.utils as mvt_utils
 from bridgevla.mvt.mvt_single import MVT as MVTSingle
 from bridgevla.mvt.config import get_cfg_defaults
 from bridgevla.models.oracle_prior import (
+    OraclePriorFeatureAdapter,
     OraclePriorFusion,
     rasterize_instance_points,
 )
@@ -69,8 +70,12 @@ class MVT(nn.Module):
         flash_attention_2=False,
         oracle_prior_fusion=False,
         oracle_prior_hidden_channels=16,
+        oracle_prior_adapter_rank=0,
+        oracle_prior_multiscale_fusion=False,
     ):
         super().__init__()
+        if oracle_prior_adapter_rank < 0:
+            raise ValueError('oracle_prior_adapter_rank must be >= 0')
 
         from point_renderer.rvt_renderer import RVTBoxRenderer as BoxRenderer
 
@@ -88,6 +93,9 @@ class MVT(nn.Module):
         del args["oracle_prior_fusion"]
         del args["oracle_prior_hidden_channels"]
 
+        del args['oracle_prior_adapter_rank']
+        del args['oracle_prior_multiscale_fusion']
+
         self.rot_ver = rot_ver
         self.num_rot = num_rot
         self.stage_two = stage_two
@@ -96,11 +104,17 @@ class MVT(nn.Module):
         self.st_wpt_loc_inp_no_noise = st_wpt_loc_inp_no_noise
         self.img_aug_2 = img_aug_2
         self.oracle_prior_fusion1 = (
-            OraclePriorFusion(oracle_prior_hidden_channels)
+            OraclePriorFusion(
+                oracle_prior_hidden_channels,
+                multiscale=oracle_prior_multiscale_fusion,
+            )
             if oracle_prior_fusion else None
         )
         self.oracle_prior_fusion2 = (
-            OraclePriorFusion(oracle_prior_hidden_channels)
+            OraclePriorFusion(
+                oracle_prior_hidden_channels,
+                multiscale=oracle_prior_multiscale_fusion,
+            )
             if oracle_prior_fusion and stage_two else None
         )
 
@@ -120,6 +134,19 @@ class MVT(nn.Module):
             **args,
             renderer=self.renderer,
         )  # we have merged mvt1 and mvt2
+        use_adapter = oracle_prior_fusion and oracle_prior_adapter_rank > 0
+        self.oracle_prior_feature_adapter1 = (
+            OraclePriorFeatureAdapter(
+                self.mvt1.vlm_dim, oracle_prior_adapter_rank,
+            )
+            if use_adapter else None
+        )
+        self.oracle_prior_feature_adapter2 = (
+            OraclePriorFeatureAdapter(
+                self.mvt1.vlm_dim, oracle_prior_adapter_rank,
+            )
+            if use_adapter and stage_two else None
+        )
 
 
 
@@ -172,23 +199,29 @@ class MVT(nn.Module):
 
         return wpt
 
-    def _apply_oracle_instance_prior(
-        self, stage_out, points, valid, first_stage, full_out,
+    def _build_oracle_instance_prior(
+        self, points, valid, first_stage, full_out,
         sigma,
+    ):
+        if points is None:
+            return None
+        projected = self.get_pt_loc_on_img(
+            points, mvt1_or_mvt2=first_stage, dyn_cam_info=None,
+            out=None if first_stage else full_out,
+        )
+        return rasterize_instance_points(
+            projected, valid, (self.img_size, self.img_size), sigma,
+        )
+
+    def _apply_oracle_instance_prior(
+        self, stage_out, prior, valid, first_stage,
     ):
         fusion = (
             self.oracle_prior_fusion1
             if first_stage else self.oracle_prior_fusion2
         )
-        if points is None or fusion is None:
+        if prior is None or fusion is None:
             return
-        projected = self.get_pt_loc_on_img(
-            points, mvt1_or_mvt2=first_stage, dyn_cam_info=None,
-            out=None if first_stage else full_out,
-        )
-        prior = rasterize_instance_points(
-            projected, valid, (self.img_size, self.img_size), sigma,
-        )
         raw_logits = stage_out['trans']
         stage_out['trans_raw'] = raw_logits.detach()
         stage_out['trans'] = fusion(raw_logits, prior, valid)
@@ -384,6 +417,11 @@ class MVT(nn.Module):
             wpt_local_stage_one = wpt_local_stage_one.clone().detach()
         else:
             wpt_local_stage_one = wpt_local
+
+        oracle_prior1 = self._build_oracle_instance_prior(
+            oracle_prior_points, oracle_prior_valid, True, None,
+            oracle_prior_sigma,
+        )
         
    
         out = self.mvt1(
@@ -392,12 +430,17 @@ class MVT(nn.Module):
             rot_x_y=rot_x_y,
             language_goal=language_goal,
             forward_no_feat=True,
+            oracle_prior_heatmap=oracle_prior1,
+            oracle_prior_valid=oracle_prior_valid,
+            oracle_feature_adapter=(
+                self.oracle_prior_feature_adapter1
+                if oracle_prior1 is not None else None
+            ),
             # forward_no_feat=False,
             **kwargs,
         )
         self._apply_oracle_instance_prior(
-            out, oracle_prior_points, oracle_prior_valid, True, None,
-            oracle_prior_sigma,
+            out, oracle_prior1, oracle_prior_valid, True,
         )
         out["mvt1_ori_img"]=img.clone().detach()
         def visualize_tensor(tensor, save_path=None):
@@ -483,17 +526,26 @@ class MVT(nn.Module):
         
             out['wpt_local1'] = wpt_local_stage_one_noisy
             out['rev_trans'] = rev_trans
+            oracle_prior2 = self._build_oracle_instance_prior(
+                oracle_prior_points, oracle_prior_valid, False, out,
+                oracle_prior_sigma,
+            )
             out_mvt2 = self.mvt1(
                 img=img,
                 wpt_local=wpt_local2,
                 rot_x_y=rot_x_y,
                 language_goal=language_goal,
                 forward_no_feat=False,
+                oracle_prior_heatmap=oracle_prior2,
+                oracle_prior_valid=oracle_prior_valid,
+                oracle_feature_adapter=(
+                    self.oracle_prior_feature_adapter2
+                    if oracle_prior2 is not None else None
+                ),
                 **kwargs,
             )
             self._apply_oracle_instance_prior(
-                out_mvt2, oracle_prior_points, oracle_prior_valid, False, out,
-                oracle_prior_sigma,
+                out_mvt2, oracle_prior2, oracle_prior_valid, False,
             )
 
             out["wpt_local1"] = wpt_local_stage_one_noisy

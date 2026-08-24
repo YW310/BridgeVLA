@@ -203,11 +203,54 @@ def rasterize_instance_points(
     return heatmap.view(batch_size, num_views, height, width)
 
 
+class OraclePriorFeatureAdapter(nn.Module):
+    def __init__(self, feature_channels: int, rank: int = 16):
+        super().__init__()
+        if feature_channels <= 0 or rank <= 0:
+            raise ValueError('feature_channels and rank must be positive')
+        self.feature_channels = feature_channels
+        self.feature_reduce = nn.Conv2d(feature_channels, rank, 1)
+        self.prior_project = nn.Conv2d(1, rank, 3, padding=1)
+        self.feature_expand = nn.Conv2d(rank, feature_channels, 1)
+        nn.init.zeros_(self.feature_expand.weight)
+        nn.init.zeros_(self.feature_expand.bias)
+
+    def forward(self, features, prior, instance_valid):
+        if features.ndim != 4:
+            raise ValueError('features must have shape [B*V,C,H,W]')
+        if features.shape[1] != self.feature_channels:
+            raise ValueError('unexpected feature channel count')
+        if prior.ndim != 4:
+            raise ValueError('prior must have shape [B,V,H,W]')
+        batch_size, num_views = prior.shape[:2]
+        if features.shape[0] != batch_size * num_views:
+            raise ValueError('feature batch does not match prior batch and views')
+        if instance_valid.shape != (batch_size,):
+            raise ValueError('instance_valid must have shape [B]')
+
+        prior_features = prior.reshape(
+            batch_size * num_views, 1, *prior.shape[-2:]
+        ).to(device=features.device, dtype=features.dtype)
+        prior_features = F.interpolate(
+            prior_features, size=features.shape[-2:], mode='bilinear',
+            align_corners=False,
+        )
+        hidden = self.feature_reduce(features) + self.prior_project(
+            prior_features
+        )
+        residual = self.feature_expand(F.gelu(hidden))
+        valid = instance_valid.to(
+            device=features.device, dtype=features.dtype,
+        ).repeat_interleave(num_views).view(-1, 1, 1, 1)
+        return features + residual * valid
+
+
 class OraclePriorFusion(nn.Module):
     """Learn a residual correction from raw and GT-instance heatmaps."""
 
-    def __init__(self, hidden_channels: int = 16):
+    def __init__(self, hidden_channels: int = 16, multiscale: bool = False):
         super().__init__()
+        self.multiscale = bool(multiscale)
         if hidden_channels <= 0:
             raise ValueError("hidden_channels must be positive")
         self.net = nn.Sequential(
@@ -217,6 +260,22 @@ class OraclePriorFusion(nn.Module):
         )
         nn.init.zeros_(self.net[-1].weight)
         nn.init.zeros_(self.net[-1].bias)
+        if self.multiscale:
+            self.context = nn.Sequential(
+                nn.Conv2d(3, hidden_channels, 3, padding=1),
+                nn.GELU(),
+                nn.Conv2d(
+                    hidden_channels, hidden_channels, 3,
+                    padding=2, dilation=2,
+                ),
+                nn.GELU(),
+                nn.Conv2d(hidden_channels, 1, 1),
+            )
+        else:
+            self.context = None
+        if self.context is not None:
+            nn.init.zeros_(self.context[-1].weight)
+            nn.init.zeros_(self.context[-1].bias)
 
     def forward(self, raw_logits, prior, instance_valid):
         if raw_logits.shape != prior.shape:
@@ -230,6 +289,14 @@ class OraclePriorFusion(nn.Module):
         residual = self.net(features).reshape(
             batch_size, num_views, height, width
         )
+        if self.context is not None:
+            interaction = (raw_logits * prior).reshape(
+                batch_size * num_views, 1, height, width
+            )
+            context_features = torch.cat((features, interaction), dim=1)
+            residual = residual + self.context(context_features).reshape(
+                batch_size, num_views, height, width
+            )
         residual = residual * instance_valid[:, None, None, None].to(
             residual.dtype
         )

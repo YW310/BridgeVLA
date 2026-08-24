@@ -3,6 +3,7 @@ import unittest
 import torch
 
 from finetune.bridgevla.models.oracle_prior import (
+    OraclePriorFeatureAdapter,
     OraclePriorFusion,
     build_training_visualization_payload,
     rasterize_instance_points,
@@ -27,6 +28,17 @@ class OraclePriorTest(unittest.TestCase):
         loss.backward()
         self.assertGreater(fusion.net[-1].weight.grad.abs().sum().item(), 0)
 
+    def test_multiscale_fusion_is_identity_and_receives_gradients(self):
+        fusion = OraclePriorFusion(4, multiscale=True)
+        logits = torch.randn(1, 2, 5, 5)
+        prior = torch.rand_like(logits)
+        fused = fusion(logits, prior, torch.tensor([True]))
+        torch.testing.assert_close(fused, logits)
+        fused.square().mean().backward()
+        self.assertGreater(
+            fusion.context[-1].weight.grad.abs().sum().item(), 0
+        )
+
     def test_invalid_sample_remains_raw_after_fusion_learns(self):
         logits = torch.randn(1, 1, 2, 2)
         prior = torch.rand_like(logits)
@@ -34,6 +46,32 @@ class OraclePriorTest(unittest.TestCase):
         torch.nn.init.ones_(fusion.net[-1].weight)
         fused = fusion(logits, prior, torch.tensor([False]))
         torch.testing.assert_close(fused, logits)
+
+    def test_feature_adapter_is_identity_and_receives_gradients(self):
+        adapter = OraclePriorFeatureAdapter(8, rank=3)
+        features = torch.randn(6, 8, 4, 4)
+        prior = torch.rand(2, 3, 8, 8)
+        adapted = adapter(features, prior, torch.tensor([True, True]))
+        torch.testing.assert_close(adapted, features)
+        adapted.square().mean().backward()
+        self.assertGreater(
+            adapter.feature_expand.weight.grad.abs().sum().item(), 0
+        )
+
+    def test_recommended_oracle_modules_are_lightweight(self):
+        adapter = OraclePriorFeatureAdapter(2048, rank=16)
+        fusion = OraclePriorFusion(64, multiscale=True)
+        per_stage = sum(p.numel() for p in adapter.parameters())
+        per_stage += sum(p.numel() for p in fusion.parameters())
+        self.assertEqual(per_stage * 2, 215652)
+
+    def test_feature_adapter_keeps_invalid_sample_unchanged(self):
+        adapter = OraclePriorFeatureAdapter(4, rank=2)
+        torch.nn.init.ones_(adapter.feature_expand.weight)
+        features = torch.randn(2, 4, 3, 3)
+        prior = torch.rand(2, 1, 6, 6)
+        adapted = adapter(features, prior, torch.tensor([True, False]))
+        torch.testing.assert_close(adapted[1], features[1])
 
     def test_auto_role_uses_target_open_reference_closed(self):
         points = torch.zeros(2, 3, 4, 3)

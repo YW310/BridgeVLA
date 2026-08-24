@@ -33,6 +33,10 @@ class RLBenchTrainingUtilsTest(unittest.TestCase):
                     'oracle_prior_fusion1.net.weight',
                     RLBenchTrainingUtilsTest._Parameter(7),
                 ),
+                (
+                    'oracle_prior_feature_adapter1.feature_expand.weight',
+                    RLBenchTrainingUtilsTest._Parameter(11),
+                ),
             ]
 
         def parameters(self):
@@ -74,6 +78,15 @@ class RLBenchTrainingUtilsTest(unittest.TestCase):
         self.assertEqual(trainable, 7)
         self.assertFalse(backbone.named[0][1].requires_grad)
         self.assertTrue(backbone.named[1][1].requires_grad)
+        self.assertFalse(backbone.named[2][1].requires_grad)
+
+    def test_oracle_adaptation_freezes_original_backbone(self):
+        backbone = self._Backbone()
+        trainable = training_utils.freeze_for_oracle_adaptation(backbone)
+        self.assertEqual(trainable, 18)
+        self.assertFalse(backbone.named[0][1].requires_grad)
+        self.assertTrue(backbone.named[1][1].requires_grad)
+        self.assertTrue(backbone.named[2][1].requires_grad)
 
 
 if __name__ == '__main__':

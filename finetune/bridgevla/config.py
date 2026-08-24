@@ -43,6 +43,8 @@ _C.use_oracle_objects = False
 _C.oracle_max_objects = 32
 _C.oracle_num_points = 512
 _C.oracle_prior_hidden_channels = 16
+_C.oracle_prior_adapter_rank = 0
+_C.oracle_prior_multiscale_fusion = False
 # arguments present in both peract and rvt
 # some of them donot support every possible combination in peract
 _C.peract = CN()

@@ -110,6 +110,10 @@ def load_agent(
             exp_cfg.rvt.oracle_prior_mode == 'o2_gt_instance'
         ),
         oracle_prior_hidden_channels=exp_cfg.oracle_prior_hidden_channels,
+        oracle_prior_adapter_rank=exp_cfg.oracle_prior_adapter_rank,
+        oracle_prior_multiscale_fusion=(
+            exp_cfg.oracle_prior_multiscale_fusion
+        ),
         **mvt_cfg,
     )
 

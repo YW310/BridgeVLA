@@ -453,6 +453,9 @@ class MVT(nn.Module):
         rot_x_y=None,
         language_goal=None,
         forward_no_feat=False,
+        oracle_prior_heatmap=None,
+        oracle_prior_valid=None,
+        oracle_feature_adapter=None,
         **kwargs,
     ):
         """
@@ -528,6 +531,12 @@ class MVT(nn.Module):
             )
         )
         x=x.to(torch.float32)
+        if oracle_feature_adapter is not None:
+            if oracle_prior_heatmap is None or oracle_prior_valid is None:
+                raise ValueError('Oracle feature adapter requires prior and valid')
+            x = oracle_feature_adapter(
+                x, oracle_prior_heatmap, oracle_prior_valid,
+            )
         
         trans = self.up0(x)
         trans = trans.view(bs, self.num_img, h, w)

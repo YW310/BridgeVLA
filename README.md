@@ -469,12 +469,10 @@ python tools/augment_replay_with_oracle_objects.py \
 同一 `episode_idx` 的多个 replay 子序列共用 slot 映射；切换到新的 `episode_idx` 时
 使用独立映射。训练随机采样 replay 时不依赖上一条 transition。
 
-训练加载 Oracle replay 时，需要将
-finetune/RLBench/utils/peract_utils_rlbench.py 中的
-TRAIN_REPLAY_STORAGE_DIR 指向 Oracle 输出目录，并启用与数据准备阶段一致的张量
-尺寸：
+训练加载 Oracle replay 时，通过 `--train_replay_storage_dir` 显式指定 Oracle
+输出根目录，并启用与数据准备阶段一致的张量尺寸：
 
-    bash train.sh \
+    bash train.sh --train_replay_storage_dir /path/to/augmented_replay \
         --exp_cfg_opts 'use_oracle_objects True oracle_max_objects 32 oracle_num_points 512' \
         [其他训练参数]
 
@@ -482,49 +480,61 @@ use_oracle_objects 默认为 False，因此原始非 Oracle replay 的加载行�
 
 ### O2：训练当前应操作实例 GT
 
-O2 不把 GT heatmap 作为固定 mask 或手工 logit 约束。程序先保留 BridgeVLA 原始
-trans_raw，再将 trans_raw 和 GT 实例三视角 heatmap 输入一个小型、可训练的
-residual fusion head；最终 trans 参与原有 translation loss。fusion 最后一层为
-零初始化，因此训练开始时 trans 与 trans_raw 相等。Oracle 无效时也强制回退
-trans_raw。
+O2 不把 GT heatmap 作为固定 mask 或手工 logit 约束。当前实现先把实例三视角
+prior 下采样后，通过低秩 feature adapter 注入 PaliGemma 的 2048 维视觉特征，
+再由多尺度 residual fusion 融合 translation logits、prior 和二者交互项。adapter
+与 fusion 输出层均为零初始化，因此训练开始时与 baseline 完全一致；Oracle
+无效时也强制回退原始路径。
 
-推荐先冻结整个原 BridgeVLA，只训练新增 fusion head：
+推荐冻结整个原 BridgeVLA，只训练新增 feature adapter 和 fusion：
 
-    bash train.sh --exp_cfg_path configs/rlbench_o2_gt_instance.yaml --train_replay_storage_dir /home/yiwei/project/BridgeVLA/LPY/BridgeVLA_RLBench_TRAIN_TASK_OBJECT_Buffer --init_checkpoint /home/yiwei/project/BridgeVLA/LPY/BridgeVLA/checkpoints/RLBench/model_80.pth --train_oracle_fusion_only
+    bash train.sh --exp_cfg_path configs/rlbench_o2_gt_instance.yaml --train_replay_storage_dir /home/yiwei/project/BridgeVLA/LPY/BridgeVLA_RLBench_TRAIN_TASK_OBJECT_Buffer --init_checkpoint /home/yiwei/project/BridgeVLA/LPY/BridgeVLA/checkpoints/RLBench/model_80.pth --train_oracle_adapter_only
 
-如果希望联合训练动作相关模块、但不 fine-tune Gemma，改用：
+该配置的 rank=16、hidden=64 两阶段模型约训练 21.6 万参数，而不是完整动作网络的
+0.54B。若只做最小 fusion 对照实验，可将命令末尾改为
+`--train_oracle_fusion_only`；此模式不会训练 feature adapter。
+
+只有确实需要完整微调约 0.54B 动作参数、但不 fine-tune Gemma 时，才改用：
 
     bash train.sh --exp_cfg_path configs/rlbench_o2_gt_instance.yaml --train_replay_storage_dir /home/yiwei/project/BridgeVLA/LPY/BridgeVLA_RLBench_TRAIN_TASK_OBJECT_Buffer --init_checkpoint /home/yiwei/project/BridgeVLA/LPY/BridgeVLA/checkpoints/RLBench/model_80.pth --freeze_language_model --freeze_vision_tower
 
 专用配置文件为
 `finetune/RLBench/configs/rlbench_o2_gt_instance.yaml`，集中配置 Oracle replay
-shape、O2 fusion 模式、active role 和 heatmap sigma。checkpoint 路径以及
-`--train_oracle_fusion_only` / `--freeze_language_model` 属于单次运行策略，
+shape、adapter rank、多尺度 fusion、active role 和 heatmap sigma。checkpoint
+路径以及 `--train_oracle_adapter_only` / `--train_oracle_fusion_only` /
+`--freeze_language_model` 属于单次运行策略，
 仍通过命令行指定。临时修改单个值时，仍可在配置文件之后使用
 `--exp_cfg_opts 'tasks stack_blocks rvt.oracle_prior_strict True'` 覆盖。
 
-init_checkpoint 只初始化模型权重，fusion 保持零初始化，epoch 和 optimizer 从头开始；
+init_checkpoint 只初始化模型权重，adapter/fusion 保持零初始化，epoch 和 optimizer 从头开始；
 继续已开始的 O2 训练则使用 resume_checkpoint。两者不能同时指定。
+旧版 fusion-only checkpoint 不含 adapter/multiscale 权重，不能直接作为新版配置的
+resume_checkpoint；请重新从 baseline 使用 init_checkpoint，或将 adapter rank 设为
+0、关闭 multiscale fusion 后继续旧结构。
 
 auto 在当前夹爪打开时选择 role T，闭合时选择 role R。评估器也可以直接提供
 oracle_active_object_points [B,P,3] 和可选的
 oracle_active_object_valid [B]，此时不经过 T/R 自动选择。训练日志同时记录
-trans_loss（fused）和 trans_loss_raw（原 heatmap），便于判断 fusion 是改善还是
-伤害原预测。oracle_prior_strict 默认为 False：当前 role 缺失或存在多个候选时，
+trans_loss（最终 fused）和 trans_loss_raw（feature adapter 后、logit fusion 前）；
+fusion-only 模式下 trans_loss_raw 就是原 heatmap。oracle_prior_strict 默认为
+False：当前 role 缺失或存在多个候选时，
 该样本回退 trans_raw；oracle_prior_coverage 用于监控实际有效比例。数据审计时可
 显式设置 rvt.oracle_prior_strict True，使异常样本直接报错。
 
 use_oracle_objects=False、rvt.oracle_prior_mode=none 均为默认值；此时不创建
-fusion 参数、不要求 Oracle 字段，旧 replay、旧 checkpoint 和原始前向路径保持
+adapter/fusion 参数、不要求 Oracle 字段，旧 replay、旧 checkpoint 和原始前向路径保持
 不变。O2 在训练和评估时均使用 GT 实例，属于 privileged Oracle 上界，不应作为
 无 GT 的部署结果报告。
 
 #### O2 代码插入位置
 
-O2 不进入 Gemma 或视觉编码器，而是插在 MVT translation head 输出之后、
+O2 不修改 Gemma 或视觉塔权重。feature adapter 插在 PaliGemma 视觉特征与
+`up0` translation decoder 之间；多尺度 fusion 插在 translation logits 输出之后、
 translation loss 和坐标 decode 之前。核心实现位于
+`finetune/bridgevla/mvt/mvt_single.py::forward` 和
 `finetune/bridgevla/mvt/mvt.py::_apply_oracle_instance_prior`：
 
+    x = oracle_feature_adapter(x, prior, valid)
     raw_logits = stage_out['trans']
     stage_out['trans_raw'] = raw_logits.detach()
     stage_out['trans'] = fusion(raw_logits, prior, valid)
@@ -537,13 +547,12 @@ translation loss 和坐标 decode 之前。核心实现位于
    根据当前夹爪状态选择唯一 Target 或 Reference；
 3. `bridgevla_agent.py::update` 临时把 instance points 拼入场景点云，使其和
    场景及动作标签执行相同 SE(3) augmentation，完成后立即拆开；
-4. `mvt.py::_apply_oracle_instance_prior` 将完整实例点投影成三视图 prior，
-   再由 `OraclePriorFusion` 学习 residual；
-5. MVT1 在第一次 `self._apply_oracle_instance_prior(..., True, ...)` 调用处
-   融合，MVT2 在第二次 `self._apply_oracle_instance_prior(..., False, ...)`
-   调用处融合；
+4. `mvt.py::_build_oracle_instance_prior` 将完整实例点投影成对应 stage 坐标系的
+   三视图 prior；
+5. MVT1/MVT2 分别先由 `OraclePriorFeatureAdapter` 修改 translation feature，
+   再由 `OraclePriorFusion` 对 logits 做多尺度 residual 融合；
 6. `bridgevla_agent.py::update` 中的 `trans_loss` 使用 fused
-   `q_trans`，而 `trans_loss_raw` 仅用于监控原始预测。
+   `q_trans`，而 `trans_loss_raw` 仅用于监控 logit fusion 前的预测。
 
 Fusion head 定义在
 `finetune/bridgevla/models/oracle_prior.py::OraclePriorFusion`，结构为
@@ -597,9 +606,9 @@ TensorBoard 的 train_visualization/mvt1 和 train_visualization/mvt2 下。
 
     python -m unittest tests.test_oracle_prior tests.test_rlbench_training_utils tests.test_rlbench_training_visualization -v
 
-`tests.test_oracle_prior` 检查当前实例选择、完整实例点投影、零初始化 identity、
-无效 prior 回退、fusion 反向梯度和训练 GT/pred 张量拆分；
-`tests.test_rlbench_training_utils` 检查 fusion-only 冻结范围和
+`tests.test_oracle_prior` 检查当前实例选择、完整实例点投影、adapter/fusion
+零初始化 identity、无效 prior 回退、反向梯度和训练 GT/pred 张量拆分；
+`tests.test_rlbench_training_utils` 检查 fusion-only、adapter-only 冻结范围和
 batch/optimizer-step 规划；`tests.test_rlbench_training_visualization` 检查
 PNG 与 TensorBoard 拼图输出。
 

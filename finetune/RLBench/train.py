@@ -51,6 +51,7 @@ from utils.peract_utils_rlbench import (
 )
 from training_utils import (
     build_batch_plan,
+    freeze_for_oracle_adaptation,
     freeze_for_oracle_fusion,
     optimizer_steps_per_epoch,
 )
@@ -415,7 +416,7 @@ def load_initial_model_checkpoint(agent, path):
     unexpected = list(incompatible.unexpected_keys)
     disallowed_missing = [
         key for key in incompatible.missing_keys
-        if 'oracle_prior_fusion' not in key
+        if 'oracle_prior_' not in key
         and not key.endswith('language_model.lm_head.weight')
     ]
     if unexpected or disallowed_missing:
@@ -588,10 +589,18 @@ def experiment(cmd_args):
         )
     if (
         cmd_args.train_oracle_fusion_only
+        and cmd_args.train_oracle_adapter_only
+    ):
+        raise ValueError('Choose only one Oracle-only training mode.')
+    if (
+        (
+            cmd_args.train_oracle_fusion_only
+            or cmd_args.train_oracle_adapter_only
+        )
         and not (cmd_args.init_checkpoint or cmd_args.resume_checkpoint)
     ):
         raise ValueError(
-            'Fusion-only training requires --init_checkpoint with a trained '
+            'Oracle-only training requires --init_checkpoint with a trained '
             'baseline, or --resume_checkpoint with an O2 checkpoint.'
         )
 
@@ -771,17 +780,38 @@ def experiment(cmd_args):
             exp_cfg.rvt.oracle_prior_mode == 'o2_gt_instance'
         ),
         oracle_prior_hidden_channels=exp_cfg.oracle_prior_hidden_channels,
+        oracle_prior_adapter_rank=exp_cfg.oracle_prior_adapter_rank,
+        oracle_prior_multiscale_fusion=(
+            exp_cfg.oracle_prior_multiscale_fusion
+        ),
         **mvt_cfg,
     )
+    expected_oracle_params = None
     if cmd_args.train_oracle_fusion_only:
         if exp_cfg.rvt.oracle_prior_mode != 'o2_gt_instance':
             raise ValueError(
                 '--train_oracle_fusion_only requires O2 mode.'
             )
         fusion_params = freeze_for_oracle_fusion(backbone)
+        expected_oracle_params = fusion_params
         print(
             'Freeze original BridgeVLA; train Oracle fusion only: '
             f'{fusion_params / 1e6:.3f} million parameters'
+        )
+    elif cmd_args.train_oracle_adapter_only:
+        if exp_cfg.rvt.oracle_prior_mode != 'o2_gt_instance':
+            raise ValueError(
+                '--train_oracle_adapter_only requires O2 mode.'
+            )
+        if exp_cfg.oracle_prior_adapter_rank <= 0:
+            raise ValueError(
+                '--train_oracle_adapter_only requires adapter rank > 0.'
+            )
+        oracle_params = freeze_for_oracle_adaptation(backbone)
+        expected_oracle_params = oracle_params
+        print(
+            'Freeze original BridgeVLA; train Oracle adapter and fusion: '
+            f'{oracle_params:,} parameters ({oracle_params / 1e6:.3f}M)'
         )
     if exp_cfg.efficient_paligemma_forward:
         backbone.mvt1.enable_efficient_paligemma_forward()
@@ -840,8 +870,19 @@ def experiment(cmd_args):
                     break
 
     total_params = sum(p.numel() for p in agent._network.parameters() if p.requires_grad)
-    total_params_billion = total_params / 1e9  
-    print(f'Total trainable parameters: {total_params_billion:.2f} billion')
+    if (
+        expected_oracle_params is not None
+        and total_params != expected_oracle_params
+    ):
+        raise RuntimeError(
+            'Oracle-only freeze changed unexpectedly: expected '
+            f'{expected_oracle_params:,}, found {total_params:,} trainable.'
+        )
+    total_params_billion = total_params / 1e9
+    print(
+        f'Total trainable parameters: {total_params:,} '
+        f'({total_params_billion:.6f} billion)'
+    )
 
 
     agent.build(training=True, device=device_id)
@@ -1046,6 +1087,13 @@ if __name__ == "__main__":
     parser.add_argument(
         '--train_oracle_fusion_only', action='store_true',
         help='Freeze original BridgeVLA and train only O2 fusion heads.',
+    )
+    parser.add_argument(
+        '--train_oracle_adapter_only', action='store_true',
+        help=(
+            'Freeze original BridgeVLA and train O2 feature adapters plus '
+            'fusion heads.'
+        ),
     )
     parser.add_argument(
         '--train_replay_storage_dir',

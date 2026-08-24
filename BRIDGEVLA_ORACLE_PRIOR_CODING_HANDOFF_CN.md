@@ -18,18 +18,19 @@
 
 首版不运行 Qwen/SAM，不改 rotation、gripper、collision heads，不实现完整 world repair。
 
-### 当前最小实现状态（2026-08-20）
+### 当前轻量适配实现状态（2026-08-24）
 
 本轮先完成 O2 训练闭环，原则是尽量不改变原 BridgeVLA：
 
-- 新增模式默认关闭；`rvt.oracle_prior_mode=none` 时不创建 fusion 参数，也不读取
+- 新增模式默认关闭；`rvt.oracle_prior_mode=none` 时不创建 adapter/fusion 参数，也不读取
   Oracle replay 字段，旧 replay、旧 checkpoint 和原前向路径保持不变；
 - O2 使用当前 GT 实例的完整点云，而不是物体中心；点云经过与场景相同的 SE(3)
   增强、立方体归一化和 MVT 三视图投影；
-- 第一、二阶段均保留原 translation logits，并通过零初始化的轻量 residual fusion
-  head 学习实例 heatmap；最终 fused logits 继续使用原 translation loss；
+- 第一、二阶段均先用 rank-16 feature adapter 将实例 prior 注入 2048 维视觉特征，
+  再通过 hidden-64 多尺度 residual fusion 修正 translation logits；两段输出层均为
+  零初始化，最终 fused logits 继续使用原 translation loss；
 - 推荐从已训练 baseline checkpoint 初始化，冻结原 BridgeVLA（包括 Gemma），只训练
-  新增 fusion head；
+  feature adapter 与 fusion，约 21.6 万参数；
 - O2 参数集中在
   `finetune/RLBench/configs/rlbench_o2_gt_instance.yaml`；checkpoint 和冻结模式
   仍作为运行时命令行参数；
@@ -50,7 +51,7 @@
   字段缺失时会警告并回退 baseline，严格模式继续报错，因此缺少 provider 的结果
   不能作为 O2 指标。
 
-上述项目是后续增强，不阻塞当前 fusion-only O2 训练。若最小实验没有稳定收益，不应
+上述项目是后续增强，不阻塞当前 adapter-only O2 训练。若轻量实验没有稳定收益，不应
 提前增加这些复杂机制。
 
 当前 eval 可视化已经支持逐视角保存 `o2_prior`、`o2_raw` 和 `o2_fused` 及其
@@ -212,17 +213,20 @@ P_v(x)=\exp\left(-\frac{d(x,M_v)^2}{2\sigma^2}\right)
 
 ## 8. Translation heatmap 融合
 
-设原 logits 为 `L_raw`，GT instance heatmap 为 `P`。不再使用固定
-`alpha/floor` 约束，而训练轻量 residual head：
+设冻结 PaliGemma 的视觉特征为 `X`，GT instance heatmap 为 `P`。不再使用固定
+`alpha/floor` 约束，而训练低秩 feature adapter 与多尺度 residual head：
 
-    L_fused = L_raw + F_theta([L_raw, P])
+    X_adapt = X + A_phi([X, downsample(P)])
+    L_raw = up0(X_adapt)
+    L_fused = L_raw + F_theta([L_raw, P, L_raw * P])
 
-`F_theta` 的最后一层必须零初始化，因此启用 O2 后的初始输出严格等于
-`L_raw`；Oracle 无效样本的 residual 必须强制为零。训练输出同时保留
+`A_phi` 和 `F_theta` 的输出层必须零初始化，因此启用 O2 后的初始输出严格等于
+baseline；Oracle 无效样本的两段 residual 必须强制为零。训练输出同时保留
 `trans_raw`、`oracle_instance_prior` 和实际参与 loss/decode 的 `trans`。
 
-推荐主实验冻结原 BridgeVLA，只训练 fusion head；补充实验可冻结 Gemma、联合训练
-动作 head 与 fusion。两种设置必须分开报告，不能把重新微调整网的收益归因于 prior。
+推荐主实验冻结原 BridgeVLA，只训练 adapter 与 fusion；fusion-only 作为最小对照，
+完整动作 head 联合训练仅作为补充。三种设置必须分开报告，不能把重新微调整网的收益
+归因于 prior。
 
 ## 9. 评测 protocol
 

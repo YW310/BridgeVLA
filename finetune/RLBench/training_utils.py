@@ -77,3 +77,17 @@ def freeze_for_oracle_fusion(backbone) -> int:
     if trainable == 0:
         raise ValueError('No Oracle fusion parameters were created.')
     return trainable
+
+
+def freeze_for_oracle_adaptation(backbone) -> int:
+    for parameter in backbone.parameters():
+        parameter.requires_grad = False
+    trainable = 0
+    oracle_names = ('oracle_prior_fusion', 'oracle_prior_feature_adapter')
+    for name, parameter in backbone.named_parameters():
+        if any(module_name in name for module_name in oracle_names):
+            parameter.requires_grad = True
+            trainable += parameter.numel()
+    if trainable == 0:
+        raise ValueError('No Oracle adaptation parameters were created.')
+    return trainable
