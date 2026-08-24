@@ -486,17 +486,44 @@ prior 下采样后，通过低秩 feature adapter 注入 PaliGemma 的 2048 维�
 与 fusion 输出层均为零初始化，因此训练开始时与 baseline 完全一致；Oracle
 无效时也强制回退原始路径。
 
-推荐冻结整个原 BridgeVLA，只训练新增 feature adapter 和 fusion：
+#### 推荐主实验：Adapter + Fusion（约 21.6 万参数）
 
-    bash train.sh --exp_cfg_path configs/rlbench_o2_gt_instance.yaml --train_replay_storage_dir /home/yiwei/project/BridgeVLA/LPY/BridgeVLA_RLBench_TRAIN_TASK_OBJECT_Buffer --init_checkpoint /home/yiwei/project/BridgeVLA/LPY/BridgeVLA/checkpoints/RLBench/model_80.pth --train_oracle_adapter_only
+冻结整个原 BridgeVLA，只训练新增 feature adapter 和 fusion：
 
-该配置的 rank=16、hidden=64 两阶段模型约训练 21.6 万参数，而不是完整动作网络的
-0.54B。若只做最小 fusion 对照实验，可将命令末尾改为
-`--train_oracle_fusion_only`；此模式不会训练 feature adapter。
+```bash
+bash train.sh \
+    --exp_cfg_path configs/rlbench_o2_gt_instance.yaml \
+    --train_replay_storage_dir /home/yiwei/project/BridgeVLA/LPY/BridgeVLA_RLBench_TRAIN_TASK_OBJECT_Buffer \
+    --init_checkpoint /home/yiwei/project/BridgeVLA/LPY/BridgeVLA/checkpoints/RLBench/model_80.pth \
+    --train_oracle_adapter_only
+```
 
-只有确实需要完整微调约 0.54B 动作参数、但不 fine-tune Gemma 时，才改用：
+该配置使用 rank=16、hidden=64，两阶段模型精确训练 215,652 个参数。
 
-    bash train.sh --exp_cfg_path configs/rlbench_o2_gt_instance.yaml --train_replay_storage_dir /home/yiwei/project/BridgeVLA/LPY/BridgeVLA_RLBench_TRAIN_TASK_OBJECT_Buffer --init_checkpoint /home/yiwei/project/BridgeVLA/LPY/BridgeVLA/checkpoints/RLBench/model_80.pth --freeze_language_model --freeze_vision_tower
+#### 最小消融：仅 Fusion
+
+该设置只训练 logit fusion，不训练 feature adapter，不作为推荐主实验：
+
+```bash
+bash train.sh \
+    --exp_cfg_path configs/rlbench_o2_gt_instance.yaml \
+    --train_replay_storage_dir /home/yiwei/project/BridgeVLA/LPY/BridgeVLA_RLBench_TRAIN_TASK_OBJECT_Buffer \
+    --init_checkpoint /home/yiwei/project/BridgeVLA/LPY/BridgeVLA/checkpoints/RLBench/model_80.pth \
+    --train_oracle_fusion_only
+```
+
+#### 补充实验：完整动作网络联合训练（约 0.54B 参数）
+
+只有确实需要完整微调动作网络、但不 fine-tune Gemma 和视觉塔时才使用：
+
+```bash
+bash train.sh \
+    --exp_cfg_path configs/rlbench_o2_gt_instance.yaml \
+    --train_replay_storage_dir /home/yiwei/project/BridgeVLA/LPY/BridgeVLA_RLBench_TRAIN_TASK_OBJECT_Buffer \
+    --init_checkpoint /home/yiwei/project/BridgeVLA/LPY/BridgeVLA/checkpoints/RLBench/model_80.pth \
+    --freeze_language_model \
+    --freeze_vision_tower
+```
 
 专用配置文件为
 `finetune/RLBench/configs/rlbench_o2_gt_instance.yaml`，集中配置 Oracle replay
