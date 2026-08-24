@@ -4,8 +4,8 @@
 
 exp_id: rlbench_o2_gt_instance
 tasks: all
-bs: 4
-num_workers: 3
+bs: 48
+num_workers: 4
 epochs: 50
 train_iter: 38400
 global_batch_size: 192

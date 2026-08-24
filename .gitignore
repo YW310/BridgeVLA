@@ -80,3 +80,4 @@ LPY
 exp/RLBench
 checkpoints
 *_visualizations*
+finetune/RLBench/train/*
