@@ -8,6 +8,7 @@ from finetune.bridgevla.models.oracle_prior import (
     build_training_visualization_payload,
     rasterize_instance_points,
     select_active_instance_points,
+    select_relation_instance_points,
 )
 
 
@@ -59,11 +60,15 @@ class OraclePriorTest(unittest.TestCase):
         )
 
     def test_recommended_oracle_modules_are_lightweight(self):
-        adapter = OraclePriorFeatureAdapter(2048, rank=16)
-        fusion = OraclePriorFusion(64, multiscale=True)
+        adapter = OraclePriorFeatureAdapter(
+            2048, rank=16, prior_channels=2,
+        )
+        fusion = OraclePriorFusion(
+            64, multiscale=True, prior_channels=2,
+        )
         per_stage = sum(p.numel() for p in adapter.parameters())
         per_stage += sum(p.numel() for p in fusion.parameters())
-        self.assertEqual(per_stage * 2, 215652)
+        self.assertEqual(per_stage * 2, 220548)
 
     def test_feature_adapter_keeps_invalid_sample_unchanged(self):
         adapter = OraclePriorFeatureAdapter(4, rank=2)
@@ -87,6 +92,58 @@ class OraclePriorTest(unittest.TestCase):
         self.assertEqual(slots.tolist(), [0, 1])
         self.assertTrue(selected_valid.all())
         self.assertEqual(selected[:, 0, 0].tolist(), [10.0, 20.0])
+
+    def test_relation_selection_keeps_target_then_reference(self):
+        points = torch.zeros(1, 4, 3, 3)
+        points[:, 1] = 20
+        points[:, 3] = 40
+        selected, selected_valid, slots = select_relation_instance_points(
+            points,
+            torch.ones(1, 4, dtype=torch.bool),
+            torch.tensor([[0, 2, 0, 1]]),
+            strict=True,
+        )
+        self.assertEqual(slots.tolist(), [[3, 1]])
+        self.assertEqual(selected_valid.tolist(), [[True, True]])
+        self.assertEqual(
+            selected[:, :, 0, 0].tolist(), [[40.0, 20.0]]
+        )
+
+    def test_relation_non_strict_missing_role_disables_pair(self):
+        selected, selected_valid, slots = select_relation_instance_points(
+            torch.ones(1, 2, 3, 3),
+            torch.ones(1, 2, dtype=torch.bool),
+            torch.tensor([[1, 0]]),
+            strict=False,
+        )
+        self.assertEqual(selected_valid.tolist(), [[True, False]])
+        self.assertEqual(slots.tolist(), [[0, -1]])
+        self.assertEqual(selected[:, 1].count_nonzero().item(), 0)
+
+    def test_relation_fusion_uses_pair_validity(self):
+        fusion = OraclePriorFusion(
+            4, multiscale=True, prior_channels=2,
+        )
+        torch.nn.init.ones_(fusion.net[-1].weight)
+        logits = torch.randn(2, 3, 5, 5)
+        prior = torch.rand(2, 3, 2, 5, 5)
+        fused = fusion(
+            logits, prior,
+            torch.tensor([[True, True], [True, False]]),
+        )
+        torch.testing.assert_close(fused[1], logits[1])
+
+    def test_relation_adapter_is_identity_at_initialization(self):
+        adapter = OraclePriorFeatureAdapter(
+            8, rank=3, prior_channels=2,
+        )
+        features = torch.randn(6, 8, 4, 4)
+        prior = torch.rand(2, 3, 2, 8, 8)
+        adapted = adapter(
+            features, prior,
+            torch.tensor([[True, True], [True, True]]),
+        )
+        torch.testing.assert_close(adapted, features)
 
     def test_strict_selection_rejects_ambiguous_gt(self):
         with self.assertRaisesRegex(ValueError, 'exactly one'):
@@ -129,6 +186,12 @@ class OraclePriorTest(unittest.TestCase):
             'oracle_instance_prior': torch.rand(
                 batch_size, views, height, width
             ),
+            'oracle_target_prior': torch.rand(
+                batch_size, views, height, width
+            ),
+            'oracle_reference_prior': torch.rand(
+                batch_size, views, height, width
+            ),
         }
         stage_two = {
             'trans': torch.randn(batch_size, views, height, width),
@@ -162,6 +225,14 @@ class OraclePriorTest(unittest.TestCase):
         self.assertEqual(tuple(payload), ('mvt1', 'mvt2'))
         self.assertEqual(payload['mvt1']['gt'].shape, (views, height, width))
         self.assertEqual(payload['mvt2']['gt'].shape, (views, height, width))
+        self.assertEqual(
+            payload['mvt1']['target_prior'].shape,
+            (views, height, width),
+        )
+        self.assertEqual(
+            payload['mvt1']['reference_prior'].shape,
+            (views, height, width),
+        )
         self.assertTrue(
             torch.allclose(
                 payload['mvt1']['pred'].sum(dim=(-2, -1)),

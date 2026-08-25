@@ -43,5 +43,7 @@ rvt:
   img_aug: 0.0
   oracle_prior_mode: o2_gt_instance
   oracle_prior_sigma: 2.0
+  # Compatibility only; ignored while relation mode is enabled.
   oracle_prior_active_role: auto
   oracle_prior_strict: False
+  oracle_prior_relation: True

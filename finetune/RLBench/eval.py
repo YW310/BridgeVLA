@@ -114,6 +114,7 @@ def load_agent(
         oracle_prior_multiscale_fusion=(
             exp_cfg.oracle_prior_multiscale_fusion
         ),
+        oracle_prior_relation=exp_cfg.rvt.oracle_prior_relation,
         **mvt_cfg,
     )
 

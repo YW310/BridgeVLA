@@ -71,8 +71,10 @@ _C.rvt.move_pc_in_bound = True
 # Optional privileged O2 prior. Defaults preserve the historical forward path.
 _C.rvt.oracle_prior_mode = 'none'
 _C.rvt.oracle_prior_sigma = 2.0
+# Used only by the legacy single-prior path.
 _C.rvt.oracle_prior_active_role = 'auto'
 _C.rvt.oracle_prior_strict = False
+_C.rvt.oracle_prior_relation = False
 
 # arguments present in peract official
 _C.peract_official = CN()

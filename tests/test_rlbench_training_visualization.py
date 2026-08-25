@@ -51,6 +51,8 @@ class RLBenchTrainingVisualizationTest(unittest.TestCase):
             'mvt1': {
                 'input': torch.rand(views, 3, height, width),
                 'gt': torch.rand(views, height, width),
+                'target_prior': torch.rand(views, height, width),
+                'reference_prior': torch.rand(views, height, width),
                 'prior': torch.rand(views, height, width),
                 'raw_pred': torch.rand(views, height, width),
                 'pred': torch.rand(views, height, width),

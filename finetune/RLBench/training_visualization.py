@@ -9,6 +9,8 @@ from PIL import Image, ImageDraw
 
 
 _COLUMNS = (
+    ('target_prior', 'Target prior'),
+    ('reference_prior', 'Reference prior'),
     ("input", "Input"),
     ("gt", "GT"),
     ("prior", "Oracle prior"),
@@ -75,8 +77,18 @@ def _stage_montage(
         raise KeyError("training visualization requires input and gt")
     inputs = _input_images(stage_payload["input"])
     view_count, height, width, _ = inputs.shape
+    title_by_key = dict(_COLUMNS)
+    column_order = (
+        'input', 'gt', 'target_prior', 'reference_prior',
+        'prior', 'raw_pred', 'pred',
+    )
+    columns = tuple(
+        (key, title_by_key[key])
+        for key in column_order
+        if key == 'input' or key in stage_payload
+    )
     heatmaps: Dict[str, np.ndarray] = {}
-    for key, _ in _COLUMNS:
+    for key, _ in columns:
         if key == "input" or key not in stage_payload:
             continue
         value = stage_payload[key]
@@ -91,13 +103,13 @@ def _stage_montage(
     header_height = 42
     montage = Image.new(
         "RGB",
-        (label_width + len(_COLUMNS) * width, header_height + view_count * height),
+        (label_width + len(columns) * width, header_height + view_count * height),
         color=(245, 245, 245),
     )
     draw = ImageDraw.Draw(montage)
     sample_text = f"step={step} task={task} goal={language_goal}"[:180]
     draw.text((4, 2), sample_text, fill=(0, 0, 0))
-    for column, (_, title) in enumerate(_COLUMNS):
+    for column, (_, title) in enumerate(columns):
         draw.text(
             (label_width + column * width + 4, 22),
             title,
@@ -108,7 +120,7 @@ def _stage_montage(
     for view_index in range(view_count):
         y = header_height + view_index * height
         draw.text((4, y + 4), f"View {view_index}", fill=(0, 0, 0))
-        for column, (key, _) in enumerate(_COLUMNS):
+        for column, (key, _) in enumerate(columns):
             x = label_width + column * width
             if key == "input":
                 cell = _as_uint8_image(inputs[view_index], cell_size)

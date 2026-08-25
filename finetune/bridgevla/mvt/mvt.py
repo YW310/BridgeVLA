@@ -72,6 +72,7 @@ class MVT(nn.Module):
         oracle_prior_hidden_channels=16,
         oracle_prior_adapter_rank=0,
         oracle_prior_multiscale_fusion=False,
+        oracle_prior_relation=False,
     ):
         super().__init__()
         if oracle_prior_adapter_rank < 0:
@@ -95,6 +96,7 @@ class MVT(nn.Module):
 
         del args['oracle_prior_adapter_rank']
         del args['oracle_prior_multiscale_fusion']
+        del args['oracle_prior_relation']
 
         self.rot_ver = rot_ver
         self.num_rot = num_rot
@@ -103,10 +105,13 @@ class MVT(nn.Module):
         self.st_wpt_loc_aug = st_wpt_loc_aug
         self.st_wpt_loc_inp_no_noise = st_wpt_loc_inp_no_noise
         self.img_aug_2 = img_aug_2
+        self.oracle_prior_relation = bool(oracle_prior_relation)
+        oracle_prior_channels = 2 if oracle_prior_relation else 1
         self.oracle_prior_fusion1 = (
             OraclePriorFusion(
                 oracle_prior_hidden_channels,
                 multiscale=oracle_prior_multiscale_fusion,
+                prior_channels=oracle_prior_channels,
             )
             if oracle_prior_fusion else None
         )
@@ -114,6 +119,7 @@ class MVT(nn.Module):
             OraclePriorFusion(
                 oracle_prior_hidden_channels,
                 multiscale=oracle_prior_multiscale_fusion,
+                prior_channels=oracle_prior_channels,
             )
             if oracle_prior_fusion and stage_two else None
         )
@@ -138,12 +144,14 @@ class MVT(nn.Module):
         self.oracle_prior_feature_adapter1 = (
             OraclePriorFeatureAdapter(
                 self.mvt1.vlm_dim, oracle_prior_adapter_rank,
+                prior_channels=oracle_prior_channels,
             )
             if use_adapter else None
         )
         self.oracle_prior_feature_adapter2 = (
             OraclePriorFeatureAdapter(
                 self.mvt1.vlm_dim, oracle_prior_adapter_rank,
+                prior_channels=oracle_prior_channels,
             )
             if use_adapter and stage_two else None
         )
@@ -205,10 +213,41 @@ class MVT(nn.Module):
     ):
         if points is None:
             return None
+        if self.oracle_prior_relation and points.ndim != 4:
+            raise ValueError(
+                'relation mode requires oracle prior points [B,2,P,3]'
+            )
+        if not self.oracle_prior_relation and points.ndim != 3:
+            raise ValueError(
+                'single-prior mode requires oracle prior points [B,P,3]'
+            )
+        relation_shape = None
+        if points.ndim == 4:
+            batch_size, role_count, num_points, _ = points.shape
+            relation_shape = (batch_size, role_count, num_points)
+            points = points.reshape(batch_size, role_count * num_points, 3)
+        elif points.ndim != 3:
+            raise ValueError(
+                'oracle prior points must have shape [B,P,3] or [B,R,P,3]'
+            )
         projected = self.get_pt_loc_on_img(
             points, mvt1_or_mvt2=first_stage, dyn_cam_info=None,
             out=None if first_stage else full_out,
         )
+        if relation_shape is not None:
+            batch_size, role_count, num_points = relation_shape
+            projected = projected.reshape(
+                batch_size, role_count, num_points,
+                projected.shape[-2], 2,
+            )
+            role_priors = [
+                rasterize_instance_points(
+                    projected[:, role], valid[:, role],
+                    (self.img_size, self.img_size), sigma,
+                )
+                for role in range(role_count)
+            ]
+            return torch.stack(role_priors, dim=2)
         return rasterize_instance_points(
             projected, valid, (self.img_size, self.img_size), sigma,
         )
@@ -225,7 +264,12 @@ class MVT(nn.Module):
         raw_logits = stage_out['trans']
         stage_out['trans_raw'] = raw_logits.detach()
         stage_out['trans'] = fusion(raw_logits, prior, valid)
-        stage_out['oracle_instance_prior'] = prior.detach()
+        if prior.ndim == 5:
+            stage_out['oracle_target_prior'] = prior[:, :, 0].detach()
+            stage_out['oracle_reference_prior'] = prior[:, :, 1].detach()
+            stage_out['oracle_instance_prior'] = prior.amax(dim=2).detach()
+        else:
+            stage_out['oracle_instance_prior'] = prior.detach()
 
 
 

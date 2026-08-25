@@ -35,6 +35,7 @@ from bridgevla.models.oracle_prior import (
     build_training_visualization_payload,
     latest_replay_value,
     select_active_instance_points,
+    select_relation_instance_points,
     validate_oracle_prior_config,
 )
 from bridgevla.models.optimizer_utils import parameter_learning_rate
@@ -441,6 +442,7 @@ class RVTAgent:
         oracle_prior_sigma: float = 2.0,
         oracle_prior_active_role: str = 'auto',
         oracle_prior_strict: bool = False,
+        oracle_prior_relation: bool = False,
         log_dir="",
     ):
         self._network = network
@@ -475,6 +477,7 @@ class RVTAgent:
         self.oracle_prior_sigma = oracle_prior_sigma
         self.oracle_prior_active_role = oracle_prior_active_role
         self.oracle_prior_strict = oracle_prior_strict
+        self.oracle_prior_relation = bool(oracle_prior_relation)
         self._oracle_missing_warning_shown = False
 
         print("Cameras:",self.cameras)
@@ -560,6 +563,64 @@ class RVTAgent:
     def _select_oracle_prior_points(self, replay_sample, allow_missing=False):
         if not self.oracle_prior_enabled:
             return None, None, None
+        if self.oracle_prior_relation:
+            pair_keys = (
+                'oracle_target_object_points',
+                'oracle_reference_object_points',
+            )
+            if any(key in replay_sample for key in pair_keys):
+                missing_pair = [
+                    key for key in pair_keys if key not in replay_sample
+                ]
+                if missing_pair:
+                    raise KeyError(
+                        'O2 relation input requires both Target and Reference: '
+                        + ', '.join(missing_pair)
+                    )
+                role_points = [
+                    latest_replay_value(replay_sample[key], 3).float()
+                    for key in pair_keys
+                ]
+                points = torch.stack(role_points, dim=1)
+                role_valid = []
+                for role_name, role_points_value in zip(
+                    ('target', 'reference'), role_points,
+                ):
+                    valid_value = replay_sample.get(
+                        f'oracle_{role_name}_object_valid'
+                    )
+                    if valid_value is None:
+                        valid_value = torch.ones(
+                            role_points_value.shape[0],
+                            device=role_points_value.device,
+                            dtype=torch.bool,
+                        )
+                    else:
+                        valid_value = latest_replay_value(
+                            valid_value, 1,
+                        ).bool()
+                    role_valid.append(valid_value)
+                valid = torch.stack(role_valid, dim=1)
+                slots = torch.full(
+                    (points.shape[0], 2), -1,
+                    device=points.device, dtype=torch.long,
+                )
+                return points, valid, slots
+            if 'oracle_active_object_points' in replay_sample:
+                message = (
+                    'O2 relation mode cannot infer a Target/Reference relation '
+                    'from oracle_active_object_points; provide the full Oracle '
+                    'object fields or both direct role point tensors.'
+                )
+                if allow_missing and not self.oracle_prior_strict:
+                    if not self._oracle_missing_warning_shown:
+                        print(
+                            'WARNING: ' + message + ' Falling back to raw '
+                            'BridgeVLA logits.', flush=True,
+                        )
+                        self._oracle_missing_warning_shown = True
+                    return None, None, None
+                raise KeyError(message)
         if 'oracle_active_object_points' in replay_sample:
             points = latest_replay_value(
                 replay_sample['oracle_active_object_points'], 3,
@@ -575,10 +636,12 @@ class RVTAgent:
                 (points.shape[0],), -1, device=points.device, dtype=torch.long
             )
             return points, valid, slots
-        required = (
+        required = [
             'oracle_object_points', 'oracle_object_valid',
-            'oracle_object_roles', 'low_dim_state',
-        )
+            'oracle_object_roles',
+        ]
+        if not self.oracle_prior_relation:
+            required.append('low_dim_state')
         missing = [key for key in required if key not in replay_sample]
         if missing:
             if allow_missing and not self.oracle_prior_strict:
@@ -601,6 +664,10 @@ class RVTAgent:
         roles = latest_replay_value(
             replay_sample['oracle_object_roles'], 2,
         ).long()
+        if self.oracle_prior_relation:
+            return select_relation_instance_points(
+                points, valid, roles, strict=self.oracle_prior_strict,
+            )
         low_dim = latest_replay_value(replay_sample['low_dim_state'], 2)
         return select_active_instance_points(
             points, valid, roles, gripper_open=low_dim[:, 0],
@@ -778,9 +845,20 @@ class RVTAgent:
         tasks = replay_sample["tasks"]
         return_out = {}
         if oracle_valid is not None:
-            return_out['oracle_prior_coverage'] = (
-                oracle_valid.float().mean().item()
-            )
+            if oracle_valid.ndim == 2:
+                return_out['oracle_target_coverage'] = (
+                    oracle_valid[:, 0].float().mean().item()
+                )
+                return_out['oracle_reference_coverage'] = (
+                    oracle_valid[:, 1].float().mean().item()
+                )
+                return_out['oracle_prior_coverage'] = (
+                    oracle_valid.all(dim=1).float().mean().item()
+                )
+            else:
+                return_out['oracle_prior_coverage'] = (
+                    oracle_valid.float().mean().item()
+                )
 
         obs, pcd = rlbench_utils._preprocess_inputs(replay_sample, self.cameras)
         
@@ -791,13 +869,22 @@ class RVTAgent:
             )
 
             oracle_scene_point_count = None
+            oracle_point_shape = (
+                tuple(oracle_points.shape[1:])
+                if oracle_points is not None else None
+            )
             if (
                 oracle_points is not None
                 and self._transform_augmentation
                 and backprop
             ):
                 oracle_scene_point_count = pc.shape[1]
-                pc = torch.cat((pc, oracle_points.to(pc.device)), dim=1)
+                flat_oracle_points = oracle_points.reshape(
+                    oracle_points.shape[0], -1, 3,
+                )
+                pc = torch.cat(
+                    (pc, flat_oracle_points.to(pc.device)), dim=1,
+                )
 
             if self._transform_augmentation and backprop:
                 action_trans_con, action_rot, pc = apply_se3_aug_con(
@@ -810,7 +897,9 @@ class RVTAgent:
                 action_trans_con = torch.tensor(action_trans_con).to(pc.device)
                 action_rot = torch.tensor(action_rot).to(pc.device)
                 if oracle_scene_point_count is not None:
-                    oracle_points = pc[:, oracle_scene_point_count:]
+                    oracle_points = pc[:, oracle_scene_point_count:].reshape(
+                        pc.shape[0], *oracle_point_shape,
+                    )
                     pc = pc[:, :oracle_scene_point_count]
 
             # TODO: vectorize
@@ -844,13 +933,13 @@ class RVTAgent:
                 oracle_points = torch.stack([
                     mvt_utils.place_pc_in_cube(
                         scene_pc,
-                        app_pc=instance_points.to(
+                        app_pc=instance_points.reshape(-1, 3).to(
                             device=scene_pc.device, dtype=scene_pc.dtype
                         ),
                         with_mean_or_bounds=self._place_with_mean,
                         scene_bounds=None if self._place_with_mean
                         else self.scene_bounds,
-                    )[0]
+                    )[0].reshape(oracle_point_shape)
                     for scene_pc, instance_points in zip(pc, oracle_points)
                 ])
 
@@ -1244,6 +1333,10 @@ class RVTAgent:
         pc_new = []
         rev_trans = []
         oracle_points_local = [] if oracle_points is not None else None
+        oracle_point_shape = (
+            tuple(oracle_points.shape[1:])
+            if oracle_points is not None else None
+        )
         for batch_index, _pc in enumerate(pc):
             a, b = mvt_utils.place_pc_in_cube(
                 _pc,
@@ -1256,13 +1349,13 @@ class RVTAgent:
                 oracle_points_local.append(
                     mvt_utils.place_pc_in_cube(
                         _pc,
-                        app_pc=oracle_points[batch_index].to(
+                        app_pc=oracle_points[batch_index].reshape(-1, 3).to(
                             device=_pc.device, dtype=_pc.dtype
                         ),
                         with_mean_or_bounds=self._place_with_mean,
                         scene_bounds=None if self._place_with_mean
                         else self.scene_bounds,
-                    )[0]
+                    )[0].reshape(oracle_point_shape)
                 )
         pc = pc_new
         if oracle_points_local is not None:
@@ -1317,6 +1410,20 @@ class RVTAgent:
                     raw = translation_heatmap_probabilities(
                         stage_out['trans_raw'][0]
                     )
+                    if 'oracle_target_prior' in stage_out:
+                        save_heatmap_views(
+                            stage_out['oracle_target_prior'][0],
+                            stage_dir,
+                            'o2_target_prior',
+                            stage_img,
+                        )
+                    if 'oracle_reference_prior' in stage_out:
+                        save_heatmap_views(
+                            stage_out['oracle_reference_prior'][0],
+                            stage_dir,
+                            'o2_reference_prior',
+                            stage_img,
+                        )
                     save_heatmap_views(
                         stage_out['oracle_instance_prior'][0],
                         stage_dir,

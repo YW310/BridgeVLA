@@ -480,13 +480,15 @@ use_oracle_objects 默认为 False，因此原始非 Oracle replay 的加载行�
 
 ### O2：训练当前应操作实例 GT
 
-O2 不把 GT heatmap 作为固定 mask 或手工 logit 约束。当前实现先把实例三视角
-prior 下采样后，通过低秩 feature adapter 注入 PaliGemma 的 2048 维视觉特征，
-再由多尺度 residual fusion 融合 translation logits、prior 和二者交互项。adapter
+O2 不把 GT heatmap 作为固定 mask 或手工 logit 约束。主配置会同时选择唯一的
+Target 与 Reference，按固定顺序组成双通道三视角 prior `[P_T, P_R]`；两组点云经过
+完全相同的增强、归一化和投影，因此通道间保留当前状态下的空间关系。双通道 prior
+下采样后，通过低秩 feature adapter 注入 PaliGemma 的 2048 维视觉特征，再由多尺度
+residual fusion 融合 translation logits、两个 prior 及交互项。adapter
 与 fusion 输出层均为零初始化，因此训练开始时与 baseline 完全一致；Oracle
-无效时也强制回退原始路径。
+任一角色缺失或不唯一时，relation residual 整体关闭并强制回退原始路径。
 
-#### 推荐主实验：Adapter + Fusion（约 21.6 万参数）
+#### 推荐主实验：Adapter + Fusion（约 22.1 万参数）
 
 冻结整个原 BridgeVLA，只训练新增 feature adapter 和 fusion：
 
@@ -498,7 +500,8 @@ bash train.sh \
     --train_oracle_adapter_only
 ```
 
-该配置使用 rank=16、hidden=64，两阶段模型精确训练 215,652 个参数。
+该配置使用双通道 Target/Reference prior、rank=16、hidden=64，两阶段模型精确训练
+220,548 个参数。
 
 #### 最小消融：仅 Fusion
 
@@ -527,11 +530,39 @@ bash train.sh \
 
 专用配置文件为
 `finetune/RLBench/configs/rlbench_o2_gt_instance.yaml`，集中配置 Oracle replay
-shape、adapter rank、多尺度 fusion、active role 和 heatmap sigma。checkpoint
+shape、adapter rank、多尺度 fusion、relation 模式和 heatmap sigma。checkpoint
 路径以及 `--train_oracle_adapter_only` / `--train_oracle_fusion_only` /
 `--freeze_language_model` 属于单次运行策略，
 仍通过命令行指定。临时修改单个值时，仍可在配置文件之后使用
 `--exp_cfg_opts 'tasks stack_blocks rvt.oracle_prior_strict True'` 覆盖。
+
+#### 开启 Target/Reference relation 输入
+
+O2 专用配置已经默认开启双通道输入，因此使用该 YAML 时不需要额外添加命令行参数：
+
+```yaml
+rvt:
+  oracle_prior_relation: True
+```
+
+如果使用其他实验配置，可在命令行显式开启：
+
+```bash
+bash train.sh \
+    --exp_cfg_path configs/rlbench.yaml \
+    --exp_cfg_opts 'rvt.oracle_prior_relation True' \
+    [其他训练参数]
+```
+
+如需恢复旧的 Target/Reference 二选一单 prior 模式，可覆盖为：
+
+```bash
+--exp_cfg_opts 'rvt.oracle_prior_relation False'
+```
+
+`rvt.oracle_prior_relation` 决定 Oracle 输入采用双通道 T/R 还是旧单 prior；
+`--train_oracle_adapter_only` 决定冻结范围和可训练模块。两个参数作用不同，推荐主实验
+同时使用 O2 专用 YAML 和 `--train_oracle_adapter_only`。
 
 init_checkpoint 只初始化模型权重，adapter/fusion 保持零初始化，epoch 和 optimizer 从头开始；
 继续已开始的 O2 训练则使用 resume_checkpoint。两者不能同时指定。
@@ -539,13 +570,17 @@ init_checkpoint 只初始化模型权重，adapter/fusion 保持零初始化，e
 resume_checkpoint；请重新从 baseline 使用 init_checkpoint，或将 adapter rank 设为
 0、关闭 multiscale fusion 后继续旧结构。
 
-auto 在当前夹爪打开时选择 role T，闭合时选择 role R。评估器也可以直接提供
-oracle_active_object_points [B,P,3] 和可选的
-oracle_active_object_valid [B]，此时不经过 T/R 自动选择。训练日志同时记录
+主配置中的 `rvt.oracle_prior_relation=True` 会同时输入唯一 T/R，
+`oracle_prior_active_role` 在该模式下不参与选择；它仅用于兼容旧的单 prior 模式。
+在线评估器可直接同时提供 `oracle_target_object_points [B,P,3]`、
+`oracle_reference_object_points [B,P,3]` 及对应可选 valid，或提供完整的
+`oracle_object_points/valid/roles`。relation 模式不接受旧的单个
+`oracle_active_object_points` 作为有效 O2 输入，因为它无法表达 T/R 关系。训练日志同时记录
 trans_loss（最终 fused）和 trans_loss_raw（feature adapter 后、logit fusion 前）；
 fusion-only 模式下 trans_loss_raw 就是原 heatmap。oracle_prior_strict 默认为
-False：当前 role 缺失或存在多个候选时，
-该样本回退 trans_raw；oracle_prior_coverage 用于监控实际有效比例。数据审计时可
+False：T/R 任一缺失或存在多个候选时，该样本回退 trans_raw；
+`oracle_target_coverage`、`oracle_reference_coverage` 和 `oracle_prior_coverage`
+分别监控两个角色及完整 pair 的有效比例。数据审计时可
 显式设置 rvt.oracle_prior_strict True，使异常样本直接报错。
 
 use_oracle_objects=False、rvt.oracle_prior_mode=none 均为默认值；此时不创建
@@ -571,19 +606,20 @@ translation loss 和坐标 decode 之前。核心实现位于
 1. `finetune/RLBench/utils/dataset.py::create_replay` 注册 Oracle points、
    valid、roles 等 replay 字段；
 2. `finetune/bridgevla/models/bridgevla_agent.py::_select_oracle_prior_points`
-   根据当前夹爪状态选择唯一 Target 或 Reference；
-3. `bridgevla_agent.py::update` 临时把 instance points 拼入场景点云，使其和
+   同时选择唯一 Target 和 Reference，并固定输出顺序为 `[T,R]`；
+3. `bridgevla_agent.py::update` 临时把两组 instance points 展平并拼入场景点云，使其和
    场景及动作标签执行相同 SE(3) augmentation，完成后立即拆开；
-4. `mvt.py::_build_oracle_instance_prior` 将完整实例点投影成对应 stage 坐标系的
-   三视图 prior；
+4. `mvt.py::_build_oracle_instance_prior` 将两组完整实例点分别投影成对应 stage
+   坐标系的三视图 prior `[B,V,2,H,W]`；
 5. MVT1/MVT2 分别先由 `OraclePriorFeatureAdapter` 修改 translation feature，
    再由 `OraclePriorFusion` 对 logits 做多尺度 residual 融合；
 6. `bridgevla_agent.py::update` 中的 `trans_loss` 使用 fused
    `q_trans`，而 `trans_loss_raw` 仅用于监控 logit fusion 前的预测。
 
 Fusion head 定义在
-`finetune/bridgevla/models/oracle_prior.py::OraclePriorFusion`，结构为
-`Conv(2→hidden) → GELU → Conv(hidden→1)`，最后一层零初始化。因此启用 O2
+`finetune/bridgevla/models/oracle_prior.py::OraclePriorFusion`。双通道主配置的
+基础输入为 `[L_raw,P_T,P_R]`，多尺度分支额外接收
+`[L_raw*P_T,L_raw*P_R,P_T*P_R]`；最后一层零初始化。因此启用 O2
 后的初始 translation 输出与 baseline 完全相同。
 
 O2 评估可视化需要同时启用开关和输出目录：
@@ -594,7 +630,9 @@ O2 评估可视化需要同时启用开关和输出目录：
 
 - `original_N.png`、`gray_N.png`、`overlay_N.png`：输入视图、最终 fused
   translation heatmap 和其最大值位置；
-- `o2_prior_N.png`、`o2_prior_overlay_N.png`：GT instance prior；
+- `o2_target_prior_N.png`、`o2_target_prior_overlay_N.png`：GT Target prior；
+- `o2_reference_prior_N.png`、`o2_reference_prior_overlay_N.png`：GT Reference prior；
+- `o2_prior_N.png`、`o2_prior_overlay_N.png`：两者逐像素最大值的合并检查图；
 - `o2_raw_N.png`、`o2_raw_overlay_N.png`：原始 BridgeVLA heatmap；
 - `o2_fused_N.png`、`o2_fused_overlay_N.png`：融合后 heatmap。
 
@@ -619,7 +657,7 @@ O2 评估可视化需要同时启用开关和输出目录：
 interval 使用 optimizer step，而不是梯度累积的 micro-step。每次只采集 rank 0
 最后一个 micro-batch 的第一个样本，并分别生成 MVT1/MVT2 拼图。每张拼图包含
 Input、经过当前 SE(3) 增强和投影后的 GT translation heatmap、
-Oracle prior、Raw pred 和 Fused pred。
+Target prior、Reference prior、合并 prior、Raw pred 和 Fused pred。
 
 当 save_png=True 时，图片保存到
 `<log_dir>/<output_dir>/step_XXXXXXXX/{mvt1,mvt2}.png`。当
@@ -633,7 +671,7 @@ TensorBoard 的 train_visualization/mvt1 和 train_visualization/mvt2 下。
 
     python -m unittest tests.test_oracle_prior tests.test_rlbench_training_utils tests.test_rlbench_training_visualization -v
 
-`tests.test_oracle_prior` 检查当前实例选择、完整实例点投影、adapter/fusion
+`tests.test_oracle_prior` 检查固定 `[T,R]` 选择、缺失角色回退、双通道实例点投影、adapter/fusion
 零初始化 identity、无效 prior 回退、反向梯度和训练 GT/pred 张量拆分；
 `tests.test_rlbench_training_utils` 检查 fusion-only、adapter-only 冻结范围和
 batch/optimizer-step 规划；`tests.test_rlbench_training_visualization` 检查
@@ -643,8 +681,9 @@ PNG 与 TensorBoard 拼图输出。
 
     PYTHONPATH=finetune python -c "from bridgevla.config import get_cfg_defaults; c=get_cfg_defaults(); c.merge_from_file('finetune/RLBench/configs/rlbench_o2_gt_instance.yaml'); assert c.use_oracle_objects and c.rvt.oracle_prior_mode == 'o2_gt_instance'; print(c)"
 
-上述测试属于代码级检查；正式训练前仍应在 GPU 上运行一个真实 replay batch 的
-forward/backward，并确认 `oracle_prior_coverage`、`trans_loss_raw` 和
+配置打印结果还应包含 `rvt.oracle_prior_relation: True`。上述测试属于代码级检查；
+正式训练前仍应在 GPU 上运行一个真实 replay batch 的 forward/backward，并确认
+T/R 两项 coverage、`oracle_prior_coverage`、`trans_loss_raw` 和
 `trans_loss` 均能正常输出。
 
 训练默认只在 `model_*.pth` 中保存 `epoch` 和 `model_state`，适用于评估与

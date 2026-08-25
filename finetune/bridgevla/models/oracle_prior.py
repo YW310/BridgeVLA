@@ -1,8 +1,8 @@
 """Utilities for the optional O2 GT-instance translation prior.
 
 This module is deliberately independent of PaliGemma and the MVT feature
-extractor.  It selects one padded replay slot, rasterizes that instance's 3-D
-points after MVT projection for a small trainable fusion head.
+extractor. It supports both the legacy single active instance and the fixed
+Target/Reference pair used by the relation-aware trainable fusion path.
 """
 
 from __future__ import annotations
@@ -152,6 +152,65 @@ def select_active_instance_points(
     return selected_points, selected_valid, selected_slots
 
 
+def select_relation_instance_points(
+    object_points: torch.Tensor,
+    object_valid: torch.Tensor,
+    object_roles: torch.Tensor,
+    *,
+    strict: bool = True,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    if object_points.ndim != 4 or object_points.shape[-1] != 3:
+        raise ValueError('oracle_object_points must have shape [B,O,P,3]')
+    batch_size, num_objects, num_points, _ = object_points.shape
+    if object_valid.shape != (batch_size, num_objects):
+        raise ValueError('oracle_object_valid shape does not match points')
+    if object_roles.shape != (batch_size, num_objects):
+        raise ValueError('oracle_object_roles shape does not match points')
+
+    role_codes = torch.tensor(
+        [ORACLE_ROLE_TARGET, ORACLE_ROLE_REFERENCE],
+        device=object_roles.device,
+        dtype=object_roles.dtype,
+    )
+    candidates = object_valid.bool().unsqueeze(-1) & (
+        object_roles.long().unsqueeze(-1) == role_codes.long()
+    )
+    candidate_counts = candidates.sum(dim=1)
+    if strict and torch.any(candidate_counts != 1):
+        bad = torch.nonzero(candidate_counts != 1, as_tuple=False)
+        details = ', '.join(
+            f'batch {int(batch)}, role {int(role)}: '
+            f'{int(candidate_counts[batch, role])} candidates'
+            for batch, role in bad.detach().cpu()
+        )
+        raise ValueError(
+            'O2 relation requires exactly one Target and one Reference; '
+            + details
+        )
+
+    selected_valid = candidate_counts == 1
+    selected_slots = torch.where(
+        selected_valid,
+        candidates.long().argmax(dim=1),
+        torch.full_like(candidate_counts, -1, dtype=torch.long),
+    )
+    safe_slots = selected_slots.clamp_min(0)
+    batch_indices = torch.arange(
+        batch_size, device=object_points.device,
+    ).unsqueeze(1)
+    selected_points = object_points[batch_indices, safe_slots]
+    selected_points = torch.where(
+        selected_valid[:, :, None, None],
+        selected_points,
+        torch.zeros(
+            (batch_size, 2, num_points, 3),
+            device=object_points.device,
+            dtype=object_points.dtype,
+        ),
+    )
+    return selected_points, selected_valid, selected_slots
+
+
 def rasterize_instance_points(
     projected_points: torch.Tensor,
     instance_valid: torch.Tensor,
@@ -203,14 +262,25 @@ def rasterize_instance_points(
     return heatmap.view(batch_size, num_views, height, width)
 
 
+def _relation_valid_mask(instance_valid, batch_size):
+    if instance_valid.shape == (batch_size,):
+        return instance_valid.bool()
+    if instance_valid.ndim == 2 and instance_valid.shape[0] == batch_size:
+        return instance_valid.bool().all(dim=1)
+    raise ValueError('instance_valid must have shape [B] or [B,R]')
+
+
 class OraclePriorFeatureAdapter(nn.Module):
-    def __init__(self, feature_channels: int, rank: int = 16):
+    def __init__(
+        self, feature_channels: int, rank: int = 16, prior_channels: int = 1,
+    ):
         super().__init__()
-        if feature_channels <= 0 or rank <= 0:
-            raise ValueError('feature_channels and rank must be positive')
+        if feature_channels <= 0 or rank <= 0 or prior_channels <= 0:
+            raise ValueError('feature_channels, rank and prior_channels must be positive')
         self.feature_channels = feature_channels
+        self.prior_channels = prior_channels
         self.feature_reduce = nn.Conv2d(feature_channels, rank, 1)
-        self.prior_project = nn.Conv2d(1, rank, 3, padding=1)
+        self.prior_project = nn.Conv2d(prior_channels, rank, 3, padding=1)
         self.feature_expand = nn.Conv2d(rank, feature_channels, 1)
         nn.init.zeros_(self.feature_expand.weight)
         nn.init.zeros_(self.feature_expand.bias)
@@ -220,16 +290,19 @@ class OraclePriorFeatureAdapter(nn.Module):
             raise ValueError('features must have shape [B*V,C,H,W]')
         if features.shape[1] != self.feature_channels:
             raise ValueError('unexpected feature channel count')
-        if prior.ndim != 4:
-            raise ValueError('prior must have shape [B,V,H,W]')
-        batch_size, num_views = prior.shape[:2]
+        if prior.ndim == 4:
+            prior = prior.unsqueeze(2)
+        if prior.ndim != 5:
+            raise ValueError('prior must have shape [B,V,R,H,W]')
+        batch_size, num_views, prior_channels = prior.shape[:3]
+        if prior_channels != self.prior_channels:
+            raise ValueError('unexpected prior channel count')
         if features.shape[0] != batch_size * num_views:
             raise ValueError('feature batch does not match prior batch and views')
-        if instance_valid.shape != (batch_size,):
-            raise ValueError('instance_valid must have shape [B]')
+        relation_valid = _relation_valid_mask(instance_valid, batch_size)
 
         prior_features = prior.reshape(
-            batch_size * num_views, 1, *prior.shape[-2:]
+            batch_size * num_views, prior_channels, *prior.shape[-2:]
         ).to(device=features.device, dtype=features.dtype)
         prior_features = F.interpolate(
             prior_features, size=features.shape[-2:], mode='bilinear',
@@ -239,7 +312,7 @@ class OraclePriorFeatureAdapter(nn.Module):
             prior_features
         )
         residual = self.feature_expand(F.gelu(hidden))
-        valid = instance_valid.to(
+        valid = relation_valid.to(
             device=features.device, dtype=features.dtype,
         ).repeat_interleave(num_views).view(-1, 1, 1, 1)
         return features + residual * valid
@@ -248,21 +321,32 @@ class OraclePriorFeatureAdapter(nn.Module):
 class OraclePriorFusion(nn.Module):
     """Learn a residual correction from raw and GT-instance heatmaps."""
 
-    def __init__(self, hidden_channels: int = 16, multiscale: bool = False):
+    def __init__(
+        self, hidden_channels: int = 16, multiscale: bool = False,
+        prior_channels: int = 1,
+    ):
         super().__init__()
         self.multiscale = bool(multiscale)
+        self.prior_channels = prior_channels
         if hidden_channels <= 0:
             raise ValueError("hidden_channels must be positive")
+        if prior_channels <= 0:
+            raise ValueError('prior_channels must be positive')
         self.net = nn.Sequential(
-            nn.Conv2d(2, hidden_channels, kernel_size=3, padding=1),
+            nn.Conv2d(
+                1 + prior_channels, hidden_channels, kernel_size=3, padding=1,
+            ),
             nn.GELU(),
             nn.Conv2d(hidden_channels, 1, kernel_size=1),
         )
         nn.init.zeros_(self.net[-1].weight)
         nn.init.zeros_(self.net[-1].bias)
         if self.multiscale:
+            context_channels = 1 + 2 * prior_channels
+            if prior_channels == 2:
+                context_channels += 1
             self.context = nn.Sequential(
-                nn.Conv2d(3, hidden_channels, 3, padding=1),
+                nn.Conv2d(context_channels, hidden_channels, 3, padding=1),
                 nn.GELU(),
                 nn.Conv2d(
                     hidden_channels, hidden_channels, 3,
@@ -277,7 +361,41 @@ class OraclePriorFusion(nn.Module):
             nn.init.zeros_(self.context[-1].weight)
             nn.init.zeros_(self.context[-1].bias)
 
+    def _forward_relation(self, raw_logits, prior, instance_valid):
+        batch_size, num_views, prior_channels, height, width = prior.shape
+        if raw_logits.shape != (batch_size, num_views, height, width):
+            raise ValueError('raw logits and relation prior shapes must match')
+        if prior_channels != self.prior_channels:
+            raise ValueError('unexpected relation prior channel count')
+        features = torch.cat((raw_logits.unsqueeze(2), prior), dim=2).reshape(
+            batch_size * num_views, 1 + prior_channels, height, width
+        )
+        residual = self.net(features).reshape(
+            batch_size, num_views, height, width
+        )
+        if self.context is not None:
+            raw_prior = (raw_logits.unsqueeze(2) * prior).reshape(
+                batch_size * num_views, prior_channels, height, width
+            )
+            context_parts = [features, raw_prior]
+            if prior_channels == 2:
+                target_reference = (prior[:, :, 0] * prior[:, :, 1]).reshape(
+                    batch_size * num_views, 1, height, width
+                )
+                context_parts.append(target_reference)
+            context_features = torch.cat(context_parts, dim=1)
+            residual = residual + self.context(context_features).reshape(
+                batch_size, num_views, height, width
+            )
+        relation_valid = _relation_valid_mask(instance_valid, batch_size)
+        residual = residual * relation_valid[:, None, None, None].to(
+            residual.dtype
+        )
+        return raw_logits + residual
+
     def forward(self, raw_logits, prior, instance_valid):
+        if prior.ndim == 5:
+            return self._forward_relation(raw_logits, prior, instance_valid)
         if raw_logits.shape != prior.shape:
             raise ValueError("raw logits and prior shapes must match")
         if instance_valid.shape != (raw_logits.shape[0],):
@@ -373,6 +491,14 @@ def build_training_visualization_payload(
             )
         if "oracle_instance_prior" in stage_output:
             stage_payload["prior"] = stage_output["oracle_instance_prior"][0]
+        if 'oracle_target_prior' in stage_output:
+            stage_payload['target_prior'] = stage_output[
+                'oracle_target_prior'
+            ][0]
+        if 'oracle_reference_prior' in stage_output:
+            stage_payload['reference_prior'] = stage_output[
+                'oracle_reference_prior'
+            ][0]
         payload[stage_name] = {
             key: value.detach().float().cpu()
             for key, value in stage_payload.items()
