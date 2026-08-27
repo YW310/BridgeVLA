@@ -420,6 +420,7 @@ class MVT(nn.Module):
         oracle_prior_points=None,
         oracle_prior_valid=None,
         oracle_prior_sigma=2.0,
+        oracle_compute_base=False,
         **kwargs,
     ):
         """
@@ -480,6 +481,7 @@ class MVT(nn.Module):
                 self.oracle_prior_feature_adapter1
                 if oracle_prior1 is not None else None
             ),
+            oracle_compute_base=oracle_compute_base,
             # forward_no_feat=False,
             **kwargs,
         )
@@ -586,6 +588,7 @@ class MVT(nn.Module):
                     self.oracle_prior_feature_adapter2
                     if oracle_prior2 is not None else None
                 ),
+                oracle_compute_base=oracle_compute_base,
                 **kwargs,
             )
             self._apply_oracle_instance_prior(

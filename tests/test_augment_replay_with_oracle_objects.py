@@ -1,3 +1,4 @@
+import json
 import os
 import pickle
 import tempfile
@@ -13,6 +14,8 @@ from tools.augment_replay_with_oracle_objects import (
     ORACLE_KEYS,
     REPLAY_METADATA_CACHE_NAME,
     OracleFrameCache,
+    SourceAlignmentManifest,
+    audit_replay_frame_alignment,
     atomic_write_replay,
     augment_transition,
     decode_depth_image,
@@ -62,6 +65,121 @@ def point_cloud(offset):
 
 
 class OracleReplayAugmentationTest(unittest.TestCase):
+    def test_source_alignment_audit_accepts_matching_rgb_and_point_cloud(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            episode = Path(temporary)
+            rgb_dir = episode / 'front_rgb'
+            rgb_dir.mkdir()
+            rgb = np.arange(18, dtype=np.uint8).reshape(2, 3, 3)
+            Image.fromarray(rgb).save(rgb_dir / '4.png')
+            replay_points = point_cloud(0)
+            transition = {
+                'front_rgb': np.moveaxis(rgb, -1, 0),
+                'front_point_cloud': replay_points,
+            }
+            with patch(
+                'tools.augment_replay_with_oracle_objects.'
+                'load_raw_frame_point_clouds',
+                return_value={
+                    'front': np.moveaxis(replay_points, 0, -1),
+                },
+            ):
+                report = audit_replay_frame_alignment(
+                    transition,
+                    episode,
+                    'stack_blocks',
+                    replay_index=9,
+                    episode_idx=2,
+                    sample_frame=4,
+                    cameras=('front',),
+                    observation=SimpleNamespace(),
+                )
+        self.assertTrue(report['valid'])
+        self.assertEqual(report['issues'], [])
+        self.assertAlmostEqual(
+            report['cameras']['front']['point_error_p95_m'], 0.0
+        )
+
+    def test_source_alignment_audit_reports_missing_replay_point_cloud(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            episode = Path(temporary)
+            rgb_dir = episode / 'front_rgb'
+            rgb_dir.mkdir()
+            rgb = np.zeros((2, 3, 3), dtype=np.uint8)
+            Image.fromarray(rgb).save(rgb_dir / '1.png')
+            report = audit_replay_frame_alignment(
+                {'front_rgb': np.moveaxis(rgb, -1, 0)},
+                episode,
+                'stack_blocks',
+                replay_index=3,
+                episode_idx=0,
+                sample_frame=1,
+                cameras=('front',),
+                observation=SimpleNamespace(),
+            )
+        self.assertFalse(report['valid'])
+        self.assertTrue(
+            any('missing_replay_point_cloud' in issue for issue in report['issues'])
+        )
+
+    def test_source_alignment_audit_detects_small_instance_without_points(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            episode = Path(temporary)
+            rgb_dir = episode / 'front_rgb'
+            rgb_dir.mkdir()
+            rgb = np.zeros((10, 10, 3), dtype=np.uint8)
+            Image.fromarray(rgb).save(rgb_dir / '2.png')
+            raw_points = np.ones((10, 10, 3), dtype=np.float32)
+            replay_points = raw_points.copy()
+            replay_points[4, 5] = np.nan
+            mask = np.zeros((10, 10), dtype=np.int64)
+            mask[4, 5] = 7
+            with patch(
+                'tools.augment_replay_with_oracle_objects.'
+                'load_raw_frame_point_clouds',
+                return_value={'front': raw_points},
+            ):
+                report = audit_replay_frame_alignment(
+                    {
+                        'front_rgb': np.moveaxis(rgb, -1, 0),
+                        'front_point_cloud': np.moveaxis(
+                            replay_points, -1, 0
+                        ),
+                    },
+                    episode,
+                    'stack_blocks',
+                    replay_index=5,
+                    episode_idx=0,
+                    sample_frame=2,
+                    cameras=('front',),
+                    observation=SimpleNamespace(),
+                    masks={'front': mask},
+                )
+        self.assertFalse(report['valid'])
+        self.assertTrue(
+            any('instance_missing_points' in issue for issue in report['issues'])
+        )
+
+    def test_source_alignment_manifest_persists_invalid_report(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'invalid_alignment_manifest.json'
+            manifest = SourceAlignmentManifest(path, 'stack_blocks')
+            manifest.initialize()
+            manifest.record(
+                {
+                    'valid': False,
+                    'task': 'stack_blocks',
+                    'replay_index': 7,
+                    'episode_idx': 2,
+                    'sample_frame': 4,
+                    'issues': ['front:missing_replay_point_cloud:front_point_cloud'],
+                    'cameras': {},
+                }
+            )
+            payload = json.loads(path.read_text(encoding='utf-8'))
+        self.assertEqual(payload['invalid_frame_count'], 1)
+        self.assertEqual(payload['invalid_frames'][0]['replay_index'], 7)
+
     def test_cached_task_detection_returns_slots_roles_and_groups(self):
         detection = TaskHandleDetection(
             episode_idx=3,
@@ -244,6 +362,12 @@ class OracleReplayAugmentationTest(unittest.TestCase):
         self.assertTrue(args.refresh_replay_metadata_cache)
         args = parser.parse_args(base + ['--skip-invalid-frames'])
         self.assertTrue(args.skip_invalid_frames)
+        self.assertTrue(args.validate_source_alignment)
+        self.assertAlmostEqual(args.alignment_rgb_tolerance, 1.0)
+        self.assertAlmostEqual(args.alignment_point_cloud_tolerance, 0.002)
+        self.assertAlmostEqual(args.alignment_min_finite_ratio, 0.95)
+        args = parser.parse_args(base + ['--no-validate-source-alignment'])
+        self.assertFalse(args.validate_source_alignment)
 
     def test_resume_parser_and_pending_files(self):
         parser = build_parser()

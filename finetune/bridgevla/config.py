@@ -75,6 +75,7 @@ _C.rvt.oracle_prior_sigma = 2.0
 _C.rvt.oracle_prior_active_role = 'auto'
 _C.rvt.oracle_prior_strict = False
 _C.rvt.oracle_prior_relation = False
+_C.rvt.oracle_log_base_loss = False
 
 # arguments present in peract official
 _C.peract_official = CN()

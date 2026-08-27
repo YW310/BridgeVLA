@@ -47,3 +47,4 @@ rvt:
   oracle_prior_active_role: auto
   oracle_prior_strict: False
   oracle_prior_relation: True
+  oracle_log_base_loss: True

@@ -35,8 +35,9 @@
 - O2 参数集中在
   `finetune/RLBench/configs/rlbench_o2_gt_instance.yaml`；checkpoint 和冻结模式
   仍作为运行时命令行参数；
-- 日志同时输出 `trans_loss_raw`、`trans_loss`、T/R 各自 coverage 和完整 pair 的
-  `oracle_prior_coverage`；任一 role 缺失或存在多个候选时，该样本回退原始 logits；
+- 日志同时输出 `trans_loss_base`（Adapter 前，仅监控）、`trans_loss_raw`、
+  `trans_loss`、T/R 各自 coverage 和完整 pair 的 `oracle_prior_coverage`；任一 role
+  缺失或存在多个候选时，该样本回退原始 logits；
 - 已完成 Python 语法检查、补丁格式检查和不依赖 PyTorch 的训练工具回归测试。
 
 最小版本暂不处理以下复杂情况：

@@ -166,6 +166,7 @@ def train(
                 for key in (
                     'total_loss',
                     'trans_loss',
+                    'trans_loss_base',
                     'trans_loss_raw',
                     'rot_loss_x',
                     'rot_loss_y',
@@ -324,6 +325,7 @@ def train_with_accumulation(
                 for key in (
                     'total_loss',
                     'trans_loss',
+                    'trans_loss_base',
                     'trans_loss_raw',
                     'rot_loss_x',
                     'rot_loss_y',

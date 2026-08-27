@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import colorsys
 import hashlib
+import json
 import os
 import pickle
 import shutil
@@ -93,6 +94,9 @@ ORACLE_KEYS = (
 ORACLE_ROLE_UNKNOWN = 0
 ORACLE_ROLE_TARGET = 1
 ORACLE_ROLE_REFERENCE = 2
+DEFAULT_ALIGNMENT_RGB_TOLERANCE = 1.0
+DEFAULT_ALIGNMENT_POINT_CLOUD_TOLERANCE = 0.002
+DEFAULT_ALIGNMENT_MIN_FINITE_RATIO = 0.95
 
 
 ReplayMetadataArrays = Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
@@ -144,6 +148,113 @@ class RobotFrameSelection:
     max_gripper_displacement: float
     motion_sufficient: bool
     stopped_on_close: bool
+
+
+class SourceAlignmentError(ValueError):
+    '''Raised when a non-terminal replay does not match its raw RLBench frame.'''
+
+    def __init__(self, report: Mapping[str, object]):
+        self.report = dict(report)
+        issues = ', '.join(str(value) for value in report.get('issues', ()))
+        super().__init__(
+            'Replay/raw source alignment validation failed: '
+            'task={}, replay={}, episode={}, frame={}; issues={}'.format(
+                report.get('task'),
+                report.get('replay_index'),
+                report.get('episode_idx'),
+                report.get('sample_frame'),
+                issues or 'unknown',
+            )
+        )
+
+
+class SourceAlignmentManifest:
+    '''Thread-safe, crash-resistant manifest for invalid replay/raw pairs.'''
+
+    def __init__(self, path: Path, task: str, resume: bool = False):
+        self.path = path
+        self.task = task
+        self._lock = Lock()
+        self._audited_frames = 0
+        self._invalid_by_frame: Dict[Tuple[int, int], Dict[str, object]] = {}
+        if resume and path.is_file():
+            try:
+                payload = json.loads(path.read_text(encoding='utf-8'))
+                self._audited_frames = int(payload.get('audited_frames', 0))
+                for report in payload.get('invalid_frames', ()):
+                    key = (
+                        int(report['episode_idx']),
+                        int(report['sample_frame']),
+                    )
+                    self._invalid_by_frame[key] = dict(report)
+            except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+                # A stale/incomplete diagnostic file must never block replay
+                # generation. It will be replaced by the next valid result.
+                self._audited_frames = 0
+                self._invalid_by_frame.clear()
+
+    def initialize(self) -> None:
+        with self._lock:
+            self._write_locked()
+
+    def record(self, report: Mapping[str, object]) -> None:
+        with self._lock:
+            self._audited_frames += 1
+            if not bool(report.get('valid', False)):
+                key = (
+                    int(report['episode_idx']),
+                    int(report['sample_frame']),
+                )
+                self._invalid_by_frame[key] = dict(report)
+                # Persist every invalid result immediately so strict-mode
+                # failures still leave actionable diagnostics behind.
+                self._write_locked()
+                print(
+                    f'Source alignment failure recorded: {self.path}',
+                    flush=True,
+                )
+
+    def record_invalid_without_audit(self, report: Mapping[str, object]) -> None:
+        with self._lock:
+            key = (
+                int(report['episode_idx']),
+                int(report['sample_frame']),
+            )
+            if key not in self._invalid_by_frame:
+                self._audited_frames += 1
+            self._invalid_by_frame[key] = dict(report)
+            self._write_locked()
+            print(
+                f'Source alignment failure recorded: {self.path}',
+                flush=True,
+            )
+
+    def invalid_count(self) -> int:
+        with self._lock:
+            return len(self._invalid_by_frame)
+
+    def finalize(self) -> None:
+        with self._lock:
+            self._write_locked()
+
+    def _write_locked(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            'version': 1,
+            'task': self.task,
+            'audited_frames': self._audited_frames,
+            'invalid_frame_count': len(self._invalid_by_frame),
+            'invalid_frames': [
+                self._invalid_by_frame[key]
+                for key in sorted(self._invalid_by_frame)
+            ],
+        }
+        temporary = self.path.with_name(self.path.name + '.tmp')
+        temporary.write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + '\n',
+            encoding='utf-8',
+        )
+        os.replace(temporary, self.path)
 
 
 class OracleFrameCache:
@@ -405,6 +516,298 @@ def load_frame_rgb_images(
         with Image.open(image_path) as image:
             images[camera] = np.asarray(image.convert('RGB')).copy()
     return images
+
+
+def _rgb_image_hwc(image: np.ndarray, name: str) -> np.ndarray:
+    '''Return an RGB image in HWC float32 with values on the 0..255 scale.'''
+    image = np.asarray(image)
+    if image.ndim != 3:
+        raise ValueError(f'{name} must have 3 dimensions; got {image.shape}')
+    if image.shape[0] in (3, 4):
+        image = np.moveaxis(image[:3], 0, -1)
+    elif image.shape[-1] in (3, 4):
+        image = image[..., :3]
+    else:
+        raise ValueError(
+            f'{name} must be [H, W, 3] or [3, H, W]; got {image.shape}'
+        )
+    image = image.astype(np.float32, copy=False)
+    finite = image[np.isfinite(image)]
+    if finite.size:
+        image_min = float(np.min(finite))
+        image_max = float(np.max(finite))
+        if image_min >= 0.0 and image_max <= 1.0 + 1e-6:
+            image = image * 255.0
+        elif image_min >= -1.0 - 1e-6 and image_max <= 1.0 + 1e-6:
+            image = (image + 1.0) * 127.5
+    return image
+
+
+def _alignment_issue(code: str, camera: str, detail: str) -> str:
+    return f'{camera}:{code}:{detail}'
+
+
+def invalid_frame_alignment_report(
+    task: str,
+    replay_index: int,
+    episode_idx: int,
+    sample_frame: int,
+    issue: str,
+) -> Dict[str, object]:
+    return {
+        'valid': False,
+        'task': task,
+        'replay_index': int(replay_index),
+        'episode_idx': int(episode_idx),
+        'sample_frame': int(sample_frame),
+        'issues': [str(issue)],
+        'cameras': {},
+    }
+
+
+def _audit_camera_source_alignment(
+    transition: Mapping[str, object],
+    episode_dir: Path,
+    sample_frame: int,
+    camera: str,
+    observation: object,
+    mask: Optional[np.ndarray],
+    rgb_tolerance: float,
+    point_cloud_tolerance: float,
+    min_finite_ratio: float,
+) -> Tuple[Dict[str, object], List[str]]:
+    metrics: Dict[str, object] = {}
+    issues: List[str] = []
+
+    raw_rgb_path = episode_dir / f'{camera}_rgb' / f'{sample_frame}.png'
+    rgb_key = f'{camera}_rgb'
+    if not raw_rgb_path.is_file():
+        issues.append(_alignment_issue('missing_raw_rgb', camera, str(raw_rgb_path)))
+    elif rgb_key not in transition:
+        issues.append(_alignment_issue('missing_replay_rgb', camera, rgb_key))
+    else:
+        try:
+            with Image.open(raw_rgb_path) as image:
+                raw_rgb = np.asarray(image.convert('RGB'), dtype=np.float32)
+            replay_rgb = _rgb_image_hwc(
+                np.asarray(transition[rgb_key]), rgb_key
+            )
+            if raw_rgb.shape != replay_rgb.shape:
+                issues.append(
+                    _alignment_issue(
+                        'rgb_shape_mismatch',
+                        camera,
+                        f'raw={raw_rgb.shape},replay={replay_rgb.shape}',
+                    )
+                )
+            else:
+                difference = np.abs(raw_rgb - replay_rgb)
+                finite_difference = difference[np.isfinite(difference)]
+                if finite_difference.size != difference.size:
+                    issues.append(
+                        _alignment_issue('nonfinite_replay_rgb', camera, rgb_key)
+                    )
+                else:
+                    metrics['rgb_mae'] = float(np.mean(finite_difference))
+                    metrics['rgb_max_error'] = float(np.max(finite_difference))
+                    metrics['rgb_changed_fraction'] = float(
+                        np.mean(finite_difference > rgb_tolerance)
+                    )
+                    if metrics['rgb_max_error'] > rgb_tolerance:
+                        issues.append(
+                            _alignment_issue(
+                                'rgb_mismatch',
+                                camera,
+                                'max_error={:.3f},tolerance={:.3f}'.format(
+                                    metrics['rgb_max_error'], rgb_tolerance
+                                ),
+                            )
+                        )
+        except (OSError, TypeError, ValueError) as exc:
+            issues.append(_alignment_issue('invalid_rgb', camera, str(exc)))
+
+    point_key = f'{camera}_point_cloud'
+    if point_key not in transition:
+        issues.append(
+            _alignment_issue('missing_replay_point_cloud', camera, point_key)
+        )
+        return metrics, issues
+    try:
+        replay_points = _point_cloud_hwc(
+            np.asarray(transition[point_key]), point_key
+        )
+    except (TypeError, ValueError) as exc:
+        issues.append(
+            _alignment_issue('invalid_replay_point_cloud', camera, str(exc))
+        )
+        return metrics, issues
+
+    replay_finite = np.isfinite(replay_points).all(axis=-1)
+    finite_ratio = float(np.mean(replay_finite))
+    metrics['replay_point_finite_ratio'] = finite_ratio
+    metrics['replay_point_nonzero_ratio'] = float(
+        np.mean(np.any(replay_points != 0, axis=-1) & replay_finite)
+    )
+    if mask is not None and np.asarray(mask).shape == replay_finite.shape:
+        instance_finite_ratios: Dict[str, float] = {}
+        for object_id_value in np.unique(mask):
+            object_id = int(object_id_value)
+            if object_id == 0:
+                continue
+            object_pixels = np.asarray(mask) == object_id
+            object_finite_ratio = float(np.mean(replay_finite[object_pixels]))
+            instance_finite_ratios[str(object_id)] = object_finite_ratio
+            if object_finite_ratio < min_finite_ratio:
+                issues.append(
+                    _alignment_issue(
+                        'instance_missing_points',
+                        camera,
+                        'id={},ratio={:.6f},minimum={:.6f}'.format(
+                            object_id,
+                            object_finite_ratio,
+                            min_finite_ratio,
+                        ),
+                    )
+                )
+        metrics['instance_point_finite_ratios'] = instance_finite_ratios
+    if finite_ratio < min_finite_ratio:
+        issues.append(
+            _alignment_issue(
+                'insufficient_finite_points',
+                camera,
+                'ratio={:.6f},minimum={:.6f}'.format(
+                    finite_ratio, min_finite_ratio
+                ),
+            )
+        )
+
+    try:
+        raw_points = load_raw_frame_point_clouds(
+            episode_dir,
+            sample_frame,
+            (camera,),
+            observation,
+        )[camera]
+    except (OSError, KeyError, TypeError, ValueError) as exc:
+        issues.append(
+            _alignment_issue('raw_point_cloud_unavailable', camera, str(exc))
+        )
+        return metrics, issues
+
+    if raw_points.shape != replay_points.shape:
+        issues.append(
+            _alignment_issue(
+                'point_cloud_shape_mismatch',
+                camera,
+                f'raw={raw_points.shape},replay={replay_points.shape}',
+            )
+        )
+        return metrics, issues
+
+    raw_finite = np.isfinite(raw_points).all(axis=-1)
+    common_finite = raw_finite & replay_finite
+    common_ratio = float(np.mean(common_finite))
+    metrics['common_point_finite_ratio'] = common_ratio
+    if common_ratio < min_finite_ratio:
+        issues.append(
+            _alignment_issue(
+                'insufficient_comparable_points',
+                camera,
+                'ratio={:.6f},minimum={:.6f}'.format(
+                    common_ratio, min_finite_ratio
+                ),
+            )
+        )
+        return metrics, issues
+
+    errors = np.linalg.norm(
+        raw_points[common_finite].astype(np.float64)
+        - replay_points[common_finite].astype(np.float64),
+        axis=1,
+    )
+    metrics['point_error_median_m'] = float(np.median(errors))
+    metrics['point_error_p95_m'] = float(np.quantile(errors, 0.95))
+    metrics['point_error_max_m'] = float(np.max(errors))
+    if metrics['point_error_p95_m'] > point_cloud_tolerance:
+        issues.append(
+            _alignment_issue(
+                'point_cloud_mismatch',
+                camera,
+                'p95={:.6f}m,tolerance={:.6f}m'.format(
+                    metrics['point_error_p95_m'], point_cloud_tolerance
+                ),
+            )
+        )
+    if mask is not None and np.asarray(mask).shape == common_finite.shape:
+        error_image = np.full(common_finite.shape, np.nan, dtype=np.float64)
+        error_image[common_finite] = errors
+        instance_error_p95: Dict[str, float] = {}
+        for object_id_value in np.unique(mask):
+            object_id = int(object_id_value)
+            if object_id == 0:
+                continue
+            object_errors = error_image[np.asarray(mask) == object_id]
+            object_errors = object_errors[np.isfinite(object_errors)]
+            if not object_errors.size:
+                continue
+            object_p95 = float(np.quantile(object_errors, 0.95))
+            instance_error_p95[str(object_id)] = object_p95
+            if object_p95 > point_cloud_tolerance:
+                issues.append(
+                    _alignment_issue(
+                        'instance_point_cloud_mismatch',
+                        camera,
+                        'id={},p95={:.6f}m,tolerance={:.6f}m'.format(
+                            object_id,
+                            object_p95,
+                            point_cloud_tolerance,
+                        ),
+                    )
+                )
+        metrics['instance_point_error_p95_m'] = instance_error_p95
+    return metrics, issues
+
+
+def audit_replay_frame_alignment(
+    transition: Mapping[str, object],
+    episode_dir: Path,
+    task: str,
+    replay_index: int,
+    episode_idx: int,
+    sample_frame: int,
+    cameras: Sequence[str],
+    observation: object,
+    masks: Optional[Mapping[str, np.ndarray]] = None,
+    rgb_tolerance: float = DEFAULT_ALIGNMENT_RGB_TOLERANCE,
+    point_cloud_tolerance: float = DEFAULT_ALIGNMENT_POINT_CLOUD_TOLERANCE,
+    min_finite_ratio: float = DEFAULT_ALIGNMENT_MIN_FINITE_RATIO,
+) -> Dict[str, object]:
+    '''Compare replay RGB/XYZ with the raw frame used by its GT masks.'''
+    issues: List[str] = []
+    camera_metrics: Dict[str, object] = {}
+    for camera in cameras:
+        metrics, camera_issues = _audit_camera_source_alignment(
+            transition,
+            episode_dir,
+            sample_frame,
+            camera,
+            observation,
+            masks.get(camera) if masks is not None else None,
+            rgb_tolerance,
+            point_cloud_tolerance,
+            min_finite_ratio,
+        )
+        camera_metrics[camera] = metrics
+        issues.extend(camera_issues)
+    return {
+        'valid': not issues,
+        'task': task,
+        'replay_index': int(replay_index),
+        'episode_idx': int(episode_idx),
+        'sample_frame': int(sample_frame),
+        'issues': issues,
+        'cameras': camera_metrics,
+    }
 
 
 def _noisy_plane_geometry(
@@ -992,6 +1395,15 @@ def augment_transition(
     thin_plane_min_extent: float = 0.30,
     thin_plane_min_inlier_ratio: float = 0.80,
     filter_thin_planes_all_roles: bool = True,
+    validate_source_alignment: bool = False,
+    alignment_rgb_tolerance: float = DEFAULT_ALIGNMENT_RGB_TOLERANCE,
+    alignment_point_cloud_tolerance: float = (
+        DEFAULT_ALIGNMENT_POINT_CLOUD_TOLERANCE
+    ),
+    alignment_min_finite_ratio: float = DEFAULT_ALIGNMENT_MIN_FINITE_RATIO,
+    alignment_audit_callback: Optional[
+        Callable[[Mapping[str, object]], None]
+    ] = None,
 ) -> Tuple[Dict[str, object], OracleObjects, Optional[Path]]:
     existing_oracle_keys = set(ORACLE_KEYS).intersection(original)
     if existing_oracle_keys:
@@ -1040,6 +1452,37 @@ def augment_transition(
 
         def build_oracle() -> OracleObjects:
             masks = load_frame_masks(episode_dir, sample_frame, cameras)
+            if validate_source_alignment:
+                observations = _load_low_dim_observations(episode_dir)
+                if sample_frame >= len(observations):
+                    report = invalid_frame_alignment_report(
+                        task,
+                        replay_index,
+                        episode_idx,
+                        sample_frame,
+                        'sample_frame_out_of_range:raw_observations={}'.format(
+                            len(observations)
+                        ),
+                    )
+                else:
+                    report = audit_replay_frame_alignment(
+                        original,
+                        episode_dir,
+                        task,
+                        replay_index,
+                        episode_idx,
+                        sample_frame,
+                        cameras,
+                        observations[sample_frame],
+                        masks=masks,
+                        rgb_tolerance=alignment_rgb_tolerance,
+                        point_cloud_tolerance=alignment_point_cloud_tolerance,
+                        min_finite_ratio=alignment_min_finite_ratio,
+                    )
+                if alignment_audit_callback is not None:
+                    alignment_audit_callback(report)
+                if not bool(report['valid']):
+                    raise SourceAlignmentError(report)
             return extract_oracle_objects(
                 original,
                 masks,
@@ -1126,6 +1569,13 @@ def augment_transition(
                 float(thin_plane_min_extent),
                 float(thin_plane_min_inlier_ratio),
                 bool(filter_thin_planes_all_roles),
+            )
+        if validate_source_alignment:
+            cache_key += (
+                'source-alignment',
+                float(alignment_rgb_tolerance),
+                float(alignment_point_cloud_tolerance),
+                float(alignment_min_finite_ratio),
             )
         oracle = (
             frame_cache.get_or_compute(cache_key, build_oracle)
@@ -2909,6 +3359,12 @@ def process_task(
     replay_metadata_cache_dir: Optional[Path],
     skip_invalid_frames: bool = False,
     resume: bool = False,
+    validate_source_alignment: bool = False,
+    alignment_rgb_tolerance: float = DEFAULT_ALIGNMENT_RGB_TOLERANCE,
+    alignment_point_cloud_tolerance: float = (
+        DEFAULT_ALIGNMENT_POINT_CLOUD_TOLERANCE
+    ),
+    alignment_min_finite_ratio: float = DEFAULT_ALIGNMENT_MIN_FINITE_RATIO,
 ) -> int:
     all_files = _numeric_replay_files(source_dir)
     if not all_files:
@@ -2962,6 +3418,17 @@ def process_task(
     replay_metadata_cache_dir = (
         replay_metadata_cache_dir or destination_dir or source_dir
     )
+    alignment_manifest: Optional[SourceAlignmentManifest] = None
+    if validate_source_alignment:
+        manifest_root = destination_dir
+        if manifest_root is None:
+            manifest_root = visualize_output_dir / task
+        alignment_manifest = SourceAlignmentManifest(
+            manifest_root / 'invalid_alignment_manifest.json',
+            task,
+            resume=resume,
+        )
+        alignment_manifest.initialize()
     ignored_frame_keys: Set[Tuple[int, int]] = set()
     ignored_frame_lock = Lock()
     raw_episode_info: Dict[int, Tuple[Path, int]] = {}
@@ -3087,7 +3554,10 @@ def process_task(
                     role_cycles = task_role_cycles_by_episode.get(
                         original_episode_idx, ()
                     )
-                if skip_invalid_frames and 'sample_frame' in original:
+                if (
+                    (skip_invalid_frames or validate_source_alignment)
+                    and 'sample_frame' in original
+                ):
                     original_sample_frame = int(
                         np.asarray(original['sample_frame']).item()
                     )
@@ -3101,39 +3571,76 @@ def process_task(
                         record_ignored_frame(
                             original_episode_idx, original_sample_frame
                         )
+                        report = invalid_frame_alignment_report(
+                            task,
+                            replay_index,
+                            original_episode_idx,
+                            original_sample_frame,
+                            'sample_frame_out_of_range:raw_observations={}'.format(
+                                observation_count
+                            ),
+                        )
+                        if alignment_manifest is not None:
+                            alignment_manifest.record_invalid_without_audit(report)
+                        if not skip_invalid_frames:
+                            raise SourceAlignmentError(report)
             if ignored_alignment:
                 oracle = empty_oracle_objects(max_objects, num_points)
                 migrated = dict(original)
                 migrated.update(oracle.as_replay_fields())
                 validate_migrated_transition(original, migrated, oracle)
             else:
-                migrated, oracle, _ = augment_transition(
-                    original,
-                    raw_data_dir,
-                    task,
-                    replay_index,
-                    cameras,
-                    max_objects,
-                    num_points,
-                    effective_excluded_ids,
-                    seed,
-                    slot_ids=slot_ids,
-                    min_object_points=min_object_points,
-                    frame_cache=frame_cache,
-                    task_prior_filter=task_prior_filter,
-                    task_prior_radius=task_prior_radius,
-                    task_prior_max_instances=task_prior_max_instances,
-                    task_prior_background_extent=task_prior_background_extent,
-                    task_prior_strict=task_prior_strict,
-                    role_by_id=role_by_id,
-                    group_by_id=group_by_id,
-                    role_cycles=role_cycles,
-                    filter_thin_planes=filter_thin_planes,
-                    thin_plane_max_thickness=thin_plane_max_thickness,
-                    thin_plane_min_extent=thin_plane_min_extent,
-                    thin_plane_min_inlier_ratio=thin_plane_min_inlier_ratio,
-                    filter_thin_planes_all_roles=filter_thin_planes_all_roles,
-                )
+                try:
+                    migrated, oracle, _ = augment_transition(
+                        original,
+                        raw_data_dir,
+                        task,
+                        replay_index,
+                        cameras,
+                        max_objects,
+                        num_points,
+                        effective_excluded_ids,
+                        seed,
+                        slot_ids=slot_ids,
+                        min_object_points=min_object_points,
+                        frame_cache=frame_cache,
+                        task_prior_filter=task_prior_filter,
+                        task_prior_radius=task_prior_radius,
+                        task_prior_max_instances=task_prior_max_instances,
+                        task_prior_background_extent=task_prior_background_extent,
+                        task_prior_strict=task_prior_strict,
+                        role_by_id=role_by_id,
+                        group_by_id=group_by_id,
+                        role_cycles=role_cycles,
+                        filter_thin_planes=filter_thin_planes,
+                        thin_plane_max_thickness=thin_plane_max_thickness,
+                        thin_plane_min_extent=thin_plane_min_extent,
+                        thin_plane_min_inlier_ratio=thin_plane_min_inlier_ratio,
+                        filter_thin_planes_all_roles=filter_thin_planes_all_roles,
+                        validate_source_alignment=validate_source_alignment,
+                        alignment_rgb_tolerance=alignment_rgb_tolerance,
+                        alignment_point_cloud_tolerance=(
+                            alignment_point_cloud_tolerance
+                        ),
+                        alignment_min_finite_ratio=alignment_min_finite_ratio,
+                        alignment_audit_callback=(
+                            alignment_manifest.record
+                            if alignment_manifest is not None
+                            else None
+                        ),
+                    )
+                except SourceAlignmentError as exc:
+                    if not skip_invalid_frames:
+                        raise
+                    ignored_alignment = True
+                    record_ignored_frame(
+                        int(exc.report['episode_idx']),
+                        int(exc.report['sample_frame']),
+                    )
+                    oracle = empty_oracle_objects(max_objects, num_points)
+                    migrated = dict(original)
+                    migrated.update(oracle.as_replay_fields())
+                    validate_migrated_transition(original, migrated, oracle)
             if not dry_run:
                 assert destination_dir is not None
                 atomic_write_replay(
@@ -3362,8 +3869,15 @@ def process_task(
             overwrite,
             resume=resume,
         )
+    if alignment_manifest is not None:
+        alignment_manifest.finalize()
     mode = 'validated' if dry_run else 'migrated'
     cache_hits, cache_misses, cache_entries = frame_cache.stats()
+    alignment_invalid_frames = (
+        alignment_manifest.invalid_count()
+        if alignment_manifest is not None
+        else 0
+    )
     print(
         f'{task}: {mode} {len(files)} replay files; '
         f'skipped_existing={skipped_existing}; truncated={truncated}; '
@@ -3372,12 +3886,18 @@ def process_task(
         f'excluded={excluded}; '
         f'temporal_filtered={temporal_filtered}; '
         f'thin_planes={thin_planes}; '
+        f'alignment_invalid_frames={alignment_invalid_frames}; '
         f'ignored_invalid_frames={ignored_frame_count()}; '
         f'ignored_invalid_replays={ignored_invalid_replays}; '
         f'visualized={visualized}; '
         f'cache_hits={cache_hits}; cache_misses={cache_misses}; '
         f'cache_entries={cache_entries}'
     )
+    if alignment_manifest is not None:
+        print(
+            f'{task}: alignment manifest: {alignment_manifest.path}',
+            flush=True,
+        )
     return len(all_files) if resume else len(files)
 
 
@@ -3645,9 +4165,44 @@ def build_parser() -> argparse.ArgumentParser:
         '--skip-invalid-frames',
         action='store_true',
         help=(
-            'keep replay alignment slots whose raw frame is out of range, write '
-            'an empty Oracle target, and report ignored frame/replay counts'
+            'keep replay slots with out-of-range or failed source-alignment '
+            'checks, write an empty Oracle target, and report ignored counts'
         ),
+    )
+    source_alignment = parser.add_mutually_exclusive_group()
+    source_alignment.add_argument(
+        '--validate-source-alignment',
+        dest='validate_source_alignment',
+        action='store_true',
+        default=True,
+        help=(
+            'strictly compare raw/replay RGB and raw-depth/replay XYZ before '
+            'writing Oracle objects (default)'
+        ),
+    )
+    source_alignment.add_argument(
+        '--no-validate-source-alignment',
+        dest='validate_source_alignment',
+        action='store_false',
+        help='disable the raw/replay content audit for legacy speed',
+    )
+    parser.add_argument(
+        '--alignment-rgb-tolerance',
+        type=float,
+        default=DEFAULT_ALIGNMENT_RGB_TOLERANCE,
+        help='maximum allowed per-channel RGB difference on the 0..255 scale',
+    )
+    parser.add_argument(
+        '--alignment-point-cloud-tolerance',
+        type=float,
+        default=DEFAULT_ALIGNMENT_POINT_CLOUD_TOLERANCE,
+        help='maximum allowed p95 raw/replay XYZ error in metres',
+    )
+    parser.add_argument(
+        '--alignment-min-finite-ratio',
+        type=float,
+        default=DEFAULT_ALIGNMENT_MIN_FINITE_RATIO,
+        help='minimum finite/comparable pixel fraction per camera',
     )
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument(
@@ -3740,6 +4295,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         raise ValueError('--workers must be positive')
     if args.cache_frames < 0:
         raise ValueError('--cache-frames must be non-negative')
+    if args.alignment_rgb_tolerance < 0:
+        raise ValueError('--alignment-rgb-tolerance must be non-negative')
+    if args.alignment_point_cloud_tolerance < 0:
+        raise ValueError(
+            '--alignment-point-cloud-tolerance must be non-negative'
+        )
+    if not 0 < args.alignment_min_finite_ratio <= 1:
+        raise ValueError('--alignment-min-finite-ratio must be in (0, 1]')
     if args.robot_detection_frames <= 0:
         raise ValueError('--robot-detection-frames must be positive')
     if args.robot_detection_stride <= 0:
@@ -3868,6 +4431,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             replay_metadata_cache_dir=replay_metadata_cache_dir,
             skip_invalid_frames=args.skip_invalid_frames,
             resume=args.resume,
+            validate_source_alignment=args.validate_source_alignment,
+            alignment_rgb_tolerance=args.alignment_rgb_tolerance,
+            alignment_point_cloud_tolerance=(
+                args.alignment_point_cloud_tolerance
+            ),
+            alignment_min_finite_ratio=args.alignment_min_finite_ratio,
         )
     print(f'Done: {total} replay files')
     return 0

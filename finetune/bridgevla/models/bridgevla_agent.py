@@ -443,6 +443,7 @@ class RVTAgent:
         oracle_prior_active_role: str = 'auto',
         oracle_prior_strict: bool = False,
         oracle_prior_relation: bool = False,
+        oracle_log_base_loss: bool = False,
         log_dir="",
     ):
         self._network = network
@@ -478,6 +479,7 @@ class RVTAgent:
         self.oracle_prior_active_role = oracle_prior_active_role
         self.oracle_prior_strict = oracle_prior_strict
         self.oracle_prior_relation = bool(oracle_prior_relation)
+        self.oracle_log_base_loss = bool(oracle_log_base_loss)
         self._oracle_missing_warning_shown = False
 
         print("Cameras:",self.cameras)
@@ -811,6 +813,24 @@ class RVTAgent:
             raw = torch.cat((raw, raw2), dim=2)
         return raw
 
+    def get_base_q_trans(self, out, dims):
+        '''Return detached translation logits before the Oracle adapter.'''
+        bs, nc, h, w = dims
+        if 'trans_base' not in out:
+            return None
+        base = out['trans_base'].view(
+            bs, nc, h * w,
+        ).transpose(1, 2)
+        if self.stage_two:
+            stage_two_out = out['mvt2']
+            if 'trans_base' not in stage_two_out:
+                return None
+            base2 = stage_two_out['trans_base'].view(
+                bs, nc, h * w,
+            ).transpose(1, 2)
+            base = torch.cat((base, base2), dim=2)
+        return base
+
 
 
     def update(
@@ -996,6 +1016,7 @@ class RVTAgent:
             img_aug=img_aug,
             wpt_local=wpt_local if self._network.training else None,
             rot_x_y=rot_x_y if self.rot_ver == 1 else None,
+            oracle_compute_base=(backprop and self.oracle_log_base_loss),
             **self._oracle_network_kwargs(oracle_points, oracle_valid),
             language_goal=replay_sample["lang_goal"]  
         )
@@ -1008,6 +1029,7 @@ class RVTAgent:
             wpt_local, pts, out, dyn_cam_info, dims=(bs, nc, h, w)
         )
         raw_q_trans = self.get_raw_q_trans(out, dims=(bs, nc, h, w))
+        base_q_trans = self.get_base_q_trans(out, dims=(bs, nc, h, w))
 
 
         loss_log = {}
@@ -1017,6 +1039,10 @@ class RVTAgent:
             raw_trans_loss = (
                 self._cross_entropy_loss(raw_q_trans, action_trans).mean()
                 if raw_q_trans is not None else None
+            )
+            base_trans_loss = (
+                self._cross_entropy_loss(base_q_trans, action_trans).mean()
+                if base_q_trans is not None else None
             )
             rot_loss_x = rot_loss_y = rot_loss_z = 0.0
             grip_loss = 0.0
@@ -1086,6 +1112,8 @@ class RVTAgent:
             }
             if raw_trans_loss is not None:
                 loss_log['trans_loss_raw'] = raw_trans_loss.item()
+            if base_trans_loss is not None:
+                loss_log['trans_loss_base'] = base_trans_loss.item()
             manage_loss_log(self, loss_log, reset_log=reset_log)
             return_out.update(loss_log)
             if return_visualization:

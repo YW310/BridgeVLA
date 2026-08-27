@@ -18,20 +18,29 @@ A 3D VLA framework that aligns the input and output within a shared 2D space in 
 
 ## 👀 Contents
 
-- [Model Overview](#Model-Overview)
-- [Installation](#Installation)
-- [Training](#Training)
+- [Model Overview](#model-overview)
+- [Installation](#installation)
+- [Training](#training)
+  - [RLBench 8×40 GB 训练](#rlbench-8x40)
+  - [Raw → Replay 生成](#rlbench-raw-replay)
+  - [Oracle 3D 物体 Replay](#oracle-replay)
+  - [O2 Target/Reference 训练](#o2-training)
+  - [训练日志与实时 Loss](#rlbench-training-logs)
 - [Evaluation](#evaluation)
 - [Experimental Results](#experimental-results)
-- [TODO](#TODO)
-- [Acknowledgement](#Acknowledgement)
-- [Contact](#Contact)
-- [Citation](#Citation)
+- [TODO](#todo)
+- [Acknowledgement](#acknowledgement)
+- [Contact](#contact)
+- [Citation](#citation)
 
+
+<a id=model-overview></a>
 
 ## 📋 Model Overview
 As illustrated in the following figure, BridgeVLA employs a dual-phase training recipe. During pre-training, it is trained to predict 2D heatmaps on object detection datasets. During fine-tuning, point clouds are projected into multiple 2D images as inputs to the VLM backbone. The model is trained to predict 2D heatmaps for estimating the translational action and other action components. **This design aligns the input and output within a shared 2D space in both pre-training and fine-tuning.**
 ![](./assets/network.png)
+<a id=installation></a>
+
 ## 🛠️ Installation
 1. **Clone this repository and navigate to the BridgeVLA folder:**
 ```bash
@@ -61,6 +70,8 @@ cd finetune/GemBench
 bash ./install_gembench.sh
 ```
 3. Note: To avoid potential conflicts between different simulation benchmarks, we suggest creating separate virtual environments for each benchmark. Also, our model is built upon [Paligemma](https://huggingface.co/google/paligemma-3b-pt-224), which is a gated repo. Therefore, you should first be authenticated to access it.
+<a id=training></a>
+
 ## 🚀 Training
 If you want to reproduce our results, please use the same training hyperparameters in the config file. **Do not forget to modify the corresponding saving path in the file before running the following code.**
 1. **Pre-training:**
@@ -83,6 +94,8 @@ bash train.sh --exp_cfg_path  configs/rlbench_config.yaml \
               --load_pretrain \
               --pretrain_path  LPY/BridgeVLA/checkpoints/RLBench/model_80.pth 
 ```
+
+<a id=rlbench-8x40></a>
 
 ### RLBench fine-tuning on one 8 x 40 GB node
 
@@ -125,6 +138,8 @@ python eval_parallel.py \
 The runner creates a unique run directory, merges the 18 task CSV files, and
 writes `summary.json` with the macro success rate. It does not record videos.
 
+
+<a id=rlbench-raw-replay></a>
 
 ### RLBench Raw → Replay 独立生成
 
@@ -177,7 +192,12 @@ python tools/generate_rlbench_replay.py \
 正式任务目录。若程序中断，临时目录会保留用于检查；确认无需保留后使用
 `--overwrite` 重新生成。
 
+<a id=oracle-replay></a>
+
 ### RLBench Oracle 3D 物体 Replay 数据准备
+
+> 本节导航：[参数表](#oracle-parameters) · [关键行为与检查](#oracle-checks) ·
+> [O2 Target/Reference 训练](#o2-training)
 
 `tools/augment_replay_with_oracle_objects.py` 可直接为已有 BridgeVLA replay 追加
 RLBench GT instance 点云，无需重新采集数据或重建原始 replay。脚本用每个
@@ -215,9 +235,9 @@ JSON 的 `object_groups` 和 `group_by_handle` 中。
 对齐。`terminal == -1` 是 YARR final-observation sentinel，写入全 invalid 的填充张量；
 可视化时会通过上一条 replay 的 `next_keypoint_frame` 恢复最终 raw 帧。
 
-推荐先在命令末尾保留 `--dry-run` 检查结果，确认后移除它进行正式写入。以下示例还
-包含 `--skip-invalid-frames`，适用于已经确认只有少量 replay/raw 越界样本、并接受这些
-样本退回 baseline 的情况；若要求严格校验整套数据，应移除该参数并修复数据配对：
+推荐先在命令末尾保留 `--dry-run` 检查结果，确认后移除它进行正式写入。以下示例使用
+默认开启的严格源对齐检查；发现异常会先写 manifest 再停止，不会静默生成错误 instance。
+只有已经确认少量异常样本可以退回 baseline 时，才额外添加 `--skip-invalid-frames`：
 
 ```bash
 python tools/augment_replay_with_oracle_objects.py \
@@ -244,7 +264,7 @@ python tools/augment_replay_with_oracle_objects.py \
     --visualize-output-dir oracle_visualizations \
     --visualize-objects-only \
     --thin-plane-max-thickness 0.02 \
-    --skip-invalid-frames \
+    --validate-source-alignment \
     --dry-run
 ```
 
@@ -258,6 +278,8 @@ python tools/augment_replay_with_oracle_objects.py \
 已完整完成的 task 会在 episode detection 前直接跳过，部分完成的 task 也只检测和处理
 剩余 replay 所涉及的 episode。续跑必须保持原 replay、raw data 和过滤参数不变；
 如果需要修改生成参数，应改用新的输出目录或显式 `--overwrite` 全量重建。
+
+<a id=oracle-parameters></a>
 
 #### 参数表
 
@@ -301,7 +323,12 @@ python tools/augment_replay_with_oracle_objects.py \
 | 机器人 | `--robot-handle-cache-dir PATH` | `<output-dir>/<task>/robot_handle_maps` | episode robot handle JSON 缓存；显式 PATH 作为根目录并追加 task 名。 |
 | 机器人 | `--refresh-robot-handle-cache` | 关闭 | 忽略已有 robot handle JSON 并重新检测。 |
 | 性能 | `--refresh-replay-metadata-cache` | 关闭 | 强制重建 replay 元数据索引；仅在同名 `.replay` 被原地改写时使用，日常运行不要添加。 |
-| 容错 | `--skip-invalid-frames` | 关闭 | raw 帧越界时保留 replay 并写入 `valid=False` 的空 Oracle；进度条和最终汇总输出忽略的唯一帧数及 replay 数。O2 非 strict 配置会对这些样本退回原始 heatmap。 |
+| 检查 | `--validate-source-alignment` | 开启 | 默认严格比较 raw/replay RGB，并比较 raw depth 重建 XYZ 与 replay point cloud；异常时停止，防止静默生成错位 instance。 |
+| 检查 | `--no-validate-source-alignment` | 关闭 | 为旧流程关闭内容校验以提高速度；只建议在已离线确认 replay/raw 完全一致时使用。 |
+| 检查 | `--alignment-rgb-tolerance VALUE` | `1.0` | RGB 单通道允许的最大差值，按 `0..255` 尺度计算。 |
+| 检查 | `--alignment-point-cloud-tolerance METRES` | `0.002` | raw 重建点云与 replay 点云逐像素误差的 P95 上限。 |
+| 检查 | `--alignment-min-finite-ratio RATIO` | `0.95` | 每个相机 replay 点云的最小有限点比例，同时用于要求 raw/replay 可比较像素比例。 |
+| 容错 | `--skip-invalid-frames` | 关闭 | raw 帧越界或源对齐校验失败时保留 replay，并写入 `valid=False` 的空 Oracle；仅用于明确接受 baseline fallback 的容错实验。 |
 | 性能 | `--workers N` | `1` | replay 线程数；建议从 `4` 或 `8` 测试，过高会增加内存和网络盘竞争。 |
 | 性能 | `--cache-frames N` | `128` | 相同 raw 帧 Oracle 结果的 LRU 容量；`0` 禁用，内存有限时降低。 |
 | 性能 | `--seed N` | `0` | 控制确定性点采样和 dry-run 抽样。 |
@@ -312,6 +339,8 @@ python tools/augment_replay_with_oracle_objects.py \
 | 可视化 | `--visualize-every N` | `0` | 每隔 N 个排序后的 replay 保存一张 PNG；`0` 关闭。 |
 | 可视化 | `--visualize-output-dir PATH` | `oracle_visualizations` | PNG 输出目录，不设置时也会自动创建该默认目录。 |
 | 可视化 | `--visualize-objects-only` | 关闭 | 隐藏点云面板中的灰色完整场景，仅绘制保留实例；不影响上排 RGB。 |
+
+<a id=oracle-checks></a>
 
 #### 关键行为与检查
 
@@ -403,6 +432,18 @@ python tools/augment_replay_with_oracle_objects.py \
   `--skip-invalid-frames`：程序保留 replay 的连续结构，为越界样本写入
   `valid=False` 的空 Oracle，并输出 `ignored_invalid_frames` 与
   `ignored_invalid_replays`。这属于容错绕过，不会修复数据配对关系。
+- 源对齐检查默认开启。图像来自 raw `*_rgb/{sample_frame}.png`，instance mask 来自
+  raw `*_mask/{sample_frame}.png`，而训练点云来自 `.replay` 的
+  `*_point_cloud`；程序现在会检查三者是否对齐。缺少点云字段、整帧或任一 mask instance
+  的有限点比例不足、RGB 不一致，或 raw depth 重建点云的整帧/逐实例 P95 误差超过阈值，
+  都会判为无效，因此小物体点云单独缺失也不会被全局统计掩盖。
+- 每个 task 的检查结果写入输出目录下的 `invalid_alignment_manifest.json`；即使严格模式
+  在第一个异常处退出，manifest 也会先原子落盘。dry-run 时写入
+  `<visualize-output-dir>/<task>/invalid_alignment_manifest.json`。最终汇总中的
+  `alignment_invalid_frames` 是检测到的唯一异常帧数。
+- raw 数据没有单独的 point-cloud 文件夹属于正常现象：点云由 depth PNG、
+  `low_dim_obs.pkl` 中的相机内参/外参和 near/far 在线重建。若 depth PNG 或相机参数缺失，
+  则该帧无法可靠生成 Oracle instance，不应只因为 RGB 存在就继续训练。
 - `dry-run` 会打印 `excluded_object_ids`、`no_finite_point_object_ids`、
   `small_object_ids`、`task_prior_filtered_object_ids`、
   `temporal_filtered_object_ids` 和 `truncated_object_ids`。命令行时序匹配不再产生
@@ -478,7 +519,14 @@ python tools/augment_replay_with_oracle_objects.py \
 
 use_oracle_objects 默认为 False，因此原始非 Oracle replay 的加载行为保持不变。
 
-### O2：训练当前应操作实例 GT
+<a id=o2-training></a>
+
+### O2：训练 Target/Reference 实例 GT
+
+> 本节导航：[推荐 Adapter + Fusion](#o2-adapter-fusion) ·
+> [仅 Fusion](#o2-fusion-only) · [完整动作网络](#o2-full-action) ·
+> [开启 T/R relation](#o2-relation-switch) · [代码插入位置](#o2-code-path) ·
+> [训练可视化](#o2-training-visualization) · [代码测试](#o2-tests)
 
 O2 不把 GT heatmap 作为固定 mask 或手工 logit 约束。主配置会同时选择唯一的
 Target 与 Reference，按固定顺序组成双通道三视角 prior `[P_T, P_R]`；两组点云经过
@@ -487,6 +535,8 @@ Target 与 Reference，按固定顺序组成双通道三视角 prior `[P_T, P_R]
 residual fusion 融合 translation logits、两个 prior 及交互项。adapter
 与 fusion 输出层均为零初始化，因此训练开始时与 baseline 完全一致；Oracle
 任一角色缺失或不唯一时，relation residual 整体关闭并强制回退原始路径。
+
+<a id=o2-adapter-fusion></a>
 
 #### 推荐主实验：Adapter + Fusion（约 22.1 万参数）
 
@@ -503,6 +553,8 @@ bash train.sh \
 该配置使用双通道 Target/Reference prior、rank=16、hidden=64，两阶段模型精确训练
 220,548 个参数。
 
+<a id=o2-fusion-only></a>
+
 #### 最小消融：仅 Fusion
 
 该设置只训练 logit fusion，不训练 feature adapter，不作为推荐主实验：
@@ -514,6 +566,8 @@ bash train.sh \
     --init_checkpoint /home/yiwei/project/BridgeVLA/LPY/BridgeVLA/checkpoints/RLBench/model_80.pth \
     --train_oracle_fusion_only
 ```
+
+<a id=o2-full-action></a>
 
 #### 补充实验：完整动作网络联合训练（约 0.54B 参数）
 
@@ -536,6 +590,8 @@ shape、adapter rank、多尺度 fusion、relation 模式和 heatmap sigma。che
 仍通过命令行指定。临时修改单个值时，仍可在配置文件之后使用
 `--exp_cfg_opts 'tasks stack_blocks rvt.oracle_prior_strict True'` 覆盖。
 
+<a id=o2-relation-switch></a>
+
 #### 开启 Target/Reference relation 输入
 
 O2 专用配置已经默认开启双通道输入，因此使用该 YAML 时不需要额外添加命令行参数：
@@ -543,6 +599,7 @@ O2 专用配置已经默认开启双通道输入，因此使用该 YAML 时不�
 ```yaml
 rvt:
   oracle_prior_relation: True
+  oracle_log_base_loss: True
 ```
 
 如果使用其他实验配置，可在命令行显式开启：
@@ -564,6 +621,22 @@ bash train.sh \
 `--train_oracle_adapter_only` 决定冻结范围和可训练模块。两个参数作用不同，推荐主实验
 同时使用 O2 专用 YAML 和 `--train_oracle_adapter_only`。
 
+O2 专用配置还默认启用 `rvt.oracle_log_base_loss=True`。三项 translation loss
+分别表示：
+
+| 指标 | 位置 | 是否参与反向传播 |
+| --- | --- | --- |
+| `trans_loss_base` | Adapter 前的原 BridgeVLA translation 输出 | 否，仅监控 |
+| `trans_loss_raw` | Adapter 后、Fusion 前 | 否，仅监控 |
+| `trans_loss` | Adapter + Fusion 后 | 是，实际训练目标 |
+
+`trans_loss_base` 需要额外执行一次无梯度的 `up0` translation decoder 前向，但不会
+建立反向图或改变模型参数。如果更重视吞吐量、暂时不需要该诊断，可关闭：
+
+```bash
+--exp_cfg_opts 'rvt.oracle_log_base_loss False'
+```
+
 init_checkpoint 只初始化模型权重，adapter/fusion 保持零初始化，epoch 和 optimizer 从头开始；
 继续已开始的 O2 训练则使用 resume_checkpoint。两者不能同时指定。
 旧版 fusion-only checkpoint 不含 adapter/multiscale 权重，不能直接作为新版配置的
@@ -576,7 +649,8 @@ resume_checkpoint；请重新从 baseline 使用 init_checkpoint，或将 adapte
 `oracle_reference_object_points [B,P,3]` 及对应可选 valid，或提供完整的
 `oracle_object_points/valid/roles`。relation 模式不接受旧的单个
 `oracle_active_object_points` 作为有效 O2 输入，因为它无法表达 T/R 关系。训练日志同时记录
-trans_loss（最终 fused）和 trans_loss_raw（feature adapter 后、logit fusion 前）；
+trans_loss_base（feature adapter 前）、trans_loss（最终 fused）和
+trans_loss_raw（feature adapter 后、logit fusion 前）；
 fusion-only 模式下 trans_loss_raw 就是原 heatmap。oracle_prior_strict 默认为
 False：T/R 任一缺失或存在多个候选时，该样本回退 trans_raw；
 `oracle_target_coverage`、`oracle_reference_coverage` 和 `oracle_prior_coverage`
@@ -587,6 +661,8 @@ use_oracle_objects=False、rvt.oracle_prior_mode=none 均为默认值；此时�
 adapter/fusion 参数、不要求 Oracle 字段，旧 replay、旧 checkpoint 和原始前向路径保持
 不变。O2 在训练和评估时均使用 GT 实例，属于 privileged Oracle 上界，不应作为
 无 GT 的部署结果报告。
+
+<a id=o2-code-path></a>
 
 #### O2 代码插入位置
 
@@ -643,6 +719,8 @@ O2 评估可视化需要同时启用开关和输出目录：
 `o2_unavailable.txt`；这种结果不是有效 O2 评测。设置
 `rvt.oracle_prior_strict True` 可改为立即报错。
 
+<a id=o2-training-visualization></a>
+
 #### O2 训练中间可视化
 
 训练样本可视化由实验 YAML 控制，默认配置关闭；O2 配置示例已开启：
@@ -664,6 +742,8 @@ Target prior、Reference prior、合并 prior、Raw pred 和 Fused pred。
 tensorboard=True 时，必须同时使用 --log_backend tensorboard，图片显示在
 TensorBoard 的 train_visualization/mvt1 和 train_visualization/mvt2 下。
 两种输出可以独立关闭；可视化未命中的 step 不会拷贝训练张量到 CPU。
+
+<a id=o2-tests></a>
 
 #### O2 训练代码测试
 
@@ -691,6 +771,8 @@ T/R 两项 coverage、`oracle_prior_coverage`、`trans_loss_raw` 和
 训练，启动训练时显式添加 `--save_optimizer_state`。轻量 checkpoint 仍可直接
 传给 RLBench `eval.py`；使用轻量 checkpoint 执行 `--resume` 时只恢复模型
 权重，优化器会重新初始化。
+
+<a id=rlbench-training-logs></a>
 
 ### RLBench 训练日志与实时 Loss
 
@@ -754,6 +836,8 @@ bash train.sh --exp_cfg_path  configs/gembench_config.yaml \
               --load_pretrain \
               --pretrain_path  PATH_TO_PRETRAINED_MODEL
 ```
+<a id=evaluation></a>
+
 ## 🧪 Evaluation
 1. **RLBench Evaluation:** To evaluate on RLBench, you can just run the following code:
 ```bash
@@ -793,6 +877,8 @@ The results are saved as `results.json`, which record the success status of each
 cd finetune/GemBench
 python3 cal_results.py
 ```
+<a id=experimental-results></a>
+
 ## 📈 Experimental Results
 BridgeVLA's performance on three simulation benchmarks is shown in the following table:
 ### RLBench Task Success Rates (Part 1)
@@ -862,6 +948,8 @@ BridgeVLA's performance on three simulation benchmarks is shown in the following
 | **BridgeVLA (Ours)**           | **50.0** | 91.1±1.1        | **65.0±1.3**    | **43.8±1.2**    | 0.0±0.0        |
 
 
+<a id=todo></a>
+
 ## 📅 TODO 
 
 - [x] Release the pre-training code
@@ -873,6 +961,8 @@ BridgeVLA's performance on three simulation benchmarks is shown in the following
 
 </details>
 
+<a id=acknowledgement></a>
+
 ## 🙏 Acknowledgement
 We stand on the shoulders of giants, and our work in developing BridgeVLA has been inspired and empowered by the remarkable open source projects in the field. We would like to extend our heartfelt gratitude to each of these initiatives and their dedicated developers.
 - [PerAct](https://peract.github.io/)
@@ -883,8 +973,12 @@ We stand on the shoulders of giants, and our work in developing BridgeVLA has be
 - [COLOSSEUM](https://robot-colosseum.github.io/)
 - [RoboPoint](https://github.com/wentaoyuan/RoboPoint)
 
+<a id=contact></a>
+
 ## ✉️ Contact
 If you have any questions about the code, please contact peiyan.li@cripac.ia.ac.cn.
+<a id=citation></a>
+
 ## 📝 Citation
 
 ```bibtex
