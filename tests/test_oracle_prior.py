@@ -1,14 +1,21 @@
 import unittest
+from contextlib import ExitStack
+from unittest import mock
 
 import torch
+from finetune.bridgevla.models import oracle_prior as oracle_prior_module
 
 from finetune.bridgevla.models.oracle_prior import (
     OraclePriorFeatureAdapter,
     OraclePriorFusion,
+    OracleRelationGatedFeatureAdapter,
     build_training_visualization_payload,
+    choose_oracle_translation_loss,
     rasterize_instance_points,
+    route_oracle_adapter_features,
     select_active_instance_points,
     select_relation_instance_points,
+    valid_oracle_translation_loss,
 )
 
 
@@ -69,6 +76,17 @@ class OraclePriorTest(unittest.TestCase):
         per_stage = sum(p.numel() for p in adapter.parameters())
         per_stage += sum(p.numel() for p in fusion.parameters())
         self.assertEqual(per_stage * 2, 220548)
+
+    def test_relation_gated_oracle_modules_are_lightweight(self):
+        adapter = OracleRelationGatedFeatureAdapter(
+            2048, rank=16, prior_channels=2,
+        )
+        fusion = OraclePriorFusion(
+            64, multiscale=True, prior_channels=2,
+        )
+        per_stage = sum(p.numel() for p in adapter.parameters())
+        per_stage += sum(p.numel() for p in fusion.parameters())
+        self.assertEqual(per_stage * 2, 223878)
 
     def test_feature_adapter_keeps_invalid_sample_unchanged(self):
         adapter = OraclePriorFeatureAdapter(4, rank=2)
@@ -144,6 +162,114 @@ class OraclePriorTest(unittest.TestCase):
             torch.tensor([[True, True], [True, True]]),
         )
         torch.testing.assert_close(adapted, features)
+
+    def test_relation_gated_adapter_is_identity_and_receives_gradients(self):
+        adapter = OracleRelationGatedFeatureAdapter(
+            8, rank=3, prior_channels=2,
+        )
+        features = torch.randn(6, 8, 4, 4)
+        prior = torch.rand(2, 3, 2, 8, 8)
+        points = torch.randn(2, 2, 5, 3)
+        valid = torch.tensor([[True, True], [True, True]])
+        adapted = adapter(features, prior, valid, points)
+        torch.testing.assert_close(adapted, features)
+        adapted.square().mean().backward()
+        self.assertGreater(
+            adapter.feature_expand.weight.grad.abs().sum().item(), 0
+        )
+
+    def test_relation_gated_adapter_keeps_incomplete_pair_unchanged(self):
+        adapter = OracleRelationGatedFeatureAdapter(
+            4, rank=2, prior_channels=2,
+        )
+        torch.nn.init.ones_(adapter.feature_expand.weight)
+        features = torch.randn(2, 4, 3, 3)
+        prior = torch.rand(2, 1, 2, 6, 6)
+        points = torch.randn(2, 2, 5, 3)
+        valid = torch.tensor([[True, True], [True, False]])
+        adapted = adapter(features, prior, valid, points)
+        torch.testing.assert_close(adapted[1], features[1])
+
+    def test_valid_oracle_translation_loss_ignores_incomplete_pairs(self):
+        values = torch.tensor(
+            [[1.0, 3.0], [100.0, 100.0]], requires_grad=True,
+        )
+        valid = torch.tensor([[True, True], [True, False]])
+        loss = valid_oracle_translation_loss(values, valid)
+        self.assertEqual(loss.item(), 2.0)
+        loss.backward()
+        torch.testing.assert_close(values.grad[1], torch.zeros(2))
+
+    def test_valid_oracle_translation_loss_all_invalid_is_zero(self):
+        values = torch.tensor([[2.0, 4.0]], requires_grad=True)
+        loss = valid_oracle_translation_loss(
+            values, torch.tensor([[True, False]]),
+        )
+        self.assertEqual(loss.item(), 0.0)
+        loss.backward()
+        torch.testing.assert_close(values.grad, torch.zeros_like(values))
+
+    def test_valid_oracle_translation_loss_uses_global_ddp_count(self):
+        values = torch.tensor([[2.0]], requires_grad=True)
+
+        def fake_all_reduce(tensor, op=None):
+            tensor.mul_(3.0)
+
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch.object(
+                oracle_prior_module.dist, 'is_available', return_value=True,
+            ))
+            stack.enter_context(mock.patch.object(
+                oracle_prior_module.dist, 'is_initialized', return_value=True,
+            ))
+            stack.enter_context(mock.patch.object(
+                oracle_prior_module.dist, 'get_world_size', return_value=2,
+            ))
+            stack.enter_context(mock.patch.object(
+                oracle_prior_module.dist,
+                'all_reduce',
+                side_effect=fake_all_reduce,
+            ))
+            loss = valid_oracle_translation_loss(
+                values, torch.tensor([[True, True]]), distributed=True,
+            )
+        torch.testing.assert_close(loss, torch.tensor(4.0 / 3.0))
+
+    def test_translation_only_route_isolates_action_feature_gradient(self):
+        base = torch.randn(1, 2, requires_grad=True)
+        adapted = torch.randn(1, 2, requires_grad=True)
+        translation, action = route_oracle_adapter_features(
+            base, adapted, translation_only=True,
+        )
+        self.assertIs(translation, adapted)
+        self.assertIs(action, base)
+        action.sum().backward()
+        self.assertIsNone(adapted.grad)
+        torch.testing.assert_close(base.grad, torch.ones_like(base))
+
+    def test_joint_route_uses_adapted_action_features(self):
+        base = torch.randn(1, 2)
+        adapted = torch.randn(1, 2)
+        _, action = route_oracle_adapter_features(
+            base, adapted, translation_only=False,
+        )
+        self.assertIs(action, adapted)
+
+    def test_translation_objective_respects_valid_only_switch(self):
+        all_loss = torch.tensor(1.0)
+        valid_loss = torch.tensor(2.0)
+        self.assertIs(
+            choose_oracle_translation_loss(
+                all_loss, valid_loss, valid_only=False,
+            ),
+            all_loss,
+        )
+        self.assertIs(
+            choose_oracle_translation_loss(
+                all_loss, valid_loss, valid_only=True,
+            ),
+            valid_loss,
+        )
 
     def test_strict_selection_rejects_ambiguous_gt(self):
         with self.assertRaisesRegex(ValueError, 'exactly one'):

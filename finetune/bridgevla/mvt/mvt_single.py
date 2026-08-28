@@ -25,6 +25,7 @@ from bridgevla.mvt.attn import (
     FixedPositionalEncoding,
 )
 from bridgevla.mvt.raft_utils import ConvexUpSample
+from bridgevla.models.oracle_prior import route_oracle_adapter_features
 from PIL import Image
 
 
@@ -456,6 +457,8 @@ class MVT(nn.Module):
         oracle_prior_heatmap=None,
         oracle_prior_valid=None,
         oracle_feature_adapter=None,
+        oracle_relation_points=None,
+        oracle_adapter_translation_only=False,
         oracle_compute_base=False,
         **kwargs,
     ):
@@ -533,6 +536,7 @@ class MVT(nn.Module):
         )
         x=x.to(torch.float32)
         trans_base = None
+        translation_features = x
         if oracle_feature_adapter is not None:
             if oracle_prior_heatmap is None or oracle_prior_valid is None:
                 raise ValueError('Oracle feature adapter requires prior and valid')
@@ -541,11 +545,17 @@ class MVT(nn.Module):
                     trans_base = self.up0(x).view(
                         bs, self.num_img, h, w,
                     )
-            x = oracle_feature_adapter(
+            translation_features = oracle_feature_adapter(
                 x, oracle_prior_heatmap, oracle_prior_valid,
+                oracle_relation_points,
+            )
+            translation_features, x = route_oracle_adapter_features(
+                x,
+                translation_features,
+                oracle_adapter_translation_only,
             )
         
-        trans = self.up0(x)
+        trans = self.up0(translation_features)
         trans = trans.view(bs, self.num_img, h, w)
 
 

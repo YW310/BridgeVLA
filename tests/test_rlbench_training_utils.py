@@ -37,6 +37,10 @@ class RLBenchTrainingUtilsTest(unittest.TestCase):
                     'oracle_prior_feature_adapter1.feature_expand.weight',
                     RLBenchTrainingUtilsTest._Parameter(11),
                 ),
+                (
+                    'oracle_prior_feature_adapter1.relation_encoder.weight',
+                    RLBenchTrainingUtilsTest._Parameter(5),
+                ),
             ]
 
         def parameters(self):
@@ -72,6 +76,20 @@ class RLBenchTrainingUtilsTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'at least one complete'):
             training_utils.optimizer_steps_per_epoch(191, 192)
 
+    def test_translation_only_oracle_training_disables_rgc_loss(self):
+        self.assertTrue(
+            training_utils.should_disable_rgc_loss(False, True, True)
+        )
+        self.assertTrue(
+            training_utils.should_disable_rgc_loss(True, False, False)
+        )
+        self.assertFalse(
+            training_utils.should_disable_rgc_loss(False, True, False)
+        )
+        self.assertFalse(
+            training_utils.should_disable_rgc_loss(False, False, True)
+        )
+
     def test_fusion_only_freezes_original_backbone(self):
         backbone = self._Backbone()
         trainable = training_utils.freeze_for_oracle_fusion(backbone)
@@ -79,14 +97,16 @@ class RLBenchTrainingUtilsTest(unittest.TestCase):
         self.assertFalse(backbone.named[0][1].requires_grad)
         self.assertTrue(backbone.named[1][1].requires_grad)
         self.assertFalse(backbone.named[2][1].requires_grad)
+        self.assertFalse(backbone.named[3][1].requires_grad)
 
     def test_oracle_adaptation_freezes_original_backbone(self):
         backbone = self._Backbone()
         trainable = training_utils.freeze_for_oracle_adaptation(backbone)
-        self.assertEqual(trainable, 18)
+        self.assertEqual(trainable, 23)
         self.assertFalse(backbone.named[0][1].requires_grad)
         self.assertTrue(backbone.named[1][1].requires_grad)
         self.assertTrue(backbone.named[2][1].requires_grad)
+        self.assertTrue(backbone.named[3][1].requires_grad)
 
 
 if __name__ == '__main__':

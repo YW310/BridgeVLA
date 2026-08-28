@@ -54,6 +54,7 @@ from training_utils import (
     freeze_for_oracle_adaptation,
     freeze_for_oracle_fusion,
     optimizer_steps_per_epoch,
+    should_disable_rgc_loss,
 )
 from training_visualization import (
     record_training_visualization,
@@ -168,6 +169,10 @@ def train(
                     'trans_loss',
                     'trans_loss_base',
                     'trans_loss_raw',
+                    'trans_loss_valid',
+                    'trans_loss_base_valid',
+                    'trans_loss_raw_valid',
+                    'oracle_prior_coverage',
                     'rot_loss_x',
                     'rot_loss_y',
                     'rot_loss_z',
@@ -327,6 +332,10 @@ def train_with_accumulation(
                     'trans_loss',
                     'trans_loss_base',
                     'trans_loss_raw',
+                    'trans_loss_valid',
+                    'trans_loss_base_valid',
+                    'trans_loss_raw_valid',
+                    'oracle_prior_coverage',
                     'rot_loss_x',
                     'rot_loss_y',
                     'rot_loss_z',
@@ -676,6 +685,18 @@ def experiment(cmd_args):
                 'train_visualization.tensorboard=True requires '
                 '--log_backend tensorboard'
             )
+    if should_disable_rgc_loss(
+        cmd_args.train_oracle_fusion_only,
+        cmd_args.train_oracle_adapter_only,
+        exp_cfg.oracle_adapter_translation_only,
+    ):
+        exp_cfg.peract.add_rgc_loss = False
+        if local_rank == 0:
+            print(
+                'Disable R/G/C losses: Oracle-only trainable modules affect '
+                'translation only.',
+                flush=True,
+            )
     exp_cfg.freeze()
     if reduced_hardware_mode:
         set_training_seed(exp_cfg.seed, dist.get_rank())
@@ -787,6 +808,10 @@ def experiment(cmd_args):
             exp_cfg.oracle_prior_multiscale_fusion
         ),
         oracle_prior_relation=exp_cfg.rvt.oracle_prior_relation,
+        oracle_relation_gated_adapter=exp_cfg.oracle_relation_gated_adapter,
+        oracle_adapter_translation_only=(
+            exp_cfg.oracle_adapter_translation_only
+        ),
         **mvt_cfg,
     )
     expected_oracle_params = None

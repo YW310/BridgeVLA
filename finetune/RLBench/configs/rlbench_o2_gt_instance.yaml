@@ -32,6 +32,8 @@ oracle_num_points: 512
 oracle_prior_hidden_channels: 64
 oracle_prior_adapter_rank: 16
 oracle_prior_multiscale_fusion: True
+oracle_relation_gated_adapter: True
+oracle_adapter_translation_only: True
 
 peract:
   lr: 4e-5
@@ -48,3 +50,5 @@ rvt:
   oracle_prior_strict: False
   oracle_prior_relation: True
   oracle_log_base_loss: True
+  # Keep a fixed denominator under 8-GPU gradient accumulation.
+  oracle_valid_only_loss: False

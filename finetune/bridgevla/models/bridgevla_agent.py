@@ -33,9 +33,11 @@ import bridgevla.utils.rvt_utils as rvt_utils
 from bridgevla.mvt.augmentation import apply_se3_aug_con, aug_utils
 from bridgevla.models.oracle_prior import (
     build_training_visualization_payload,
+    choose_oracle_translation_loss,
     latest_replay_value,
     select_active_instance_points,
     select_relation_instance_points,
+    valid_oracle_translation_loss,
     validate_oracle_prior_config,
 )
 from bridgevla.models.optimizer_utils import parameter_learning_rate
@@ -444,6 +446,7 @@ class RVTAgent:
         oracle_prior_strict: bool = False,
         oracle_prior_relation: bool = False,
         oracle_log_base_loss: bool = False,
+        oracle_valid_only_loss: bool = False,
         log_dir="",
     ):
         self._network = network
@@ -474,12 +477,17 @@ class RVTAgent:
         validate_oracle_prior_config(
             oracle_prior_mode, oracle_prior_sigma, oracle_prior_active_role,
         )
+        if oracle_valid_only_loss and oracle_prior_mode != 'o2_gt_instance':
+            raise ValueError(
+                'oracle_valid_only_loss requires O2 GT-instance mode'
+            )
         self.oracle_prior_mode = oracle_prior_mode
         self.oracle_prior_sigma = oracle_prior_sigma
         self.oracle_prior_active_role = oracle_prior_active_role
         self.oracle_prior_strict = oracle_prior_strict
         self.oracle_prior_relation = bool(oracle_prior_relation)
         self.oracle_log_base_loss = bool(oracle_log_base_loss)
+        self.oracle_valid_only_loss = bool(oracle_valid_only_loss)
         self._oracle_missing_warning_shown = False
 
         print("Cameras:",self.cameras)
@@ -1035,18 +1043,59 @@ class RVTAgent:
         loss_log = {}
         if backprop:
             # cross-entropy loss
-            trans_loss = self._cross_entropy_loss(q_trans, action_trans).mean()    # Soft-label cross-entropy loss. The target has the same shape as the input and is no longer one-hot encoded, but represented by class probabilities.
-            raw_trans_loss = (
-                self._cross_entropy_loss(raw_q_trans, action_trans).mean()
+            trans_loss_values = self._cross_entropy_loss(q_trans, action_trans)
+            trans_loss = trans_loss_values.mean()
+            valid_loss_values = (
+                trans_loss_values
+                if self.oracle_valid_only_loss else trans_loss_values.detach()
+            )
+            trans_loss_valid = (
+                valid_oracle_translation_loss(
+                    valid_loss_values,
+                    oracle_valid,
+                    distributed=self.oracle_valid_only_loss,
+                )
+                if oracle_valid is not None else None
+            )
+            optimized_trans_loss = choose_oracle_translation_loss(
+                trans_loss,
+                trans_loss_valid,
+                self.oracle_valid_only_loss,
+            )
+            raw_trans_loss_values = (
+                self._cross_entropy_loss(raw_q_trans, action_trans)
                 if raw_q_trans is not None else None
             )
-            base_trans_loss = (
-                self._cross_entropy_loss(base_q_trans, action_trans).mean()
+            raw_trans_loss = (
+                raw_trans_loss_values.mean()
+                if raw_trans_loss_values is not None else None
+            )
+            raw_trans_loss_valid = (
+                valid_oracle_translation_loss(
+                    raw_trans_loss_values, oracle_valid,
+                )
+                if oracle_valid is not None
+                and raw_trans_loss_values is not None else None
+            )
+            base_trans_loss_values = (
+                self._cross_entropy_loss(base_q_trans, action_trans)
                 if base_q_trans is not None else None
             )
-            rot_loss_x = rot_loss_y = rot_loss_z = 0.0
-            grip_loss = 0.0
-            collision_loss = 0.0
+            base_trans_loss = (
+                base_trans_loss_values.mean()
+                if base_trans_loss_values is not None else None
+            )
+            base_trans_loss_valid = (
+                valid_oracle_translation_loss(
+                    base_trans_loss_values, oracle_valid,
+                )
+                if oracle_valid is not None
+                and base_trans_loss_values is not None else None
+            )
+            zero_loss = trans_loss.new_zeros(())
+            rot_loss_x = rot_loss_y = rot_loss_z = zero_loss
+            grip_loss = zero_loss
+            collision_loss = zero_loss
             if self.add_rgc_loss:
                 
                 rot_loss_x = self._cross_entropy_loss(
@@ -1083,7 +1132,7 @@ class RVTAgent:
                 ).mean()
 
             total_loss = (
-                trans_loss
+                optimized_trans_loss
                 + rot_loss_x
                 + rot_loss_y
                 + rot_loss_z
@@ -1114,6 +1163,16 @@ class RVTAgent:
                 loss_log['trans_loss_raw'] = raw_trans_loss.item()
             if base_trans_loss is not None:
                 loss_log['trans_loss_base'] = base_trans_loss.item()
+            if trans_loss_valid is not None:
+                loss_log['trans_loss_valid'] = trans_loss_valid.item()
+            if raw_trans_loss_valid is not None:
+                loss_log['trans_loss_raw_valid'] = (
+                    raw_trans_loss_valid.item()
+                )
+            if base_trans_loss_valid is not None:
+                loss_log['trans_loss_base_valid'] = (
+                    base_trans_loss_valid.item()
+                )
             manage_loss_log(self, loss_log, reset_log=reset_log)
             return_out.update(loss_log)
             if return_visualization:

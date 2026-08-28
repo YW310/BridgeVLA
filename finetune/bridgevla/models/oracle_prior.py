@@ -11,6 +11,7 @@ import math
 from typing import Dict, Mapping, Optional, Tuple
 
 import torch
+import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -270,6 +271,55 @@ def _relation_valid_mask(instance_valid, batch_size):
     raise ValueError('instance_valid must have shape [B] or [B,R]')
 
 
+def valid_oracle_translation_loss(
+    loss_values, oracle_valid, distributed=False,
+):
+    '''Average over complete Oracle samples, with optional DDP normalization.'''
+    if oracle_valid is None:
+        raise ValueError('oracle_valid_only_loss requires Oracle validity')
+    if loss_values.ndim < 1:
+        raise ValueError('translation loss must retain a batch dimension')
+    sample_valid = _relation_valid_mask(
+        oracle_valid, loss_values.shape[0],
+    )
+    per_sample = loss_values.reshape(loss_values.shape[0], -1).mean(dim=1)
+    valid_weight = sample_valid.to(
+        device=per_sample.device, dtype=per_sample.dtype,
+    )
+    numerator = (per_sample * valid_weight).sum()
+    denominator = valid_weight.sum()
+    if distributed and dist.is_available() and dist.is_initialized():
+        denominator = denominator.detach().clone()
+        dist.all_reduce(denominator, op=dist.ReduceOp.SUM)
+        # DDP averages gradients across ranks. Multiplying the local numerator
+        # by world size recovers a global sum / global valid-count gradient.
+        numerator = numerator * dist.get_world_size()
+    return numerator / denominator.clamp_min(1.0)
+
+
+def route_oracle_adapter_features(
+    base_features, adapted_features, translation_only,
+):
+    '''Return translation features and the feature tensor used by action heads.'''
+    if base_features.shape != adapted_features.shape:
+        raise ValueError('base and adapted feature shapes must match')
+    action_features = (
+        base_features if translation_only else adapted_features
+    )
+    return adapted_features, action_features
+
+
+def choose_oracle_translation_loss(
+    all_sample_loss, valid_sample_loss, valid_only,
+):
+    '''Select the configured translation objective without changing metrics.'''
+    if not valid_only:
+        return all_sample_loss
+    if valid_sample_loss is None:
+        raise ValueError('valid-only translation loss is unavailable')
+    return valid_sample_loss
+
+
 class OraclePriorFeatureAdapter(nn.Module):
     def __init__(
         self, feature_channels: int, rank: int = 16, prior_channels: int = 1,
@@ -285,7 +335,9 @@ class OraclePriorFeatureAdapter(nn.Module):
         nn.init.zeros_(self.feature_expand.weight)
         nn.init.zeros_(self.feature_expand.bias)
 
-    def forward(self, features, prior, instance_valid):
+    def forward(
+        self, features, prior, instance_valid, relation_points=None,
+    ):
         if features.ndim != 4:
             raise ValueError('features must have shape [B*V,C,H,W]')
         if features.shape[1] != self.feature_channels:
@@ -316,6 +368,118 @@ class OraclePriorFeatureAdapter(nn.Module):
             device=features.device, dtype=features.dtype,
         ).repeat_interleave(num_views).view(-1, 1, 1, 1)
         return features + residual * valid
+
+
+class OracleRelationGatedFeatureAdapter(OraclePriorFeatureAdapter):
+    '''Low-rank adapter conditioned on explicit Target/Reference geometry.
+
+    It combines the two projected prior channels with a shared PointNet-style
+    encoder of the two 3-D point sets. The final feature expansion remains zero
+    initialized, preserving the original BridgeVLA output at initialization.
+    '''
+
+    def __init__(
+        self, feature_channels: int, rank: int = 16, prior_channels: int = 2,
+    ):
+        if prior_channels != 2:
+            raise ValueError(
+                'Relation-gated adapter requires Target/Reference prior channels'
+            )
+        super().__init__(feature_channels, rank, prior_channels)
+        self.rank = rank
+        self.point_encoder = nn.Sequential(
+            nn.Linear(3, rank),
+            nn.GELU(),
+            nn.Linear(rank, rank),
+            nn.GELU(),
+        )
+        relation_input_channels = 2 * rank + 15
+        self.relation_encoder = nn.Sequential(
+            nn.Linear(relation_input_channels, rank),
+            nn.GELU(),
+            nn.Linear(rank, 2 * rank + 1),
+        )
+        nn.init.zeros_(self.relation_encoder[-1].weight[-1:])
+        nn.init.zeros_(self.relation_encoder[-1].bias[-1:])
+
+    def _encode_relation(self, points, instance_valid, dtype, device):
+        if points is None:
+            raise ValueError(
+                'Relation-gated adapter requires oracle relation points'
+            )
+        if points.ndim != 4 or points.shape[1] != 2 or points.shape[-1] != 3:
+            raise ValueError('relation points must have shape [B,2,P,3]')
+        batch_size = points.shape[0]
+        if instance_valid.shape != (batch_size, 2):
+            raise ValueError(
+                'Relation-gated adapter requires instance_valid shape [B,2]'
+            )
+
+        points = points.to(device=device, dtype=dtype)
+        role_valid = instance_valid.to(device=device).bool()
+        valid_float = role_valid.to(dtype=dtype).view(batch_size, 2, 1)
+        pooled = self.point_encoder(points).mean(dim=2) * valid_float
+        centers = points.mean(dim=2) * valid_float
+        extents = (points.amax(dim=2) - points.amin(dim=2)) * valid_float
+        displacement = centers[:, 1] - centers[:, 0]
+        descriptor = torch.cat(
+            (
+                pooled.reshape(batch_size, -1),
+                centers.reshape(batch_size, -1),
+                extents.reshape(batch_size, -1),
+                displacement,
+            ),
+            dim=1,
+        )
+        modulation = self.relation_encoder(descriptor)
+        gamma, beta, gate_logit = torch.split(
+            modulation, (self.rank, self.rank, 1), dim=1,
+        )
+        return torch.tanh(gamma), beta, torch.sigmoid(gate_logit)
+
+    def forward(self, features, prior, instance_valid, relation_points=None):
+        if features.ndim != 4:
+            raise ValueError('features must have shape [B*V,C,H,W]')
+        if features.shape[1] != self.feature_channels:
+            raise ValueError('unexpected feature channel count')
+        if prior.ndim != 5:
+            raise ValueError('relation prior must have shape [B,V,2,H,W]')
+        batch_size, num_views, prior_channels = prior.shape[:3]
+        if prior_channels != self.prior_channels:
+            raise ValueError('unexpected prior channel count')
+        if features.shape[0] != batch_size * num_views:
+            raise ValueError('feature batch does not match prior batch and views')
+        relation_valid = _relation_valid_mask(instance_valid, batch_size)
+
+        prior_features = prior.reshape(
+            batch_size * num_views, prior_channels, *prior.shape[-2:]
+        ).to(device=features.device, dtype=features.dtype)
+        prior_features = F.interpolate(
+            prior_features, size=features.shape[-2:], mode='bilinear',
+            align_corners=False,
+        )
+        gamma, beta, gate = self._encode_relation(
+            relation_points, instance_valid, features.dtype, features.device,
+        )
+        gamma = gamma.repeat_interleave(num_views, dim=0).view(
+            -1, self.rank, 1, 1,
+        )
+        beta = beta.repeat_interleave(num_views, dim=0).view(
+            -1, self.rank, 1, 1,
+        )
+        gate = gate.repeat_interleave(num_views, dim=0).view(-1, 1, 1, 1)
+
+        feature_hidden = self.feature_reduce(features)
+        hidden = (
+            feature_hidden * (1.0 + gamma)
+            + self.prior_project(prior_features)
+            + beta
+        )
+        residual = self.feature_expand(F.gelu(hidden))
+        valid = relation_valid.to(
+            device=features.device, dtype=features.dtype,
+        ).repeat_interleave(num_views).view(-1, 1, 1, 1)
+        return features + residual * gate * valid
 
 
 class OraclePriorFusion(nn.Module):

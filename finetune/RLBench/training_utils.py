@@ -65,6 +65,21 @@ def optimizer_steps_per_epoch(train_samples: int, global_batch_size: int) -> int
     return steps
 
 
+def should_disable_rgc_loss(
+    train_oracle_fusion_only: bool,
+    train_oracle_adapter_only: bool,
+    oracle_adapter_translation_only: bool,
+) -> bool:
+    '''Return whether frozen Oracle-only training has no R/G/C gradient path.'''
+    return bool(
+        train_oracle_fusion_only
+        or (
+            train_oracle_adapter_only
+            and oracle_adapter_translation_only
+        )
+    )
+
+
 def freeze_for_oracle_fusion(backbone) -> int:
     """Freeze all parameters except modules named oracle_prior_fusion."""
     for parameter in backbone.parameters():

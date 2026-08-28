@@ -28,6 +28,7 @@ from bridgevla.mvt.config import get_cfg_defaults
 from bridgevla.models.oracle_prior import (
     OraclePriorFeatureAdapter,
     OraclePriorFusion,
+    OracleRelationGatedFeatureAdapter,
     rasterize_instance_points,
 )
 
@@ -73,10 +74,24 @@ class MVT(nn.Module):
         oracle_prior_adapter_rank=0,
         oracle_prior_multiscale_fusion=False,
         oracle_prior_relation=False,
+        oracle_relation_gated_adapter=False,
+        oracle_adapter_translation_only=False,
     ):
         super().__init__()
         if oracle_prior_adapter_rank < 0:
             raise ValueError('oracle_prior_adapter_rank must be >= 0')
+        if oracle_relation_gated_adapter and not oracle_prior_relation:
+            raise ValueError(
+                'oracle_relation_gated_adapter requires oracle_prior_relation'
+            )
+        if oracle_relation_gated_adapter and not oracle_prior_fusion:
+            raise ValueError(
+                'oracle_relation_gated_adapter requires oracle_prior_fusion'
+            )
+        if oracle_relation_gated_adapter and oracle_prior_adapter_rank <= 0:
+            raise ValueError(
+                'oracle_relation_gated_adapter requires adapter rank > 0'
+            )
 
         from point_renderer.rvt_renderer import RVTBoxRenderer as BoxRenderer
 
@@ -97,6 +112,8 @@ class MVT(nn.Module):
         del args['oracle_prior_adapter_rank']
         del args['oracle_prior_multiscale_fusion']
         del args['oracle_prior_relation']
+        del args['oracle_relation_gated_adapter']
+        del args['oracle_adapter_translation_only']
 
         self.rot_ver = rot_ver
         self.num_rot = num_rot
@@ -106,6 +123,12 @@ class MVT(nn.Module):
         self.st_wpt_loc_inp_no_noise = st_wpt_loc_inp_no_noise
         self.img_aug_2 = img_aug_2
         self.oracle_prior_relation = bool(oracle_prior_relation)
+        self.oracle_relation_gated_adapter = bool(
+            oracle_relation_gated_adapter
+        )
+        self.oracle_adapter_translation_only = bool(
+            oracle_adapter_translation_only
+        )
         oracle_prior_channels = 2 if oracle_prior_relation else 1
         self.oracle_prior_fusion1 = (
             OraclePriorFusion(
@@ -141,15 +164,19 @@ class MVT(nn.Module):
             renderer=self.renderer,
         )  # we have merged mvt1 and mvt2
         use_adapter = oracle_prior_fusion and oracle_prior_adapter_rank > 0
+        adapter_class = (
+            OracleRelationGatedFeatureAdapter
+            if oracle_relation_gated_adapter else OraclePriorFeatureAdapter
+        )
         self.oracle_prior_feature_adapter1 = (
-            OraclePriorFeatureAdapter(
+            adapter_class(
                 self.mvt1.vlm_dim, oracle_prior_adapter_rank,
                 prior_channels=oracle_prior_channels,
             )
             if use_adapter else None
         )
         self.oracle_prior_feature_adapter2 = (
-            OraclePriorFeatureAdapter(
+            adapter_class(
                 self.mvt1.vlm_dim, oracle_prior_adapter_rank,
                 prior_channels=oracle_prior_channels,
             )
@@ -477,6 +504,10 @@ class MVT(nn.Module):
             forward_no_feat=True,
             oracle_prior_heatmap=oracle_prior1,
             oracle_prior_valid=oracle_prior_valid,
+            oracle_relation_points=oracle_prior_points,
+            oracle_adapter_translation_only=(
+                self.oracle_adapter_translation_only
+            ),
             oracle_feature_adapter=(
                 self.oracle_prior_feature_adapter1
                 if oracle_prior1 is not None else None
@@ -576,6 +607,22 @@ class MVT(nn.Module):
                 oracle_prior_points, oracle_prior_valid, False, out,
                 oracle_prior_sigma,
             )
+            oracle_relation_points2 = oracle_prior_points
+            if (
+                self.oracle_relation_gated_adapter
+                and oracle_prior_points is not None
+            ):
+                oracle_point_shape = oracle_prior_points.shape
+                oracle_relation_points2, _ = mvt_utils.trans_pc(
+                    oracle_prior_points.reshape(
+                        oracle_prior_points.shape[0], -1, 3,
+                    ),
+                    loc=wpt_local_stage_one_noisy,
+                    sca=self.st_sca,
+                )
+                oracle_relation_points2 = oracle_relation_points2.reshape(
+                    oracle_point_shape
+                )
             out_mvt2 = self.mvt1(
                 img=img,
                 wpt_local=wpt_local2,
@@ -584,6 +631,10 @@ class MVT(nn.Module):
                 forward_no_feat=False,
                 oracle_prior_heatmap=oracle_prior2,
                 oracle_prior_valid=oracle_prior_valid,
+                oracle_relation_points=oracle_relation_points2,
+                oracle_adapter_translation_only=(
+                    self.oracle_adapter_translation_only
+                ),
                 oracle_feature_adapter=(
                     self.oracle_prior_feature_adapter2
                     if oracle_prior2 is not None else None

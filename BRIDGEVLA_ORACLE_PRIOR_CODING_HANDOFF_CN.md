@@ -18,7 +18,7 @@
 
 首版不运行 Qwen/SAM，不改 rotation、gripper、collision heads，不实现完整 world repair。
 
-### 当前轻量适配实现状态（2026-08-24）
+### 当前轻量适配实现状态（2026-08-28）
 
 本轮先完成 O2 训练闭环，原则是尽量不改变原 BridgeVLA：
 
@@ -27,22 +27,28 @@
 - O2 主配置同时使用当前状态下唯一的 Target 与 Reference 完整点云，而不是物体中心；
   两组点云按固定 `[T,R]` 顺序，经过与场景相同的 SE(3) 增强、立方体归一化和
   MVT 三视图投影，以保留二者的空间关系；
-- 第一、二阶段均先用 rank-16 feature adapter 将双通道实例 prior 注入 2048 维视觉特征，
-  再通过 hidden-64 多尺度 residual fusion 修正 translation logits；两段输出层均为
-  零初始化，最终 fused logits 继续使用原 translation loss；
+- 第一、二阶段均先用 rank-16 feature adapter 将双通道实例 prior 注入 2048 维视觉特征；
+  可开关的 relation encoder 共享编码 T/R 点集，并用 pooled feature、中心、尺度和相对位移
+  生成 gated FiLM。Stage 2 使用与局部 heatmap 相同的平移/缩放坐标系；随后通过 hidden-64
+  多尺度 residual fusion 修正 translation logits。输出层零初始化，初始结果仍等于 baseline。
+  主配置开启 `oracle_adapter_translation_only`，R/G/C 分支继续读取原 feature，避免这些
+  loss 通过 Adapter 形成竞争梯度；Oracle-only translation 训练还会自动关闭
+  `peract.add_rgc_loss`，使 `total_loss` 与真正可训练的 translation 目标一致；
 - 推荐从已训练 baseline checkpoint 初始化，冻结原 BridgeVLA（包括 Gemma），只训练
-  feature adapter 与 fusion，精确为 220,548 个参数（约 22.1 万）；
+  relation-gated feature adapter 与 fusion，精确为 223,878 个参数（约 22.4 万）；
 - O2 参数集中在
   `finetune/RLBench/configs/rlbench_o2_gt_instance.yaml`；checkpoint 和冻结模式
   仍作为运行时命令行参数；
-- 日志同时输出 `trans_loss_base`（Adapter 前，仅监控）、`trans_loss_raw`、
-  `trans_loss`、T/R 各自 coverage 和完整 pair 的 `oracle_prior_coverage`；任一 role
-  缺失或存在多个候选时，该样本回退原始 logits；
-- 已完成 Python 语法检查、补丁格式检查和不依赖 PyTorch 的训练工具回归测试。
+- 日志同时输出全 batch 的 `trans_loss_base`/`trans_loss_raw`/`trans_loss`，
+  以及完整 T/R pair 的对应 `*_valid` 指标。主配置保持
+  `oracle_valid_only_loss=False`，使用固定 batch 分母，避免 8-GPU 梯度累积时低
+  coverage micro-batch 被放大；valid-only 开关保留用于消融，并修正了 DDP rank 间计数；
+- 本地完成补丁格式与静态接线检查；新增 PyTorch 回归测试需在服务器环境执行。
 
 最小版本暂不处理以下复杂情况：
 
-- 不加入 prior dropout、错误实例扰动、置信度 gate 或不确定性建模；
+- 不加入 prior dropout、错误实例扰动、外部置信度或不确定性建模；当前 gate 只由
+  GT T/R 三维关系特征学习；
 - 不训练 Qwen/SAM/predicted-instance provider，也不把 Oracle 结果当作部署结果；
 - 不实现复杂的抓取周期状态机、多 target/reference 消歧和 interaction-site prior；
 - 不修改 Gemma、vision tower、rotation、gripper、collision 等原网络分支；

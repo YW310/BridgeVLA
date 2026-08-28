@@ -45,6 +45,9 @@ _C.oracle_num_points = 512
 _C.oracle_prior_hidden_channels = 16
 _C.oracle_prior_adapter_rank = 0
 _C.oracle_prior_multiscale_fusion = False
+_C.oracle_relation_gated_adapter = False
+# Keep Oracle feature residuals out of rotation/gripper/collision branches.
+_C.oracle_adapter_translation_only = False
 # arguments present in both peract and rvt
 # some of them donot support every possible combination in peract
 _C.peract = CN()
@@ -76,6 +79,8 @@ _C.rvt.oracle_prior_active_role = 'auto'
 _C.rvt.oracle_prior_strict = False
 _C.rvt.oracle_prior_relation = False
 _C.rvt.oracle_log_base_loss = False
+# Normalize translation loss over complete Oracle relation samples only.
+_C.rvt.oracle_valid_only_loss = False
 
 # arguments present in peract official
 _C.peract_official = CN()

@@ -531,14 +531,18 @@ use_oracle_objects 默认为 False，因此原始非 Oracle replay 的加载行�
 O2 不把 GT heatmap 作为固定 mask 或手工 logit 约束。主配置会同时选择唯一的
 Target 与 Reference，按固定顺序组成双通道三视角 prior `[P_T, P_R]`；两组点云经过
 完全相同的增强、归一化和投影，因此通道间保留当前状态下的空间关系。双通道 prior
-下采样后，通过低秩 feature adapter 注入 PaliGemma 的 2048 维视觉特征，再由多尺度
-residual fusion 融合 translation logits、两个 prior 及交互项。adapter
+下采样后，通过低秩 feature adapter 注入 PaliGemma 的 2048 维视觉特征。主配置还会
+用共享 PointNet-style MLP 编码 T/R 完整 3D 点集，并将 pooled feature、中心、尺度和
+相对位移用于 gated FiLM；随后由多尺度 residual fusion 融合 translation logits、
+两个 prior 及交互项。adapter
 与 fusion 输出层均为零初始化，因此训练开始时与 baseline 完全一致；Oracle
 任一角色缺失或不唯一时，relation residual 整体关闭并强制回退原始路径。
+推荐配置中 Adapter 只修改 translation decoder 的输入；rotation、gripper 和
+collision 分支继续使用原 BridgeVLA feature，避免非 translation loss 竞争更新 O2。
 
 <a id=o2-adapter-fusion></a>
 
-#### 推荐主实验：Adapter + Fusion（约 22.1 万参数）
+#### 推荐主实验：Relation-gated Adapter + Fusion（约 22.4 万参数）
 
 冻结整个原 BridgeVLA，只训练新增 feature adapter 和 fusion：
 
@@ -550,8 +554,13 @@ bash train.sh \
     --train_oracle_adapter_only
 ```
 
-该配置使用双通道 Target/Reference prior、rank=16、hidden=64，两阶段模型精确训练
-220,548 个参数。
+该配置使用双通道 Target/Reference prior、rank=16、hidden=64，并显式编码 3D
+T/R relation；两阶段模型精确训练 223,878 个参数。关闭 relation-gated adapter 后，
+旧 Adapter + Fusion 仍为 220,548 个参数。
+当 `--train_oracle_adapter_only` 与 `oracle_adapter_translation_only=True` 同时使用时，
+训练入口会自动将 `peract.add_rgc_loss` 设为 False：冻结的 R/G/C 头没有通向 O2
+参数的梯度路径，继续计算只会增加开销并让 `total_loss` 看起来震荡。此时
+`total_loss` 就是实际优化的 translation loss。
 
 <a id=o2-fusion-only></a>
 
@@ -597,9 +606,13 @@ shape、adapter rank、多尺度 fusion、relation 模式和 heatmap sigma。che
 O2 专用配置已经默认开启双通道输入，因此使用该 YAML 时不需要额外添加命令行参数：
 
 ```yaml
+oracle_relation_gated_adapter: True
+oracle_adapter_translation_only: True
+
 rvt:
   oracle_prior_relation: True
   oracle_log_base_loss: True
+  oracle_valid_only_loss: False
 ```
 
 如果使用其他实验配置，可在命令行显式开启：
@@ -607,28 +620,38 @@ rvt:
 ```bash
 bash train.sh \
     --exp_cfg_path configs/rlbench.yaml \
-    --exp_cfg_opts 'rvt.oracle_prior_relation True' \
+    --exp_cfg_opts 'oracle_relation_gated_adapter True oracle_adapter_translation_only True rvt.oracle_prior_relation True' \
     [其他训练参数]
 ```
 
-如需恢复旧的 Target/Reference 二选一单 prior 模式，可覆盖为：
+如需保留双通道 heatmap、但恢复旧的无显式 3D relation Adapter，可覆盖为：
 
 ```bash
---exp_cfg_opts 'rvt.oracle_prior_relation False'
+--exp_cfg_opts 'oracle_relation_gated_adapter False'
 ```
 
+如需进一步恢复 Target/Reference 二选一单 prior，必须同时关闭 gated adapter：
+
+    --exp_cfg_opts 'oracle_relation_gated_adapter False rvt.oracle_prior_relation False'
+
 `rvt.oracle_prior_relation` 决定 Oracle 输入采用双通道 T/R 还是旧单 prior；
-`--train_oracle_adapter_only` 决定冻结范围和可训练模块。两个参数作用不同，推荐主实验
+`oracle_relation_gated_adapter` 决定 feature adapter 是否显式编码 3D T/R relation；
+`oracle_adapter_translation_only` 决定 Adapter 输出是否只进入 translation decoder；
+`rvt.oracle_valid_only_loss` 决定 translation 优化是否忽略不完整 T/R pair。
+`--train_oracle_adapter_only` 决定冻结范围和可训练模块。这些开关作用不同，推荐主实验
 同时使用 O2 专用 YAML 和 `--train_oracle_adapter_only`。
 
-O2 专用配置还默认启用 `rvt.oracle_log_base_loss=True`。三项 translation loss
+O2 专用配置还默认启用 `rvt.oracle_log_base_loss=True`。以下 translation loss
 分别表示：
 
 | 指标 | 位置 | 是否参与反向传播 |
 | --- | --- | --- |
-| `trans_loss_base` | Adapter 前的原 BridgeVLA translation 输出 | 否，仅监控 |
-| `trans_loss_raw` | Adapter 后、Fusion 前 | 否，仅监控 |
-| `trans_loss` | Adapter + Fusion 后 | 是，实际训练目标 |
+| `trans_loss_base` | Adapter 前、全 batch | 否，仅监控 |
+| `trans_loss_raw` | Adapter 后、Fusion 前、全 batch | 否，仅监控 |
+| `trans_loss` | Adapter + Fusion 后、全 batch | 主配置的 translation 优化目标 |
+| `trans_loss_base_valid` | Adapter 前、仅完整 T/R pair | 否，仅监控 |
+| `trans_loss_raw_valid` | Adapter 后、Fusion 前、仅完整 T/R pair | 否，仅监控 |
+| `trans_loss_valid` | Adapter + Fusion 后、仅完整 T/R pair | 仅 `oracle_valid_only_loss=True` 时作为优化目标 |
 
 `trans_loss_base` 需要额外执行一次无梯度的 `up0` translation decoder 前向，但不会
 建立反向图或改变模型参数。如果更重视吞吐量、暂时不需要该诊断，可关闭：
@@ -636,6 +659,16 @@ O2 专用配置还默认启用 `rvt.oracle_log_base_loss=True`。三项 translat
 ```bash
 --exp_cfg_opts 'rvt.oracle_log_base_loss False'
 ```
+
+主配置使用 `rvt.oracle_valid_only_loss=False`。因为无效 pair 的 residual 已被
+mask 为零，它们不会给 Adapter/Fusion 产生错误梯度；固定 batch 分母还能避免低
+coverage micro-batch 被过度放大，适合当前 8-GPU + gradient accumulation 设置。
+`trans_loss_valid` 仍会输出用于诊断。只有做高 coverage 的 valid-only 消融时才建议：
+
+    --exp_cfg_opts 'rvt.oracle_valid_only_loss True'
+
+该可选路径已按所有 DDP rank 的有效样本总数修正单个 micro-batch 的梯度归一化；
+但多个 accumulation micro-batch 的有效数仍可能不同，因此不作为主实验默认值。
 
 init_checkpoint 只初始化模型权重，adapter/fusion 保持零初始化，epoch 和 optimizer 从头开始；
 继续已开始的 O2 训练则使用 resume_checkpoint。两者不能同时指定。
@@ -649,8 +682,8 @@ resume_checkpoint；请重新从 baseline 使用 init_checkpoint，或将 adapte
 `oracle_reference_object_points [B,P,3]` 及对应可选 valid，或提供完整的
 `oracle_object_points/valid/roles`。relation 模式不接受旧的单个
 `oracle_active_object_points` 作为有效 O2 输入，因为它无法表达 T/R 关系。训练日志同时记录
-trans_loss_base（feature adapter 前）、trans_loss（最终 fused）和
-trans_loss_raw（feature adapter 后、logit fusion 前）；
+全 batch 的 trans_loss_base/trans_loss_raw/trans_loss，以及完整 pair 对应的
+trans_loss_base_valid/trans_loss_raw_valid/trans_loss_valid；
 fusion-only 模式下 trans_loss_raw 就是原 heatmap。oracle_prior_strict 默认为
 False：T/R 任一缺失或存在多个候选时，该样本回退 trans_raw；
 `oracle_target_coverage`、`oracle_reference_coverage` 和 `oracle_prior_coverage`
@@ -672,7 +705,9 @@ translation loss 和坐标 decode 之前。核心实现位于
 `finetune/bridgevla/mvt/mvt_single.py::forward` 和
 `finetune/bridgevla/mvt/mvt.py::_apply_oracle_instance_prior`：
 
-    x = oracle_feature_adapter(x, prior, valid)
+    x_trans = oracle_feature_adapter(x, prior, valid, relation_points)
+    trans = up0(x_trans)
+    action_feature = x  # translation-only 模式不污染 R/G/C feature
     raw_logits = stage_out['trans']
     stage_out['trans_raw'] = raw_logits.detach()
     stage_out['trans'] = fusion(raw_logits, prior, valid)
@@ -686,11 +721,15 @@ translation loss 和坐标 decode 之前。核心实现位于
 3. `bridgevla_agent.py::update` 临时把两组 instance points 展平并拼入场景点云，使其和
    场景及动作标签执行相同 SE(3) augmentation，完成后立即拆开；
 4. `mvt.py::_build_oracle_instance_prior` 将两组完整实例点分别投影成对应 stage
-   坐标系的三视图 prior `[B,V,2,H,W]`；
-5. MVT1/MVT2 分别先由 `OraclePriorFeatureAdapter` 修改 translation feature，
-   再由 `OraclePriorFusion` 对 logits 做多尺度 residual 融合；
-6. `bridgevla_agent.py::update` 中的 `trans_loss` 使用 fused
-   `q_trans`，而 `trans_loss_raw` 仅用于监控 logit fusion 前的预测。
+   坐标系的三视图 prior `[B,V,2,H,W]`；Stage 2 的 relation descriptor 也使用同一
+   局部平移和缩放坐标系；
+5. MVT1/MVT2 分别先由 `OracleRelationGatedFeatureAdapter` 编码完整 T/R 点集，
+   以 pooled point feature、中心、尺度及相对位移生成 gated FiLM，再修改 translation feature；
+   translation-only 模式下 R/G/C 分支仍读取原 feature，再由 `OraclePriorFusion`
+   对 translation logits 做多尺度 residual 融合；
+6. `bridgevla_agent.py::update` 同时计算全 batch 与完整 T/R pair 的 translation loss；
+   主配置用固定 batch mean 的 `trans_loss` 优化，`trans_loss_valid` 仅作 coverage
+   对齐后的诊断指标。
 
 Fusion head 定义在
 `finetune/bridgevla/models/oracle_prior.py::OraclePriorFusion`。双通道主配置的
