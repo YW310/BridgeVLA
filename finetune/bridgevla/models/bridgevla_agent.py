@@ -839,6 +839,34 @@ class RVTAgent:
             base = torch.cat((base, base2), dim=2)
         return base
 
+    def get_base_q_rgc(self, out, batch_size):
+        '''Return detached R/G/C logits before Oracle feature adaptation.'''
+        if self.stage_two:
+            out = out['mvt2']
+        if self.rot_ver == 0:
+            if 'feat_base' not in out:
+                return None, None, None
+            feat = out['feat_base'].view(batch_size, -1)
+            rot_q = feat[:, :self.num_all_rot]
+            grip_q = feat[:, self.num_all_rot:self.num_all_rot + 2]
+            collision_q = feat[
+                :, self.num_all_rot + 2:self.num_all_rot + 4
+            ]
+            return rot_q, grip_q, collision_q
+
+        required = (
+            'feat_x_base', 'feat_y_base', 'feat_z_base',
+            'feat_ex_rot_base',
+        )
+        if any(name not in out for name in required):
+            return None, None, None
+        rot_q = torch.cat(
+            (out['feat_x_base'], out['feat_y_base'], out['feat_z_base']),
+            dim=-1,
+        ).view(batch_size, -1)
+        feat_ex_rot = out['feat_ex_rot_base'].view(batch_size, -1)
+        return rot_q, feat_ex_rot[:, :2], feat_ex_rot[:, 2:]
+
 
 
     def update(
@@ -1038,6 +1066,9 @@ class RVTAgent:
         )
         raw_q_trans = self.get_raw_q_trans(out, dims=(bs, nc, h, w))
         base_q_trans = self.get_base_q_trans(out, dims=(bs, nc, h, w))
+        base_rot_q, base_grip_q, base_collision_q = self.get_base_q_rgc(
+            out, bs,
+        )
 
 
         loss_log = {}
@@ -1087,7 +1118,9 @@ class RVTAgent:
             )
             base_trans_loss_valid = (
                 valid_oracle_translation_loss(
-                    base_trans_loss_values, oracle_valid,
+                    base_trans_loss_values,
+                    oracle_valid,
+                    distributed=self.oracle_valid_only_loss,
                 )
                 if oracle_valid is not None
                 and base_trans_loss_values is not None else None
@@ -1131,6 +1164,43 @@ class RVTAgent:
                     collision_q, action_collision_one_hot.argmax(-1)
                 ).mean()
 
+            base_rot_loss_x = base_rot_loss_y = base_rot_loss_z = None
+            base_grip_loss = base_collision_loss = None
+            if self.add_rgc_loss and base_rot_q is not None:
+                with torch.no_grad():
+                    base_rot_loss_x = self._cross_entropy_loss(
+                        base_rot_q[
+                            :,
+                            0 * self._num_rotation_classes:
+                            1 * self._num_rotation_classes,
+                        ],
+                        action_rot_x_one_hot.argmax(-1),
+                    ).mean()
+                    base_rot_loss_y = self._cross_entropy_loss(
+                        base_rot_q[
+                            :,
+                            1 * self._num_rotation_classes:
+                            2 * self._num_rotation_classes,
+                        ],
+                        action_rot_y_one_hot.argmax(-1),
+                    ).mean()
+                    base_rot_loss_z = self._cross_entropy_loss(
+                        base_rot_q[
+                            :,
+                            2 * self._num_rotation_classes:
+                            3 * self._num_rotation_classes,
+                        ],
+                        action_rot_z_one_hot.argmax(-1),
+                    ).mean()
+                    base_grip_loss = self._cross_entropy_loss(
+                        base_grip_q,
+                        action_grip_one_hot.argmax(-1),
+                    ).mean()
+                    base_collision_loss = self._cross_entropy_loss(
+                        base_collision_q,
+                        action_collision_one_hot.argmax(-1),
+                    ).mean()
+
             total_loss = (
                 optimized_trans_loss
                 + rot_loss_x
@@ -1139,6 +1209,27 @@ class RVTAgent:
                 + grip_loss
                 + collision_loss
             )
+            base_total_loss = None
+            if base_trans_loss is not None:
+                base_total_loss = choose_oracle_translation_loss(
+                    base_trans_loss,
+                    base_trans_loss_valid,
+                    self.oracle_valid_only_loss,
+                )
+                if self.add_rgc_loss:
+                    if base_rot_loss_x is None:
+                        raise RuntimeError(
+                            'Base R/G/C logits are missing while base loss '
+                            'comparison is enabled.'
+                        )
+                    base_total_loss = (
+                        base_total_loss
+                        + base_rot_loss_x
+                        + base_rot_loss_y
+                        + base_rot_loss_z
+                        + base_grip_loss
+                        + base_collision_loss
+                    )
 
 
             if reset_gradients:
@@ -1173,6 +1264,22 @@ class RVTAgent:
                 loss_log['trans_loss_base_valid'] = (
                     base_trans_loss_valid.item()
                 )
+            if base_total_loss is not None:
+                total_loss_gain = base_total_loss - total_loss.detach()
+                loss_log['total_loss_base'] = base_total_loss.item()
+                loss_log['total_loss_gain'] = total_loss_gain.item()
+                loss_log['total_loss_gain_pct'] = (
+                    100.0 * total_loss_gain
+                    / base_total_loss.abs().clamp_min(1e-12)
+                ).item()
+            if base_rot_loss_x is not None:
+                loss_log.update({
+                    'rot_loss_x_base': base_rot_loss_x.item(),
+                    'rot_loss_y_base': base_rot_loss_y.item(),
+                    'rot_loss_z_base': base_rot_loss_z.item(),
+                    'grip_loss_base': base_grip_loss.item(),
+                    'collision_loss_base': base_collision_loss.item(),
+                })
             manage_loss_log(self, loss_log, reset_log=reset_log)
             return_out.update(loss_log)
             if return_visualization:

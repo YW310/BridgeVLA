@@ -314,6 +314,73 @@ class MVT(nn.Module):
         self.use_gpu_paligemma_preprocessing = True
         print('Enabled GPU-native PaliGemma preprocessing')
 
+    def _forward_action_heads(
+        self, feat, rot_x_y, batch_size,
+    ):
+        if self.rot_ver == 0:
+            return {'feat': self.feat_fc(feat)}
+        if self.rot_ver != 1:
+            raise ValueError(f'Unsupported rot_ver: {self.rot_ver}')
+
+        feat_ex_rot = self.feat_fc_ex_rot(feat)
+        action_batch_norm = self.feat_fc_init_bn
+        batch_norm_frozen = not any(
+            parameter.requires_grad
+            for parameter in action_batch_norm.parameters()
+        )
+        if self.training and batch_norm_frozen:
+            feat_rot = F.batch_norm(
+                feat,
+                action_batch_norm.running_mean,
+                action_batch_norm.running_var,
+                action_batch_norm.weight,
+                action_batch_norm.bias,
+                training=False,
+                momentum=action_batch_norm.momentum,
+                eps=action_batch_norm.eps,
+            )
+        else:
+            feat_rot = action_batch_norm(feat)
+        feat_x = self.feat_fc_x(feat_rot)
+        rot_x = (
+            rot_x_y[..., 0].view(batch_size, 1)
+            if self.training else feat_x.argmax(dim=1, keepdim=True)
+        )
+        feat_y = self.feat_fc_y(feat_rot + self.feat_fc_pe(rot_x))
+        rot_y = (
+            rot_x_y[..., 1].view(batch_size, 1)
+            if self.training else feat_y.argmax(dim=1, keepdim=True)
+        )
+        feat_z = self.feat_fc_z(feat_rot + self.feat_fc_pe(rot_x)
+                                + self.feat_fc_pe(rot_y))
+        return {
+            'feat_ex_rot': feat_ex_rot,
+            'feat_x': feat_x,
+            'feat_y': feat_y,
+            'feat_z': feat_z,
+        }
+
+    def _forward_base_action_heads(self, feat, rot_x_y, batch_size):
+        '''Run the diagnostic base branch without changing BatchNorm state.'''
+        batch_norm_state = None
+        if self.rot_ver == 1 and self.training:
+            batch_norm = self.feat_fc_init_bn
+            batch_norm_state = {
+                name: value.detach().clone()
+                for name, value in batch_norm.named_buffers(recurse=False)
+                if value is not None
+            }
+        try:
+            with torch.no_grad():
+                return self._forward_action_heads(
+                    feat, rot_x_y, batch_size,
+                )
+        finally:
+            if batch_norm_state is not None:
+                with torch.no_grad():
+                    for name, value in batch_norm_state.items():
+                        getattr(batch_norm, name).copy_(value)
+
     @staticmethod
     def _build_paligemma_input_strings(
         prompts, image_token, image_seq_length, num_images, bos_token
@@ -535,6 +602,7 @@ class MVT(nn.Module):
             )
         )
         x=x.to(torch.float32)
+        base_action_features = x
         trans_base = None
         translation_features = x
         if oracle_feature_adapter is not None:
@@ -590,46 +658,31 @@ class MVT(nn.Module):
             ), print(_wpt_img, x.shape)
 
             _wpt_img = _wpt_img.unsqueeze(1)
+            base_action_out = None
+            if oracle_compute_base and oracle_feature_adapter is not None:
+                with torch.no_grad():
+                    base_local_feat = select_feat_from_hm(
+                        _wpt_img, base_action_features,
+                    )[0].view(bs, -1)
+                    base_action_input = torch.cat(
+                        (feat[0], base_local_feat), dim=-1,
+                    )
+                    base_action_out = self._forward_base_action_heads(
+                        base_action_input, rot_x_y, bs,
+                    )
             _feat = select_feat_from_hm(_wpt_img, _u)[0]
             _feat = _feat.view(bs, -1)
             feat.append(_feat)
             feat = torch.cat(feat, dim=-1)
 
-            if self.rot_ver == 0:
-                feat = self.feat_fc(feat)
-                out = {"feat": feat}
-            elif self.rot_ver == 1:
-                # features except rotation
-                feat_ex_rot = self.feat_fc_ex_rot(feat)
-
-                # batch normalized features for rotation
-                feat_rot = self.feat_fc_init_bn(feat)
-                # feat_rot = self.feat_fc_init_bn(feat)
-                feat_x = self.feat_fc_x(feat_rot)
-
-                if self.training:
-                    rot_x = rot_x_y[..., 0].view(bs, 1)
-                else:
-                    # sample with argmax
-                    rot_x = feat_x.argmax(dim=1, keepdim=True)
-
-                # rot_x_pe = self.feat_fc_pe(rot_x).to(torch.bfloat16)
-                rot_x_pe = self.feat_fc_pe(rot_x)
-                feat_y = self.feat_fc_y(feat_rot + rot_x_pe)
-
-                if self.training:
-                    rot_y = rot_x_y[..., 1].view(bs, 1)
-                else:
-                    rot_y = feat_y.argmax(dim=1, keepdim=True)
-                rot_y_pe = self.feat_fc_pe(rot_y)
-                # rot_y_pe = self.feat_fc_pe(rot_y).to(torch.bfloat16)
-                feat_z = self.feat_fc_z(feat_rot + rot_x_pe + rot_y_pe)
-                out = {
-                    "feat_ex_rot": feat_ex_rot,
-                    "feat_x": feat_x,
-                    "feat_y": feat_y,
-                    "feat_z": feat_z,
-                }
+            out = self._forward_action_heads(
+                feat, rot_x_y, bs,
+            )
+            if base_action_out is not None:
+                out.update({
+                    f'{name}_base': value.detach()
+                    for name, value in base_action_out.items()
+                })
         
         else:
             out = {}

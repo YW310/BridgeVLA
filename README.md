@@ -525,7 +525,8 @@ use_oracle_objects 默认为 False，因此原始非 Oracle replay 的加载行�
 
 > 本节导航：[推荐 Adapter + Fusion](#o2-adapter-fusion) ·
 > [仅 Fusion](#o2-fusion-only) · [完整动作网络](#o2-full-action) ·
-> [开启 T/R relation](#o2-relation-switch) · [代码插入位置](#o2-code-path) ·
+> [开启 T/R relation](#o2-relation-switch) · [同 batch loss 对比](#o2-loss-comparison) ·
+> [代码插入位置](#o2-code-path) ·
 > [训练可视化](#o2-training-visualization) · [代码测试](#o2-tests)
 
 O2 不把 GT heatmap 作为固定 mask 或手工 logit 约束。主配置会同时选择唯一的
@@ -537,12 +538,13 @@ Target 与 Reference，按固定顺序组成双通道三视角 prior `[P_T, P_R]
 两个 prior 及交互项。adapter
 与 fusion 输出层均为零初始化，因此训练开始时与 baseline 完全一致；Oracle
 任一角色缺失或不唯一时，relation residual 整体关闭并强制回退原始路径。
-推荐配置中 Adapter 只修改 translation decoder 的输入；rotation、gripper 和
-collision 分支继续使用原 BridgeVLA feature，避免非 translation loss 竞争更新 O2。
+推荐配置中 Adapter 输出同时进入 translation、rotation、gripper 和 collision 分支；
+六项动作 loss 联合更新新增 Adapter，translation 的 logit Fusion 仍只接收 translation
+梯度。原 BridgeVLA（包括原动作头）保持冻结，因此可训练规模仍约 22.4 万参数。
 
 <a id=o2-adapter-fusion></a>
 
-#### 推荐主实验：Relation-gated Adapter + Fusion（约 22.4 万参数）
+#### 推荐主实验：Relation-gated Adapter + Fusion 联合动作 loss（约 22.4 万参数）
 
 冻结整个原 BridgeVLA，只训练新增 feature adapter 和 fusion：
 
@@ -557,10 +559,22 @@ bash train.sh \
 该配置使用双通道 Target/Reference prior、rank=16、hidden=64，并显式编码 3D
 T/R relation；两阶段模型精确训练 223,878 个参数。关闭 relation-gated adapter 后，
 旧 Adapter + Fusion 仍为 220,548 个参数。
-当 `--train_oracle_adapter_only` 与 `oracle_adapter_translation_only=True` 同时使用时，
-训练入口会自动将 `peract.add_rgc_loss` 设为 False：冻结的 R/G/C 头没有通向 O2
-参数的梯度路径，继续计算只会增加开销并让 `total_loss` 看起来震荡。此时
-`total_loss` 就是实际优化的 translation loss。
+主配置设置 `oracle_adapter_translation_only=False` 和 `peract.add_rgc_loss=True`：
+T/R-adapted feature 同时供 translation 与 R/G/C 动作头使用，`trans_loss`、三个
+rotation loss、`grip_loss` 和 `collision_loss` 都参与反向传播。原动作头虽被冻结，
+梯度仍可穿过它们更新 Adapter；Fusion 只位于 translation logits 路径上。
+启动时应看到 `Enable joint Oracle action losses...` 和
+`Total trainable parameters: 223,878`，且 R/G/C loss 不再为零。
+本次主配置已从 translation-only 改为联合动作目标；旧 O2 checkpoint 若直接 resume，
+会在中途改变优化目标，不应与原曲线视为同一实验。主实验请从 baseline checkpoint
+重新 `--init_checkpoint`。专用 YAML 已改用新的
+`exp_id: rlbench_o2_gt_instance_joint_action`，避免日志目录混合。
+
+如需恢复旧的 translation-only 消融，可覆盖：
+
+```bash
+--exp_cfg_opts 'oracle_adapter_translation_only True peract.add_rgc_loss False'
+```
 
 <a id=o2-fusion-only></a>
 
@@ -607,7 +621,10 @@ O2 专用配置已经默认开启双通道输入，因此使用该 YAML 时不�
 
 ```yaml
 oracle_relation_gated_adapter: True
-oracle_adapter_translation_only: True
+oracle_adapter_translation_only: False
+
+peract:
+  add_rgc_loss: True
 
 rvt:
   oracle_prior_relation: True
@@ -619,8 +636,8 @@ rvt:
 
 ```bash
 bash train.sh \
-    --exp_cfg_path configs/rlbench.yaml \
-    --exp_cfg_opts 'oracle_relation_gated_adapter True oracle_adapter_translation_only True rvt.oracle_prior_relation True' \
+    --exp_cfg_path configs/rlbench_config.yaml \
+    --exp_cfg_opts 'oracle_relation_gated_adapter True oracle_adapter_translation_only False peract.add_rgc_loss True rvt.oracle_prior_relation True' \
     [其他训练参数]
 ```
 
@@ -637,24 +654,91 @@ bash train.sh \
 `rvt.oracle_prior_relation` 决定 Oracle 输入采用双通道 T/R 还是旧单 prior；
 `oracle_relation_gated_adapter` 决定 feature adapter 是否显式编码 3D T/R relation；
 `oracle_adapter_translation_only` 决定 Adapter 输出是否只进入 translation decoder；
+`peract.add_rgc_loss` 决定 rotation、gripper、collision loss 是否加入总目标；
 `rvt.oracle_valid_only_loss` 决定 translation 优化是否忽略不完整 T/R pair。
 `--train_oracle_adapter_only` 决定冻结范围和可训练模块。这些开关作用不同，推荐主实验
 同时使用 O2 专用 YAML 和 `--train_oracle_adapter_only`。
 
-O2 专用配置还默认启用 `rvt.oracle_log_base_loss=True`。以下 translation loss
-分别表示：
+<a id=o2-loss-comparison></a>
+
+#### Object prior 与原方法的同 batch loss 对比
+
+O2 专用配置默认启用 `rvt.oracle_log_base_loss=True`。一次 PaliGemma 前向后，代码
+复用同一组视觉 feature、GT waypoint、数据增强和动作标签，构造无梯度 baseline 支路与
+可训练 O2 支路；不会为了对比重复运行 PaliGemma。`total_loss_base` 与 `total_loss`
+因而是逐 batch 配对指标：
+
+```mermaid
+flowchart LR
+    A[同一 replay batch<br/>图像 点云 指令 动作标签] --> B[冻结的 PaliGemma<br/>共享视觉 feature x]
+    B --> C{配对分支}
+    C --> D[Baseline 支路<br/>原 feature x<br/>no grad]
+    C --> E[O2 支路<br/>T/R 点云和 heatmap<br/>Relation Adapter]
+    D --> F[原 up0<br/>trans base]
+    D --> G[原动作头<br/>rot grip collision base]
+    E --> H[up0<br/>trans raw]
+    H --> I[T/R Logit Fusion<br/>trans fused]
+    E --> J[原动作头<br/>rot grip collision]
+    F --> K[trans_loss_base]
+    G --> L[R/G/C base losses]
+    I --> M[trans_loss]
+    J --> N[R/G/C losses]
+    K --> O[total_loss_base<br/>仅监控]
+    L --> O
+    M --> P[total_loss<br/>反向传播]
+    N --> P
+    O --> Q[total_loss_gain<br/>base minus O2]
+    P --> Q
+    P --> R[更新 Adapter 和 Fusion<br/>原 BridgeVLA 保持冻结]
+```
+
+主配置采用相同的六项等权交叉熵：
+
+```text
+total_loss_base = trans_loss_base
+                + rot_loss_x_base + rot_loss_y_base + rot_loss_z_base
+                + grip_loss_base + collision_loss_base
+
+total_loss = trans_loss
+           + rot_loss_x + rot_loss_y + rot_loss_z
+           + grip_loss + collision_loss
+
+total_loss_gain = total_loss_base - total_loss
+```
+
+`total_loss_gain > 0` 表示加入 object prior 后当前 batch 的完整动作 loss 更低；
+`total_loss_gain_pct` 是相对于 `total_loss_base` 的百分比。TensorBoard 会记录所有
+base/O2 分量，tqdm 实时显示 `total_loss`、`total_loss_base`、gain 和 gain percentage。
+总 loss 容易受三项 rotation loss 主导，因此报告结果时还应逐项对比，而不能只看总和。
+这里的 `total_loss_base` 表示同一 batch 上“冻结 baseline checkpoint、不使用 object
+prior”的配对诊断，不代表 baseline 又训练了相同步数。正式结果至少还要在固定验证集和
+closed-loop evaluation 上比较原始 baseline checkpoint 与 O2 checkpoint；如果要进一步
+排除“额外训练步数/新增参数”本身的影响，还需另设相同可训练预算的无 prior control。
+当前配对指标主要用于降低训练期 batch 波动和定位收益来自哪项 loss。
+
+完整指标如下：
 
 | 指标 | 位置 | 是否参与反向传播 |
 | --- | --- | --- |
+| `total_loss_base` | Adapter 前六项动作 loss 之和 | 否，仅监控 |
+| `total_loss` | O2 六项动作 loss 之和 | 是，主优化目标 |
+| `total_loss_gain` / `total_loss_gain_pct` | baseline 减 O2 | 否，派生对比指标 |
 | `trans_loss_base` | Adapter 前、全 batch | 否，仅监控 |
 | `trans_loss_raw` | Adapter 后、Fusion 前、全 batch | 否，仅监控 |
-| `trans_loss` | Adapter + Fusion 后、全 batch | 主配置的 translation 优化目标 |
+| `trans_loss` | Adapter + Fusion 后、全 batch | 是，总目标的一部分 |
+| `rot_loss_x/y/z_base` | Adapter 前的三个旋转 loss | 否，仅监控 |
+| `rot_loss_x/y/z` | Adapter 后的三个旋转 loss | 是，总目标的一部分 |
+| `grip_loss_base` / `collision_loss_base` | Adapter 前的离散动作 loss | 否，仅监控 |
+| `grip_loss` / `collision_loss` | Adapter 后的离散动作 loss | 是，总目标的一部分 |
 | `trans_loss_base_valid` | Adapter 前、仅完整 T/R pair | 否，仅监控 |
 | `trans_loss_raw_valid` | Adapter 后、Fusion 前、仅完整 T/R pair | 否，仅监控 |
 | `trans_loss_valid` | Adapter + Fusion 后、仅完整 T/R pair | 仅 `oracle_valid_only_loss=True` 时作为优化目标 |
 
-`trans_loss_base` 需要额外执行一次无梯度的 `up0` translation decoder 前向，但不会
-建立反向图或改变模型参数。如果更重视吞吐量、暂时不需要该诊断，可关闭：
+Base 对比只额外执行无梯度的 `up0` 和小型动作头前向；代码在计算 base rotation
+时保存并恢复 BatchNorm buffer，避免诊断支路改变训练状态。它不会建立反向图、不会
+重复 PaliGemma，也不会改变模型参数。Adapter-only 下冻结动作头的 BatchNorm 还会固定
+使用 checkpoint running statistics，不再因联合 loss 前向而悄悄更新 buffer。如果更重视
+吞吐量、暂时不需要该诊断，可关闭：
 
 ```bash
 --exp_cfg_opts 'rvt.oracle_log_base_loss False'
@@ -705,9 +789,12 @@ translation loss 和坐标 decode 之前。核心实现位于
 `finetune/bridgevla/mvt/mvt_single.py::forward` 和
 `finetune/bridgevla/mvt/mvt.py::_apply_oracle_instance_prior`：
 
-    x_trans = oracle_feature_adapter(x, prior, valid, relation_points)
-    trans = up0(x_trans)
-    action_feature = x  # translation-only 模式不污染 R/G/C feature
+    x_base = x
+    x_o2 = oracle_feature_adapter(x, prior, valid, relation_points)
+    trans_base = up0(x_base)                 # no grad，仅对比
+    action_base = action_head(x_base)         # no grad，仅对比
+    trans = up0(x_o2)
+    action = action_head(x_o2)                # R/G/C loss 更新 Adapter
     raw_logits = stage_out['trans']
     stage_out['trans_raw'] = raw_logits.detach()
     stage_out['trans'] = fusion(raw_logits, prior, valid)
@@ -724,12 +811,13 @@ translation loss 和坐标 decode 之前。核心实现位于
    坐标系的三视图 prior `[B,V,2,H,W]`；Stage 2 的 relation descriptor 也使用同一
    局部平移和缩放坐标系；
 5. MVT1/MVT2 分别先由 `OracleRelationGatedFeatureAdapter` 编码完整 T/R 点集，
-   以 pooled point feature、中心、尺度及相对位移生成 gated FiLM，再修改 translation feature；
-   translation-only 模式下 R/G/C 分支仍读取原 feature，再由 `OraclePriorFusion`
-   对 translation logits 做多尺度 residual 融合；
-6. `bridgevla_agent.py::update` 同时计算全 batch 与完整 T/R pair 的 translation loss；
-   主配置用固定 batch mean 的 `trans_loss` 优化，`trans_loss_valid` 仅作 coverage
-   对齐后的诊断指标。
+   以 pooled point feature、中心、尺度及相对位移生成 gated FiLM；主配置将 adapted
+   feature 同时送入 translation 与 R/G/C 分支，再由 `OraclePriorFusion` 对 translation
+   logits 做多尺度 residual 融合；
+6. 同一 forward 内，原 feature 经过无梯度的 base decoder/action heads，adapted feature
+   经过可训练 O2 路径；`bridgevla_agent.py::update` 分别计算 `total_loss_base` 和
+   `total_loss`。主配置联合优化六项动作 loss，完整 T/R pair 的 `trans_loss_valid`
+   仍仅作 coverage 对齐后的诊断指标。
 
 Fusion head 定义在
 `finetune/bridgevla/models/oracle_prior.py::OraclePriorFusion`。双通道主配置的
@@ -788,10 +876,12 @@ TensorBoard 的 train_visualization/mvt1 和 train_visualization/mvt2 下。
 
 在服务器的 `bridgevla` 环境、仓库根目录运行：
 
-    python -m unittest tests.test_oracle_prior tests.test_rlbench_training_utils tests.test_rlbench_training_visualization -v
+    python -m unittest tests.test_oracle_prior tests.test_o2_joint_action_loss tests.test_rlbench_training_utils tests.test_rlbench_training_visualization -v
 
 `tests.test_oracle_prior` 检查固定 `[T,R]` 选择、缺失角色回退、双通道实例点投影、adapter/fusion
 零初始化 identity、无效 prior 回退、反向梯度和训练 GT/pred 张量拆分；
+`tests.test_o2_joint_action_loss` 检查联合动作配置，以及无梯度 base 动作支路不会改变
+BatchNorm 状态；
 `tests.test_rlbench_training_utils` 检查 fusion-only、adapter-only 冻结范围和
 batch/optimizer-step 规划；`tests.test_rlbench_training_visualization` 检查
 PNG 与 TensorBoard 拼图输出。
@@ -800,10 +890,11 @@ PNG 与 TensorBoard 拼图输出。
 
     PYTHONPATH=finetune python -c "from bridgevla.config import get_cfg_defaults; c=get_cfg_defaults(); c.merge_from_file('finetune/RLBench/configs/rlbench_o2_gt_instance.yaml'); assert c.use_oracle_objects and c.rvt.oracle_prior_mode == 'o2_gt_instance'; print(c)"
 
-配置打印结果还应包含 `rvt.oracle_prior_relation: True`。上述测试属于代码级检查；
+配置打印结果还应包含 `rvt.oracle_prior_relation: True`、
+`oracle_adapter_translation_only: False` 和 `peract.add_rgc_loss: True`。上述测试属于代码级检查；
 正式训练前仍应在 GPU 上运行一个真实 replay batch 的 forward/backward，并确认
-T/R 两项 coverage、`oracle_prior_coverage`、`trans_loss_raw` 和
-`trans_loss` 均能正常输出。
+T/R 两项 coverage、`oracle_prior_coverage`、`total_loss_base`、`total_loss` 和
+`total_loss_gain` 均能正常输出。
 
 训练默认只在 `model_*.pth` 中保存 `epoch` 和 `model_state`，适用于评估与
 推理，不保存体积较大的 Adam optimizer state。如果需要完整恢复优化器以继续

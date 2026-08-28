@@ -2,7 +2,7 @@
 # Use with --init_checkpoint and --train_oracle_adapter_only.
 # Pass the augmented Oracle replay root with --train_replay_storage_dir.
 
-exp_id: rlbench_o2_gt_instance
+exp_id: rlbench_o2_gt_instance_joint_action
 tasks: all
 bs: 48
 num_workers: 4
@@ -33,10 +33,12 @@ oracle_prior_hidden_channels: 64
 oracle_prior_adapter_rank: 16
 oracle_prior_multiscale_fusion: True
 oracle_relation_gated_adapter: True
-oracle_adapter_translation_only: True
+# Joint action training: route T/R-adapted features to translation and R/G/C.
+oracle_adapter_translation_only: False
 
 peract:
   lr: 4e-5
+  add_rgc_loss: True
   transform_augmentation_xyz: [0.125, 0.125, 0.125]
   transform_augmentation_rpy: [0.0, 0.0, 45.0]
 

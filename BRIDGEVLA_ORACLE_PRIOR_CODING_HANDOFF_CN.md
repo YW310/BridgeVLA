@@ -1,6 +1,6 @@
 # BridgeVLA Oracle Prior Coding 交接文档（精简版）
 
-> 更新时间：2026-08-20
+> 更新时间：2026-08-28
 > 目标分支：BridgeVLA 官方仓库 `bridgevla` 分支  
 > 目标：用 RLBench 真值 entity/site prior 测量 BridgeVLA 的性能上限
 
@@ -16,7 +16,8 @@
 4. 保留原 translation heatmap，用零初始化的轻量 fusion head 学习 GT prior；
 5. 先跑离线 keyframe replay，再跑 paired online evaluation。
 
-首版不运行 Qwen/SAM，不改 rotation、gripper、collision heads，不实现完整 world repair。
+首版不运行 Qwen/SAM，不解冻 rotation、gripper、collision heads，不实现完整 world repair；
+但联合动作实验允许这些冻结头的 loss 穿过动作头更新新增 Adapter。
 
 ### 当前轻量适配实现状态（2026-08-28）
 
@@ -31,16 +32,19 @@
   可开关的 relation encoder 共享编码 T/R 点集，并用 pooled feature、中心、尺度和相对位移
   生成 gated FiLM。Stage 2 使用与局部 heatmap 相同的平移/缩放坐标系；随后通过 hidden-64
   多尺度 residual fusion 修正 translation logits。输出层零初始化，初始结果仍等于 baseline。
-  主配置开启 `oracle_adapter_translation_only`，R/G/C 分支继续读取原 feature，避免这些
-  loss 通过 Adapter 形成竞争梯度；Oracle-only translation 训练还会自动关闭
-  `peract.add_rgc_loss`，使 `total_loss` 与真正可训练的 translation 目标一致；
+  主配置设置 `oracle_adapter_translation_only=False` 与 `peract.add_rgc_loss=True`，
+  adapted feature 同时进入 translation、rotation、gripper、collision 分支；六项 loss
+  联合更新新增 Adapter，translation Fusion 只接收 translation 梯度；
 - 推荐从已训练 baseline checkpoint 初始化，冻结原 BridgeVLA（包括 Gemma），只训练
   relation-gated feature adapter 与 fusion，精确为 223,878 个参数（约 22.4 万）；
 - O2 参数集中在
   `finetune/RLBench/configs/rlbench_o2_gt_instance.yaml`；checkpoint 和冻结模式
   仍作为运行时命令行参数；
-- 日志同时输出全 batch 的 `trans_loss_base`/`trans_loss_raw`/`trans_loss`，
-  以及完整 T/R pair 的对应 `*_valid` 指标。主配置保持
+- 同一个 batch 内增加无梯度 baseline 动作支路，不重复 PaliGemma 前向；日志同时输出
+  `total_loss_base`/`total_loss`/`total_loss_gain`、各 R/G/C base/O2 loss、全 batch 的
+  `trans_loss_base`/`trans_loss_raw`/`trans_loss`，以及完整 T/R pair 的对应 `*_valid`
+  指标。base rotation 对比会保存并恢复 BatchNorm buffer；Adapter-only 下冻结动作头的
+  BatchNorm 使用 checkpoint running statistics，避免原模型 buffer 漂移。主配置保持
   `oracle_valid_only_loss=False`，使用固定 batch 分母，避免 8-GPU 梯度累积时低
   coverage micro-batch 被放大；valid-only 开关保留用于消融，并修正了 DDP rank 间计数；
 - 本地完成补丁格式与静态接线检查；新增 PyTorch 回归测试需在服务器环境执行。
@@ -51,7 +55,8 @@
   GT T/R 三维关系特征学习；
 - 不训练 Qwen/SAM/predicted-instance provider，也不把 Oracle 结果当作部署结果；
 - 不实现复杂的抓取周期状态机、多 target/reference 消歧和 interaction-site prior；
-- 不修改 Gemma、vision tower、rotation、gripper、collision 等原网络分支；
+- 不修改 Gemma、vision tower、rotation、gripper、collision 等原网络参数；这些冻结
+  动作头参与 forward/backward，将联合动作 loss 的梯度传给新增 Adapter；
 - 不在本地 Windows 环境完成 PyTorch 前向/反向和 RLBench online smoke test。本地缺少
   PyTorch；对应测试已编写，需在服务器 `bridgevla` 环境执行；
 - online evaluation 仍需评估器在每个时刻同时提供正确的

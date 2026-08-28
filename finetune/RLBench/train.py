@@ -166,6 +166,9 @@ def train(
                 key: f'{metrics[key]:.4f}'
                 for key in (
                     'total_loss',
+                    'total_loss_base',
+                    'total_loss_gain',
+                    'total_loss_gain_pct',
                     'trans_loss',
                     'trans_loss_base',
                     'trans_loss_raw',
@@ -329,6 +332,9 @@ def train_with_accumulation(
                 key: f'{metrics[key]:.4f}'
                 for key in (
                     'total_loss',
+                    'total_loss_base',
+                    'total_loss_gain',
+                    'total_loss_gain_pct',
                     'trans_loss',
                     'trans_loss_base',
                     'trans_loss_raw',
@@ -697,6 +703,18 @@ def experiment(cmd_args):
                 'translation only.',
                 flush=True,
             )
+    elif (
+        cmd_args.train_oracle_adapter_only
+        and exp_cfg.peract.add_rgc_loss
+        and not exp_cfg.oracle_adapter_translation_only
+        and local_rank == 0
+    ):
+        print(
+            'Enable joint Oracle action losses: translation, rotation, '
+            'gripper, and collision update the Adapter; original action '
+            'heads remain frozen.',
+            flush=True,
+        )
     exp_cfg.freeze()
     if reduced_hardware_mode:
         set_training_seed(exp_cfg.seed, dist.get_rank())
