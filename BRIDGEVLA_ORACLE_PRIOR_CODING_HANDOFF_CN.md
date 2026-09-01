@@ -19,7 +19,7 @@
 首版不运行 Qwen/SAM，不解冻 rotation、gripper、collision heads，不实现完整 world repair；
 但联合动作实验允许这些冻结头的 loss 穿过动作头更新新增 Adapter。
 
-### 当前轻量适配实现状态（2026-08-28）
+### 当前轻量适配实现状态（2026-08-31）
 
 本轮先完成 O2 训练闭环，原则是尽量不改变原 BridgeVLA：
 
@@ -37,9 +37,10 @@
   联合更新新增 Adapter，translation Fusion 只接收 translation 梯度；
 - 推荐从已训练 baseline checkpoint 初始化，冻结原 BridgeVLA（包括 Gemma），只训练
   relation-gated feature adapter 与 fusion，精确为 223,878 个参数（约 22.4 万）；
-- O2 参数集中在
-  `finetune/RLBench/configs/rlbench_o2_gt_instance.yaml`；checkpoint 和冻结模式
-  仍作为运行时命令行参数；
+- 正式 semantic-GT O2 参数集中在
+  `finetune/RLBench/configs/rlbench_o2_semantic_gt.yaml`；旧
+  `rlbench_o2_gt_instance.yaml` 保留给启发式 buffer 消融；checkpoint 和冻结模式仍作为
+  运行时命令行参数；
 - 同一个 batch 内增加无梯度 baseline 动作支路，不重复 PaliGemma 前向；日志同时输出
   `total_loss_base`/`total_loss`/`total_loss_gain`、各 R/G/C base/O2 loss、全 batch 的
   `trans_loss_base`/`trans_loss_raw`/`trans_loss`，以及完整 T/R pair 的对应 `*_valid`
@@ -47,23 +48,30 @@
   BatchNorm 使用 checkpoint running statistics，避免原模型 buffer 漂移。主配置保持
   `oracle_valid_only_loss=False`，使用固定 batch 分母，避免 8-GPU 梯度累积时低
   coverage micro-batch 被放大；valid-only 开关保留用于消融，并修正了 DDP rank 间计数；
-- 本地完成补丁格式与静态接线检查；新增 PyTorch 回归测试需在服务器环境执行。
+- 新增版本化 `rlbench_o2_semantic_roles.yaml`，覆盖 18 个任务的唯一 T/R、variation、
+  固定顺序和成功条件；在线 `RLBenchGTOracleProvider` 从四视角 simulator handle mask
+  生成 object/site prior，并输出 role audit、manifest 与分类统计；
+- `eval.sh` 支持 `ORACLE_PROVIDER=none|rlbench_gt`、`ORACLE_STRICT=1` 和 expert
+  keypoint replay。离线 `rewrite_replay_with_semantic_roles.py` 只重写 Oracle/audit 字段，
+  不修改 baseline transition；
+- 本地完成补丁格式、Python/Bash 语法与静态接线检查；新增 PyTorch/RLBench 回归测试需在
+  服务器环境执行。
 
 最小版本暂不处理以下复杂情况：
 
 - 不加入 prior dropout、错误实例扰动、外部置信度或不确定性建模；当前 gate 只由
   GT T/R 三维关系特征学习；
 - 不训练 Qwen/SAM/predicted-instance provider，也不把 Oracle 结果当作部署结果；
-- 不实现复杂的抓取周期状态机、多 target/reference 消歧和 interaction-site prior；
+- 不实现多候选启发式消歧；当前 phase/角色严格来自 task/variation/success condition。
+  success sensor/dummy site 已支持，但不加入第三个 Tool 通道；
 - 不修改 Gemma、vision tower、rotation、gripper、collision 等原网络参数；这些冻结
   动作头参与 forward/backward，将联合动作 loss 的梯度传给新增 Adapter；
 - 不在本地 Windows 环境完成 PyTorch 前向/反向和 RLBench online smoke test。本地缺少
   PyTorch；对应测试已编写，需在服务器 `bridgevla` 环境执行；
-- online evaluation 仍需评估器在每个时刻同时提供正确的
-  `oracle_target_object_points` 与 `oracle_reference_object_points`，或完整的
-  `oracle_object_points/valid/roles`。旧 `oracle_active_object_points` 只保留给单 prior
-  兼容模式，不能表达 relation。默认非严格模式在字段缺失时会警告并回退 baseline，
-  严格模式继续报错，因此缺少双角色 provider 的结果不能作为 O2 指标。
+- online evaluation 已接入 `RLBenchGTOracleProvider`，每个时刻直接提供
+  `oracle_target_object_points` 与 `oracle_reference_object_points`。仍需在目标服务器的
+  vendored RLBench/TTM 上对全部 variation 跑 strict reset 和 closed-loop smoke test；任何
+  selector/层级不一致应修 YAML/provider，不能回退邻近关系猜测。
 
 上述项目是后续增强，不阻塞当前 adapter-only O2 训练。若轻量实验没有稳定收益，不应
 提前增加这些复杂机制。

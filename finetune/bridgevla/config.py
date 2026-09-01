@@ -40,6 +40,10 @@ _C.train_visualization.tensorboard = True
 _C.train_visualization.output_dir = "train_visualizations"
 # Oracle object experiment: opt in only when loading an augmented replay copy.
 _C.use_oracle_objects = False
+# Require semantic-role provenance during training startup. The audit fields
+# remain in replay files for inspection and are intentionally excluded from
+# sampled network batches.
+_C.oracle_semantic_audit = False
 _C.oracle_max_objects = 32
 _C.oracle_num_points = 512
 _C.oracle_prior_hidden_channels = 16

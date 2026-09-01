@@ -156,14 +156,42 @@ def get_eval_parser():
     parser.add_argument("--save-video", action="store_true")
     parser.add_argument("--skip", action="store_true")
     parser.add_argument("--debug", action="store_true")
-    parser.add_argument("--visualize", action="store_true",default=False)    
+    parser.add_argument("--visualize", action="store_true", default=False)
+    parser.add_argument(
+        "--oracle-provider",
+        choices=("none", "rlbench_gt"),
+        default="none",
+        help="Oracle source used during evaluation. 'none' evaluates the raw branch.",
+    )
+    parser.add_argument(
+        "--oracle-role-config",
+        type=str,
+        default=None,
+        help="Versioned semantic T/R mapping YAML used by the RLBench GT provider.",
+    )
+    parser.add_argument(
+        "--oracle-num-points",
+        type=int,
+        default=512,
+        help="Fixed number of points emitted for each Target/Reference role.",
+    )
+    parser.add_argument(
+        "--oracle-strict",
+        action="store_true",
+        help="Fail on semantic mapping errors instead of emitting an invalid prior.",
+    )
+    parser.add_argument(
+        "--oracle-debug",
+        action="store_true",
+        help="Write one semantic-role audit image per evaluated episode.",
+    )
     return parser
 
 
 
 
 
-def load_agent(agent_path, agent=None, only_epoch=False):
+def load_agent(agent_path, agent=None, only_epoch=False, strict=False):
     if isinstance(agent, PreprocessAgent2):
         assert not only_epoch
         agent._pose_agent.load_weights(agent_path)
@@ -181,21 +209,24 @@ def load_agent(agent_path, agent=None, only_epoch=False):
         if isinstance(model, DDP):
             model = model.module
 
-        try:
+        if strict:
             model.load_state_dict(checkpoint["model_state"])
-        except RuntimeError:
+        else:
             try:
-                print(
-                    "WARNING: loading states in mvt1. "
-                    "Be cautious if you are using a two stage network."
-                )
-                model.mvt1.load_state_dict(checkpoint["model_state"])
+                model.load_state_dict(checkpoint["model_state"])
             except RuntimeError:
-                print(
-                    "WARNING: loading states with strick=False! "
-                    "KNOW WHAT YOU ARE DOING!!"
-                )
-                model.load_state_dict(checkpoint["model_state"], strict=False)
+                try:
+                    print(
+                        "WARNING: loading states in mvt1. "
+                        "Be cautious if you are using a two stage network."
+                    )
+                    model.mvt1.load_state_dict(checkpoint["model_state"])
+                except RuntimeError:
+                    print(
+                        "WARNING: loading states with strict=False! "
+                        "KNOW WHAT YOU ARE DOING!!"
+                    )
+                    model.load_state_dict(checkpoint["model_state"], strict=False)
     return epoch
 
 

@@ -3,7 +3,8 @@
 # # export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$COPPELIASIM_ROOT
 # # export QT_QPA_PLATFORM_PLUGIN_PATH=$COPPELIASIM_ROOT
 # # export DISPLAY=:1.0
-# cd RLBench
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "${SCRIPT_DIR}"
 
 
 # pip uninstall -y opencv-python opencv-contrib-python
@@ -25,11 +26,44 @@
 
 export TRANSFORMERS_VERBOSITY=error
 export PYTHONWARNINGS="ignore"
-export DISPLAY="109.105.4.172:0.0"
+export DISPLAY="${DISPLAY:-109.105.4.172:0.0}"
 export __GLX_VENDOR_LIBRARY_NAME=nvidia
 export __GL_PROVIDER_VERSION=GLX
 export LIBGL_ALWAYS_SOFTWARE=0
 export LIBGL_ALWAYS_INDIRECT=0
+
+MODEL_FOLDER="${MODEL_FOLDER:-/common-data-32t/usr/yiwei/hugging_download/data_tmp/LPY/BridgeVLA/checkpoints/RLBench}"
+MODEL_NAME="${MODEL_NAME:-model_60.pth}"
+EVAL_DATAFOLDER="${EVAL_DATAFOLDER:-/common-data-32t/usr/yiwei/hugging_download/data_tmp/LPY/BridgeVLA_RLBench_EVAL_DATA}"
+EVAL_EPISODES="${EVAL_EPISODES:-25}"
+EPISODE_LENGTH="${EPISODE_LENGTH:-25}"
+DEVICE="${DEVICE:-0}"
+ORACLE_PROVIDER="${ORACLE_PROVIDER:-none}"
+ORACLE_STRICT="${ORACLE_STRICT:-0}"
+ORACLE_DEBUG="${ORACLE_DEBUG:-0}"
+ORACLE_NUM_POINTS="${ORACLE_NUM_POINTS:-512}"
+ORACLE_ROLE_CONFIG="${ORACLE_ROLE_CONFIG:-${SCRIPT_DIR}/configs/rlbench_o2_semantic_roles.yaml}"
+EXP_CFG_PATH="${EXP_CFG_PATH:-}"
+REPLAY_GROUND_TRUTH="${REPLAY_GROUND_TRUTH:-0}"
+SAVE_VIDEO="${SAVE_VIDEO:-1}"
+VISUALIZE="${VISUALIZE:-0}"
+VISUALIZE_ROOT_DIR="${VISUALIZE_ROOT_DIR:-exp/RLBench_vis}"
+
+oracle_args=(
+  --oracle-provider "${ORACLE_PROVIDER}"
+  --oracle-role-config "${ORACLE_ROLE_CONFIG}"
+  --oracle-num-points "${ORACLE_NUM_POINTS}"
+)
+[[ "${ORACLE_STRICT}" == "1" ]] && oracle_args+=(--oracle-strict)
+[[ "${ORACLE_DEBUG}" == "1" ]] && oracle_args+=(--oracle-debug)
+exp_cfg_args=()
+[[ -n "${EXP_CFG_PATH}" ]] && exp_cfg_args+=(--exp_cfg_path "${EXP_CFG_PATH}")
+ground_truth_args=()
+[[ "${REPLAY_GROUND_TRUTH}" == "1" ]] && ground_truth_args+=(--ground-truth)
+video_args=()
+[[ "${SAVE_VIDEO}" == "1" ]] && video_args+=(--save-video)
+visualize_args=(--visualize_root_dir "${VISUALIZE_ROOT_DIR}")
+[[ "${VISUALIZE}" == "1" ]] && visualize_args+=(--visualize)
 
 tasks=(
     # "close_jar"
@@ -51,13 +85,30 @@ tasks=(
     # "slide_block_to_color_target"
     # "sweep_to_dustpan_of_size"
 )
+if [[ -n "${TASKS:-}" ]]; then
+  read -r -a tasks <<< "${TASKS}"
+fi
 
 for task in "${tasks[@]}"; do
   echo "=========================================="
   echo "Processing task: $task"
   echo "=========================================="
       
-  python3 eval.py --model-folder /common-data-32t/usr/yiwei/hugging_download/data_tmp/LPY/BridgeVLA/checkpoints/RLBench --eval-datafolder   /common-data-32t/usr/yiwei/hugging_download/data_tmp/LPY/BridgeVLA_RLBench_EVAL_DATA --tasks ${task} --eval-episodes 25 --log-name "${task}" --device 0 --headless --model-name "model_60.pth" --visualize_root_dir "exp/RLBench_vis_${task}" --save-video
+  python3 eval.py \
+    --model-folder "${MODEL_FOLDER}" \
+    --eval-datafolder "${EVAL_DATAFOLDER}" \
+    --tasks "${task}" \
+    --eval-episodes "${EVAL_EPISODES}" \
+    --episode-length "${EPISODE_LENGTH}" \
+    --log-name "${task}/${ORACLE_PROVIDER}" \
+    --device "${DEVICE}" \
+    --headless \
+    --model-name "${MODEL_NAME}" \
+    "${oracle_args[@]}" \
+    "${exp_cfg_args[@]}" \
+    "${ground_truth_args[@]}" \
+    "${video_args[@]}" \
+    "${visualize_args[@]}"
   # --visualize_root_dir "exp/RLBench_vis" --save-video --visualize
       
   echo "Completed task: $task"
@@ -69,15 +120,15 @@ echo "All tasks completed!"
 echo "=========================================="
 
 
-eval_root="/home/yiwei/project/BridgeVLA/exp/RLBench/eval"
-model_dir="model_80"
-output_csv="${eval_root}/${model_dir}_merged_eval_results.csv"
+eval_root="${MODEL_FOLDER}/eval"
+model_dir="${MODEL_NAME%.pth}"
+output_csv="${eval_root}/${model_dir}_${ORACLE_PROVIDER}_merged_eval_results.csv"
 
 # 写入统一表头
 echo "task,success rate,length,total_transitions" > "${output_csv}"
 
 for task in "${tasks[@]}"; do
-    csv_path="${eval_root}/${task}/${model_dir}/eval_results.csv"
+    csv_path="${eval_root}/${task}/${ORACLE_PROVIDER}/${model_dir}/eval_results.csv"
 
     if [[ ! -f "${csv_path}" ]]; then
         echo "[WARN] File not found: ${csv_path}" >&2

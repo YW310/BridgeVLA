@@ -23,6 +23,7 @@ import time
 import tqdm
 import yaml
 import argparse
+import pickle
 import time
 from collections import defaultdict
 from contextlib import nullcontext, redirect_stdout
@@ -60,6 +61,47 @@ from training_visualization import (
     record_training_visualization,
     visualization_due,
 )
+
+
+def _validate_semantic_replay_schema(replay_root):
+    root = Path(replay_root)
+    candidates = []
+    direct = next(root.glob('*.replay'), None)
+    if direct is not None:
+        candidates.append(direct)
+    else:
+        for task_dir in root.iterdir():
+            if task_dir.is_dir():
+                candidate = next(task_dir.glob('*.replay'), None)
+                if candidate is not None:
+                    candidates.append(candidate)
+    if not candidates:
+        raise FileNotFoundError(
+            f'No replay files found under semantic replay root: {root}'
+        )
+    required = {
+        'oracle_role_schema_version', 'oracle_phase_id',
+        'oracle_target_name', 'oracle_reference_name',
+        'oracle_target_kind', 'oracle_reference_kind',
+        'oracle_target_handles', 'oracle_reference_handles',
+        'oracle_target_role_valid', 'oracle_reference_role_valid',
+    }
+    for candidate in candidates:
+        with candidate.open('rb') as stream:
+            transition = pickle.load(stream)
+        missing = sorted(required.difference(transition))
+        if missing:
+            raise ValueError(
+                'oracle_semantic_audit=True requires a semantic-GT replay; '
+                f'{candidate} is missing {missing}'
+            )
+        schema = str(
+            np.asarray(transition['oracle_role_schema_version']).reshape(-1)[0]
+        )
+        if schema != 'rlbench_o2_semantic_roles_v1':
+            raise ValueError(
+                f'Unsupported semantic role schema {schema!r} in {candidate}'
+            )
 
 def _scalar_metrics(values):
     metrics = {}
@@ -669,6 +711,8 @@ def experiment(cmd_args):
             'Oracle replay root does not exist: '
             f'{train_replay_storage_dir}'
         )
+    if exp_cfg.oracle_semantic_audit:
+        _validate_semantic_replay_schema(train_replay_storage_dir)
     reduced_hardware_mode = exp_cfg.global_batch_size > 0
     if reduced_hardware_mode and exp_cfg.checkpoint_every_epochs <= 0:
         raise ValueError('checkpoint_every_epochs must be > 0')

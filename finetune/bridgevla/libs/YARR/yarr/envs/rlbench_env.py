@@ -77,7 +77,9 @@ def _get_cam_observation_elements(camera: CameraConfig, prefix: str, channels_la
         elements.append(
             ObservationElement('%s_depth' % prefix, shape, np.float32))
     if camera.mask:
-        raise NotImplementedError()
+        mask_shape = img_s + [1] if channels_last else [1] + img_s
+        elements.append(
+            ObservationElement('%s_mask' % prefix, mask_shape, np.int32))
 
     return elements
 
