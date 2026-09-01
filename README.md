@@ -24,6 +24,7 @@ A 3D VLA framework that aligns the input and output within a shared 2D space in 
   - [RLBench 8×40 GB 训练](#rlbench-8x40)
   - [Raw → Replay 生成](#rlbench-raw-replay)
   - [Oracle 3D 物体 Replay](#oracle-replay)
+  - [严格 Semantic-GT T/R](#semantic-gt-roles)
   - [O2 Target/Reference 训练](#o2-training)
   - [训练日志与实时 Loss](#rlbench-training-logs)
 - [Evaluation](#evaluation)
@@ -519,6 +520,123 @@ python tools/augment_replay_with_oracle_objects.py \
 
 use_oracle_objects 默认为 False，因此原始非 Oracle replay 的加载行为保持不变。
 
+<a id=semantic-gt-roles></a>
+
+### 严格 Semantic-GT Target/Reference
+
+正式 O2 upper-bound 不再使用最近距离、运动幅度、Qwen 或时域 ID 猜测角色。唯一语义
+契约是 `finetune/RLBench/configs/rlbench_o2_semantic_roles.yaml`：Target 是当前未完成
+子目标中必须直接接触、抓取或控制的实体；Reference 是该子目标终止条件中与 Target
+构成空间关系的唯一物体或 site。单物体关节任务没有 Reference。一个语义实体可合并
+多个 simulator handles，phase 只在 live RLBench 成功条件满足后推进。
+
+| 任务类型 | Target / Reference | phase 规则 |
+| --- | --- | --- |
+| 单关节 | `open_drawer`、`push_buttons`、`turn_tap`：T 为源码指定的可动部件，R 不存在 | 对应 joint condition 满足 |
+| 单次放置 | `close_jar`、`light_bulb_in`、`meat_off_grill`、`place_shape_in_shape_sorter`、`place_wine_at_rack_location`、`put_groceries_in_cupboard`、`put_item_in_drawer`、`put_money_in_safe`、`slide_block_to_color_target` | variation 决定唯一 T/R；detector 和需要时的释放条件满足 |
+| 顺序操作 | `place_cups`、`stack_blocks`、`stack_cups` | 固定源码顺序；空抓、错误张合和其他物体移动不推进 |
+| 工具任务 | `reach_and_drag`：stick/target；`sweep_to_dustpan_of_size`：broom/dustpan site | 不新增第三个 Tool 通道 |
+| 几何选择 | `insert_onto_square_peg`：ring/与 `success_centre` 对齐的 pillar | 四个 detector 同时满足 |
+
+Reference `kind=object` 时从四视角 GT handle mask 提取完整点云；`kind=site` 时读取
+success sensor/dummy 的 world position，并重复到 `oracle_num_points` 后走原有 Gaussian
+projection。site 只用于 Oracle upper-bound，manifest 和 replay audit 字段都会显式记录
+`kind=site`。
+
+正式生成前先对全部 variation 做 strict reset 审计（不需要 checkpoint）：
+
+```bash
+cd finetune/RLBench
+python validate_semantic_roles.py \
+    --output-dir semantic_role_validation \
+    --headless
+```
+
+任一对象选择器无法解析、T/R 混入 robot handle 或层级不满足契约时立即报错；成功时
+输出 `variation_role_audit.json`、逐 variation 首帧 audit 图和 provider 统计。
+
+#### 1. 用 simulator GT 生成 phase/handle manifest
+
+在 RLBench 环境中回放保存的 expert keypoints。每个 episode 只调用一次
+`reset_to_demo`，provider 直接查询 task 对象属性、层级、variation、success condition 和
+四视角 GT mask：
+
+```bash
+cd finetune/RLBench
+TASKS="close_jar place_cups push_buttons stack_blocks" \
+MODEL_FOLDER=/path/to/baseline_checkpoint_folder \
+MODEL_NAME=model_80.pth \
+EXP_CFG_PATH=configs/rlbench_config.yaml \
+EVAL_DATAFOLDER=/path/to/BridgeVLA_RLBench_TRAIN_DATA/train \
+EVAL_EPISODES=100 \
+EPISODE_LENGTH=50 \
+REPLAY_GROUND_TRUTH=1 \
+SAVE_VIDEO=0 \
+ORACLE_PROVIDER=rlbench_gt \
+ORACLE_STRICT=1 \
+ORACLE_DEBUG=1 \
+bash eval.sh
+```
+
+manifest 生成只回放 expert action，不调用 policy，因此可以使用已有 baseline checkpoint，
+不依赖尚未训练的 O2 checkpoint；模型仅用于复用现有 eval 启动入口。
+
+对 18 个任务可把 `TASKS` 设为 `finetune/bridgevla/utils/rvt_utils.py` 中的完整任务列表。
+若 expert keypoint 数超过 `EPISODE_LENGTH`，离线重写器会拒绝不完整 manifest，不能静默
+沿用最后一个 phase。每个 checkpoint/task 的输出位于：
+
+- `.../eval/<task>/rlbench_gt/<model>/semantic_oracle/semantic_role_manifests/<task>/episode_N.json`；
+- `oracle_provider_stats.json`：区分 `mapping_errors`、`not_visible_*` 和 `no_reference`；
+- `semantic_role_audits/<task>/episode_N/role_audit_step_000.png`：首帧四视角 overlay、
+  原图、instance/T/R mask、三正交 T/R 点云以及 phase condition 状态。
+
+#### 2. 只重写 Oracle 字段，生成 semantic-GT buffer
+
+```bash
+python tools/rewrite_replay_with_semantic_roles.py \
+    --replay-dir LPY/BridgeVLA_RLBench_TRAIN_Buffer \
+    --raw-data-dir LPY/BridgeVLA_RLBench_TRAIN_DATA/train \
+    --manifest-dir /path/to/model/eval \
+    --output-dir LPY/BridgeVLA_RLBench_SEMANTIC_GT_Buffer \
+    --task all \
+    --max-objects 32 \
+    --num-points 512 \
+    --cache-frames 128 \
+    --cache-episodes 2 \
+    --resume
+```
+
+工具保留 action、图像、点云、语言、`episode_idx/sample_frame` 和其他 baseline 字段；只
+替换六个 Oracle tensor，并增加不输入网络的审计字段：schema version、phase ID、T/R
+semantic name、kind、原始 handle 集合及各角色 valid。输出中的 T/R 使用固定小 slot ID
+`0/1`，不会把上千万的 simulator handle 当作显示 ID；真实 handle 仍保存在 audit 字段。
+
+严格行为如下：
+
+- live mask 与保存 mask 在相同 manifest frame 的 handle 体系不一致：立即停止并报告
+  `mapping_error`，禁止用邻近实例代替；
+- 角色正确但当前四个相机均不可见：该角色 `valid=False` 并计入 `not_visible`；
+- 任务定义没有 R：计入 `no_reference`，不是异常，网络的 R residual 为零；
+- raw/replay frame 越界：立即停止，不截断到最后一帧，也不生成伪点云；
+- `--resume` 只跳过已经原子写完的 replay；`--overwrite` 与它互斥。
+- `--cache-frames` 与 `--cache-episodes` 都是有界 LRU；默认最多保留 128 个 Oracle
+  帧和 2 个 episode 的 low-dim 数据，不会随已处理 episode 数持续增长。
+
+#### 3. 正式 semantic-GT O2 训练
+
+```bash
+cd finetune/RLBench
+bash train.sh \
+    --exp_cfg_path configs/rlbench_o2_semantic_gt.yaml \
+    --train_replay_storage_dir /path/to/BridgeVLA_RLBench_SEMANTIC_GT_Buffer \
+    --init_checkpoint /path/to/baseline/model_80.pth \
+    --train_oracle_adapter_only
+```
+
+`rlbench_o2_semantic_gt.yaml` 设置 `oracle_semantic_audit=True`；旧启发式 buffer 必须继续
+使用 `rlbench_o2_gt_instance.yaml`（audit schema 默认关闭）。两类 buffer/checkpoint 不应
+混在同一实验目录。semantic mapping 是 privileged GT，结果只能解释为 Oracle 上界。
+
 <a id=o2-training></a>
 
 ### O2：训练 Target/Reference 实例 GT
@@ -550,8 +668,8 @@ Target 与 Reference，按固定顺序组成双通道三视角 prior `[P_T, P_R]
 
 ```bash
 bash train.sh \
-    --exp_cfg_path configs/rlbench_o2_gt_instance.yaml \
-    --train_replay_storage_dir /home/yiwei/project/BridgeVLA/LPY/BridgeVLA_RLBench_TRAIN_TASK_OBJECT_Buffer \
+    --exp_cfg_path configs/rlbench_o2_semantic_gt.yaml \
+    --train_replay_storage_dir /home/yiwei/project/BridgeVLA/LPY/BridgeVLA_RLBench_SEMANTIC_GT_Buffer \
     --init_checkpoint /home/yiwei/project/BridgeVLA/LPY/BridgeVLA/checkpoints/RLBench/model_80.pth \
     --train_oracle_adapter_only
 ```
@@ -584,8 +702,8 @@ rotation loss、`grip_loss` 和 `collision_loss` 都参与反向传播。原动�
 
 ```bash
 bash train.sh \
-    --exp_cfg_path configs/rlbench_o2_gt_instance.yaml \
-    --train_replay_storage_dir /home/yiwei/project/BridgeVLA/LPY/BridgeVLA_RLBench_TRAIN_TASK_OBJECT_Buffer \
+    --exp_cfg_path configs/rlbench_o2_semantic_gt.yaml \
+    --train_replay_storage_dir /home/yiwei/project/BridgeVLA/LPY/BridgeVLA_RLBench_SEMANTIC_GT_Buffer \
     --init_checkpoint /home/yiwei/project/BridgeVLA/LPY/BridgeVLA/checkpoints/RLBench/model_80.pth \
     --train_oracle_fusion_only
 ```
@@ -598,15 +716,16 @@ bash train.sh \
 
 ```bash
 bash train.sh \
-    --exp_cfg_path configs/rlbench_o2_gt_instance.yaml \
-    --train_replay_storage_dir /home/yiwei/project/BridgeVLA/LPY/BridgeVLA_RLBench_TRAIN_TASK_OBJECT_Buffer \
+    --exp_cfg_path configs/rlbench_o2_semantic_gt.yaml \
+    --train_replay_storage_dir /home/yiwei/project/BridgeVLA/LPY/BridgeVLA_RLBench_SEMANTIC_GT_Buffer \
     --init_checkpoint /home/yiwei/project/BridgeVLA/LPY/BridgeVLA/checkpoints/RLBench/model_80.pth \
     --freeze_language_model \
     --freeze_vision_tower
 ```
 
 专用配置文件为
-`finetune/RLBench/configs/rlbench_o2_gt_instance.yaml`，集中配置 Oracle replay
+正式配置文件为 `finetune/RLBench/configs/rlbench_o2_semantic_gt.yaml`，集中配置 semantic
+audit schema、Oracle replay
 shape、adapter rank、多尺度 fusion、relation 模式和 heatmap sigma。checkpoint
 路径以及 `--train_oracle_adapter_only` / `--train_oracle_fusion_only` /
 `--freeze_language_model` 属于单次运行策略，
@@ -825,9 +944,31 @@ Fusion head 定义在
 `[L_raw*P_T,L_raw*P_R,P_T*P_R]`；最后一层零初始化。因此启用 O2
 后的初始 translation 输出与 baseline 完全相同。
 
-O2 评估可视化需要同时启用开关和输出目录：
+正式 closed-loop 评测仍使用 `finetune/RLBench/eval.sh`。三组必须使用相同 task、demo
+编号和 episode 数：
 
-    python eval.py [原评估参数] --visualize --visualize_root_dir exp/RLBench_O2_vis
+```bash
+# 1. 原始 baseline checkpoint
+TASKS="place_cups" MODEL_FOLDER=/path/to/baseline MODEL_NAME=model_80.pth \
+EXP_CFG_PATH=configs/rlbench_config.yaml ORACLE_PROVIDER=none bash eval.sh
+
+# 2. O2 checkpoint，但关闭 prior，测同一 checkpoint 的 raw 分支
+TASKS="place_cups" MODEL_FOLDER=/path/to/o2 MODEL_NAME=model_50.pth \
+EXP_CFG_PATH=configs/rlbench_o2_semantic_gt.yaml ORACLE_PROVIDER=none bash eval.sh
+
+# 3. O2 checkpoint + simulator semantic-GT T/R fusion
+TASKS="place_cups" MODEL_FOLDER=/path/to/o2 MODEL_NAME=model_50.pth \
+EXP_CFG_PATH=configs/rlbench_o2_semantic_gt.yaml \
+ORACLE_PROVIDER=rlbench_gt ORACLE_STRICT=1 ORACLE_DEBUG=1 bash eval.sh
+```
+
+`ORACLE_PROVIDER=none` 会显式关闭 O2 prior 选择，而不是依赖“字段缺失后自动回退”；
+`ORACLE_PROVIDER=rlbench_gt` 会让 CoppeliaSim 直接输出四视角 one-channel handle mask，
+provider 提取点云后立刻移除 mask，mask 不进入 BridgeVLA policy。O2 config 加载 checkpoint
+时使用严格 `state_dict`，缺失 adapter/fusion 权重会报错，不再 `strict=False` 静默继续。
+
+若同时需要模型 heatmap 可视化，运行 `eval.sh` 时设置
+`VISUALIZE=1 VISUALIZE_ROOT_DIR=exp/RLBench_O2_vis`。
 
 每个 step 的 `mvt1/` 和 `mvt2/` 目录会保存：
 
@@ -841,10 +982,10 @@ O2 评估可视化需要同时启用开关和输出目录：
 
 完整路径为
 `<visualize_root_dir>/<task>/episode_<N>/<language_goal>/step<N>/{mvt1,mvt2}/`。
-只设置 `--visualize_root_dir` 不会启用可视化。online observation 未提供 Oracle
-字段时，默认非严格模式会打印警告、回退原始 logits，并写入
-`o2_unavailable.txt`；这种结果不是有效 O2 评测。设置
-`rvt.oracle_prior_strict True` 可改为立即报错。
+只设置 `--visualize_root_dir` 不会启用模型可视化。semantic role 首帧 audit 由
+`ORACLE_DEBUG=1` 单独控制；provider 统计和 manifest 无论是否启用图片都会写入
+`<eval_log>/semantic_oracle/`。`ORACLE_STRICT=1` 约束的是 task/variation/handle 映射错误；
+正确实体暂时不可见会记录 `valid=False`，无 Reference 的任务则记录 `no_reference`。
 
 <a id=o2-training-visualization></a>
 
@@ -877,6 +1018,7 @@ TensorBoard 的 train_visualization/mvt1 和 train_visualization/mvt2 下。
 在服务器的 `bridgevla` 环境、仓库根目录运行：
 
     python -m unittest tests.test_oracle_prior tests.test_o2_joint_action_loss tests.test_rlbench_training_utils tests.test_rlbench_training_visualization -v
+    python -m pytest tests/test_o2_semantic_roles.py tests/test_replay_extra_fields.py -q
 
 `tests.test_oracle_prior` 检查固定 `[T,R]` 选择、缺失角色回退、双通道实例点投影、adapter/fusion
 零初始化 identity、无效 prior 回退、反向梯度和训练 GT/pred 张量拆分；
@@ -885,10 +1027,14 @@ BatchNorm 状态；
 `tests.test_rlbench_training_utils` 检查 fusion-only、adapter-only 冻结范围和
 batch/optimizer-step 规划；`tests.test_rlbench_training_visualization` 检查
 PNG 与 TensorBoard 拼图输出。
+`tests/test_o2_semantic_roles.py` 检查 18 任务配置覆盖、只读 RGB handle mask 解码、
+多 handle 实体合并、顺序 phase 的完成/释放门控、`no_reference` 与 strict selector 错误。
+`tests/test_replay_extra_fields.py` 检查 semantic audit metadata 保留在磁盘 replay 中但不会
+进入训练 batch，同时缺失训练必需字段仍会立即报错。
 
 确认专用 YAML 能被项目 YACS 配置系统加载：
 
-    PYTHONPATH=finetune python -c "from bridgevla.config import get_cfg_defaults; c=get_cfg_defaults(); c.merge_from_file('finetune/RLBench/configs/rlbench_o2_gt_instance.yaml'); assert c.use_oracle_objects and c.rvt.oracle_prior_mode == 'o2_gt_instance'; print(c)"
+    PYTHONPATH=finetune python -c "from bridgevla.config import get_cfg_defaults; c=get_cfg_defaults(); c.merge_from_file('finetune/RLBench/configs/rlbench_o2_semantic_gt.yaml'); assert c.use_oracle_objects and c.oracle_semantic_audit and c.rvt.oracle_prior_mode == 'o2_gt_instance'; print(c)"
 
 配置打印结果还应包含 `rvt.oracle_prior_relation: True`、
 `oracle_adapter_translation_only: False` 和 `peract.add_rgc_loss: True`。上述测试属于代码级检查；

@@ -380,16 +380,19 @@ def extract_obs(obs: Observation,
 
 def create_obs_config(camera_names: List[str],
                        camera_resolution: List[int],
-                       method_name: str):
+                       method_name: str,
+                       include_masks: bool = False):
     unused_cams = CameraConfig()
     unused_cams.set_all(False)
     used_cams = CameraConfig(
         rgb=True,
         point_cloud=True,
-        mask=False,
+        mask=bool(include_masks),
         depth=False,
         image_size=camera_resolution,
         render_mode=RenderMode.OPENGL)
+    if include_masks and hasattr(used_cams, 'masks_as_one_channel'):
+        used_cams.masks_as_one_channel = True
 
     cam_obs = []
     kwargs = {}

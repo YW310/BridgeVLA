@@ -39,6 +39,16 @@ from natsort import natsort
 from yarr.replay_buffer.replay_buffer import ReplayBuffer, ReplayElement
 from yarr.utils.observation_type import ObservationElement
 
+
+def _copy_required_disk_fields(store, transition, index, task_index):
+    """Copy declared replay fields while leaving audit-only metadata on disk."""
+    for key in store:
+        if key not in transition:
+            raise KeyError(
+                'Replay transition %s is missing required field %r.'
+                % (task_index, key))
+        store[key][index] = transition[key]
+
 # Defines a type describing part of the tuple returned by the replay
 # memory. Each element of the tuple is a tensor of shape [batch, ...] where
 # ... is defined the 'shape' field of ReplayElement. The tensor type is
@@ -452,8 +462,7 @@ class UniformReplayBuffer(ReplayBuffer):
 
                 with open(join(task_replay_storage_folder, '%d.replay' % task_index), 'rb') as f:
                     d = pickle.load(f)
-                    for k, v in d.items():
-                        store[k][i] = v # NOTE: potential bug here, should % self._replay_capacity
+                    _copy_required_disk_fields(store, d, i, task_index)
         else:
             for i in range(end_index - start_index):
                 idx = (start_index + i) % self._replay_capacity
@@ -461,8 +470,7 @@ class UniformReplayBuffer(ReplayBuffer):
                 task_index = self._index_mapping[idx, 1]
                 with open(join(task_replay_storage_folder, '%d.replay' % task_index), 'rb') as f:
                     d = pickle.load(f)
-                    for k, v in d.items():
-                        store[k][idx] = v
+                    _copy_required_disk_fields(store, d, idx, task_index)
         return store
 
     def _check_add_types(self, kwargs, signature):
@@ -956,4 +964,3 @@ class UniformReplayBuffer(ReplayBuffer):
 
     def init_enumeratation(self):
         self._enumeration_cursor = 0
-

@@ -19,6 +19,7 @@ Email: peiyan.li@cripac.ia.ac.cn
 import os
 import yaml
 import csv
+from pathlib import Path
 import torch
 import cv2
 import shutil
@@ -46,6 +47,7 @@ from bridgevla.libs.peract.helpers import utils
 from utils.custom_rlbench_env import (
     CustomMultiTaskRLBenchEnv2 as CustomMultiTaskRLBenchEnv,
 )
+from utils.o2_oracle_provider import RLBenchGTOracleProvider
 from utils.peract_utils_rlbench import (
     CAMERAS,
     SCENE_BOUNDS,
@@ -115,6 +117,8 @@ def load_agent(
             exp_cfg.oracle_prior_multiscale_fusion
         ),
         oracle_prior_relation=exp_cfg.rvt.oracle_prior_relation,
+        oracle_relation_gated_adapter=exp_cfg.oracle_relation_gated_adapter,
+        oracle_adapter_translation_only=exp_cfg.oracle_adapter_translation_only,
         **mvt_cfg,
     )
 
@@ -132,7 +136,11 @@ def load_agent(
 
 
     agent.build(training=False, device=device)
-    load_agent_state(model_path, agent)
+    load_agent_state(
+        model_path,
+        agent,
+        strict=(exp_cfg.rvt.oracle_prior_mode == 'o2_gt_instance'),
+    )
     agent.eval()
 
     print("Agent Information")
@@ -160,11 +168,32 @@ def eval(
     model_name="debug",
     visualize=False,
     visualize_root_dir="",
+    oracle_provider_name="none",
+    oracle_role_config=None,
+    oracle_num_points=512,
+    oracle_strict=False,
+    oracle_debug=False,
 ):
     agent.eval()
 
     camera_resolution = [IMAGE_SIZE, IMAGE_SIZE]
-    obs_config = utils.create_obs_config(CAMERAS, camera_resolution, method_name="")
+    use_rlbench_gt = oracle_provider_name == "rlbench_gt"
+    obs_config = utils.create_obs_config(
+        CAMERAS,
+        camera_resolution,
+        method_name="",
+        include_masks=use_rlbench_gt,
+    )
+    oracle_provider = None
+    if use_rlbench_gt:
+        debug_root = Path(log_dir) / "semantic_role_audits" if oracle_debug else None
+        oracle_provider = RLBenchGTOracleProvider(
+            Path(oracle_role_config),
+            num_points=oracle_num_points,
+            cameras=CAMERAS,
+            strict=oracle_strict,
+            debug_root=debug_root,
+        )
 
     gripper_mode = Discrete()
     arm_action_mode = EndEffectorPoseViaPlanning()
@@ -198,6 +227,7 @@ def eval(
         include_lang_goal_in_obs=True,
         time_in_state=True,
         record_every_n=1 if save_video else -1,
+        oracle_provider=oracle_provider,
     )
 
     eval_env.eval = True
@@ -246,7 +276,6 @@ def eval(
                 )
             else:
                 task_name = tasks[task_id]
-                lang_goal = eval_env._lang_goal
                 visualize_save_dir=os.path.join(visualize_root_dir,task_name,f"episode_{ep}")
                 if not os.path.exists(visualize_save_dir):
                     os.makedirs(visualize_save_dir)
@@ -261,6 +290,7 @@ def eval(
                     record_enabled=True,
                     visualize_save_dir=visualize_save_dir,
                     visualize=True,
+                    replay_ground_truth=replay_ground_truth,
                 )
             try:
                 for replay_transition in generator:
@@ -269,6 +299,8 @@ def eval(
             except StopIteration as e:
                 continue
             except Exception as e:
+                if oracle_provider is not None:
+                    oracle_provider.dump(Path(log_dir) / "semantic_oracle")
                 eval_env.shutdown()
                 raise e
 
@@ -378,6 +410,8 @@ def eval(
                     os.remove(palette_image_path)
                     shutil.rmtree(video_image_folder)
 
+    if oracle_provider is not None:
+        oracle_provider.dump(Path(log_dir) / "semantic_oracle")
     eval_env.shutdown()
 
     if logging:
@@ -423,6 +457,29 @@ def _eval(args):
             device=args.device,
             use_input_place_with_mean=args.use_input_place_with_mean,
         )
+        if args.oracle_provider == "rlbench_gt":
+            if not agent.oracle_prior_enabled and not args.ground_truth:
+                raise ValueError(
+                    "ORACLE_PROVIDER=rlbench_gt requires an O2 experiment config "
+                    "with rvt.oracle_prior_mode=o2_gt_instance unless "
+                    "--ground-truth is used only to generate manifests."
+                )
+            if args.ground_truth:
+                print(
+                    "Evaluation branch: expert replay for semantic-role manifest "
+                    f"generation (strict={bool(args.oracle_strict)})"
+                )
+            else:
+                agent.oracle_prior_strict = bool(args.oracle_strict)
+                print(
+                    "Evaluation branch: O2 semantic-GT Target/Reference fusion "
+                    f"(strict={agent.oracle_prior_strict})"
+                )
+        elif agent.oracle_prior_enabled:
+            agent.oracle_prior_mode = "none"
+            print("Evaluation branch: O2 checkpoint with raw BridgeVLA outputs")
+        else:
+            print("Evaluation branch: original baseline")
 
         agent_eval_log_dir = os.path.join(
             args.eval_log_dir, os.path.basename(model_path).split(".")[0]
@@ -447,6 +504,11 @@ def _eval(args):
             save_video=args.save_video,
             model_name=args.model_name,
             visualize_root_dir=args.visualize_root_dir,
+            oracle_provider_name=args.oracle_provider,
+            oracle_role_config=args.oracle_role_config,
+            oracle_num_points=args.oracle_num_points,
+            oracle_strict=args.oracle_strict,
+            oracle_debug=args.oracle_debug,
         )
         print(f"model {model_path}, scores {scores}")
         task_scores = {}
@@ -464,6 +526,13 @@ if __name__ == "__main__":
     parser = get_eval_parser()
 
     args = parser.parse_args()
+
+    if args.oracle_role_config is None:
+        args.oracle_role_config = str(
+            Path(__file__).resolve().parent
+            / "configs"
+            / "rlbench_o2_semantic_roles.yaml"
+        )
 
     if args.log_name is None:
         args.log_name = "none"

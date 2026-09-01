@@ -1,0 +1,164 @@
+schema_version: rlbench_o2_semantic_roles_v1
+
+# This file is the single semantic contract shared by the online RLBench GT
+# provider and the offline Oracle-field rewriter.  Object names are resolved
+# against the live task scene at episode reset; no spatial-nearest fallback is
+# permitted in strict mode.
+tasks:
+  close_jar:
+    resolver: close_jar
+    target: {kind: object, names: [jar_lid0]}
+    reference: {kind: object, names_by_variation_mod_2: [jar0, jar1]}
+    completion: lid_detected_and_released
+
+  insert_onto_square_peg:
+    resolver: insert_onto_square_peg
+    target: {kind: object, names: [square_ring]}
+    reference: {kind: object, candidates: [pillar0, pillar1, pillar2]}
+    completion: all_ring_detectors
+
+  light_bulb_in:
+    resolver: light_bulb_in
+    target:
+      kind: object
+      names_by_variation_mod_2:
+        - [bulb_phys0, light_bulb0, bulb0]
+        - [bulb_phys1, light_bulb1, bulb1]
+    reference: {kind: site, names: [success], semantic_name: lamp_socket}
+    completion: bulb_detected_and_released
+
+  meat_off_grill:
+    resolver: meat_off_grill
+    target: {kind: object, names_by_variation: [[chicken], [steak]]}
+    reference: {kind: site, names: [success], semantic_name: off_grill_site}
+    completion: meat_detected_and_released
+
+  open_drawer:
+    resolver: open_drawer
+    target:
+      kind: object
+      names_by_variation:
+        - [drawer_bottom, drawer_handle_bottom, bottom_drawer]
+        - [drawer_middle, drawer_handle_middle, middle_drawer]
+        - [drawer_top, drawer_handle_top, top_drawer]
+    reference: null
+    completion: selected_drawer_joint
+
+  place_cups:
+    resolver: place_cups
+    target: {kind: object, sequence: [mug0, mug1, mug2]}
+    reference:
+      kind: object
+      sequence: [place_cups_holder_spoke0, place_cups_holder_spoke1, place_cups_holder_spoke2]
+    completion: current_mug_on_any_spoke
+
+  place_shape_in_shape_sorter:
+    resolver: place_shape_in_shape_sorter
+    target:
+      kind: object
+      names_by_variation: [[cube], [cylinder], [triangular_prism], [star], [moon]]
+    reference:
+      kind: site
+      names_by_variation: [cube_drop_point, cylinder_drop_point, triangular_prism_drop_point, star_drop_point, moon_drop_point]
+      semantic_name: sorter_slot
+    completion: selected_shape_detected
+
+  place_wine_at_rack_location:
+    resolver: place_wine_at_rack_location
+    target: {kind: object, names: [wine_bottle]}
+    reference:
+      kind: site
+      names_by_variation: [success_middle, success_left, success_right]
+      semantic_name: rack_location
+    completion: bottle_detected_and_released
+
+  push_buttons:
+    resolver: push_buttons
+    target:
+      kind: object
+      sequence: [target_button_topPlate0, target_button_topPlate1, target_button_topPlate2]
+    reference: null
+    completion: current_button_joint
+
+  put_groceries_in_cupboard:
+    resolver: put_groceries_in_cupboard
+    target:
+      kind: object
+      names_by_variation:
+        - [crackers]
+        - [chocolate_jello]
+        - [strawberry_jello]
+        - [soup]
+        - [tuna]
+        - [spam]
+        - [coffee]
+        - [mustard]
+        - [sugar]
+    reference: {kind: site, names: [success], semantic_name: cupboard_bottom_shelf}
+    completion: grocery_detected_and_released
+
+  put_item_in_drawer:
+    resolver: put_item_in_drawer
+    target: {kind: object, names: [item]}
+    reference:
+      kind: object
+      names_by_variation:
+        - [drawer_bottom, bottom_drawer]
+        - [drawer_middle, middle_drawer]
+        - [drawer_top, top_drawer]
+    completion: item_in_selected_drawer
+
+  put_money_in_safe:
+    resolver: put_money_in_safe
+    target: {kind: object, names: [dollar_stack]}
+    reference:
+      kind: site
+      names_by_variation: [dummy_shelf0, dummy_shelf1, dummy_shelf2]
+      semantic_name: safe_shelf
+    completion: money_detected_and_released
+
+  reach_and_drag:
+    resolver: reach_and_drag
+    target: {kind: object, names: [stick]}
+    reference: {kind: object, names: [target0]}
+    completion: cube_on_target
+
+  slide_block_to_color_target:
+    resolver: slide_block_to_color_target
+    target: {kind: object, names: [block]}
+    reference: {kind: site, names: [success], semantic_name: color_target}
+    completion: block_on_target
+
+  stack_blocks:
+    resolver: stack_blocks
+    target:
+      kind: object
+      sequence: [stack_blocks_target0, stack_blocks_target1, stack_blocks_target2, stack_blocks_target3]
+    first_reference: {kind: object, names: [stack_blocks_target_plane]}
+    later_reference: previous_target
+    completion: current_block_in_stack_and_released
+
+  stack_cups:
+    resolver: stack_cups
+    target: {kind: object, sequence: [cup1, cup3]}
+    reference: {kind: object, sequence: [cup2, cup1]}
+    completion: current_cup_detected_and_released
+
+  sweep_to_dustpan_of_size:
+    resolver: sweep_to_dustpan_of_size
+    target: {kind: object, names: [broom]}
+    reference:
+      kind: site
+      candidates: [success, success0, success1, success_tall, success_short]
+      semantic_name: dustpan_site
+    completion: all_dirt_detected
+
+  turn_tap:
+    resolver: turn_tap
+    target:
+      kind: object
+      names_by_variation:
+        - [left_tap, tap_left, left_handle]
+        - [right_tap, tap_right, right_handle]
+    reference: null
+    completion: selected_tap_joint
