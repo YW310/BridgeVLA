@@ -1019,7 +1019,6 @@ TensorBoard 的 train_visualization/mvt1 和 train_visualization/mvt2 下。
 
     python -m unittest tests.test_oracle_prior tests.test_o2_joint_action_loss tests.test_rlbench_training_utils tests.test_rlbench_training_visualization -v
     python -m pytest tests/test_o2_semantic_roles.py tests/test_replay_extra_fields.py -q
-    python -m pytest tests/test_o2_semantic_roles.py -q
 
 `tests.test_oracle_prior` 检查固定 `[T,R]` 选择、缺失角色回退、双通道实例点投影、adapter/fusion
 零初始化 identity、无效 prior 回退、反向梯度和训练 GT/pred 张量拆分；
@@ -1032,8 +1031,6 @@ PNG 与 TensorBoard 拼图输出。
 多 handle 实体合并、顺序 phase 的完成/释放门控、`no_reference` 与 strict selector 错误。
 `tests/test_replay_extra_fields.py` 检查 semantic audit metadata 保留在磁盘 replay 中但不会
 进入训练 batch，同时缺失训练必需字段仍会立即报错。
-`tests/test_o2_semantic_roles.py` 检查 18 任务配置覆盖、只读 RGB handle mask 解码、
-多 handle 实体合并、顺序 phase 的完成/释放门控、`no_reference` 与 strict selector 错误。
 
 确认专用 YAML 能被项目 YACS 配置系统加载：
 

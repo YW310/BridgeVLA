@@ -16,6 +16,7 @@ import os
 import pickle
 import shutil
 from collections import OrderedDict
+from functools import lru_cache
 from pathlib import Path
 from typing import Dict, Mapping, Optional, Sequence, Tuple
 
@@ -76,6 +77,14 @@ class FrameCache:
             self.values.popitem(last=False)
 
 
+@lru_cache(maxsize=None)
+def _manifest_task_dirs(root: str, task: str):
+    return tuple(
+        path for path in Path(root).glob(f"**/semantic_role_manifests/{task}")
+        if path.is_dir()
+    )
+
+
 def _manifest_path(root: Path, task: str, episode_idx: int) -> Path:
     candidates = (
         root / task / f"episode_{episode_idx}.json",
@@ -86,11 +95,11 @@ def _manifest_path(root: Path, task: str, episode_idx: int) -> Path:
     for path in candidates:
         if path.is_file():
             return path
-    recursive = list(
-        root.glob(
-            f"**/semantic_role_manifests/{task}/episode_{episode_idx}.json"
-        )
-    )
+    recursive = [
+        directory / f"episode_{episode_idx}.json"
+        for directory in _manifest_task_dirs(str(root.resolve()), task)
+        if (directory / f"episode_{episode_idx}.json").is_file()
+    ]
     if len(recursive) == 1:
         return recursive[0]
     if len(recursive) > 1:
