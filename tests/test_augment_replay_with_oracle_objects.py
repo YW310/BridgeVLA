@@ -40,6 +40,7 @@ from tools.augment_replay_with_oracle_objects import (
     _detect_task_relevant_handles,
     _load_current_gripper_states,
     _limit_episode_candidates,
+    _needs_selected_episode_lookup,
     _open_gripper_prefix,
     _pending_resume_files,
     _REPLAY_METADATA_MEMORY_CACHE,
@@ -403,6 +404,42 @@ class OracleReplayAugmentationTest(unittest.TestCase):
                 [path.name for path in pending],
                 ['1.replay', '2.replay'],
             )
+
+    def test_resume_does_not_prescan_an_untouched_task(self):
+        self.assertFalse(
+            _needs_selected_episode_lookup(
+                dry_run=False,
+                resume=True,
+                skipped_existing=0,
+            )
+        )
+        self.assertTrue(
+            _needs_selected_episode_lookup(
+                dry_run=False,
+                resume=True,
+                skipped_existing=1,
+            )
+        )
+        self.assertTrue(
+            _needs_selected_episode_lookup(
+                dry_run=True,
+                resume=False,
+                skipped_existing=0,
+            )
+        )
+
+    def test_episode_detection_skips_replay_scan_when_cache_covers_request(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            unreadable_replay = Path(temporary) / '0.replay'
+            unreadable_replay.write_bytes(b'not a pickle')
+            selected = _episode_detection_sources(
+                [unreadable_replay],
+                frames_per_episode=1,
+                requested_episode_ids=(3,),
+                cached_episode_ids=(3,),
+                show_progress=False,
+            )
+        self.assertEqual(selected, {3: []})
 
     def test_robot_sampling_defaults_cover_raw_frames_zero_through_100(self):
         args = build_parser().parse_args(

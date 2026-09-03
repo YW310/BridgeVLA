@@ -2578,6 +2578,18 @@ def _episode_detection_sources(
         else {int(value) for value in requested_episode_ids}
     )
     cached = {int(value) for value in cached_episode_ids}
+    # Resume commonly reaches a partially written task after both per-episode
+    # handle caches were created. In that case the caller only needs the
+    # cached detections returned below; walking every replay segment again can
+    # deserialize many large anchor pickles before the main progress bar even
+    # appears.
+    if requested is not None and requested.issubset(cached):
+        if show_progress:
+            tqdm.write(
+                'episode detection: handle cache covers all '
+                f'{len(requested)} requested episode(s); replay scan skipped'
+            )
+        return {episode_idx: [] for episode_idx in sorted(requested)}
     replay_info_path = files[0].parent / 'replay_info.npy' if files else None
     if replay_info_path is not None and replay_info_path.is_file():
         try:
@@ -2718,10 +2730,19 @@ def _episode_detection_sources(
 def _episode_ids_for_selected_files(
     files: Sequence[Path],
     previous_file_by_index: Mapping[int, Path],
+    *,
+    show_progress: bool = False,
 ) -> Tuple[int, ...]:
     '''Find only the episodes needed by a dry-run selection.'''
     episode_ids = set()
-    for source in files:
+    progress = tqdm(
+        files,
+        desc='episode detection: selected replay lookup',
+        unit='replay',
+        dynamic_ncols=True,
+        disable=not show_progress,
+    )
+    for source in progress:
         with source.open('rb') as stream:
             transition = pickle.load(stream)
         if int(np.asarray(transition.get('terminal', -1)).item()) == -1:
@@ -2733,6 +2754,16 @@ def _episode_ids_for_selected_files(
         if 'episode_idx' in transition:
             episode_ids.add(int(np.asarray(transition['episode_idx']).item()))
     return tuple(sorted(episode_ids))
+
+
+def _needs_selected_episode_lookup(
+    *, dry_run: bool, resume: bool, skipped_existing: int
+) -> bool:
+    '''Whether handle detection should be limited to selected replay episodes.'''
+    # A resumed task with no completed destination files is untouched. Treat
+    # it like a normal run: pre-scanning every (large) replay just to rediscover
+    # that all episodes are required adds a long, silent pass and no benefit.
+    return dry_run or (resume and skipped_existing > 0)
 
 
 @lru_cache(maxsize=8)
@@ -3453,13 +3484,22 @@ def process_task(
         with ignored_frame_lock:
             return len(ignored_frame_keys)
 
+    requested_detection_episodes = None
+    if (
+        auto_detect_robot_handles or temporal_task_filter
+    ) and _needs_selected_episode_lookup(
+        dry_run=dry_run,
+        resume=resume,
+        skipped_existing=skipped_existing,
+    ):
+        requested_detection_episodes = _episode_ids_for_selected_files(
+            files,
+            previous_file_by_index,
+            show_progress=show_progress,
+        )
+
     robot_handles_by_episode: Dict[int, Tuple[int, ...]] = {}
     if auto_detect_robot_handles:
-        requested_robot_episodes = (
-            _episode_ids_for_selected_files(files, previous_file_by_index)
-            if dry_run or resume
-            else None
-        )
         robot_handles_by_episode = _detect_task_robot_handles(
             task,
             all_files,
@@ -3475,7 +3515,7 @@ def process_task(
             robot_handle_cache_dir,
             refresh_robot_handle_cache,
             write_cache=not dry_run,
-            requested_episode_ids=requested_robot_episodes,
+            requested_episode_ids=requested_detection_episodes,
             show_progress=show_progress,
             refresh_metadata_cache=refresh_replay_metadata_cache,
             metadata_cache_dir=replay_metadata_cache_dir,
@@ -3487,11 +3527,6 @@ def process_task(
         int, Tuple[Tuple[int, int, int, int], ...]
     ] = {}
     if temporal_task_filter:
-        requested_task_episodes = (
-            _episode_ids_for_selected_files(files, previous_file_by_index)
-            if dry_run or resume
-            else None
-        )
         (
             task_slot_ids_by_episode,
             task_roles_by_episode,
@@ -3511,7 +3546,7 @@ def process_task(
             task_prior_radius=task_prior_radius,
             task_prior_max_instances=task_prior_max_instances,
             task_prior_background_extent=task_prior_background_extent,
-            requested_episode_ids=requested_task_episodes,
+            requested_episode_ids=requested_detection_episodes,
             show_progress=show_progress,
             refresh_metadata_cache=refresh_replay_metadata_cache,
             metadata_cache_dir=replay_metadata_cache_dir,
