@@ -30,6 +30,10 @@ from copy import deepcopy
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 os.environ["BITSANDBYTES_NOWELCOME"] = "1"
 
+from utils.rlbench_compat import install_rlbench_mask_decoder_compat
+
+install_rlbench_mask_decoder_compat()
+
 from rlbench.backend import task as rlbench_task
 from rlbench.backend.utils import task_file_to_task_class
 from rlbench.action_modes.gripper_action_modes import Discrete

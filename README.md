@@ -962,10 +962,26 @@ EXP_CFG_PATH=configs/rlbench_o2_semantic_gt.yaml \
 ORACLE_PROVIDER=rlbench_gt ORACLE_STRICT=1 ORACLE_DEBUG=1 bash eval.sh
 ```
 
+也可以使用 O2 专用包装脚本；它默认加载 semantic-GT 配置并启用 strict/debug：
+
+```bash
+TASKS="place_cups" \
+MODEL_FOLDER=/path/to/o2 MODEL_NAME=model_50.pth \
+EVAL_DATAFOLDER=/path/to/BridgeVLA_RLBench_EVAL_DATA \
+bash eval_o2.sh
+
+# 同一个 O2 checkpoint 的 raw 分支对照
+ORACLE_PROVIDER=none TASKS="place_cups" \
+MODEL_FOLDER=/path/to/o2 MODEL_NAME=model_50.pth bash eval_o2.sh
+```
+
 `ORACLE_PROVIDER=none` 会显式关闭 O2 prior 选择，而不是依赖“字段缺失后自动回退”；
 `ORACLE_PROVIDER=rlbench_gt` 会让 CoppeliaSim 直接输出四视角 one-channel handle mask，
 provider 提取点云后立刻移除 mask，mask 不进入 BridgeVLA policy。O2 config 加载 checkpoint
 时使用严格 `state_dict`，缺失 adapter/fusion 权重会报错，不再 `strict=False` 静默继续。
+评测入口会兼容 NumPy 2 对 `uint8 * 256` 的严格溢出检查，并在解码保存的 RLBench
+RGB handle mask 前转换到安全整数类型；`eval.sh` 遇到 Python 异常会立即返回非零状态，
+不会再把失败任务打印为 `Completed` 或生成误导性的空汇总结果。
 
 若同时需要模型 heatmap 可视化，运行 `eval.sh` 时设置
 `VISUALIZE=1 VISUALIZE_ROOT_DIR=exp/RLBench_O2_vis`。

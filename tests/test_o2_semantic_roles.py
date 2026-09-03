@@ -16,6 +16,7 @@ from utils.o2_oracle_provider import (  # noqa: E402
     SemanticRoleMappingError,
     decode_handle_mask,
 )
+from utils.rlbench_compat import rgb_handles_to_mask_safe  # noqa: E402
 
 
 ROLE_CONFIG = ROOT / "finetune" / "RLBench" / "configs" / "rlbench_o2_semantic_roles.yaml"
@@ -109,6 +110,27 @@ def test_decode_rgb_handle_mask_does_not_mutate_read_only_input():
     image.setflags(write=False)
     decoded = decode_handle_mask(image)
     assert int(decoded[0, 0]) == 1 + 256 * 2 + 65536 * 3
+
+
+@pytest.mark.parametrize(
+    "image",
+    (
+        np.asarray([[[1, 2, 3], [255, 0, 0]]], dtype=np.uint8),
+        np.asarray(
+            [[[1 / 255.0, 2 / 255.0, 3 / 255.0], [1.0, 0.0, 0.0]]],
+            dtype=np.float32,
+        ),
+    ),
+)
+def test_safe_rlbench_mask_decoder_supports_numpy2_and_read_only_input(image):
+    original = image.copy()
+    image.setflags(write=False)
+    decoded = rgb_handles_to_mask_safe(image)
+    np.testing.assert_array_equal(
+        decoded,
+        np.asarray([[1 + 256 * 2 + 65536 * 3, 255]], dtype=np.int64),
+    )
+    np.testing.assert_array_equal(image, original)
 
 
 def test_close_jar_merges_lid_children_and_selects_variation_jar(tmp_path):
