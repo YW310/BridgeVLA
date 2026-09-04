@@ -957,7 +957,7 @@ TASKS="place_cups" MODEL_FOLDER=/path/to/o2 MODEL_NAME=model_50.pth \
 EXP_CFG_PATH=configs/rlbench_o2_semantic_gt.yaml ORACLE_PROVIDER=none bash eval.sh
 
 # 3. O2 checkpoint + simulator semantic-GT T/R fusion
-TASKS="place_cups" MODEL_FOLDER=/path/to/o2 MODEL_NAME=model_50.pth \
+TASKS="place_cups" MODEL_FOLDER=/home/yiwei/project/BridgeVLA/finetune/RLBench/train/rlbench_o2_gt_instance_joint_action/08_28_17_12 MODEL_NAME=model_last.pth \
 EXP_CFG_PATH=configs/rlbench_o2_semantic_gt.yaml \
 ORACLE_PROVIDER=rlbench_gt ORACLE_STRICT=1 ORACLE_DEBUG=1 bash eval.sh
 ```
