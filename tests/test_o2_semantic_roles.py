@@ -231,6 +231,68 @@ def test_place_cups_advances_only_after_condition_and_release():
     assert value._entries[-1]["target"]["semantic_name"] == "mug1"
 
 
+def test_place_cups_demo_events_build_phase_manifest_without_sim_replay(tmp_path):
+    cups = [FakeObject(f"mug{i}", 10 + i) for i in range(3)]
+    spokes = [FakeObject(f"spoke{i}", 20 + i) for i in range(3)]
+    task = FakeTask(cups + spokes)
+    task._cups = cups
+    task._spokes = spokes
+    task._index = 1
+    task._on_peg_conditions = [FakeCondition(), FakeCondition(), FakeCondition()]
+    value = provider("place_cups", task, tmp_path)
+    demo = [
+        observation([[10, 20], [11, 21]], gripper_open=state)
+        for state in (1.0, 0.0, 0.0, 1.0, 0.0, 1.0)
+    ]
+    value.set_sample_frame(0)
+    value.enrich(demo[0], {})
+
+    info = value.build_demo_event_manifest(demo, [1, 3, 5])
+
+    assert info["release_frames"] == [3, 5]
+    assert [entry["sample_frame"] for entry in value._entries] == [0, 1, 3, 5]
+    assert [entry["phase_id"] for entry in value._entries] == [
+        "place_cups:0", "place_cups:0", "place_cups:1", "place_cups:1"
+    ]
+    assert value._entries[2]["phase_advanced"] is True
+    assert value._entries[-1]["completion_satisfied"] is True
+    assert all(entry["phase_source"] == "demo_events" for entry in value._entries)
+
+    value.dump(tmp_path / "demo_event_dump")
+    manifest = json.loads(
+        (tmp_path / "demo_event_dump" / "semantic_role_manifests" /
+         "place_cups" / "episode_0.json").read_text(encoding="utf-8")
+    )
+    assert manifest["phase_source"] == "demo_events"
+    assert manifest["source_alignment_validated"] is True
+
+
+def test_place_cups_demo_events_require_one_release_per_phase():
+    cups = [FakeObject(f"mug{i}", 10 + i) for i in range(3)]
+    spokes = [FakeObject(f"spoke{i}", 20 + i) for i in range(3)]
+    task = FakeTask(cups + spokes)
+    task._cups = cups
+    task._spokes = spokes
+    task._index = 1
+    task._on_peg_conditions = [FakeCondition(), FakeCondition(), FakeCondition()]
+    value = provider("place_cups", task)
+    demo = [observation([[10, 20]], gripper_open=state) for state in (1.0, 0.0, 1.0)]
+
+    with pytest.raises(SemanticRoleMappingError, match="requires 2 completed"):
+        value.build_demo_event_manifest(demo, [1, 2])
+
+
+def test_demo_events_reject_unsupported_task():
+    drawer = FakeObject("drawer_bottom", 31)
+    task = FakeTask([drawer])
+    value = provider("open_drawer", task)
+
+    with pytest.raises(NotImplementedError, match="supports only place_cups"):
+        value.build_demo_event_manifest(
+            [observation([[31]], gripper_open=1.0)], [0]
+        )
+
+
 def test_open_drawer_has_no_reference_and_is_not_mapping_error():
     drawer = FakeObject("drawer_bottom", 31)
     task = FakeTask([drawer])

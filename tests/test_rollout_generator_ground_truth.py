@@ -36,6 +36,7 @@ class _GroundTruthEnv:
 
     def __init__(self):
         self.retry_attempts = []
+        self.step_calls = 0
 
     def reset_to_demo(self, seed, retry_attempt=0):
         self.retry_attempts.append(retry_attempt)
@@ -45,12 +46,21 @@ class _GroundTruthEnv:
         return [np.asarray([seed], dtype=np.float32)]
 
     def step(self, act_result):
+        self.step_calls += 1
         return Transition(
             observation={"state": np.asarray([1], dtype=np.float32)},
             reward=0.0,
             terminal=False,
             info={},
         )
+
+    def build_manifest_from_demo_events(self):
+        return {
+            "phase_source": "demo_events",
+            "release_frames": [3],
+            "phase_count": 1,
+            "sample_frames": [0, 3],
+        }
 
 
 def _failed_ground_truth_rollout(seed):
@@ -112,3 +122,20 @@ def test_ground_truth_retry_resets_same_demo_as_retry_attempt():
 
     assert len(rollout) == 1
     assert env.retry_attempts == [2]
+
+
+def test_demo_event_manifest_does_not_execute_simulator_actions():
+    env = _GroundTruthEnv()
+    generator = RolloutGenerator(env_device="cpu")
+
+    rollout = list(generator.generator(
+        Value("i", 0), env, _Agent(), episode_length=50,
+        timesteps=1, eval=True, eval_demo_seed=7,
+        replay_ground_truth=True, manifest_phase_source="demo_events",
+    ))
+
+    assert len(rollout) == 1
+    assert rollout[0].reward == pytest.approx(100.0)
+    assert rollout[0].terminal is True
+    assert rollout[0].info["manifest_phase_source"] == "demo_events"
+    assert env.step_calls == 0

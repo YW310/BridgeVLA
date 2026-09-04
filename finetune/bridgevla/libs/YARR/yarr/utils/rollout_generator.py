@@ -52,6 +52,7 @@ class RolloutGenerator(object):
                   record_enabled: bool = False,
                   replay_ground_truth: bool = False,
                   ground_truth_attempt: int = 0,
+                  manifest_phase_source: str = "sim_replay",
                   ):
 
         actions = None
@@ -62,6 +63,14 @@ class RolloutGenerator(object):
         if ground_truth_attempt and not replay_ground_truth:
             raise ValueError(
                 "ground_truth_attempt is only valid with REPLAY_GROUND_TRUTH=1."
+            )
+        if manifest_phase_source not in ("sim_replay", "demo_events"):
+            raise ValueError(
+                f"Unsupported manifest_phase_source={manifest_phase_source!r}."
+            )
+        if manifest_phase_source == "demo_events" and not replay_ground_truth:
+            raise ValueError(
+                "manifest_phase_source='demo_events' requires REPLAY_GROUND_TRUTH=1."
             )
         if eval:
             if ground_truth_attempt:
@@ -77,6 +86,23 @@ class RolloutGenerator(object):
         else:
             obs = env.reset()
         agent.reset()
+        if manifest_phase_source == "demo_events":
+            manifest_info = env.build_manifest_from_demo_events()
+            info = {
+                "active_task_id": env.active_task_id,
+                "manifest_phase_source": "demo_events",
+                **manifest_info,
+            }
+            yield ReplayTransition(
+                obs,
+                actions[-1],
+                float(getattr(env, "_reward_scale", 100.0)),
+                True,
+                False,
+                final_observation=obs,
+                info=info,
+            )
+            return
         obs_history = {k: [np.array(v, dtype=self._get_type(v))] * timesteps for k, v in obs.items()}
         for step in range(episode_length):
 
@@ -178,6 +204,7 @@ class RolloutGenerator(object):
                   record_enabled: bool = False,
                   replay_ground_truth: bool = False,
                   ground_truth_attempt: int = 0,
+                  manifest_phase_source: str = "sim_replay",
                   visualize_save_dir="",
                   visualize=True,
                   ):
@@ -190,6 +217,14 @@ class RolloutGenerator(object):
         if ground_truth_attempt and not replay_ground_truth:
             raise ValueError(
                 "ground_truth_attempt is only valid with REPLAY_GROUND_TRUTH=1."
+            )
+        if manifest_phase_source not in ("sim_replay", "demo_events"):
+            raise ValueError(
+                f"Unsupported manifest_phase_source={manifest_phase_source!r}."
+            )
+        if manifest_phase_source == "demo_events" and not replay_ground_truth:
+            raise ValueError(
+                "manifest_phase_source='demo_events' requires REPLAY_GROUND_TRUTH=1."
             )
         if eval:
             if ground_truth_attempt:
@@ -205,6 +240,23 @@ class RolloutGenerator(object):
         else:
             obs = env.reset()
         agent.reset()
+        if manifest_phase_source == "demo_events":
+            manifest_info = env.build_manifest_from_demo_events()
+            info = {
+                "active_task_id": env.active_task_id,
+                "manifest_phase_source": "demo_events",
+                **manifest_info,
+            }
+            yield ReplayTransition(
+                obs,
+                actions[-1],
+                float(getattr(env, "_reward_scale", 100.0)),
+                True,
+                False,
+                final_observation=obs,
+                info=info,
+            )
+            return
         obs_history = {k: [np.array(v, dtype=self._get_type(v))] * timesteps for k, v in obs.items()}
         visualize_save_dir=os.path.join(visualize_save_dir,env._lang_goal)
         if not os.path.exists(visualize_save_dir):

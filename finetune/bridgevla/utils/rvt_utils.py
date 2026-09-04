@@ -156,6 +156,15 @@ def get_eval_parser():
             "Only used with --ground-truth."
         ),
     )
+    parser.add_argument(
+        "--manifest-phase-source",
+        choices=("sim_replay", "demo_events"),
+        default="sim_replay",
+        help=(
+            "How semantic manifest phases are generated. demo_events currently "
+            "supports place_cups only and does not execute expert actions."
+        ),
+    )
     parser.add_argument("--exp_cfg_path", type=str, default=None)
     parser.add_argument("--mvt_cfg_path", type=str, default=None)
     parser.add_argument("--device", type=int, default=0)

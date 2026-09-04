@@ -264,6 +264,7 @@ class RLBenchGTOracleProvider:
         self._sample_frame: Optional[int] = None
         self._expected_sample_frames: Tuple[int, ...] = ()
         self._generation_attempt = 1
+        self._source_alignment_validated = False
         self._robot_handles = set()
         self._entries: List[Dict[str, object]] = []
         self._manifests: Dict[Tuple[str, int], Dict[str, object]] = {}
@@ -299,6 +300,7 @@ class RLBenchGTOracleProvider:
         self._variation = int(variation)
         self._episode_idx = int(episode_idx)
         self._generation_attempt = int(generation_attempt)
+        self._source_alignment_validated = False
         self._phase_index = 0
         self._step_index = 0
         self._sample_frame = None
@@ -769,6 +771,14 @@ class RLBenchGTOracleProvider:
         return points[indices].astype(np.float32, copy=False), True
 
     def enrich(self, obs, obs_dict: Mapping[str, object]) -> Dict[str, object]:
+        return self._enrich(obs, obs_dict)
+
+    def _enrich(
+        self,
+        obs,
+        obs_dict: Mapping[str, object],
+        phase_event: Optional[Tuple[int, bool, bool]] = None,
+    ) -> Dict[str, object]:
         result = dict(obs_dict)
         masks = {
             camera: getattr(obs, f"{camera}_mask")
@@ -781,16 +791,26 @@ class RLBenchGTOracleProvider:
             if getattr(obs, f"{camera}_point_cloud", None) is not None
         }
         try:
-            assignment = self._build_assignment()
-            completion_satisfied = self._phase_complete(assignment, obs)
-            phase_advanced = False
-            if (
-                self._phase_index + 1 < self._phase_count()
-                and completion_satisfied
-            ):
-                self._phase_index += 1
+            if phase_event is None:
                 assignment = self._build_assignment()
-                phase_advanced = True
+                completion_satisfied = self._phase_complete(assignment, obs)
+                phase_advanced = False
+                if (
+                    self._phase_index + 1 < self._phase_count()
+                    and completion_satisfied
+                ):
+                    self._phase_index += 1
+                    assignment = self._build_assignment()
+                    phase_advanced = True
+            else:
+                phase_index, completion_satisfied, phase_advanced = phase_event
+                if phase_index < 0 or phase_index >= self._phase_count():
+                    raise SemanticRoleMappingError(
+                        f"Invalid demo-event phase {phase_index} for "
+                        f"{self._task_name}; phase_count={self._phase_count()}"
+                    )
+                self._phase_index = int(phase_index)
+                assignment = self._build_assignment()
             target_points, target_valid = self._sample_entity_points(
                 assignment.target, masks, point_clouds
             )
@@ -841,6 +861,7 @@ class RLBenchGTOracleProvider:
             ),
             "target_valid": bool(target_valid),
             "reference_valid": bool(reference_valid),
+            "phase_source": "demo_events" if phase_event is not None else "sim_replay",
         }
         self._entries.append(entry)
         if self.debug_root is not None and self._step_index == 0:
@@ -857,6 +878,103 @@ class RLBenchGTOracleProvider:
             )
         self._step_index += 1
         return result
+
+    def build_demo_event_manifest(
+        self, demo: Sequence[object], sample_frames: Sequence[int]
+    ) -> Dict[str, object]:
+        """Build a place_cups manifest from its successful stored demo.
+
+        A close-to-open gripper transition completes one scripted cup placement.
+        This avoids re-planning the contact-sensitive trajectory in CoppeliaSim.
+        """
+        if self._task_name != "place_cups":
+            raise NotImplementedError(
+                "manifest phase source 'demo_events' currently supports only "
+                f"place_cups, not {self._task_name!r}."
+            )
+        if not demo:
+            raise SemanticRoleMappingError("place_cups stored demo is empty")
+
+        phase_count = self._phase_count()
+        release_frames = [
+            frame
+            for frame in range(1, len(demo))
+            if float(demo[frame - 1].gripper_open) < 0.5
+            and float(demo[frame].gripper_open) >= 0.5
+        ]
+        if len(release_frames) != phase_count:
+            raise SemanticRoleMappingError(
+                f"place_cups variation {self._variation} requires "
+                f"{phase_count} completed release cycles, but the stored demo "
+                f"contains {len(release_frames)} at frames {release_frames}."
+            )
+
+        expected = tuple(int(frame) for frame in sample_frames)
+        # Include the exact release boundary even if heuristic keypoint
+        # discovery removed it because it was adjacent to the final frame.
+        selected_frames = sorted(set((0, *expected, *release_frames)))
+        invalid = [frame for frame in selected_frames if frame < 0 or frame >= len(demo)]
+        if invalid:
+            raise SemanticRoleMappingError(
+                f"place_cups demo-event frames out of range: {invalid}; "
+                f"demo length={len(demo)}"
+            )
+
+        # reset_to_demo() emits one live initial entry. Keep it only long
+        # enough to verify that simulator handles address the same objects in
+        # the stored frame-0 masks, then replace it with deterministic entries.
+        live_initial = self._entries[-1] if self._entries else None
+        if (
+            live_initial is None
+            or live_initial.get("sample_frame") != 0
+            or live_initial.get("phase_source") != "sim_replay"
+        ):
+            raise SemanticRoleMappingError(
+                "place_cups demo_events requires a live reset frame before "
+                "stored-demo manifest generation"
+            )
+        self._entries = []
+        self._step_index = 0
+        self._phase_index = 0
+        self.set_expected_sample_frames(expected)
+        previous_phase = 0
+        for frame in selected_frames:
+            completed = sum(release_frame <= frame for release_frame in release_frames)
+            phase_index = min(completed, phase_count - 1)
+            phase_advanced = phase_index > previous_phase
+            completion_satisfied = phase_advanced or completed >= phase_count
+            self.set_sample_frame(frame)
+            self._enrich(
+                demo[frame],
+                {},
+                phase_event=(
+                    phase_index,
+                    completion_satisfied,
+                    phase_advanced,
+                ),
+            )
+            previous_phase = phase_index
+
+        stored_initial = self._entries[0]
+        for role_name in ("target", "reference"):
+            live_visible = bool(live_initial.get(f"{role_name}_valid", False))
+            stored_visible = bool(
+                stored_initial.get(f"{role_name}_valid", False)
+            )
+            if live_visible != stored_visible:
+                raise SemanticRoleMappingError(
+                    "Live/stored frame-0 handle mismatch for place_cups "
+                    f"{role_name}: live_visible={live_visible}, "
+                    f"stored_visible={stored_visible}"
+                )
+        self._source_alignment_validated = True
+
+        return {
+            "phase_source": "demo_events",
+            "release_frames": release_frames,
+            "phase_count": phase_count,
+            "sample_frames": selected_frames,
+        }
 
     @staticmethod
     def _labeled_panel(image: np.ndarray, label: str) -> Image.Image:
@@ -1012,6 +1130,11 @@ class RLBenchGTOracleProvider:
             "episode_idx": self._episode_idx,
             "variation": self._variation,
             "generation_attempt": self._generation_attempt,
+            "source_alignment_validated": self._source_alignment_validated,
+            "phase_source": (
+                self._entries[-1].get("phase_source", "sim_replay")
+                if self._entries else "sim_replay"
+            ),
             "expected_sample_frames": list(self._expected_sample_frames),
             "entries": list(self._entries),
         }

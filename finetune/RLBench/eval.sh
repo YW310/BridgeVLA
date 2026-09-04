@@ -49,6 +49,7 @@ ORACLE_ROLE_CONFIG="${ORACLE_ROLE_CONFIG:-${SCRIPT_DIR}/configs/rlbench_o2_seman
 EXP_CFG_PATH="${EXP_CFG_PATH:-}"
 REPLAY_GROUND_TRUTH="${REPLAY_GROUND_TRUTH:-0}"
 GT_REPLAY_RETRIES="${GT_REPLAY_RETRIES:-3}"
+MANIFEST_PHASE_SOURCE="${MANIFEST_PHASE_SOURCE:-sim_replay}"
 SAVE_VIDEO="${SAVE_VIDEO:-1}"
 VISUALIZE="${VISUALIZE:-0}"
 VISUALIZE_ROOT_DIR="${VISUALIZE_ROOT_DIR:-exp/RLBench_vis}"
@@ -66,6 +67,7 @@ ground_truth_args=()
 [[ "${REPLAY_GROUND_TRUTH}" == "1" ]] && ground_truth_args+=(
   --ground-truth
   --ground-truth-retries "${GT_REPLAY_RETRIES}"
+  --manifest-phase-source "${MANIFEST_PHASE_SOURCE}"
 )
 video_args=()
 [[ "${SAVE_VIDEO}" == "1" ]] && video_args+=(--save-video)

@@ -123,6 +123,14 @@ def _load_manifest(root: Path, task: str, episode_idx: int):
             f"Unsupported semantic role schema {schema!r} in {path}; "
             f"expected {SEMANTIC_ROLE_SCHEMA!r}"
         )
+    phase_source = str(manifest.get("phase_source", "sim_replay"))
+    if (
+        phase_source == "demo_events"
+        and not bool(manifest.get("source_alignment_validated", False))
+    ):
+        raise ValueError(
+            f"Demo-event manifest did not validate live/stored handle alignment: {path}"
+        )
     entries = manifest.get("entries", ())
     if not entries:
         raise ValueError(f"Semantic manifest has no entries: {path}")
@@ -139,13 +147,14 @@ def _load_manifest(root: Path, task: str, episode_idx: int):
     missing = sorted(set(expected).difference(frames))
     if not expected or missing:
         raise ValueError(
-            f"Incomplete expert replay manifest {path}; expected keypoints={expected}, "
-            f"missing={missing}. Increase --episode-length and regenerate."
+            f"Incomplete semantic manifest {path}; expected keypoints={expected}, "
+            f"missing={missing}. Regenerate the manifest from its configured "
+            "phase source."
         )
     if not bool(entries[-1].get("completion_satisfied", False)):
         raise ValueError(
-            f"Expert replay did not satisfy the final task condition: {path}. "
-            "Do not use a failed simulator replay as semantic-GT training data."
+            f"Semantic manifest did not satisfy the final task condition: {path}. "
+            "Do not use an incomplete phase trace as semantic-GT training data."
         )
     return schema, frames, entries
 
@@ -264,6 +273,7 @@ def _audit_fields(schema, entry, target_valid, reference_valid, max_objects):
     text = lambda value: np.asarray([value], dtype=object)
     return {
         "oracle_role_schema_version": text(schema),
+        "oracle_phase_source": text(entry.get("phase_source", "sim_replay")),
         "oracle_phase_id": text(entry["phase_id"]),
         "oracle_target_name": text(target["semantic_name"]),
         "oracle_reference_name": text(
@@ -280,6 +290,7 @@ def _audit_fields(schema, entry, target_valid, reference_valid, max_objects):
 
 def _empty_audit(max_objects):
     entry = {
+        "phase_source": "",
         "phase_id": "",
         "target": {"semantic_name": "", "kind": "none", "handles": []},
         "reference": None,

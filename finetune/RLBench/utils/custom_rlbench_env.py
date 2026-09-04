@@ -161,6 +161,20 @@ class CustomMultiTaskRLBenchEnv2(CustomMultiTaskRLBenchEnv):
             for frame in frames
         ]
 
+    def build_manifest_from_demo_events(self):
+        if self._oracle_provider is None:
+            raise ValueError(
+                "manifest phase source 'demo_events' requires ORACLE_PROVIDER=rlbench_gt"
+            )
+        if self._oracle_demo is None or self._oracle_ground_truth_frames is None:
+            raise RuntimeError(
+                "reset_to_demo() and get_ground_truth_action() must run before "
+                "building a demo-event manifest"
+            )
+        return self._oracle_provider.build_demo_event_manifest(
+            self._oracle_demo, self._oracle_ground_truth_frames
+        )
+
     def step(self, act_result):
         if self._oracle_provider is not None:
             sample_frame = None

@@ -164,6 +164,7 @@ def eval(
     episode_length=25,
     replay_ground_truth=False,
     ground_truth_retries=0,
+    manifest_phase_source="sim_replay",
     device=0,
     headless=True,
     logging=False,
@@ -182,6 +183,17 @@ def eval(
     if ground_truth_retries < 0:
         raise ValueError("ground_truth_retries must be non-negative")
     if not replay_ground_truth:
+        ground_truth_retries = 0
+    if manifest_phase_source == "demo_events":
+        if not replay_ground_truth:
+            raise ValueError(
+                "manifest_phase_source=demo_events requires --ground-truth"
+            )
+        if oracle_provider_name != "rlbench_gt":
+            raise ValueError(
+                "manifest_phase_source=demo_events requires "
+                "--oracle-provider rlbench_gt"
+            )
         ground_truth_retries = 0
     agent.eval()
 
@@ -288,6 +300,7 @@ def eval(
                         record_enabled=False,
                         replay_ground_truth=replay_ground_truth,
                         ground_truth_attempt=attempt,
+                        manifest_phase_source=manifest_phase_source,
                     )
                 else:
                     task_name = tasks[task_id]
@@ -312,6 +325,7 @@ def eval(
                         visualize=True,
                         replay_ground_truth=replay_ground_truth,
                         ground_truth_attempt=attempt,
+                        manifest_phase_source=manifest_phase_source,
                     )
                 try:
                     for replay_transition in generator:
@@ -357,11 +371,18 @@ def eval(
             lang_goal = eval_env._lang_goal
             language_goals.append(lang_goal)
             if verbose:
-                print(
-                    f"Evaluating {task_name} | Episode {ep} | Score: {reward} "
-                    f"| Episode Length: {len(episode_rollout)} "
-                    f"| Attempts: {attempts_used} | Lang Goal: {lang_goal}"
-                )
+                if manifest_phase_source == "demo_events":
+                    print(
+                        f"Generated demo-event manifest for {task_name} "
+                        f"| Episode {ep} | Logical transitions: "
+                        f"{len(episode_rollout)} | Lang Goal: {lang_goal}"
+                    )
+                else:
+                    print(
+                        f"Evaluating {task_name} | Episode {ep} | Score: {reward} "
+                        f"| Episode Length: {len(episode_rollout)} "
+                        f"| Attempts: {attempts_used} | Lang Goal: {lang_goal}"
+                    )
 
         if replay_ground_truth and verbose:
             print(
@@ -403,7 +424,13 @@ def eval(
         else:
             task_score = "unknown"
 
-        print(f"[Evaluation] Finished {task_name} | Final Score: {task_score}\n")
+        if manifest_phase_source == "demo_events":
+            print(
+                f"[Manifest] Finished {task_name} | "
+                f"Generated Coverage: {task_score}\n"
+            )
+        else:
+            print(f"[Evaluation] Finished {task_name} | Final Score: {task_score}\n")
 
         scores.append(task_score)
 
@@ -517,10 +544,17 @@ def _eval(args):
                     "--ground-truth is used only to generate manifests."
                 )
             if args.ground_truth:
-                print(
-                    "Evaluation branch: expert replay for semantic-role manifest "
-                    f"generation (strict={bool(args.oracle_strict)})"
-                )
+                if args.manifest_phase_source == "demo_events":
+                    print(
+                        "Manifest generation branch: stored-demo phase events "
+                        f"(strict={bool(args.oracle_strict)}, task=place_cups)"
+                    )
+                else:
+                    print(
+                        "Evaluation branch: expert replay for semantic-role manifest "
+                        f"generation (strict={bool(args.oracle_strict)}, "
+                        f"phase_source={args.manifest_phase_source})"
+                    )
             else:
                 agent.oracle_prior_strict = bool(args.oracle_strict)
                 print(
@@ -548,6 +582,7 @@ def _eval(args):
             episode_length=args.episode_length,
             replay_ground_truth=args.ground_truth,
             ground_truth_retries=args.ground_truth_retries,
+            manifest_phase_source=args.manifest_phase_source,
             device=args.device,
             headless=args.headless,
             visualize=args.visualize,

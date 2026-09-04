@@ -572,6 +572,7 @@ EVAL_EPISODES=100 \
 EPISODE_LENGTH=50 \
 REPLAY_GROUND_TRUTH=1 \
 GT_REPLAY_RETRIES=3 \
+MANIFEST_PHASE_SOURCE=sim_replay \
 SAVE_VIDEO=0 \
 ORACLE_PROVIDER=rlbench_gt \
 ORACLE_STRICT=1 \
@@ -587,6 +588,29 @@ manifest 生成只回放 expert action，不调用 policy，因此可以使用�
 计数，Final Score 仍只统计每个 episode 最终采用的尝试。provider 会丢弃失败尝试的全部
 entries，manifest 的 `generation_attempt` 从 1 开始记录最终采用的是第几次尝试。若全部重试仍失败，
 保留最后一次失败 manifest，离线重写器会因最终 `completion_satisfied=False` 拒绝使用。
+
+`place_cups` 还支持不重新执行动作的原始 demo phase 模式：
+
+```bash
+TASKS="place_cups" \
+REPLAY_GROUND_TRUTH=1 \
+MANIFEST_PHASE_SOURCE=demo_events \
+ORACLE_PROVIDER=rlbench_gt \
+ORACLE_STRICT=1 \
+ORACLE_DEBUG=0 \
+bash eval.sh
+```
+
+该模式直接扫描成功 stored demo 的夹爪 close→open 周期：variation 0/1/2 必须分别匹配
+1/2/3 次释放，释放后才切换到下一组 `mug{k}`/`spoke{k}`。它不调用 simulator
+`step()`，因此没有 IK、路径规划或接触重放失败，也不需要重试；manifest 和每个 entry
+都会记录 `phase_source=demo_events`。目前仅支持 `place_cups`，其他任务会明确报错，
+不会静默退回启发式规则。默认 `MANIFEST_PHASE_SOURCE=sim_replay` 保持原有 18 任务行为。
+生成前仍会执行一次 simulator reset，并将 live 首帧与 stored demo 第 0 帧的 T/R handle
+可见性进行交叉检查；只有 manifest 中 `source_alignment_validated=true` 时，离线重写器
+才接受该 demo-events 标注。
+该模式日志中的 `Generated Coverage=100` 只表示原始 demo 通过事件校验并生成了完整
+manifest，不表示重新执行动作获得了 100% closed-loop success。
 
 对 18 个任务可把 `TASKS` 设为 `finetune/bridgevla/utils/rvt_utils.py` 中的完整任务列表。
 若 expert keypoint 数超过 `EPISODE_LENGTH`，离线重写器会拒绝不完整 manifest，不能静默
@@ -615,7 +639,7 @@ python tools/rewrite_replay_with_semantic_roles.py \
 
 工具保留 action、图像、点云、语言、`episode_idx/sample_frame` 和其他 baseline 字段；只
 替换六个 Oracle tensor，并增加不输入网络的审计字段：schema version、phase ID、T/R
-semantic name、kind、原始 handle 集合及各角色 valid。输出中的 T/R 使用固定小 slot ID
+semantic name、kind、原始 handle 集合、`oracle_phase_source` 及各角色 valid。输出中的 T/R 使用固定小 slot ID
 `0/1`，不会把上千万的 simulator handle 当作显示 ID；真实 handle 仍保存在 audit 字段。
 
 严格行为如下：
@@ -1051,7 +1075,8 @@ BatchNorm 状态；
 batch/optimizer-step 规划；`tests.test_rlbench_training_visualization` 检查
 PNG 与 TensorBoard 拼图输出。
 `tests/test_o2_semantic_roles.py` 检查 18 任务配置覆盖、只读 RGB handle mask 解码、
-多 handle 实体合并、顺序 phase 的完成/释放门控、`no_reference` 与 strict selector 错误。
+多 handle 实体合并、顺序 phase 的完成/释放门控、place_cups stored-demo event phase、
+`no_reference` 与 strict selector 错误。
 `tests/test_replay_extra_fields.py` 检查 semantic audit metadata 保留在磁盘 replay 中但不会
 进入训练 batch，同时缺失训练必需字段仍会立即报错。
 `tests/test_rollout_generator_ground_truth.py` 检查 expert action 用尽后的失败统计、空 action
