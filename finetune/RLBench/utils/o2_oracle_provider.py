@@ -263,6 +263,7 @@ class RLBenchGTOracleProvider:
         self._step_index = 0
         self._sample_frame: Optional[int] = None
         self._expected_sample_frames: Tuple[int, ...] = ()
+        self._generation_attempt = 1
         self._robot_handles = set()
         self._entries: List[Dict[str, object]] = []
         self._manifests: Dict[Tuple[str, int], Dict[str, object]] = {}
@@ -275,15 +276,29 @@ class RLBenchGTOracleProvider:
             "not_visible_reference": 0,
             "no_reference": 0,
             "mapping_errors": 0,
+            "discarded_attempts": 0,
         }
 
-    def reset(self, task_environment, task_name: str, variation: int, episode_idx: int):
-        self._flush_current_manifest()
+    def reset(
+        self,
+        task_environment,
+        task_name: str,
+        variation: int,
+        episode_idx: int,
+        discard_current: bool = False,
+        generation_attempt: int = 1,
+    ):
+        if discard_current:
+            self.stats["discarded_attempts"] += int(bool(self._entries))
+            self._manifests.pop((str(task_name), int(episode_idx)), None)
+        else:
+            self._flush_current_manifest()
         self._task_environment = task_environment
         self._task = getattr(task_environment, "_task", task_environment)
         self._task_name = str(task_name)
         self._variation = int(variation)
         self._episode_idx = int(episode_idx)
+        self._generation_attempt = int(generation_attempt)
         self._phase_index = 0
         self._step_index = 0
         self._sample_frame = None
@@ -996,6 +1011,7 @@ class RLBenchGTOracleProvider:
             "task": self._task_name,
             "episode_idx": self._episode_idx,
             "variation": self._variation,
+            "generation_attempt": self._generation_attempt,
             "expected_sample_frames": list(self._expected_sample_frames),
             "entries": list(self._entries),
         }

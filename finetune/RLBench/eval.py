@@ -163,6 +163,7 @@ def eval(
     eval_episodes=25,
     episode_length=25,
     replay_ground_truth=False,
+    ground_truth_retries=0,
     device=0,
     headless=True,
     logging=False,
@@ -178,6 +179,10 @@ def eval(
     oracle_strict=False,
     oracle_debug=False,
 ):
+    if ground_truth_retries < 0:
+        raise ValueError("ground_truth_retries must be non-negative")
+    if not replay_ground_truth:
+        ground_truth_retries = 0
     agent.eval()
 
     camera_resolution = [IMAGE_SIZE, IMAGE_SIZE]
@@ -264,49 +269,82 @@ def eval(
     for task_id in range(num_tasks):
         task_rewards = []
         language_goals=[]
+        retry_attempts_used = 0
+        recovered_episodes = 0
+        failed_after_retries = 0
         for ep in range(start_episode, start_episode + eval_episodes):
-            episode_rollout = []
-            if not visualize:
-                generator = rollout_generator.generator(
-                    step_signal=step_signal,
-                    env=eval_env,
-                    agent=agent,
-                    episode_length=episode_length,
-                    timesteps=1,
-                    eval=True,
-                    eval_demo_seed=ep,
-                    record_enabled=False,
-                    replay_ground_truth=replay_ground_truth,
-                )
-            else:
-                task_name = tasks[task_id]
-                visualize_save_dir=os.path.join(visualize_root_dir,task_name,f"episode_{ep}")
-                if not os.path.exists(visualize_save_dir):
-                    os.makedirs(visualize_save_dir)
-                generator = rollout_generator.generator_visualize(
-                    step_signal=step_signal,
-                    env=eval_env,
-                    agent=agent,
-                    episode_length=episode_length,
-                    timesteps=1,
-                    eval=True,
-                    eval_demo_seed=ep,
-                    record_enabled=True,
-                    visualize_save_dir=visualize_save_dir,
-                    visualize=True,
-                    replay_ground_truth=replay_ground_truth,
-                )
-            try:
-                for replay_transition in generator:
-                    episode_rollout.append(replay_transition)
-                    
-            except StopIteration as e:
-                continue
-            except Exception as e:
-                if oracle_provider is not None:
-                    oracle_provider.dump(Path(log_dir) / "semantic_oracle")
-                eval_env.shutdown()
-                raise e
+            max_attempts = 1 + ground_truth_retries
+            for attempt in range(max_attempts):
+                episode_rollout = []
+                if not visualize:
+                    generator = rollout_generator.generator(
+                        step_signal=step_signal,
+                        env=eval_env,
+                        agent=agent,
+                        episode_length=episode_length,
+                        timesteps=1,
+                        eval=True,
+                        eval_demo_seed=ep,
+                        record_enabled=False,
+                        replay_ground_truth=replay_ground_truth,
+                        ground_truth_attempt=attempt,
+                    )
+                else:
+                    task_name = tasks[task_id]
+                    visualize_save_dir = os.path.join(
+                        visualize_root_dir,
+                        task_name,
+                        f"episode_{ep}",
+                        f"attempt_{attempt}",
+                    )
+                    if not os.path.exists(visualize_save_dir):
+                        os.makedirs(visualize_save_dir)
+                    generator = rollout_generator.generator_visualize(
+                        step_signal=step_signal,
+                        env=eval_env,
+                        agent=agent,
+                        episode_length=episode_length,
+                        timesteps=1,
+                        eval=True,
+                        eval_demo_seed=ep,
+                        record_enabled=True,
+                        visualize_save_dir=visualize_save_dir,
+                        visualize=True,
+                        replay_ground_truth=replay_ground_truth,
+                        ground_truth_attempt=attempt,
+                    )
+                try:
+                    for replay_transition in generator:
+                        episode_rollout.append(replay_transition)
+                except StopIteration:
+                    continue
+                except Exception as e:
+                    if oracle_provider is not None:
+                        oracle_provider.dump(Path(log_dir) / "semantic_oracle")
+                    eval_env.shutdown()
+                    raise e
+
+                if not episode_rollout:
+                    raise RuntimeError(
+                        f"Empty rollout for task={tasks[task_id]}, episode={ep}, "
+                        f"attempt={attempt}."
+                    )
+                reward = episode_rollout[-1].reward
+                if reward > 0 or attempt == max_attempts - 1:
+                    break
+                if verbose:
+                    print(
+                        f"Ground-truth replay failed for {tasks[task_id]} "
+                        f"episode {ep}; retrying full episode "
+                        f"({attempt + 1}/{ground_truth_retries})."
+                    )
+
+            attempts_used = attempt + 1
+            retry_attempts_used += attempts_used - 1
+            if reward > 0 and attempts_used > 1:
+                recovered_episodes += 1
+            elif reward <= 0:
+                failed_after_retries += 1
 
             for transition in episode_rollout:
                 stats_accumulator.step(transition, True)
@@ -320,8 +358,18 @@ def eval(
             language_goals.append(lang_goal)
             if verbose:
                 print(
-                    f"Evaluating {task_name} | Episode {ep} | Score: {reward} | Episode Length: {len(episode_rollout)} | Lang Goal: {lang_goal}"
+                    f"Evaluating {task_name} | Episode {ep} | Score: {reward} "
+                    f"| Episode Length: {len(episode_rollout)} "
+                    f"| Attempts: {attempts_used} | Lang Goal: {lang_goal}"
                 )
+
+        if replay_ground_truth and verbose:
+            print(
+                f"Ground-truth retry summary for {tasks[task_id]}: "
+                f"extra_attempts={retry_attempts_used}, "
+                f"recovered={recovered_episodes}, "
+                f"failed_after_retries={failed_after_retries}"
+            )
 
         # report summaries
         summaries = []
@@ -499,6 +547,7 @@ def _eval(args):
             eval_episodes=args.eval_episodes,
             episode_length=args.episode_length,
             replay_ground_truth=args.ground_truth,
+            ground_truth_retries=args.ground_truth_retries,
             device=args.device,
             headless=args.headless,
             visualize=args.visualize,

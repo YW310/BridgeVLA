@@ -176,6 +176,42 @@ def test_close_jar_merges_lid_children_and_selects_variation_jar(tmp_path):
     assert manifest["entries"][0]["phase_id"] == "close_jar:0"
 
 
+def test_retry_discards_failed_manifest_attempt_before_restarting(tmp_path):
+    lid = FakeObject("jar_lid0", 11)
+    jar0 = FakeObject("jar0", 21)
+    task = FakeTask([lid, jar0])
+    task.lid = lid
+    task.jars = [jar0]
+    value = provider("close_jar", task, tmp_path)
+    value.set_expected_sample_frames([10])
+    value.set_sample_frame(10)
+    value.enrich(observation([[11, 21]]), {})
+
+    value.reset(
+        SimpleNamespace(_task=task),
+        "close_jar",
+        0,
+        0,
+        discard_current=True,
+        generation_attempt=2,
+    )
+
+    assert ("close_jar", 0) not in value._manifests
+    assert value._entries == []
+    assert value.stats["discarded_attempts"] == 1
+
+    value.set_expected_sample_frames([10])
+    value.set_sample_frame(10)
+    value.enrich(observation([[11, 21]]), {})
+    value.dump(tmp_path / "retry_dump")
+    manifest = json.loads(
+        (tmp_path / "retry_dump" / "semantic_role_manifests" /
+         "close_jar" / "episode_0.json").read_text(encoding="utf-8")
+    )
+    assert manifest["generation_attempt"] == 2
+    assert len(manifest["entries"]) == 1
+
+
 def test_place_cups_advances_only_after_condition_and_release():
     cups = [FakeObject(f"mug{i}", 10 + i) for i in range(3)]
     spokes = [FakeObject(f"spoke{i}", 20 + i) for i in range(3)]

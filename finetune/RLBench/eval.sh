@@ -48,6 +48,7 @@ ORACLE_NUM_POINTS="${ORACLE_NUM_POINTS:-512}"
 ORACLE_ROLE_CONFIG="${ORACLE_ROLE_CONFIG:-${SCRIPT_DIR}/configs/rlbench_o2_semantic_roles.yaml}"
 EXP_CFG_PATH="${EXP_CFG_PATH:-}"
 REPLAY_GROUND_TRUTH="${REPLAY_GROUND_TRUTH:-0}"
+GT_REPLAY_RETRIES="${GT_REPLAY_RETRIES:-3}"
 SAVE_VIDEO="${SAVE_VIDEO:-1}"
 VISUALIZE="${VISUALIZE:-0}"
 VISUALIZE_ROOT_DIR="${VISUALIZE_ROOT_DIR:-exp/RLBench_vis}"
@@ -62,7 +63,10 @@ oracle_args=(
 exp_cfg_args=()
 [[ -n "${EXP_CFG_PATH}" ]] && exp_cfg_args+=(--exp_cfg_path "${EXP_CFG_PATH}")
 ground_truth_args=()
-[[ "${REPLAY_GROUND_TRUTH}" == "1" ]] && ground_truth_args+=(--ground-truth)
+[[ "${REPLAY_GROUND_TRUTH}" == "1" ]] && ground_truth_args+=(
+  --ground-truth
+  --ground-truth-retries "${GT_REPLAY_RETRIES}"
+)
 video_args=()
 [[ "${SAVE_VIDEO}" == "1" ]] && video_args+=(--save-video)
 visualize_args=(--visualize_root_dir "${VISUALIZE_ROOT_DIR}")

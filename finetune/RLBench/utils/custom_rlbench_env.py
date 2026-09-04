@@ -44,7 +44,9 @@ class CustomMultiTaskRLBenchEnv2(CustomMultiTaskRLBenchEnv):
                 return int(value)
         return 0
 
-    def _reset_oracle_provider(self, variation=None):
+    def _reset_oracle_provider(
+        self, variation=None, discard_current=False, generation_attempt=1
+    ):
         if self._oracle_provider is None:
             return
         if variation is None:
@@ -54,6 +56,8 @@ class CustomMultiTaskRLBenchEnv2(CustomMultiTaskRLBenchEnv):
             self._oracle_task_name(),
             int(variation),
             int(self._oracle_episode_token),
+            discard_current=bool(discard_current),
+            generation_attempt=int(generation_attempt),
         )
         self._oracle_provider_ready = True
 
@@ -88,11 +92,16 @@ class CustomMultiTaskRLBenchEnv2(CustomMultiTaskRLBenchEnv):
         )
         return self._previous_obs_dict
 
-    def reset_to_demo(self, i, variation_number=-1):
-        if self._episodes_this_task == self._swap_task_every:
-            self._set_new_task()
-            self._episodes_this_task = 0
-        self._episodes_this_task += 1
+    def reset_to_demo(self, i, variation_number=-1, retry_attempt=0):
+        retry_attempt = int(retry_attempt)
+        if retry_attempt < 0:
+            raise ValueError("retry_attempt must be non-negative")
+        is_retry = retry_attempt > 0
+        if not is_retry:
+            if self._episodes_this_task == self._swap_task_every:
+                self._set_new_task()
+                self._episodes_this_task = 0
+            self._episodes_this_task += 1
 
         self._i = 0
         self._task.set_variation(-1)
@@ -109,7 +118,11 @@ class CustomMultiTaskRLBenchEnv2(CustomMultiTaskRLBenchEnv):
 
         self._oracle_episode_token = int(i)
         self._oracle_provider_ready = False
-        self._reset_oracle_provider(d.variation_number)
+        self._reset_oracle_provider(
+            d.variation_number,
+            discard_current=is_retry,
+            generation_attempt=retry_attempt + 1,
+        )
         if self._oracle_provider is not None:
             self._oracle_provider.set_sample_frame(0)
         self._previous_obs_dict = self.extract_obs(obs)
@@ -118,7 +131,8 @@ class CustomMultiTaskRLBenchEnv2(CustomMultiTaskRLBenchEnv):
             and self._record_every_n > 0
             and self._episode_index % self._record_every_n == 0
         )
-        self._episode_index += 1
+        if not is_retry:
+            self._episode_index += 1
         self._recorded_images.clear()
 
         return self._previous_obs_dict

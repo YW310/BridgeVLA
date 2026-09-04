@@ -27,18 +27,53 @@ class RolloutGenerator(object):
             return np.float32
         return x.dtype
 
+    @staticmethod
+    def _validate_ground_truth_actions(actions, eval_demo_seed):
+        if actions is None or len(actions) == 0:
+            raise ValueError(
+                "REPLAY_GROUND_TRUTH=1 requires at least one expert action "
+                f"for eval demo {eval_demo_seed}."
+            )
+
+    @staticmethod
+    def _rollout_limit_reached(step, episode_length, replay_ground_truth,
+                               actions):
+        episode_limit = step == episode_length - 1
+        expert_actions_exhausted = (
+            replay_ground_truth
+            and actions is not None
+            and step == len(actions) - 1
+        )
+        return episode_limit or expert_actions_exhausted
+
     def generator(self, step_signal: Value, env: Env, agent: Agent,
                   episode_length: int, timesteps: int,
                   eval: bool, eval_demo_seed: int = 0,
                   record_enabled: bool = False,
                   replay_ground_truth: bool = False,
+                  ground_truth_attempt: int = 0,
                   ):
 
+        actions = None
+        if replay_ground_truth and not eval:
+            raise ValueError("REPLAY_GROUND_TRUTH=1 is only supported in eval mode.")
+        if ground_truth_attempt < 0:
+            raise ValueError("ground_truth_attempt must be non-negative.")
+        if ground_truth_attempt and not replay_ground_truth:
+            raise ValueError(
+                "ground_truth_attempt is only valid with REPLAY_GROUND_TRUTH=1."
+            )
         if eval:
-            obs = env.reset_to_demo(eval_demo_seed)
+            if ground_truth_attempt:
+                obs = env.reset_to_demo(
+                    eval_demo_seed, retry_attempt=ground_truth_attempt
+                )
+            else:
+                obs = env.reset_to_demo(eval_demo_seed)
             # get ground-truth action sequence
             if replay_ground_truth:
                 actions = env.get_ground_truth_action(eval_demo_seed)
+                self._validate_ground_truth_actions(actions, eval_demo_seed)
         else:
             obs = env.reset()
         agent.reset()
@@ -67,8 +102,11 @@ class RolloutGenerator(object):
             transition = env.step(act_result)
             obs_tp1 = dict(transition.observation)
             timeout = False
-            if step == episode_length - 1:
-                # If last transition, and not terminal, then we timed out
+            if self._rollout_limit_reached(
+                    step, episode_length, replay_ground_truth, actions):
+                # The episode also times out when the final expert action did
+                # not complete the task. Marking this transition terminal is
+                # required for StatAccumulator to count the failed episode.
                 timeout = not transition.terminal
                 if timeout:
                     transition.terminal = True
@@ -103,7 +141,9 @@ class RolloutGenerator(object):
                     obs_tp1.update(agent_obs_elems_tp1)
                 replay_transition.final_observation = obs_tp1
 
-            if record_enabled and transition.terminal or timeout or step == episode_length - 1:
+            if record_enabled and (
+                    transition.terminal or timeout
+                    or step == episode_length - 1):
                 env.env._action_mode.arm_action_mode.record_end(env.env._scene,
                                                                 steps=60, step_scene=True)
 
@@ -137,15 +177,31 @@ class RolloutGenerator(object):
                   eval: bool, eval_demo_seed: int = 0,
                   record_enabled: bool = False,
                   replay_ground_truth: bool = False,
+                  ground_truth_attempt: int = 0,
                   visualize_save_dir="",
                   visualize=True,
                   ):
 
+        actions = None
+        if replay_ground_truth and not eval:
+            raise ValueError("REPLAY_GROUND_TRUTH=1 is only supported in eval mode.")
+        if ground_truth_attempt < 0:
+            raise ValueError("ground_truth_attempt must be non-negative.")
+        if ground_truth_attempt and not replay_ground_truth:
+            raise ValueError(
+                "ground_truth_attempt is only valid with REPLAY_GROUND_TRUTH=1."
+            )
         if eval:
-            obs = env.reset_to_demo(eval_demo_seed)
+            if ground_truth_attempt:
+                obs = env.reset_to_demo(
+                    eval_demo_seed, retry_attempt=ground_truth_attempt
+                )
+            else:
+                obs = env.reset_to_demo(eval_demo_seed)
             # get ground-truth action sequence
             if replay_ground_truth:
                 actions = env.get_ground_truth_action(eval_demo_seed)
+                self._validate_ground_truth_actions(actions, eval_demo_seed)
         else:
             obs = env.reset()
         agent.reset()
@@ -177,8 +233,9 @@ class RolloutGenerator(object):
             transition = env.step(act_result)
             obs_tp1 = dict(transition.observation)
             timeout = False
-            if step == episode_length - 1:
-                # If last transition, and not terminal, then we timed out
+            if self._rollout_limit_reached(
+                    step, episode_length, replay_ground_truth, actions):
+                # Keep visualization rollouts consistent with generator().
                 timeout = not transition.terminal
                 if timeout:
                     transition.terminal = True
@@ -213,7 +270,9 @@ class RolloutGenerator(object):
                     obs_tp1.update(agent_obs_elems_tp1)
                 replay_transition.final_observation = obs_tp1
 
-            if record_enabled and transition.terminal or timeout or step == episode_length - 1:
+            if record_enabled and (
+                    transition.terminal or timeout
+                    or step == episode_length - 1):
                 env.env._action_mode.arm_action_mode.record_end(env.env._scene,
                                                                 steps=60, step_scene=True)
 
@@ -223,4 +282,3 @@ class RolloutGenerator(object):
 
             if transition.info.get("needs_reset", transition.terminal):
                 return
-

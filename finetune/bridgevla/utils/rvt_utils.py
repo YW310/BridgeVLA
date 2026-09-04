@@ -147,6 +147,15 @@ def get_eval_parser():
     )
     parser.add_argument("--headless", action="store_true", default=True)
     parser.add_argument("--ground-truth", action="store_true", default=False)
+    parser.add_argument(
+        "--ground-truth-retries",
+        type=int,
+        default=3,
+        help=(
+            "Number of full-episode retries after a failed expert replay. "
+            "Only used with --ground-truth."
+        ),
+    )
     parser.add_argument("--exp_cfg_path", type=str, default=None)
     parser.add_argument("--mvt_cfg_path", type=str, default=None)
     parser.add_argument("--device", type=int, default=0)

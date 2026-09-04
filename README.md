@@ -563,14 +563,15 @@ python validate_semantic_roles.py \
 
 ```bash
 cd finetune/RLBench
-TASKS="close_jar place_cups push_buttons stack_blocks" \
-MODEL_FOLDER=/path/to/baseline_checkpoint_folder \
+TASKS="all" \
+MODEL_FOLDER=/home/yiwei/project/BridgeVLA/checkpoints/RLBench  \
 MODEL_NAME=model_80.pth \
-EXP_CFG_PATH=configs/rlbench_config.yaml \
-EVAL_DATAFOLDER=/path/to/BridgeVLA_RLBench_TRAIN_DATA/train \
+EXP_CFG_PATH=/home/yiwei/project/BridgeVLA/finetune/RLBench/configs/rlbench_config.yaml \
+EVAL_DATAFOLDER=/home/yiwei/project/BridgeVLA/LPY/BridgeVLA_RLBench_TRAIN_DATA/train \
 EVAL_EPISODES=100 \
 EPISODE_LENGTH=50 \
 REPLAY_GROUND_TRUTH=1 \
+GT_REPLAY_RETRIES=3 \
 SAVE_VIDEO=0 \
 ORACLE_PROVIDER=rlbench_gt \
 ORACLE_STRICT=1 \
@@ -580,6 +581,12 @@ bash eval.sh
 
 manifest 生成只回放 expert action，不调用 policy，因此可以使用已有 baseline checkpoint，
 不依赖尚未训练的 O2 checkpoint；模型仅用于复用现有 eval 启动入口。
+
+`GT_REPLAY_RETRIES` 表示首次 expert replay 失败后，最多从同一个 `reset_to_demo`
+完整重跑 episode 的次数，默认是 3；设为 0 可关闭。重试不会增加逻辑 episode 或任务切换
+计数，Final Score 仍只统计每个 episode 最终采用的尝试。provider 会丢弃失败尝试的全部
+entries，manifest 的 `generation_attempt` 从 1 开始记录最终采用的是第几次尝试。若全部重试仍失败，
+保留最后一次失败 manifest，离线重写器会因最终 `completion_satisfied=False` 拒绝使用。
 
 对 18 个任务可把 `TASKS` 设为 `finetune/bridgevla/utils/rvt_utils.py` 中的完整任务列表。
 若 expert keypoint 数超过 `EPISODE_LENGTH`，离线重写器会拒绝不完整 manifest，不能静默
@@ -1034,7 +1041,7 @@ TensorBoard 的 train_visualization/mvt1 和 train_visualization/mvt2 下。
 在服务器的 `bridgevla` 环境、仓库根目录运行：
 
     python -m unittest tests.test_oracle_prior tests.test_o2_joint_action_loss tests.test_rlbench_training_utils tests.test_rlbench_training_visualization -v
-    python -m pytest tests/test_o2_semantic_roles.py tests/test_replay_extra_fields.py -q
+    python -m pytest tests/test_o2_semantic_roles.py tests/test_replay_extra_fields.py tests/test_rollout_generator_ground_truth.py -q
 
 `tests.test_oracle_prior` 检查固定 `[T,R]` 选择、缺失角色回退、双通道实例点投影、adapter/fusion
 零初始化 identity、无效 prior 回退、反向梯度和训练 GT/pred 张量拆分；
@@ -1047,6 +1054,8 @@ PNG 与 TensorBoard 拼图输出。
 多 handle 实体合并、顺序 phase 的完成/释放门控、`no_reference` 与 strict selector 错误。
 `tests/test_replay_extra_fields.py` 检查 semantic audit metadata 保留在磁盘 replay 中但不会
 进入训练 batch，同时缺失训练必需字段仍会立即报错。
+`tests/test_rollout_generator_ground_truth.py` 检查 expert action 用尽后的失败统计、空 action
+报错和同一 demo 的整 episode 重试标记。
 
 确认专用 YAML 能被项目 YACS 配置系统加载：
 
