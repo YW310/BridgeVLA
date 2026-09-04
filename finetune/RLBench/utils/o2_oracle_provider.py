@@ -71,6 +71,22 @@ def _object_handle(obj) -> int:
     return int(obj.get_handle())
 
 
+def _unique_scene_objects(objects: Iterable[object]) -> List[object]:
+    """Deduplicate PyRep objects without requiring them to be hashable."""
+    unique = []
+    seen = set()
+    for obj in objects:
+        try:
+            key = ("handle", _object_handle(obj))
+        except Exception:
+            key = ("identity", id(obj))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(obj)
+    return unique
+
+
 def _object_position(obj) -> np.ndarray:
     value = np.asarray(obj.get_position(), dtype=np.float32).reshape(-1)
     if value.size < 3 or not np.isfinite(value[:3]).all():
@@ -136,19 +152,19 @@ class SceneObjectIndex:
         canonical_selector = _canonical_name(selector)
         if not any(ch in selector for ch in "*?["):
             values = self.by_name.get(selector, self.by_name.get(canonical_selector, []))
-            return list(dict.fromkeys(values))
+            return _unique_scene_objects(values)
         matched = []
         for obj in self.objects:
             name = _canonical_name(_object_name(obj))
             if fnmatch.fnmatchcase(name, canonical_selector):
                 matched.append(obj)
-        return list(dict.fromkeys(matched))
+        return _unique_scene_objects(matched)
 
     def require_any(self, selectors: Sequence[str], label: str) -> List[object]:
         matched = []
         for selector in selectors:
             matched.extend(self.find(selector))
-        matched = list(dict.fromkeys(matched))
+        matched = _unique_scene_objects(matched)
         if not matched:
             raise SemanticRoleMappingError(
                 f"Could not resolve {label}; selectors={list(selectors)!r}"
@@ -345,7 +361,7 @@ class RLBenchGTOracleProvider:
         matched = []
         for selector in selectors:
             matched.extend(self._index.find(selector))
-        return list(dict.fromkeys(matched))
+        return _unique_scene_objects(matched)
 
     @staticmethod
     def _expect_count(objects: Sequence[object], expected: int, label: str):

@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT / "finetune" / "RLBench"))
 
 from utils.o2_oracle_provider import (  # noqa: E402
     RLBenchGTOracleProvider,
+    SceneObjectIndex,
     SemanticRoleMappingError,
     decode_handle_mask,
 )
@@ -44,6 +45,16 @@ class FakeObject:
             output.append(child)
             output.extend(child.get_objects_in_tree(exclude_base=True))
         return output
+
+
+class UnhashableFakeObject(FakeObject):
+    __hash__ = None
+
+    def __eq__(self, other):
+        return (
+            isinstance(other, UnhashableFakeObject)
+            and self.handle == other.handle
+        )
 
 
 class FakeCondition:
@@ -131,6 +142,16 @@ def test_safe_rlbench_mask_decoder_supports_numpy2_and_read_only_input(image):
         np.asarray([[1 + 256 * 2 + 65536 * 3, 255]], dtype=np.int64),
     )
     np.testing.assert_array_equal(image, original)
+
+
+def test_scene_object_index_deduplicates_unhashable_pyrep_shapes_by_handle():
+    shape = UnhashableFakeObject("stack_blocks_target_plane", 17)
+    index = SceneObjectIndex(FakeTask([shape]))
+    assert index.find("stack_blocks_target_plane") == [shape]
+    assert index.require_any(
+        ("stack_blocks_target_plane", "stack_blocks_target_plane"),
+        "stack target plane",
+    ) == [shape]
 
 
 def test_close_jar_merges_lid_children_and_selects_variation_jar(tmp_path):
