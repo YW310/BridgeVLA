@@ -1013,6 +1013,85 @@ class RLBenchGTOracleProvider:
         self._step_index += 1
         return result
 
+    def _validate_stored_initial(self, obs, live_initial):
+        """Diagnose mask evidence separately from usable point-cloud evidence.
+
+        This is a consistency guard, not proof of cross-session handle identity.
+        Do not replace entries until this guard succeeds.
+        """
+        for role_name in ("target", "reference"):
+            role = live_initial.get(role_name)
+            if role is None or role["kind"] != "object":
+                continue
+            cameras = {}
+            total_pixels = total_points = 0
+            for camera in self.cameras:
+                mask_value = getattr(obs, f"{camera}_mask", None)
+                cloud_value = getattr(obs, f"{camera}_point_cloud", None)
+                detail = {
+                    "mask_loaded": mask_value is not None,
+                    "point_cloud_loaded": cloud_value is not None,
+                    "matching_pixels": 0,
+                    "finite_points": 0,
+                }
+                cameras[camera] = detail
+                if mask_value is None:
+                    continue
+                mask = decode_handle_mask(mask_value)
+                handles, counts = np.unique(mask, return_counts=True)
+                # Bounded diagnostic: largest instances plus exact role hits.
+                order = np.argsort(counts)[::-1][:16]
+                detail["mask_shape"] = list(mask.shape)
+                detail["largest_mask_handles"] = handles[order].astype(int).tolist()
+                selected = np.isin(mask, role["handles"])
+                pixels = int(selected.sum())
+                detail["matching_pixels"] = pixels
+                total_pixels += pixels
+                if cloud_value is None:
+                    continue
+                cloud = np.asarray(cloud_value)
+                if cloud.ndim == 3 and cloud.shape[0] == 3 and cloud.shape[-1] != 3:
+                    cloud = np.moveaxis(cloud, 0, -1)
+                detail["point_cloud_shape"] = list(cloud.shape)
+                if cloud.ndim != 3 or cloud.shape[:2] != mask.shape or cloud.shape[-1] != 3:
+                    raise SemanticRoleMappingError(
+                        f"Stored frame-0 mask/point-cloud shape mismatch for "
+                        f"{self._task_name} episode={self._episode_idx} {camera}: {detail}"
+                    )
+                points = int(np.isfinite(cloud[selected]).all(axis=1).sum())
+                detail["finite_points"] = points
+                total_points += points
+            live_visible = bool(live_initial.get(f"{role_name}_valid", False))
+            stored_visible = total_points > 0
+            if total_pixels and not total_points:
+                reason = "matching_mask_pixels_but_no_finite_point_cloud"
+            elif live_visible and not total_pixels:
+                reason = (
+                    "stored_masks_missing" if not any(
+                        detail["mask_loaded"] for detail in cameras.values()
+                    ) else "live_role_handles_absent_from_stored_masks"
+                )
+            elif live_visible != stored_visible:
+                reason = "live_stored_visibility_disagreement"
+            else:
+                continue
+            report = {
+                "reason": reason, "task": self._task_name,
+                "episode": self._episode_idx, "variation": self._variation,
+                "role": role_name, "semantic_name": role["semantic_name"],
+                "live_handles": role["handles"], "live_visible": live_visible,
+                "stored_visible": stored_visible, "cameras": cameras,
+            }
+            self.stats["mapping_errors"] += 1
+            raise SemanticRoleMappingError(
+                "Stored-demo frame-0 validation failed: "
+                + json.dumps(report, sort_keys=True)
+                + ". Check EVAL_DATAFOLDER, loaded masks/point clouds and the "
+                "dataset's original name-to-handle mapping. reset_to_demo does "
+                "not establish cross-session handle identity. No automatic "
+                "handle remapping was performed."
+            )
+
     def build_demo_event_manifest(
         self, demo: Sequence[object], sample_frames: Sequence[int]
     ) -> Dict[str, object]:
@@ -1034,6 +1113,17 @@ class RLBenchGTOracleProvider:
                 f"{self._task_name} demo-event keypoints out of range: "
                 f"{invalid_expected}; demo length={len(demo)}"
             )
+        live_initial = self._entries[-1] if self._entries else None
+        if (
+            live_initial is None
+            or live_initial.get("sample_frame") != 0
+            or live_initial.get("phase_source") != "sim_replay"
+        ):
+            raise SemanticRoleMappingError(
+                f"{self._task_name} demo_events requires a live reset frame before "
+                "stored-demo manifest generation"
+            )
+        self._validate_stored_initial(demo[0], live_initial)
         strategy_spec = self._demo_phase_strategy()
         strategy = str(strategy_spec["strategy"])
         contact_distances: List[float] = []
@@ -1080,19 +1170,7 @@ class RLBenchGTOracleProvider:
                 f"demo length={len(demo)}"
             )
 
-        # reset_to_demo() emits one live initial entry. Keep it only long
-        # enough to verify that simulator handles address the same objects in
-        # the stored frame-0 masks, then replace it with deterministic entries.
-        live_initial = self._entries[-1] if self._entries else None
-        if (
-            live_initial is None
-            or live_initial.get("sample_frame") != 0
-            or live_initial.get("phase_source") != "sim_replay"
-        ):
-            raise SemanticRoleMappingError(
-                f"{self._task_name} demo_events requires a live reset frame before "
-                "stored-demo manifest generation"
-            )
+        # Replace the live entry only after the source and phase checks pass.
         self._entries = []
         self._step_index = 0
         self._phase_index = 0
@@ -1115,18 +1193,6 @@ class RLBenchGTOracleProvider:
             )
             previous_phase = phase_index
 
-        stored_initial = self._entries[0]
-        for role_name in ("target", "reference"):
-            live_visible = bool(live_initial.get(f"{role_name}_valid", False))
-            stored_visible = bool(
-                stored_initial.get(f"{role_name}_valid", False)
-            )
-            if live_visible != stored_visible:
-                raise SemanticRoleMappingError(
-                    f"Live/stored frame-0 handle mismatch for {self._task_name} "
-                    f"{role_name}: live_visible={live_visible}, "
-                    f"stored_visible={stored_visible}"
-                )
         self._source_alignment_validated = True
         self._demo_phase_metadata = {
             "phase_strategy": strategy,

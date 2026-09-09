@@ -77,6 +77,8 @@ entries，manifest 的 `generation_attempt` 从 1 开始记录最终采用的是
 TASKS="all" \
 REPLAY_GROUND_TRUTH=1 \
 MANIFEST_PHASE_SOURCE=demo_events \
+EVAL_DATAFOLDER=/home/yiwei/project/BridgeVLA/LPY/BridgeVLA_RLBench_TRAIN_DATA/train \
+SAVE_VIDEO=0 \
 ORACLE_PROVIDER=rlbench_gt \
 ORACLE_STRICT=1 \
 ORACLE_DEBUG=0 \
@@ -106,6 +108,23 @@ manifest 和每个 entry 都记录 `phase_source=demo_events`。默认
 才接受该 demo-events 标注。
 该模式日志中的 `Generated Coverage=100` 只表示原始 demo 通过事件校验并生成了完整
 manifest，不表示重新执行动作获得了 100% closed-loop success。
+
+生成训练 manifest 时必须显式指定对应的训练 raw 数据目录。前一个命令中的临时
+环境变量不会自动保留给下一个命令；省略 EVAL_DATAFOLDER 会采用脚本默认值或
+shell 已导出的值。
+
+若出现首帧 live/stored 不一致，检查现在会在 phase 生成前失败，并列出 T/R 的
+live handles、各相机保存 mask 中的匹配像素数、有效点数和主要 handle：
+
+- stored_masks_missing：保存 observation 没有加载 mask。
+- matching_mask_pixels_but_no_finite_point_cloud：mask 有对应实例，但缺点云或对应点均无效。
+- live_role_handles_absent_from_stored_masks：保存 mask 中没有当前 simulator 的角色 handle；
+  需检查数据目录、原始采集环境及名称到 handle 的映射。
+
+reset_to_demo 恢复场景初始条件，并不能据此保证跨 simulator 会话的 handle 编号相同。
+source_alignment_validated 仅表示现有首帧一致性检查通过，不是完整身份映射证明。
+若两套 handle 确实不同，需要原始语义名称到 handle 的映射或可验证的采集元数据；
+不能通过关闭 strict、统一偏移 ID 或选择附近实例来恢复严格 semantic-GT。
 
 对 18 个任务可把 `TASKS` 设为 `finetune/bridgevla/utils/rvt_utils.py` 中的完整任务列表。
 若 expert keypoint 数超过 `EPISODE_LENGTH`，离线重写器会拒绝不完整 manifest，不能静默

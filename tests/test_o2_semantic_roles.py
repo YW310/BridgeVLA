@@ -297,6 +297,8 @@ def test_place_cups_demo_events_require_one_release_per_phase():
     task._on_peg_conditions = [FakeCondition(), FakeCondition(), FakeCondition()]
     value = provider("place_cups", task)
     demo = [observation([[10, 20]], gripper_open=state) for state in (1.0, 0.0, 1.0)]
+    value.set_sample_frame(0)
+    value.enrich(demo[0], {})
 
     with pytest.raises(SemanticRoleMappingError, match="requires 2 completed"):
         value.build_demo_event_manifest(demo, [1, 2])
@@ -320,6 +322,38 @@ def test_single_phase_demo_events_support_non_gripper_task():
     ]
     assert not value._entries[1]["completion_satisfied"]
     assert value._entries[2]["completion_satisfied"]
+
+
+@pytest.mark.parametrize("failure,reason", [
+    ("handles", "live_role_handles_absent_from_stored_masks"),
+    ("mask", "stored_masks_missing"),
+    ("cloud", "matching_mask_pixels_but_no_finite_point_cloud"),
+    ("nan", "matching_mask_pixels_but_no_finite_point_cloud"),
+])
+def test_demo_initial_validation_distinguishes_source_failures(failure, reason):
+    lid = FakeObject("jar_lid0", 11)
+    jars = [FakeObject("jar0", 21), FakeObject("jar1", 22)]
+    task = FakeTask([lid, *jars])
+    task.lid, task.jars = lid, jars
+    value = provider("close_jar", task)
+    value.set_sample_frame(0)
+    value.enrich(observation([[11, 21]]), {})
+    initial = list(value._entries)
+    stored = observation([[11, 21]])
+    if failure == "handles":
+        stored.front_mask = np.array([[111, 121]])
+    elif failure == "mask":
+        stored.front_mask = None
+    elif failure == "cloud":
+        stored.front_point_cloud = None
+    else:
+        stored.front_point_cloud[:] = np.nan
+    with pytest.raises(SemanticRoleMappingError, match=reason) as error:
+        value.build_demo_event_manifest([stored, stored], [1])
+    assert '"live_handles": [11]' in str(error.value)
+    assert '"front"' in str(error.value)
+    assert value._entries == initial
+    assert not value._source_alignment_validated
 
 
 def test_stack_cups_demo_events_use_two_release_cycles():
