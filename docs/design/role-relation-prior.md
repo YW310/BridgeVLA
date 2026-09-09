@@ -1,5 +1,10 @@
 # BridgeVLA-ARE：以主动关系编辑统一 object、relation 与 phase
 
+[文档索引](../README.md) · [项目首页](../../README.md)
+
+相关背景：[Oracle prior 交接](../handoff/oracle-prior.md)；现有实验：[O2 训练与评估](../experiments/o2-training.md)。
+
+
 > 更新时间：2026-09-07（根据数学、监督与执行接口 review 修订）
 > 状态：顶会候选研究设计，尚未实现
 > 当前代码边界：仓库默认 `rvt2.yaml` 使用 coarse/refine 两阶段，每阶段渲染 `top/front/right` 三个正交视角，即 `3 x 2`；另已实现 GT Target/Reference point prior、两通道 relation prior、zero-init feature adapter、translation fusion，以及同一次 forward 中的 `trans_base` / `trans_raw` 输出。本文提出的 phase-gated object candidates、per-object view bank、pair-specific heatmaps、pair reliability cost、关系编辑头与事件切换均是下一阶段工作。

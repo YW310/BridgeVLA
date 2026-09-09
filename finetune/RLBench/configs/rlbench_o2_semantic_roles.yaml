@@ -7,18 +7,21 @@ schema_version: rlbench_o2_semantic_roles_v1
 tasks:
   close_jar:
     resolver: close_jar
+    demo_phase: {strategy: single_success}
     target: {kind: object, names: [jar_lid0]}
     reference: {kind: object, names_by_variation_mod_2: [jar0, jar1]}
     completion: lid_detected_and_released
 
   insert_onto_square_peg:
     resolver: insert_onto_square_peg
+    demo_phase: {strategy: single_success}
     target: {kind: object, names: [square_ring]}
     reference: {kind: object, candidates: [pillar0, pillar1, pillar2]}
     completion: all_ring_detectors
 
   light_bulb_in:
     resolver: light_bulb_in
+    demo_phase: {strategy: single_success}
     target:
       kind: object
       names_by_variation_mod_2:
@@ -29,12 +32,14 @@ tasks:
 
   meat_off_grill:
     resolver: meat_off_grill
+    demo_phase: {strategy: single_success}
     target: {kind: object, names_by_variation: [[chicken], [steak]]}
     reference: {kind: site, names: [success], semantic_name: off_grill_site}
     completion: meat_detected_and_released
 
   open_drawer:
     resolver: open_drawer
+    demo_phase: {strategy: single_success}
     target:
       kind: object
       names_by_variation:
@@ -46,6 +51,7 @@ tasks:
 
   place_cups:
     resolver: place_cups
+    demo_phase: {strategy: release_cycles}
     target: {kind: object, sequence: [mug0, mug1, mug2]}
     reference:
       kind: object
@@ -54,6 +60,7 @@ tasks:
 
   place_shape_in_shape_sorter:
     resolver: place_shape_in_shape_sorter
+    demo_phase: {strategy: single_success}
     target:
       kind: object
       names_by_variation: [[cube], [cylinder], [triangular_prism], [star], [moon]]
@@ -65,6 +72,7 @@ tasks:
 
   place_wine_at_rack_location:
     resolver: place_wine_at_rack_location
+    demo_phase: {strategy: single_success}
     target: {kind: object, names: [wine_bottle]}
     reference:
       kind: site
@@ -74,6 +82,9 @@ tasks:
 
   push_buttons:
     resolver: push_buttons
+    # Legacy saved observations do not include task joint state. Semantic order
+    # is fixed by target.sequence; GT-mask distance only locates each contact.
+    demo_phase: {strategy: ordered_target_contact, max_distance: 0.20}
     target:
       kind: object
       sequence: [target_button_topPlate0, target_button_topPlate1, target_button_topPlate2]
@@ -82,6 +93,7 @@ tasks:
 
   put_groceries_in_cupboard:
     resolver: put_groceries_in_cupboard
+    demo_phase: {strategy: single_success}
     target:
       kind: object
       names_by_variation:
@@ -99,6 +111,7 @@ tasks:
 
   put_item_in_drawer:
     resolver: put_item_in_drawer
+    demo_phase: {strategy: single_success}
     target: {kind: object, names: [item]}
     reference:
       kind: object
@@ -110,6 +123,7 @@ tasks:
 
   put_money_in_safe:
     resolver: put_money_in_safe
+    demo_phase: {strategy: single_success}
     target: {kind: object, names: [dollar_stack]}
     reference:
       kind: site
@@ -119,18 +133,21 @@ tasks:
 
   reach_and_drag:
     resolver: reach_and_drag
+    demo_phase: {strategy: single_success}
     target: {kind: object, names: [stick]}
     reference: {kind: object, names: [target0]}
     completion: cube_on_target
 
   slide_block_to_color_target:
     resolver: slide_block_to_color_target
+    demo_phase: {strategy: single_success}
     target: {kind: object, names: [block]}
     reference: {kind: site, names: [success], semantic_name: color_target}
     completion: block_on_target
 
   stack_blocks:
     resolver: stack_blocks
+    demo_phase: {strategy: release_cycles}
     target:
       kind: object
       sequence: [stack_blocks_target0, stack_blocks_target1, stack_blocks_target2, stack_blocks_target3]
@@ -140,12 +157,14 @@ tasks:
 
   stack_cups:
     resolver: stack_cups
+    demo_phase: {strategy: release_cycles}
     target: {kind: object, sequence: [cup1, cup3]}
     reference: {kind: object, sequence: [cup2, cup1]}
     completion: current_cup_detected_and_released
 
   sweep_to_dustpan_of_size:
     resolver: sweep_to_dustpan_of_size
+    demo_phase: {strategy: single_success}
     target: {kind: object, names: [broom]}
     reference:
       kind: site
@@ -155,6 +174,7 @@ tasks:
 
   turn_tap:
     resolver: turn_tap
+    demo_phase: {strategy: single_success}
     target:
       kind: object
       names_by_variation:

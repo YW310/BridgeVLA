@@ -15,7 +15,7 @@ A 3D VLA framework that aligns the input and output within a shared 2D space in 
 ## 📋 Model Overview
 
 As illustrated in the following figure, BridgeVLA employs a dual-phase training recipe. During pre-training, it is trained to predict 2D heatmaps on object detection datasets. During fine-tuning, point clouds are projected into multiple 2D images as inputs to the VLM backbone. The model is trained to predict 2D heatmaps for estimating the translational action and other action components. **This design aligns the input and output within a shared 2D space in both pre-training and fine-tuning.**
-![](./assets/network.png)
+![](assets/network.png)
 
 ## 快速开始
 
@@ -34,7 +34,7 @@ conda activate bridgevla
 (cd finetune/RLBench && bash install_rlbench.sh)
 ```
 
-其他 benchmark 和预训练环境见 [安装说明](docs/installation.md)。
+其他 benchmark 和预训练环境见 [安装说明](docs/guides/installation.md)。
 
 <a id=training></a>
 
@@ -50,29 +50,29 @@ bash train.sh --exp_cfg_path configs/rlbench_config.yaml \
     --pretrain_path PATH_TO_PRETRAINED_MODEL
 ```
 
-数据下载、8×40GB 配置、断点恢复和日志见 [训练说明](docs/training.md)。
+数据下载、8×40GB 配置、断点恢复和日志见 [训练说明](docs/guides/training.md)。
 
 <a id=evaluation></a>
 
 ### 评估
 
 在 `finetune/RLBench` 下修改 `eval.sh` 中的任务和 checkpoint 路径后执行 `bash eval.sh`。
-其他 benchmark 见 [评估说明](docs/evaluation.md)；O2 的 baseline/raw/GT 对照见 [O2 实验说明](docs/o2-training.md#o2-code-path)。
+其他 benchmark 见 [评估说明](docs/guides/evaluation.md)；O2 的 baseline/raw/GT 对照见 [O2 实验说明](docs/experiments/o2-training.md#o2-code-path)。
 
 ## 文档导航
 
 | 需求 | 文档 |
 | --- | --- |
-| 环境与依赖 | [安装](docs/installation.md) |
-| 预训练、各 benchmark 微调、8×40GB 和日志 | [训练](docs/training.md) |
-| Raw 数据转 replay | [Replay 生成](docs/replay.md) |
-| Oracle 实例字段、参数和排错 | [Oracle replay](docs/oracle-replay.md) |
-| 严格 simulator-GT 角色标注 | [Semantic-GT](docs/semantic-gt.md) |
-| O2 Adapter/Fusion、消融、loss、可视化与测试 | [O2 实验](docs/o2-training.md) |
-| 各 benchmark 评估命令 | [评估](docs/evaluation.md) |
-| 论文结果、发布记录 | [结果与历史](docs/results.md) |
-| Phase / relation、物体视角、候选 cost 方案 | [研究设计](BRIDGEVLA_ROLE_RELATION_PRIOR_DESIGN_CN.md) |
-| Oracle prior 实现交接 | [交接说明](BRIDGEVLA_ORACLE_PRIOR_CODING_HANDOFF_CN.md) |
+| 环境与依赖 | [安装](docs/guides/installation.md) |
+| 预训练、各 benchmark 微调、8×40GB 和日志 | [训练](docs/guides/training.md) |
+| Raw 数据转 replay | [Replay 生成](docs/guides/replay.md) |
+| Oracle 实例字段、参数和排错 | [Oracle replay](docs/guides/oracle-replay.md) |
+| 严格 simulator-GT 角色标注 | [Semantic-GT](docs/guides/semantic-gt.md) |
+| O2 Adapter/Fusion、消融、loss、可视化与测试 | [O2 实验](docs/experiments/o2-training.md) |
+| 各 benchmark 评估命令 | [评估](docs/guides/evaluation.md) |
+| 论文结果、发布记录 | [结果与历史](docs/experiments/results.md) |
+| Phase / relation、物体视角、候选 cost 方案 | [研究设计](docs/design/role-relation-prior.md) |
+| Oracle prior 实现交接 | [交接说明](docs/handoff/oracle-prior.md) |
 
 完整阅读路径见 [文档索引](docs/README.md)。O2 是使用 GT 实例的 Oracle 上界实验；研究设计文档中的扩展方案不等同于已实现功能。
 
@@ -80,11 +80,11 @@ bash train.sh --exp_cfg_path configs/rlbench_config.yaml \
 
 ## 实验结果
 
-原始 RLBench、COLOSSEUM、GemBench 结果表已移至 [实验结果](docs/results.md#experimental-results)，数值保持不变。
+原始 RLBench、COLOSSEUM、GemBench 结果表已移至 [实验结果](docs/experiments/results.md#experimental-results)，数值保持不变。
 
 <a id=todo></a>
 
-发布状态与 News 见 [结果与历史](docs/results.md#todo)。
+发布状态与 News 见 [结果与历史](docs/experiments/results.md#todo)。
 
 
 <details>
@@ -92,67 +92,67 @@ bash train.sh --exp_cfg_path configs/rlbench_config.yaml \
 
 <a id=o2-training></a>
 
-[o2-training](docs/o2-training.md#o2-training)
+[o2-training](docs/experiments/o2-training.md#o2-training)
 
 <a id=o2-adapter-fusion></a>
 
-[o2-adapter-fusion](docs/o2-training.md#o2-adapter-fusion)
+[o2-adapter-fusion](docs/experiments/o2-training.md#o2-adapter-fusion)
 
 <a id=o2-fusion-only></a>
 
-[o2-fusion-only](docs/o2-training.md#o2-fusion-only)
+[o2-fusion-only](docs/experiments/o2-training.md#o2-fusion-only)
 
 <a id=o2-full-action></a>
 
-[o2-full-action](docs/o2-training.md#o2-full-action)
+[o2-full-action](docs/experiments/o2-training.md#o2-full-action)
 
 <a id=o2-relation-switch></a>
 
-[o2-relation-switch](docs/o2-training.md#o2-relation-switch)
+[o2-relation-switch](docs/experiments/o2-training.md#o2-relation-switch)
 
 <a id=o2-loss-comparison></a>
 
-[o2-loss-comparison](docs/o2-training.md#o2-loss-comparison)
+[o2-loss-comparison](docs/experiments/o2-training.md#o2-loss-comparison)
 
 <a id=o2-code-path></a>
 
-[o2-code-path](docs/o2-training.md#o2-code-path)
+[o2-code-path](docs/experiments/o2-training.md#o2-code-path)
 
 <a id=o2-training-visualization></a>
 
-[o2-training-visualization](docs/o2-training.md#o2-training-visualization)
+[o2-training-visualization](docs/experiments/o2-training.md#o2-training-visualization)
 
 <a id=o2-tests></a>
 
-[o2-tests](docs/o2-training.md#o2-tests)
+[o2-tests](docs/experiments/o2-training.md#o2-tests)
 
 <a id=oracle-replay></a>
 
-[oracle-replay](docs/oracle-replay.md#oracle-replay)
+[oracle-replay](docs/guides/oracle-replay.md#oracle-replay)
 
 <a id=oracle-parameters></a>
 
-[oracle-parameters](docs/oracle-replay.md#oracle-parameters)
+[oracle-parameters](docs/guides/oracle-replay.md#oracle-parameters)
 
 <a id=oracle-checks></a>
 
-[oracle-checks](docs/oracle-replay.md#oracle-checks)
+[oracle-checks](docs/guides/oracle-replay.md#oracle-checks)
 
 <a id=rlbench-raw-replay></a>
 
-[rlbench-raw-replay](docs/replay.md#rlbench-raw-replay)
+[rlbench-raw-replay](docs/guides/replay.md#rlbench-raw-replay)
 
 <a id=semantic-gt-roles></a>
 
-[semantic-gt-roles](docs/semantic-gt.md#semantic-gt-roles)
+[semantic-gt-roles](docs/guides/semantic-gt.md#semantic-gt-roles)
 
 <a id=rlbench-8x40></a>
 
-[rlbench-8x40](docs/training.md#rlbench-8x40)
+[rlbench-8x40](docs/guides/training.md#rlbench-8x40)
 
 <a id=rlbench-training-logs></a>
 
-[rlbench-training-logs](docs/training.md#rlbench-training-logs)
+[rlbench-training-logs](docs/guides/training.md#rlbench-training-logs)
 
 </details>
 

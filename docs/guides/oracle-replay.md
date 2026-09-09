@@ -1,4 +1,4 @@
-[文档索引](README.md) · [项目首页](../README.md)
+[文档索引](../README.md) · [项目首页](../../README.md)
 
 > 命令不在 docs/ 下执行。带 cd 的独立示例从仓库根目录开始；其后命令沿用该目录。替换所有示例路径后再运行。
 
@@ -7,7 +7,7 @@
 # RLBench Oracle 3D 物体 Replay 数据准备
 
 > 本节导航：[参数表](#oracle-parameters) · [关键行为与检查](#oracle-checks) ·
-> [O2 Target/Reference 训练](o2-training.md#o2-training)
+> [O2 Target/Reference 训练](../experiments/o2-training.md#o2-training)
 
 `tools/augment_replay_with_oracle_objects.py` 可直接为已有 BridgeVLA replay 追加
 RLBench GT instance 点云，无需重新采集数据或重建原始 replay。脚本用每个

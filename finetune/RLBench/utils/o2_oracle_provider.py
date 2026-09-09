@@ -265,6 +265,7 @@ class RLBenchGTOracleProvider:
         self._expected_sample_frames: Tuple[int, ...] = ()
         self._generation_attempt = 1
         self._source_alignment_validated = False
+        self._demo_phase_metadata: Dict[str, object] = {}
         self._robot_handles = set()
         self._entries: List[Dict[str, object]] = []
         self._manifests: Dict[Tuple[str, int], Dict[str, object]] = {}
@@ -301,6 +302,7 @@ class RLBenchGTOracleProvider:
         self._episode_idx = int(episode_idx)
         self._generation_attempt = int(generation_attempt)
         self._source_alignment_validated = False
+        self._demo_phase_metadata = {}
         self._phase_index = 0
         self._step_index = 0
         self._sample_frame = None
@@ -730,6 +732,138 @@ class RLBenchGTOracleProvider:
             return bool(cups and sensors and _sensor_detects(sensors[0], cups[0]) and released)
         return _task_success(task)
 
+    def _demo_phase_strategy(self) -> Mapping[str, object]:
+        """Return the explicit stored-demo phase rule for the current task."""
+        value = self._task_spec().get("demo_phase")
+        if not isinstance(value, Mapping) or not value.get("strategy"):
+            raise SemanticRoleMappingError(
+                f"Task {self._task_name!r} has no demo_phase strategy in "
+                f"{self.role_config_path}"
+            )
+        return value
+
+    @staticmethod
+    def _release_frames(demo: Sequence[object]) -> List[int]:
+        return [
+            frame
+            for frame in range(1, len(demo))
+            if float(demo[frame - 1].gripper_open) < 0.5
+            and float(demo[frame].gripper_open) >= 0.5
+        ]
+
+    def _ordered_target_contact_frames(
+        self,
+        demo: Sequence[object],
+        sample_frames: Sequence[int],
+        max_distance: float,
+    ) -> Tuple[List[int], List[float]]:
+        """Locate ordered push-button contacts at stored-demo keypoints.
+
+        The semantic target order still comes exclusively from the task source
+        and role YAML. Distance is used only to locate when each already-known
+        target was contacted because the legacy observations do not contain
+        task joint state.
+        """
+        candidates = sorted(set(int(frame) for frame in sample_frames))
+        if len(candidates) < self._phase_count():
+            raise SemanticRoleMappingError(
+                f"{self._task_name} needs at least {self._phase_count()} keypoints "
+                f"to locate ordered contacts, got {candidates}"
+            )
+
+        original_phase = self._phase_index
+        phase_handles = []
+        try:
+            for phase in range(self._phase_count()):
+                self._phase_index = phase
+                phase_handles.append(
+                    np.asarray(self._build_assignment().target.handles, dtype=np.int64)
+                )
+        finally:
+            self._phase_index = original_phase
+
+        costs = np.full(
+            (self._phase_count(), len(candidates)), np.inf, dtype=np.float64
+        )
+        for candidate_index, frame in enumerate(candidates):
+            obs = demo[frame]
+            gripper_pose = np.asarray(
+                getattr(obs, "gripper_pose", ()), dtype=np.float64
+            ).reshape(-1)
+            if gripper_pose.size < 3 or not np.isfinite(gripper_pose[:3]).all():
+                continue
+            for camera in self.cameras:
+                mask_value = getattr(obs, f"{camera}_mask", None)
+                cloud_value = getattr(obs, f"{camera}_point_cloud", None)
+                if mask_value is None or cloud_value is None:
+                    continue
+                mask = decode_handle_mask(mask_value)
+                cloud = np.asarray(cloud_value)
+                if cloud.ndim == 3 and cloud.shape[0] == 3 and cloud.shape[-1] != 3:
+                    cloud = np.moveaxis(cloud, 0, -1)
+                if cloud.shape[:2] != mask.shape or cloud.shape[-1] != 3:
+                    raise SemanticRoleMappingError(
+                        f"{self._task_name} frame {frame} {camera} mask/point-cloud "
+                        f"mismatch: {mask.shape} vs {cloud.shape}"
+                    )
+                for phase, handles in enumerate(phase_handles):
+                    points = cloud[np.isin(mask, handles)]
+                    points = points[np.isfinite(points).all(axis=1)]
+                    if points.size:
+                        distance = np.linalg.norm(
+                            points.astype(np.float64, copy=False) - gripper_pose[:3],
+                            axis=1,
+                        ).min()
+                        costs[phase, candidate_index] = min(
+                            costs[phase, candidate_index], float(distance)
+                        )
+
+        # Dynamic programming finds the minimum-cost strictly ordered contact
+        # sequence instead of independently choosing (possibly crossed) frames.
+        phase_count, candidate_count = costs.shape
+        cumulative = np.full_like(costs, np.inf)
+        previous_index = np.full(costs.shape, -1, dtype=np.int64)
+        cumulative[0] = costs[0]
+        for phase in range(1, phase_count):
+            best_cost = np.inf
+            best_index = -1
+            for candidate_index in range(candidate_count):
+                prior = candidate_index - 1
+                if prior >= 0 and cumulative[phase - 1, prior] < best_cost:
+                    best_cost = cumulative[phase - 1, prior]
+                    best_index = prior
+                if best_index >= 0 and np.isfinite(costs[phase, candidate_index]):
+                    cumulative[phase, candidate_index] = (
+                        best_cost + costs[phase, candidate_index]
+                    )
+                    previous_index[phase, candidate_index] = best_index
+
+        final_index = int(np.argmin(cumulative[-1]))
+        if not np.isfinite(cumulative[-1, final_index]):
+            raise SemanticRoleMappingError(
+                f"Could not locate {phase_count} ordered {self._task_name} "
+                "contacts from visible GT target masks at the discovered keypoints"
+            )
+        chosen_indices = [final_index]
+        for phase in range(phase_count - 1, 0, -1):
+            chosen_indices.append(int(previous_index[phase, chosen_indices[-1]]))
+        chosen_indices.reverse()
+        frames = [candidates[index] for index in chosen_indices]
+        distances = [
+            float(costs[phase, index]) for phase, index in enumerate(chosen_indices)
+        ]
+        too_far = [
+            (phase, frame, distance)
+            for phase, (frame, distance) in enumerate(zip(frames, distances))
+            if distance > max_distance
+        ]
+        if too_far:
+            raise SemanticRoleMappingError(
+                f"{self._task_name} ordered contact exceeds max_distance="
+                f"{max_distance:.3f} m: {too_far}"
+            )
+        return frames, distances
+
     def _sample_entity_points(
         self,
         entity: Optional[RoleEntity],
@@ -882,41 +1016,67 @@ class RLBenchGTOracleProvider:
     def build_demo_event_manifest(
         self, demo: Sequence[object], sample_frames: Sequence[int]
     ) -> Dict[str, object]:
-        """Build a place_cups manifest from its successful stored demo.
-
-        A close-to-open gripper transition completes one scripted cup placement.
-        This avoids re-planning the contact-sensitive trajectory in CoppeliaSim.
-        """
-        if self._task_name != "place_cups":
-            raise NotImplementedError(
-                "manifest phase source 'demo_events' currently supports only "
-                f"place_cups, not {self._task_name!r}."
-            )
+        """Build a strict phase manifest directly from a successful stored demo."""
         if not demo:
-            raise SemanticRoleMappingError("place_cups stored demo is empty")
+            raise SemanticRoleMappingError(f"{self._task_name} stored demo is empty")
 
         phase_count = self._phase_count()
-        release_frames = [
-            frame
-            for frame in range(1, len(demo))
-            if float(demo[frame - 1].gripper_open) < 0.5
-            and float(demo[frame].gripper_open) >= 0.5
-        ]
-        if len(release_frames) != phase_count:
+        expected = tuple(int(frame) for frame in sample_frames)
+        if not expected:
             raise SemanticRoleMappingError(
-                f"place_cups variation {self._variation} requires "
-                f"{phase_count} completed release cycles, but the stored demo "
-                f"contains {len(release_frames)} at frames {release_frames}."
+                f"{self._task_name} keypoint discovery returned no frames"
+            )
+        invalid_expected = [
+            frame for frame in expected if frame < 0 or frame >= len(demo)
+        ]
+        if invalid_expected:
+            raise SemanticRoleMappingError(
+                f"{self._task_name} demo-event keypoints out of range: "
+                f"{invalid_expected}; demo length={len(demo)}"
+            )
+        strategy_spec = self._demo_phase_strategy()
+        strategy = str(strategy_spec["strategy"])
+        contact_distances: List[float] = []
+        if strategy == "single_success":
+            if phase_count != 1:
+                raise SemanticRoleMappingError(
+                    f"{self._task_name} declares single_success but has "
+                    f"phase_count={phase_count}"
+                )
+            boundary_frames = [len(demo) - 1]
+            boundary_source = "successful_demo_final_frame"
+        elif strategy == "release_cycles":
+            boundary_frames = self._release_frames(demo)
+            if len(boundary_frames) != phase_count:
+                raise SemanticRoleMappingError(
+                    f"{self._task_name} variation {self._variation} requires "
+                    f"{phase_count} completed release cycles, but the stored demo "
+                    f"contains {len(boundary_frames)} at frames {boundary_frames}."
+                )
+            boundary_source = "gripper_close_to_open"
+        elif strategy == "ordered_target_contact":
+            max_distance = float(strategy_spec.get("max_distance", 0.20))
+            if max_distance <= 0:
+                raise SemanticRoleMappingError(
+                    f"{self._task_name} demo_phase max_distance must be positive"
+                )
+            boundary_frames, contact_distances = self._ordered_target_contact_frames(
+                demo, expected, max_distance
+            )
+            boundary_source = "ordered_gt_target_contact_proxy"
+        else:
+            raise SemanticRoleMappingError(
+                f"Unsupported demo_phase strategy {strategy!r} for "
+                f"{self._task_name}"
             )
 
-        expected = tuple(int(frame) for frame in sample_frames)
-        # Include the exact release boundary even if heuristic keypoint
-        # discovery removed it because it was adjacent to the final frame.
-        selected_frames = sorted(set((0, *expected, *release_frames)))
+        # Include exact phase boundaries even when keypoint discovery removed
+        # one because it was adjacent to the final frame.
+        selected_frames = sorted(set((0, *expected, *boundary_frames)))
         invalid = [frame for frame in selected_frames if frame < 0 or frame >= len(demo)]
         if invalid:
             raise SemanticRoleMappingError(
-                f"place_cups demo-event frames out of range: {invalid}; "
+                f"{self._task_name} demo-event frames out of range: {invalid}; "
                 f"demo length={len(demo)}"
             )
 
@@ -930,7 +1090,7 @@ class RLBenchGTOracleProvider:
             or live_initial.get("phase_source") != "sim_replay"
         ):
             raise SemanticRoleMappingError(
-                "place_cups demo_events requires a live reset frame before "
+                f"{self._task_name} demo_events requires a live reset frame before "
                 "stored-demo manifest generation"
             )
         self._entries = []
@@ -939,7 +1099,7 @@ class RLBenchGTOracleProvider:
         self.set_expected_sample_frames(expected)
         previous_phase = 0
         for frame in selected_frames:
-            completed = sum(release_frame <= frame for release_frame in release_frames)
+            completed = sum(boundary <= frame for boundary in boundary_frames)
             phase_index = min(completed, phase_count - 1)
             phase_advanced = phase_index > previous_phase
             completion_satisfied = phase_advanced or completed >= phase_count
@@ -963,16 +1123,24 @@ class RLBenchGTOracleProvider:
             )
             if live_visible != stored_visible:
                 raise SemanticRoleMappingError(
-                    "Live/stored frame-0 handle mismatch for place_cups "
+                    f"Live/stored frame-0 handle mismatch for {self._task_name} "
                     f"{role_name}: live_visible={live_visible}, "
                     f"stored_visible={stored_visible}"
                 )
         self._source_alignment_validated = True
-
+        self._demo_phase_metadata = {
+            "phase_strategy": strategy,
+            "phase_boundary_source": boundary_source,
+            "phase_boundary_frames": list(boundary_frames),
+            "release_frames": (
+                list(boundary_frames) if strategy == "release_cycles" else []
+            ),
+            "contact_distances": list(contact_distances),
+            "phase_count": phase_count,
+        }
         return {
             "phase_source": "demo_events",
-            "release_frames": release_frames,
-            "phase_count": phase_count,
+            **self._demo_phase_metadata,
             "sample_frames": selected_frames,
         }
 
@@ -1135,6 +1303,7 @@ class RLBenchGTOracleProvider:
                 self._entries[-1].get("phase_source", "sim_replay")
                 if self._entries else "sim_replay"
             ),
+            **self._demo_phase_metadata,
             "expected_sample_frames": list(self._expected_sample_frames),
             "entries": list(self._entries),
         }

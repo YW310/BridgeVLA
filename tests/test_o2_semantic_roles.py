@@ -76,15 +76,20 @@ class FakeTask:
         return False, False
 
 
-def observation(handles, gripper_open=0.0):
+def observation(handles, gripper_open=0.0, gripper_pose=None):
     mask = np.asarray(handles, dtype=np.int64)
     rows, cols = np.indices(mask.shape)
     cloud = np.stack((cols, rows, np.ones_like(rows)), axis=-1).astype(np.float32)
+    if gripper_pose is None:
+        gripper_pose = np.asarray(
+            [0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], dtype=np.float32
+        )
     return SimpleNamespace(
         front_mask=mask,
         front_point_cloud=cloud,
         front_rgb=np.zeros((*mask.shape, 3), dtype=np.uint8),
         gripper_open=gripper_open,
+        gripper_pose=np.asarray(gripper_pose, dtype=np.float32),
     )
 
 
@@ -114,6 +119,17 @@ def test_role_config_covers_exact_bridgevla_18_tasks():
         "slide_block_to_color_target", "stack_blocks", "stack_cups",
         "sweep_to_dustpan_of_size", "turn_tap",
     }
+    strategies = {
+        task: spec["demo_phase"]["strategy"]
+        for task, spec in config["tasks"].items()
+    }
+    assert set(strategies) == set(config["tasks"])
+    assert {
+        task for task, strategy in strategies.items()
+        if strategy == "release_cycles"
+    } == {"place_cups", "stack_blocks", "stack_cups"}
+    assert strategies["push_buttons"] == "ordered_target_contact"
+    assert sum(strategy == "single_success" for strategy in strategies.values()) == 14
 
 
 def test_decode_rgb_handle_mask_does_not_mutate_read_only_input():
@@ -179,9 +195,10 @@ def test_close_jar_merges_lid_children_and_selects_variation_jar(tmp_path):
 def test_retry_discards_failed_manifest_attempt_before_restarting(tmp_path):
     lid = FakeObject("jar_lid0", 11)
     jar0 = FakeObject("jar0", 21)
-    task = FakeTask([lid, jar0])
+    jar1 = FakeObject("jar1", 22)
+    task = FakeTask([lid, jar0, jar1])
     task.lid = lid
-    task.jars = [jar0]
+    task.jars = [jar0, jar1]
     value = provider("close_jar", task, tmp_path)
     value.set_expected_sample_frames([10])
     value.set_sample_frame(10)
@@ -265,6 +282,9 @@ def test_place_cups_demo_events_build_phase_manifest_without_sim_replay(tmp_path
     )
     assert manifest["phase_source"] == "demo_events"
     assert manifest["source_alignment_validated"] is True
+    assert manifest["phase_strategy"] == "release_cycles"
+    assert manifest["phase_boundary_source"] == "gripper_close_to_open"
+    assert manifest["phase_boundary_frames"] == [3, 5]
 
 
 def test_place_cups_demo_events_require_one_release_per_phase():
@@ -282,15 +302,79 @@ def test_place_cups_demo_events_require_one_release_per_phase():
         value.build_demo_event_manifest(demo, [1, 2])
 
 
-def test_demo_events_reject_unsupported_task():
+def test_single_phase_demo_events_support_non_gripper_task():
     drawer = FakeObject("drawer_bottom", 31)
     task = FakeTask([drawer])
     value = provider("open_drawer", task)
+    demo = [observation([[31]], gripper_open=1.0) for _ in range(3)]
+    value.set_sample_frame(0)
+    value.enrich(demo[0], {})
 
-    with pytest.raises(NotImplementedError, match="supports only place_cups"):
-        value.build_demo_event_manifest(
-            [observation([[31]], gripper_open=1.0)], [0]
-        )
+    info = value.build_demo_event_manifest(demo, [1, 2])
+
+    assert info["phase_strategy"] == "single_success"
+    assert info["phase_boundary_frames"] == [2]
+    assert [entry["sample_frame"] for entry in value._entries] == [0, 1, 2]
+    assert [entry["phase_id"] for entry in value._entries] == [
+        "open_drawer:0", "open_drawer:0", "open_drawer:0"
+    ]
+    assert not value._entries[1]["completion_satisfied"]
+    assert value._entries[2]["completion_satisfied"]
+
+
+def test_stack_cups_demo_events_use_two_release_cycles():
+    cups = [FakeObject(name, handle) for name, handle in (
+        ("cup1", 11), ("cup2", 12), ("cup3", 13)
+    )]
+    task = FakeTask(cups)
+    value = provider("stack_cups", task)
+    demo = [
+        observation([[11, 12], [13, 0]], gripper_open=state)
+        for state in (1.0, 0.0, 1.0, 0.0, 1.0)
+    ]
+    value.set_sample_frame(0)
+    value.enrich(demo[0], {})
+
+    info = value.build_demo_event_manifest(demo, [1, 2, 3, 4])
+
+    assert info["phase_strategy"] == "release_cycles"
+    assert info["phase_boundary_frames"] == [2, 4]
+    assert value._entries[2]["phase_id"] == "stack_cups:1"
+    assert value._entries[2]["phase_advanced"] is True
+    assert value._entries[-1]["completion_satisfied"] is True
+
+
+def test_push_buttons_demo_events_locate_ordered_gt_target_contacts():
+    plates = [
+        FakeObject(f"target_button_topPlate{i}", 10 + i) for i in range(3)
+    ]
+    task = FakeTask(plates)
+    task.target_topPlates = plates
+    task.buttons_to_push = 2
+    value = provider("push_buttons", task)
+    poses = (
+        [0.5, 0.5, 1.0, 0, 0, 0, 1],
+        [0.0, 0.0, 1.0, 0, 0, 0, 1],
+        [0.5, 0.5, 1.0, 0, 0, 0, 1],
+        [1.0, 0.0, 1.0, 0, 0, 0, 1],
+    )
+    demo = [
+        observation([[10, 11], [12, 0]], gripper_open=1.0, gripper_pose=pose)
+        for pose in poses
+    ]
+    value.set_sample_frame(0)
+    value.enrich(demo[0], {})
+
+    info = value.build_demo_event_manifest(demo, [1, 3])
+
+    assert info["phase_strategy"] == "ordered_target_contact"
+    assert info["phase_boundary_frames"] == [1, 3]
+    assert info["contact_distances"] == pytest.approx([0.0, 0.0])
+    assert [entry["phase_id"] for entry in value._entries] == [
+        "push_buttons:0", "push_buttons:1", "push_buttons:1"
+    ]
+    assert value._entries[1]["phase_advanced"] is True
+    assert value._entries[-1]["completion_satisfied"] is True
 
 
 def test_open_drawer_has_no_reference_and_is_not_mapping_error():

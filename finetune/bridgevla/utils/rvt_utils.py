@@ -161,8 +161,8 @@ def get_eval_parser():
         choices=("sim_replay", "demo_events"),
         default="sim_replay",
         help=(
-            "How semantic manifest phases are generated. demo_events currently "
-            "supports place_cups only and does not execute expert actions."
+            "How semantic manifest phases are generated. demo_events supports "
+            "all configured BridgeVLA tasks and does not execute expert actions."
         ),
     )
     parser.add_argument("--exp_cfg_path", type=str, default=None)

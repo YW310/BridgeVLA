@@ -1,5 +1,10 @@
 # BridgeVLA Oracle Prior Coding 交接文档（精简版）
 
+[文档索引](../README.md) · [项目首页](../../README.md)
+
+阅读定位：本文保留原有历史日期与实现背景；运行步骤见 [O2 实验指南](../experiments/o2-training.md)，后续方案见 [研究设计](../design/role-relation-prior.md)。文中代码路径均相对仓库根目录。
+
+
 > 更新时间：2026-08-28
 > 目标分支：BridgeVLA 官方仓库 `bridgevla` 分支  
 > 目标：用 RLBench 真值 entity/site prior 测量 BridgeVLA 的性能上限
@@ -120,7 +125,7 @@ zero-init learned residual fusion
 BridgeVLA 原 action decoder
 ```
 
-Oracle 首版应直接实现于 BridgeVLA 仓库，因为它需要 PyRep scene handles、BridgeVLA preprocessing 和 renderer。本仓库只提供设计参考：[`task_schema.py`](task_schema.py)、[`dynamic_role_reasoning.py`](dynamic_role_reasoning.py) 和 [`CONSERVE3D_IDEA_OVERVIEW_CN.md`](CONSERVE3D_IDEA_OVERVIEW_CN.md)。
+Oracle 首版应直接实现于 BridgeVLA 仓库，因为它需要 PyRep scene handles、BridgeVLA preprocessing 和 renderer。原设计来源为独立的 `TASK_Relevant_object-main` 项目，其中的 `task_schema.py`、`dynamic_role_reasoning.py` 和 `CONSERVE3D_IDEA_OVERVIEW_CN.md` 仅作历史设计参考，不属于本仓库。
 
 ## 4. 开工前定位 BridgeVLA 插入点
 
@@ -331,4 +336,4 @@ privileged Oracle 上界。验证信息有价值后，保持 fusion 接口不变
 依次替换为 predicted instance；再混合 truth、noisy、predicted prior，并使用
 `30%~50%` prior dropout 提升容错。可进一步扩展
 `target/reference/site` 三角色热图与末端关系 token。具体设计见
-[`BRIDGEVLA_ROLE_RELATION_PRIOR_DESIGN_CN.md`](BRIDGEVLA_ROLE_RELATION_PRIOR_DESIGN_CN.md)。
+[Role / relation / phase 研究设计](../design/role-relation-prior.md)。

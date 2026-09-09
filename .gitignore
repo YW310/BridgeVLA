@@ -77,6 +77,9 @@ finetune/bridgevla/libs/RLBench
 finetune/CoppeliaSim_Edu_V4_1_0_Ubuntu20_04
 LPY
 *exp*
+# Keep experiment documentation; generated experiment artifacts remain ignored.
+!/docs/experiments/
+!/docs/experiments/*.md
 exp/RLBench
 checkpoints
 *_visualizations*

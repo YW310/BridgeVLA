@@ -1,4 +1,4 @@
-[文档索引](README.md) · [项目首页](../README.md)
+[文档索引](../README.md) · [项目首页](../../README.md)
 
 > 命令不在 docs/ 下执行。带 cd 的独立示例从仓库根目录开始；其后命令沿用该目录。替换所有示例路径后再运行。
 
@@ -45,4 +45,4 @@ cd finetune/GemBench
 python3 cal_results.py
 ```
 
-RLBench 多 GPU 评估见 [8×40GB 说明](training.md#rlbench-8x40)；Oracle 对照见 [O2 评估](o2-training.md#o2-code-path)。
+RLBench 多 GPU 评估见 [8×40GB 说明](training.md#rlbench-8x40)；Oracle 对照见 [O2 评估](../experiments/o2-training.md#o2-code-path)。

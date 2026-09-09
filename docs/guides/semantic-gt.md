@@ -1,4 +1,4 @@
-[文档索引](README.md) · [项目首页](../README.md)
+[文档索引](../README.md) · [项目首页](../../README.md)
 
 > 命令不在 docs/ 下执行。带 cd 的独立示例从仓库根目录开始；其后命令沿用该目录。替换所有示例路径后再运行。
 
@@ -71,10 +71,10 @@ manifest 生成只回放 expert action，不调用 policy，因此可以使用�
 entries，manifest 的 `generation_attempt` 从 1 开始记录最终采用的是第几次尝试。若全部重试仍失败，
 保留最后一次失败 manifest，离线重写器会因最终 `completion_satisfied=False` 拒绝使用。
 
-`place_cups` 还支持不重新执行动作的原始 demo phase 模式：
+18 个任务均支持不重新执行动作的 stored-demo phase 模式：
 
 ```bash
-TASKS="place_cups" \
+TASKS="all" \
 REPLAY_GROUND_TRUTH=1 \
 MANIFEST_PHASE_SOURCE=demo_events \
 ORACLE_PROVIDER=rlbench_gt \
@@ -83,11 +83,24 @@ ORACLE_DEBUG=0 \
 bash eval.sh
 ```
 
-该模式直接扫描成功 stored demo 的夹爪 close→open 周期：variation 0/1/2 必须分别匹配
-1/2/3 次释放，释放后才切换到下一组 `mug{k}`/`spoke{k}`。它不调用 simulator
-`step()`，因此没有 IK、路径规划或接触重放失败，也不需要重试；manifest 和每个 entry
-都会记录 `phase_source=demo_events`。目前仅支持 `place_cups`，其他任务会明确报错，
-不会静默退回启发式规则。默认 `MANIFEST_PHASE_SOURCE=sim_replay` 保持原有 18 任务行为。
+该模式不调用 simulator `step()`，因此没有 IK、路径规划或接触重放失败，也不需要重试。
+18 个任务使用 YAML 中逐任务声明的严格策略：
+
+| 策略 | 任务 | phase 边界 |
+| --- | --- | --- |
+| `single_success` | 除下列 4 个多阶段任务外的 14 个任务 | 成功 stored demo 的末帧；这些任务始终只有 phase 0 |
+| `release_cycles` | `place_cups`、`stack_blocks`、`stack_cups` | 每次夹爪 close→open 完成一个固定顺序子目标；释放次数必须严格等于 phase 数 |
+| `ordered_target_contact` | `push_buttons` | 按源码固定按钮顺序，在 expert keypoints 中用夹爪到对应 GT top-plate 的距离定位接触；要求边界严格递增且距离不超过 YAML 的 `max_distance` |
+
+`push_buttons` 使用接触距离仅定位“何时切 phase”，不会用距离选择“哪个物体是
+Target”；Target 顺序仍唯一来自任务源码和 YAML。原因是当前 legacy stored observation
+没有 task joint state，无法离线读取 `button_joint >= 0.003`。manifest 会额外保存
+`phase_strategy`、`phase_boundary_source`、`phase_boundary_frames`，按钮任务还保存
+`contact_distances`，便于审计；任何次数、顺序、可见性或距离校验失败都会终止该 episode，
+不会静默退回启发式角色。
+
+manifest 和每个 entry 都记录 `phase_source=demo_events`。默认
+`MANIFEST_PHASE_SOURCE=sim_replay` 保持原有在线 success-condition 行为。
 生成前仍会执行一次 simulator reset，并将 live 首帧与 stored demo 第 0 帧的 T/R handle
 可见性进行交叉检查；只有 manifest 中 `source_alignment_validated=true` 时，离线重写器
 才接受该 demo-events 标注。
@@ -152,4 +165,4 @@ bash train.sh \
 使用 `rlbench_o2_gt_instance.yaml`（audit schema 默认关闭）。两类 buffer/checkpoint 不应
 混在同一实验目录。semantic mapping 是 privileged GT，结果只能解释为 Oracle 上界。
 
-训练模式、消融和评估见 [O2 实验](o2-training.md)。
+训练模式、消融和评估见 [O2 实验](../experiments/o2-training.md)。

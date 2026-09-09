@@ -547,7 +547,7 @@ def _eval(args):
                 if args.manifest_phase_source == "demo_events":
                     print(
                         "Manifest generation branch: stored-demo phase events "
-                        f"(strict={bool(args.oracle_strict)}, task=place_cups)"
+                        f"(strict={bool(args.oracle_strict)}, tasks={args.tasks})"
                     )
                 else:
                     print(
