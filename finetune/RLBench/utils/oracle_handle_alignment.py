@@ -13,6 +13,26 @@ class HandleAlignmentError(ValueError):
         self.evidence = evidence or {}
 
 
+def _geometry_summary(ac, bc, selected):
+    valid = selected & np.isfinite(ac).all(axis=-1) & np.isfinite(bc).all(axis=-1)
+    delta = np.asarray(bc[valid], dtype=np.float64) - ac[valid]
+    result = dict(selected_pixels=int(selected.sum()), finite_pixels=int(valid.sum()))
+    if delta.size:
+        distances = np.linalg.norm(delta, axis=-1)
+        result.update(distance_p50=float(np.median(distances)),
+                      distance_p95=float(np.quantile(distances, .95)),
+                      stored_minus_live_xyz_median=np.median(delta, axis=0).tolist())
+    return result
+
+
+def _interior(mask):
+    # One-pixel erosion without a scipy dependency; never changes acceptance.
+    padded = np.pad(mask, 1, constant_values=False)
+    h, w = mask.shape
+    return np.logical_and.reduce([
+        padded[y:y+h, x:x+w] for y in range(3) for x in range(3)])
+
+
 def align_handles(live, stored, names, name_to_handle=None):
     """Return live->stored mapping and auditable evidence for required shapes.
 
@@ -63,6 +83,10 @@ def align_handles(live, stored, names, name_to_handle=None):
             f"Insufficient registered live/stored camera pairs: {len(views)}; "
             f"need {minimum_views}. Excluded cameras: {excluded}", evidence)
 
+    evidence['_geometry'] = {
+        camera: _geometry_summary(ac, bc, np.ones(am.shape, dtype=bool))
+        for camera, (am, bm, ac, bc) in views.items()
+    }
     mapping, claimed = {}, {}
     for handle, name in sorted(names.items()):
         candidates = set()
@@ -101,6 +125,21 @@ def align_handles(live, stored, names, name_to_handle=None):
                 checks[camera] = dict(
                     live_pixels=na, stored_pixels=nb, precision=precision,
                     recall=recall, world_distance_p95=p95, passed=bool(ok))
+                reasons = []
+                if min(na, nb) < 16:
+                    reasons.append('insufficient_pixels')
+                if precision < .9 or recall < .9:
+                    reasons.append('mask_overlap')
+                if not count or int(finite.sum()) < .95 * count:
+                    reasons.append('insufficient_finite_geometry')
+                if p95 is None or p95 > .01:
+                    reasons.append('world_distance')
+                interior = _interior(av) & _interior(bv)
+                checks[camera].update(
+                    failure_reasons=reasons,
+                    geometry=_geometry_summary(ac, bc, overlap),
+                    interior_geometry=_geometry_summary(ac, bc, interior),
+                    boundary_geometry=_geometry_summary(ac, bc, overlap & ~interior))
                 agreeing += int(ok)
                 contradictory |= not ok
             candidate_evidence[str(candidate)] = checks
@@ -112,8 +151,10 @@ def align_handles(live, stored, names, name_to_handle=None):
         if len(accepted) != 1:
             raise HandleAlignmentError(
                 f"Cannot uniquely verify {name} (live handle={handle}); "
-                f"accepted={accepted}. Supply acquisition name-to-handle metadata "
-                "for occluded shapes; do not loosen matching to guess identities.",
+                f"accepted={accepted}. Inspect candidate failure_reasons and "
+                "geometry evidence (including _geometry for the full image). "
+                "This can be geometry disagreement, not necessarily occlusion; "
+                "do not loosen matching to guess identities.",
                 evidence)
         target = accepted[0]
         if target in claimed:

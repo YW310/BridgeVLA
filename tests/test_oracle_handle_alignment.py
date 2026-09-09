@@ -62,6 +62,30 @@ def test_numeric_identity_alone_is_not_evidence():
     assert mapping[87] == 99
 
 
+def test_exact_masks_with_depth_offset_report_geometry_failure():
+    live, stored = views()
+    for data in stored.values():
+        data['cloud'][..., 2] += .016
+    with pytest.raises(HandleAlignmentError) as error:
+        align_handles(live, stored, {87: 'lid'})
+    evidence = error.value.evidence
+    check = evidence['87']['candidates']['99']['front']
+    assert check['failure_reasons'] == ['world_distance']
+    assert check['interior_geometry']['distance_p95'] == pytest.approx(.016)
+    assert check['boundary_geometry']['distance_p95'] == pytest.approx(.016)
+    assert evidence['_geometry']['front']['stored_minus_live_xyz_median'] == pytest.approx([0, 0, .016])
+
+
+def test_boundary_error_is_reported_without_relaxing_gate():
+    live, stored = views()
+    stored['front']['cloud'][1, 1:6, 2] += .03
+    with pytest.raises(HandleAlignmentError) as error:
+        align_handles(live, stored, {87: 'lid'})
+    check = error.value.evidence['87']['candidates']['99']['front']
+    assert check['interior_geometry']['distance_p95'] == 0
+    assert check['boundary_geometry']['distance_p95'] == pytest.approx(.03)
+
+
 @pytest.mark.parametrize("failure", ["moved", "missing_extrinsics", "missing_view"])
 def test_unregistered_wrist_does_not_veto_two_registered_views(failure):
     live, stored = views()
