@@ -20,26 +20,50 @@ def align_handles(live, stored, names, name_to_handle=None):
     acquisition mapping may cover shapes invisible at reset. Otherwise every
     required shape needs two independently agreeing camera views.
     """
-    views = {}
-    for camera in sorted(set(live) & set(stored)):
+    views, excluded = {}, {}
+    for camera in sorted(set(live) | set(stored)):
+        if camera not in live or camera not in stored:
+            excluded[camera] = {"reason": "missing_live_or_stored_view"}
+            continue
         a, b = live[camera], stored[camera]
         for key, shape in (("intrinsics", (3, 3)), ("extrinsics", (4, 4))):
-            x, y = np.asarray(a.get(key)), np.asarray(b.get(key))
+            try:
+                x = np.asarray(a.get(key), dtype=np.float64)
+                y = np.asarray(b.get(key), dtype=np.float64)
+            except (TypeError, ValueError):
+                excluded[camera] = {"reason": f"invalid_{key}"}
+                break
             if (x.shape != shape or y.shape != shape
                     or not np.isfinite(x).all() or not np.isfinite(y).all()
                     or not np.allclose(x, y, atol=1e-4, rtol=0)):
-                raise HandleAlignmentError(
-                    f"{camera}: live/stored {key} differ or are missing")
+                excluded[camera] = {
+                    "reason": f"unregistered_{key}",
+                    "max_abs_difference": (
+                        float(np.max(np.abs(x - y)))
+                        if x.shape == y.shape == shape
+                        and np.isfinite(x).all() and np.isfinite(y).all()
+                        else None),
+                }
+                break
+        if camera in excluded:
+            continue
         am, bm = a["mask"], b["mask"]
         ac, bc = a["cloud"], b["cloud"]
         if (am.ndim != 2 or am.shape != bm.shape
                 or ac.shape != (*am.shape, 3) or bc.shape != ac.shape):
-            raise HandleAlignmentError(f"{camera}: mask/cloud resolution mismatch")
+            excluded[camera] = {"reason": "mask_cloud_resolution_mismatch"}
+            continue
         views[camera] = (am, bm, ac, bc)
-    if not views:
-        raise HandleAlignmentError("No registered live/stored camera pairs")
+    evidence = {"_registration": {
+        "used_cameras": sorted(views), "excluded_cameras": excluded,
+    }}
+    minimum_views = 2 if name_to_handle is None else 1
+    if len(views) < minimum_views:
+        raise HandleAlignmentError(
+            f"Insufficient registered live/stored camera pairs: {len(views)}; "
+            f"need {minimum_views}. Excluded cameras: {excluded}", evidence)
 
-    mapping, evidence, claimed = {}, {}, {}
+    mapping, claimed = {}, {}
     for handle, name in sorted(names.items()):
         candidates = set()
         for am, bm, _, _ in views.values():
@@ -47,10 +71,10 @@ def align_handles(live, stored, names, name_to_handle=None):
         declared = None
         if name_to_handle is not None:
             if name not in name_to_handle:
-                raise HandleAlignmentError(f"Acquisition mapping missing shape {name}")
+                raise HandleAlignmentError(f"Acquisition mapping missing shape {name}", evidence)
             declared = name_to_handle[name]
             if isinstance(declared, bool) or not isinstance(declared, int) or declared <= 0:
-                raise HandleAlignmentError(f"Invalid acquisition handle for {name}")
+                raise HandleAlignmentError(f"Invalid acquisition handle for {name}", evidence)
             candidates = {declared}
         accepted = []
         candidate_evidence = {}

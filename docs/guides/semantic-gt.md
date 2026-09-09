@@ -133,14 +133,20 @@ stored handles 提取保存帧点云。不可渲染的物理部件、dummy/joint
 | ORACLE_HANDLE_ALIGNMENT=verified | 默认；仅用于 demo_events，在线 policy 仍使用 live handles |
 | ORACLE_HANDLE_ALIGNMENT=identity | 旧编号假设，仅用于已有同编号数据的兼容检查；不能解决编号错配 |
 | ORACLE_HANDLE_MAP_DIR | 可选原始采集映射根目录，文件为 task/episode_N.json；显式指定后缺文件或内容不完整会报错 |
-| 相机一致性 | 用于匹配的内外参必须存在且一致（绝对容差 1e-4），mask 和点云分辨率一致 |
+| 相机一致性 | 逐视角检查内外参（绝对容差 1e-4）和 mask/点云分辨率；无法配准的视角退出匹配并记录原因，其余视角继续验证 |
 | 自动匹配证据 | 至少两个相机各有 16 个实例像素，mask 双向覆盖率均 ≥0.90，对应点的三维距离 P95 ≤1 cm，且 ≥95% 重合像素有有限点坐标 |
-| 冲突处理 | 相机之间有矛盾、对应关系不唯一、多对一、部件缺失均拒绝；不会调整阈值直到匹配成功 |
+| 冲突处理 | 已配准相机的 mask/几何证据有矛盾、对应关系不唯一、多对一、部件缺失均拒绝；自动匹配仍要求至少两个相机支持每个部件 |
 
 优先读取显式文件，其次读取 demo[0].misc.oracle_handle_metadata；都没有时才尝试上述
 已标定多视角的 mask 对应。这是有几何证据的编号配准，**仍需检查真实数据的 audit**，
 并不等价于原始采集时记录的身份真值。manifest 用 source 区分 acquisition_metadata 与
 registered_masks；T/R 语义仍由任务配置决定。
+
+例如 wrist 外参在 live reset 与 stored 第 0 帧之间不一致时，该视角不能做逐像素匹配；
+可由其余已配准视角继续建立映射。evidence._registration 记录 used_cameras、
+excluded_cameras，以及标定矩阵的最大元素差值。排除后少于两个有效视角会明确报错。
+这里排除仅影响首帧编号配准；映射建立后，保存数据的四视角仍参与 T/R 点云提取。
+有原始采集映射时沿用元数据路径的检查规则，至少保留一个已配准视角。
 
 原始映射文件使用以下格式（数值仅示例，必须替换成采集时真实 ID，包含所有所需可渲染子部件）：
 

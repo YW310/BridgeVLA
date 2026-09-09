@@ -62,6 +62,45 @@ def test_numeric_identity_alone_is_not_evidence():
     assert mapping[87] == 99
 
 
+@pytest.mark.parametrize("failure", ["moved", "missing_extrinsics", "missing_view"])
+def test_unregistered_wrist_does_not_veto_two_registered_views(failure):
+    live, stored = views()
+    live["wrist"] = deepcopy(live["front"])
+    stored["wrist"] = deepcopy(stored["front"])
+    if failure == "moved":
+        stored["wrist"]["extrinsics"][0, 3] += .02
+    elif failure == "missing_extrinsics":
+        stored["wrist"]["extrinsics"] = None
+    else:
+        stored.pop("wrist")
+    mapping, report = align_handles(live, stored, {87: "lid"})
+    assert mapping == {87: 99}
+    registration = report["_registration"]
+    assert registration["used_cameras"] == ["front", "left_shoulder"]
+    assert "wrist" in registration["excluded_cameras"]
+    assert "wrist" not in report["87"]["candidates"]["99"]
+
+
+def test_registered_but_contradictory_wrist_is_not_silently_excluded():
+    live, stored = views()
+    live["wrist"] = deepcopy(live["front"])
+    stored["wrist"] = deepcopy(stored["front"])
+    stored["wrist"]["cloud"] += .1
+    with pytest.raises(HandleAlignmentError) as error:
+        align_handles(live, stored, {87: "lid"})
+    assert error.value.evidence["_registration"]["excluded_cameras"] == {}
+
+
+def test_excluding_camera_still_requires_two_views_and_reports_reason():
+    live, stored = views()
+    stored["front"]["extrinsics"][0, 3] += .02
+    with pytest.raises(HandleAlignmentError, match="need 2") as error:
+        align_handles(live, stored, {87: "lid"})
+    report = error.value.evidence["_registration"]
+    assert report["used_cameras"] == ["left_shoulder"]
+    assert report["excluded_cameras"]["front"]["max_abs_difference"] == pytest.approx(.02)
+
+
 def test_acquisition_map_supports_occluded_shape_but_rejects_visible_conflict():
     live, stored = views()
     mapping, _ = align_handles(live, stored, {89: "hidden"}, {"hidden": 101})
