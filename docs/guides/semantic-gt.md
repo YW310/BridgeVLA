@@ -6,6 +6,14 @@
 
 # 严格 Semantic-GT Target/Reference
 
+`demo_events` 的生成统计写入 `manifest_results.csv`，字段为生成覆盖率（百分比）、
+已生成/请求 episode 数和逻辑 transition 数；TensorBoard 标签为 `manifest_coverage_<task>`。
+`eval.sh` 合并为 `*_merged_manifest_results.csv`。覆盖率 100% 只代表 manifest 生成完成，
+不是模型闭环成功率，也不代表几何验证通过。普通评估继续使用 `eval_results.csv` 和 `eval_<task>`。
+单个 episode 也会输出数值统计；缺失指标不再以 `unknown` 字符串写入 TensorBoard。
+若旧版在 TensorBoard 收尾时报错，已经逐 episode 原子保存的 manifest 仍保留，
+无需仅为该日志错误重新生成它们。
+
 ## 可选的 mask 身份验证（不代表点云几何通过）
 
 `ORACLE_HANDLE_ALIGNMENT=verified` 仍为默认：同时检查多视角 mask 和 1 cm 点云距离。

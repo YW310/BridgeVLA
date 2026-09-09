@@ -136,12 +136,19 @@ echo "=========================================="
 eval_root="${MODEL_FOLDER}/eval"
 model_dir="${MODEL_NAME%.pth}"
 output_csv="${eval_root}/${model_dir}_${ORACLE_PROVIDER}_merged_eval_results.csv"
+result_filename="eval_results.csv"
+result_header="task,success rate,length,total_transitions"
+if [[ "${MANIFEST_PHASE_SOURCE}" == "demo_events" ]]; then
+    output_csv="${eval_root}/${model_dir}_${ORACLE_PROVIDER}_merged_manifest_results.csv"
+    result_filename="manifest_results.csv"
+    result_header="task,generated coverage,generated episodes,requested episodes,logical transitions"
+fi
 
 # 写入统一表头
-echo "task,success rate,length,total_transitions" > "${output_csv}"
+echo "${result_header}" > "${output_csv}"
 
 for task in "${tasks[@]}"; do
-    csv_path="${eval_root}/${task}/${ORACLE_PROVIDER}/${model_dir}/eval_results.csv"
+    csv_path="${eval_root}/${task}/${ORACLE_PROVIDER}/${model_dir}/${result_filename}"
 
     if [[ ! -f "${csv_path}" ]]; then
         echo "[WARN] File not found: ${csv_path}" >&2

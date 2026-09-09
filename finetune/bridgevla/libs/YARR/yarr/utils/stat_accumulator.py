@@ -113,7 +113,7 @@ class _SimpleAccumulator(StatAccumulator):
 
     def pop(self) -> List[Summary]:
         data = []
-        if len(self._episode_returns) > 1:
+        if len(self._episode_returns) > 0:
             data = self._get()
             self._reset_data()
         return data

@@ -52,6 +52,7 @@ from utils.custom_rlbench_env import (
     CustomMultiTaskRLBenchEnv2 as CustomMultiTaskRLBenchEnv,
 )
 from utils.o2_oracle_provider import RLBenchGTOracleProvider
+from utils.eval_reporting import MANIFEST_FIELDS, manifest_result, numeric_task_scores
 from utils.peract_utils_rlbench import (
     CAMERAS,
     SCENE_BOUNDS,
@@ -275,10 +276,13 @@ def eval(
         assert log_dir is not None
 
         # create metric saving writer
-        csv_file = "eval_results.csv"
+        csv_file = ("manifest_results.csv" if manifest_phase_source == "demo_events"
+                    else "eval_results.csv")
         if not os.path.exists(os.path.join(log_dir, csv_file)):
             with open(os.path.join(log_dir, csv_file), "w") as csv_fp:
                 fieldnames = ["task", "success rate", "length", "total_transitions"]
+                if manifest_phase_source == "demo_events":
+                    fieldnames = MANIFEST_FIELDS
                 csv_writer = csv.DictWriter(csv_fp, fieldnames=fieldnames)
                 csv_writer.writeheader()
 
@@ -296,6 +300,7 @@ def eval(
     scores = []
     for task_id in range(num_tasks):
         task_rewards = []
+        logical_transitions = 0
         language_goals=[]
         retry_attempts_used = 0
         recovered_episodes = 0
@@ -384,6 +389,7 @@ def eval(
             task_name = tasks[task_id]
             reward = episode_rollout[-1].reward
             task_rewards.append(reward)
+            logical_transitions += len(episode_rollout)
             lang_goal = eval_env._lang_goal
             language_goals.append(lang_goal)
             if verbose:
@@ -400,7 +406,7 @@ def eval(
                         f"| Attempts: {attempts_used} | Lang Goal: {lang_goal}"
                     )
 
-        if replay_ground_truth and verbose:
+        if replay_ground_truth and verbose and manifest_phase_source != "demo_events":
             print(
                 f"Ground-truth retry summary for {tasks[task_id]}: "
                 f"extra_attempts={retry_attempts_used}, "
@@ -412,7 +418,13 @@ def eval(
         summaries = []
         summaries.extend(stats_accumulator.pop())
         task_name = tasks[task_id]
-        if logging:
+        if manifest_phase_source == "demo_events":
+            # Only completed generator calls reach task_rewards; exceptions abort.
+            result = manifest_result(task_name, len(task_rewards), eval_episodes, logical_transitions)
+            if logging:
+                with open(os.path.join(log_dir, csv_file), 'a', newline='') as csv_fp:
+                    csv.DictWriter(csv_fp, fieldnames=MANIFEST_FIELDS).writerow(result)
+        elif logging:
             # writer csv first
             with open(os.path.join(log_dir, csv_file), "a") as csv_fp:
                 fieldnames = ["task", "success rate", "length", "total_transitions"]
@@ -433,12 +445,11 @@ def eval(
                 if "eval" in s.name:
                     s.name = "%s/%s" % (s.name, task_name)
 
-        if len(summaries) > 0:
-            task_score = [
-                s.value for s in summaries if f"eval_envs/return/{task_name}" in s.name
-            ][0]
+        if manifest_phase_source == "demo_events":
+            task_score = result['generated coverage']
         else:
-            task_score = "unknown"
+            task_score = next((s.value for s in summaries
+                               if s.name == f"eval_envs/return/{task_name}"), None)
 
         if manifest_phase_source == "demo_events":
             print(
@@ -539,6 +550,8 @@ def _eval(args):
     tb = TensorboardManager(args.eval_log_dir)
     for model_path in model_paths:
         tasks_to_eval = deepcopy(args.tasks)
+        if tasks_to_eval and tasks_to_eval[0] == 'all':
+            tasks_to_eval = list(RLBENCH_TASKS)
         model_idx = get_model_index(model_path)
         if model_idx is None:
             model_idx = 0
@@ -622,7 +635,12 @@ def _eval(args):
             task_scores[tasks_to_eval[i]] = scores[i]
 
         print("save ", task_scores)
-        tb.update("eval", model_idx, task_scores)
+        scalar_scores = numeric_task_scores(task_scores)
+        if len(scalar_scores) != len(task_scores):
+            print('[WARNING] Missing/non-finite task metrics omitted from TensorBoard:',
+                  {k: v for k, v in task_scores.items() if k not in scalar_scores})
+        split = ('manifest_coverage' if args.manifest_phase_source == 'demo_events' else 'eval')
+        tb.update(split, model_idx, scalar_scores)
         tb.writer.flush()
 
     tb.close()
