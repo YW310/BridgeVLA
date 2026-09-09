@@ -13,6 +13,9 @@
 单个 episode 也会输出数值统计；缺失指标不再以 `unknown` 字符串写入 TensorBoard。
 若旧版在 TensorBoard 收尾时报错，已经逐 episode 原子保存的 manifest 仍保留，
 无需仅为该日志错误重新生成它们。
+批量生成中途在 episode `N` 停止时，可设置 `START_EPISODE=N`，并将
+`EVAL_EPISODES` 设为剩余数量；例如已完成 0--3 后使用
+`START_EPISODE=4 EVAL_EPISODES=96`。这里 `EVAL_EPISODES` 是本次运行数量，不是终止下标。
 
 ## 可选的 mask 身份验证（不代表点云几何通过）
 
@@ -21,8 +24,10 @@
 `ORACLE_HANDLE_ALIGNMENT=mask_verified`（仅用于 `MANIFEST_PHASE_SOURCE=demo_events`）。
 其余命令参数不变，无需关闭 `ORACLE_STRICT=1`。
 
-新模式仍要求至少两个视角、每个支持视角至少 16 像素、完整实例 mask 完全一致、
-映射唯一且无其他已配准视角的实质性冲突。隐藏实体不能靠这个模式猜测。
+新模式仍要求至少两个视角、每个支持视角至少 16 像素、完整实例 mask 的
+precision/recall 均不低于 0.9，并且映射唯一。第三视角的小范围轮廓栅格化差异只记入
+审计；单侧可见或 precision/recall 低于 0.5 的实质性冲突仍会否决。隐藏实体不能靠
+这个模式猜测。
 点云偏差只审计，不阻止身份映射；不修正原始点云，也不保证所有 episode 都能通过。
 报告和 manifest 使用独立的 `status=mask_verified`、`geometry_verified=false`；
 逐候选视角包含 `geometry_passed` / `geometry_warnings`。

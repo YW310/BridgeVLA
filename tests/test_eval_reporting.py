@@ -77,3 +77,5 @@ def test_eval_wires_separate_manifest_csv_and_tensorboard_namespace():
     shell = (ROOT / 'finetune/RLBench/eval.sh').read_text(encoding='utf-8')
     assert 'merged_manifest_results.csv' in shell
     assert '${result_filename}' in shell
+    assert 'START_EPISODE="${START_EPISODE:-0}"' in shell
+    assert '--start-episode "${START_EPISODE}"' in shell

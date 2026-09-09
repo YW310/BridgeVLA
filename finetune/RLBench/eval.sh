@@ -39,6 +39,7 @@ MODEL_FOLDER="${MODEL_FOLDER:-/common-data-32t/usr/yiwei/hugging_download/data_t
 MODEL_NAME="${MODEL_NAME:-model_60.pth}"
 EVAL_DATAFOLDER="${EVAL_DATAFOLDER:-/common-data-32t/usr/yiwei/hugging_download/data_tmp/LPY/BridgeVLA_RLBench_EVAL_DATA}"
 EVAL_EPISODES="${EVAL_EPISODES:-25}"
+START_EPISODE="${START_EPISODE:-0}"
 EPISODE_LENGTH="${EPISODE_LENGTH:-25}"
 DEVICE="${DEVICE:-0}"
 ORACLE_PROVIDER="${ORACLE_PROVIDER:-none}"
@@ -112,6 +113,7 @@ for task in "${tasks[@]}"; do
     --eval-datafolder "${EVAL_DATAFOLDER}" \
     --tasks "${task}" \
     --eval-episodes "${EVAL_EPISODES}" \
+    --start-episode "${START_EPISODE}" \
     --episode-length "${EPISODE_LENGTH}" \
     --log-name "${task}/${ORACLE_PROVIDER}" \
     --device "${DEVICE}" \

@@ -969,7 +969,9 @@ class RLBenchGTOracleProvider:
         }
         original_phase = self._phase_index
         if self.handle_alignment == "mask_verified":
-            report['thresholds'].update(min_precision=1., min_recall=1.)
+            report['thresholds'].update(min_precision=.9, min_recall=.9,
+                                        hard_conflict_precision=.5,
+                                        hard_conflict_recall=.5)
             report['geometry_policy'] = 'audit_only'
         try:
             required = set()
@@ -1028,7 +1030,7 @@ class RLBenchGTOracleProvider:
                 excluded_nonvisual_handles=sorted(excluded))
             if self.handle_alignment == 'mask_verified':
                 report['geometry_verified'] = False
-                print('[Manifest] mask_verified: identity inferred from exact multi-view masks; '
+                print('[Manifest] mask_verified: identity inferred from high-overlap multi-view masks; '
                       'geometry is audit-only, not certified. Review the alignment JSON '
                       'before training.', flush=True)
             self._stored_handle_map = mapping

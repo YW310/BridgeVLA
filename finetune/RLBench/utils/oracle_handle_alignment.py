@@ -147,17 +147,24 @@ def align_handles(live, stored, names, name_to_handle=None, *, mode='verified'):
                     count and int(finite.sum()) >= .95 * count
                     and p95 is not None and p95 <= .01)
                 if mask_only:
-                    # Exact whole-instance silhouettes, not a relaxed IoU gate.
-                    # Geometry remains audited but is not identity evidence.
-                    ok = min(na, nb) >= 16 and np.array_equal(av, bv)
+                    # Re-rendering the same reset may move a silhouette by a
+                    # few edge pixels. Require strong whole-instance overlap
+                    # in two views; geometry remains audit-only.
+                    ok = (min(na, nb) >= 16
+                          and precision >= .9 and recall >= .9)
+                    hard_conflict = (
+                        max(na, nb) >= 16
+                        and (min(na, nb) < 16
+                             or precision < .5 or recall < .5))
                     checks[camera]['passed'] = bool(ok)
+                    checks[camera]['hard_mask_conflict'] = bool(hard_conflict)
                     checks[camera]['geometry_warnings'] = [
                         r for r in reasons if r in (
                             'insufficient_finite_geometry', 'world_distance')]
                     checks[camera]['failure_reasons'] = (
-                        [] if ok else ['insufficient_pixels_or_nonidentical_mask'])
+                        [] if ok else ['insufficient_pixels_or_mask_overlap'])
                 agreeing += int(ok)
-                contradictory |= not ok
+                contradictory |= hard_conflict if mask_only else not ok
             candidate_evidence[str(candidate)] = checks
             # Acquisition metadata is authoritative when the entity is
             # unobservable; visible contradictory evidence still rejects it.
