@@ -137,3 +137,37 @@ def test_two_entities_cannot_share_one_saved_id():
     live, stored = views()
     with pytest.raises(HandleAlignmentError, match="Non-injective"):
         align_handles(live, stored, {89: "a", 90: "b"}, {"a": 101, "b": 101})
+
+
+def test_mask_verified_accepts_exact_masks_but_audits_geometry():
+    live, stored = views()
+    for data in stored.values():
+        data['cloud'][..., 2] += .016
+    mapping, report = align_handles(live, stored, {87: 'lid'}, mode='mask_verified')
+    assert mapping == {87: 99}
+    check = report['87']['candidates']['99']['front']
+    assert check['passed'] and not check['geometry_passed']
+    assert check['geometry_warnings'] == ['world_distance']
+    assert report['87']['source'] == 'exact_registered_masks'
+    with pytest.raises(HandleAlignmentError):
+        align_handles(live, stored, {87: 'lid'})
+
+
+@pytest.mark.parametrize('failure', ['one_view', 'one_pixel', 'split', 'hidden_metadata', 'third_view'])
+def test_mask_verified_does_not_guess_identity(failure):
+    live, stored = views()
+    names, declared = {87: 'lid'}, None
+    if failure == 'one_view':
+        stored.pop('left_shoulder')
+    elif failure == 'one_pixel':
+        stored['front']['mask'][1, 1] = 0
+    elif failure == 'split':
+        stored['front']['mask'][1:4, 1:6] = 100
+    elif failure == 'hidden_metadata':
+        names, declared = {89: 'hidden'}, {'hidden': 101}
+    else:
+        live['wrist'] = deepcopy(live['front'])
+        stored['wrist'] = deepcopy(stored['front'])
+        stored['wrist']['mask'][1, 1] = 0
+    with pytest.raises(HandleAlignmentError):
+        align_handles(live, stored, names, declared, mode='mask_verified')

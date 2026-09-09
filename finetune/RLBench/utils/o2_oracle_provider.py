@@ -259,8 +259,8 @@ class RLBenchGTOracleProvider:
         self.strict = bool(strict)
         self.seed = int(seed)
         self.debug_root = None if debug_root is None else Path(debug_root)
-        if handle_alignment not in ("identity", "verified"):
-            raise ValueError("handle_alignment must be identity or verified")
+        if handle_alignment not in ("identity", "verified", "mask_verified"):
+            raise ValueError("handle_alignment must be identity, verified or mask_verified")
         self.handle_alignment = handle_alignment
         self.handle_map_dir = None if handle_map_dir is None else Path(handle_map_dir)
         self.alignment_output_dir = (
@@ -934,7 +934,7 @@ class RLBenchGTOracleProvider:
         return points[indices].astype(np.float32, copy=False), True
 
     def enrich(self, obs, obs_dict: Mapping[str, object]) -> Dict[str, object]:
-        if self.handle_alignment == "verified" and self._step_index == 0:
+        if self.handle_alignment != "identity" and self._step_index == 0:
             self._live_initial_views = self._alignment_views(obs)
         return self._enrich(obs, obs_dict)
 
@@ -963,10 +963,14 @@ class RLBenchGTOracleProvider:
             "schema_version": "rlbench_handle_alignment_v1",
             "task": self._task_name, "episode_idx": self._episode_idx,
             "variation": self._variation, "status": "failed",
+            "mode": self.handle_alignment,
             "thresholds": dict(min_pixels=16, min_views=2, min_precision=.9,
                                min_recall=.9, max_world_distance_p95=.01),
         }
         original_phase = self._phase_index
+        if self.handle_alignment == "mask_verified":
+            report['thresholds'].update(min_precision=1., min_recall=1.)
+            report['geometry_policy'] = 'audit_only'
         try:
             required = set()
             for phase in range(self._phase_count()):
@@ -1016,11 +1020,17 @@ class RLBenchGTOracleProvider:
                 if not isinstance(declared, Mapping):
                     raise HandleAlignmentError("Acquisition mapping needs name_to_handle")
             mapping, evidence = align_handles(
-                self._live_initial_views or {}, self._alignment_views(obs), names, declared)
+                self._live_initial_views or {}, self._alignment_views(obs), names, declared,
+                mode=self.handle_alignment)
             report.update(
-                status="verified", evidence=evidence,
+                status=self.handle_alignment, evidence=evidence,
                 live_to_stored={str(k): v for k, v in mapping.items()},
                 excluded_nonvisual_handles=sorted(excluded))
+            if self.handle_alignment == 'mask_verified':
+                report['geometry_verified'] = False
+                print('[Manifest] mask_verified: identity inferred from exact multi-view masks; '
+                      'geometry is audit-only, not certified. Review the alignment JSON '
+                      'before training.', flush=True)
             self._stored_handle_map = mapping
             self._nonvisual_handles = excluded
             self._handle_alignment_audit = report

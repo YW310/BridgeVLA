@@ -33,13 +33,16 @@ def _interior(mask):
         padded[y:y+h, x:x+w] for y in range(3) for x in range(3)])
 
 
-def align_handles(live, stored, names, name_to_handle=None):
+def align_handles(live, stored, names, name_to_handle=None, *, mode='verified'):
     """Return live->stored mapping and auditable evidence for required shapes.
 
     Cameras contain mask, cloud, intrinsics and extrinsics arrays. An explicit
     acquisition mapping may cover shapes invisible at reset. Otherwise every
     required shape needs two independently agreeing camera views.
     """
+    if mode not in ('verified', 'mask_verified'):
+        raise ValueError(f'Unknown handle alignment mode: {mode}')
+    mask_only = mode == 'mask_verified'
     views, excluded = {}, {}
     for camera in sorted(set(live) | set(stored)):
         if camera not in live or camera not in stored:
@@ -77,7 +80,7 @@ def align_handles(live, stored, names, name_to_handle=None):
     evidence = {"_registration": {
         "used_cameras": sorted(views), "excluded_cameras": excluded,
     }}
-    minimum_views = 2 if name_to_handle is None else 1
+    minimum_views = 2 if mask_only or name_to_handle is None else 1
     if len(views) < minimum_views:
         raise HandleAlignmentError(
             f"Insufficient registered live/stored camera pairs: {len(views)}; "
@@ -140,12 +143,25 @@ def align_handles(live, stored, names, name_to_handle=None):
                     geometry=_geometry_summary(ac, bc, overlap),
                     interior_geometry=_geometry_summary(ac, bc, interior),
                     boundary_geometry=_geometry_summary(ac, bc, overlap & ~interior))
+                checks[camera]['geometry_passed'] = bool(
+                    count and int(finite.sum()) >= .95 * count
+                    and p95 is not None and p95 <= .01)
+                if mask_only:
+                    # Exact whole-instance silhouettes, not a relaxed IoU gate.
+                    # Geometry remains audited but is not identity evidence.
+                    ok = min(na, nb) >= 16 and np.array_equal(av, bv)
+                    checks[camera]['passed'] = bool(ok)
+                    checks[camera]['geometry_warnings'] = [
+                        r for r in reasons if r in (
+                            'insufficient_finite_geometry', 'world_distance')]
+                    checks[camera]['failure_reasons'] = (
+                        [] if ok else ['insufficient_pixels_or_nonidentical_mask'])
                 agreeing += int(ok)
                 contradictory |= not ok
             candidate_evidence[str(candidate)] = checks
             # Acquisition metadata is authoritative when the entity is
             # unobservable; visible contradictory evidence still rejects it.
-            if not contradictory and (agreeing >= 2 or declared is not None):
+            if not contradictory and (agreeing >= 2 or (declared is not None and not mask_only)):
                 accepted.append(candidate)
         evidence[str(handle)] = dict(name=name, candidates=candidate_evidence)
         if len(accepted) != 1:
@@ -165,5 +181,6 @@ def align_handles(live, stored, names, name_to_handle=None):
         mapping[handle] = target
         evidence[str(handle)].update(
             stored_handle=target,
-            source="acquisition_metadata" if declared is not None else "registered_masks")
+            source=("exact_registered_masks" if mask_only else
+                    "acquisition_metadata" if declared is not None else "registered_masks"))
     return mapping, evidence

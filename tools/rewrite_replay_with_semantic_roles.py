@@ -114,7 +114,7 @@ def _manifest_path(root: Path, task: str, episode_idx: int) -> Path:
     )
 
 
-def _load_manifest(root: Path, task: str, episode_idx: int):
+def _load_manifest(root: Path, task: str, episode_idx: int, allow_mask_verified=False):
     path = _manifest_path(root, task, episode_idx)
     with path.open("r", encoding="utf-8") as stream:
         manifest = json.load(stream)
@@ -143,8 +143,15 @@ def _load_manifest(root: Path, task: str, episode_idx: int):
     entries = sorted(entries, key=lambda entry: int(entry["sample_frame"]))
     if manifest.get("handle_namespace") == "stored":
         alignment = manifest.get("handle_alignment", {})
-        if alignment.get("status") != "verified" or not manifest.get("source_frame0_masks"):
+        mask_verified = alignment.get('status') == 'mask_verified'
+        if mask_verified and not allow_mask_verified:
+            raise ValueError('Manifest geometry is not verified; review its audit, then '
+                             'explicitly use --allow-mask-verified-handles to accept: ' + str(path))
+        if (alignment.get("status") not in ("verified", "mask_verified")
+                or not manifest.get("source_frame0_masks")):
             raise ValueError(f"Missing verified stored-handle provenance: {path}")
+        if mask_verified:
+            print(f'[WARNING] Using mask-only identity mapping; geometry not certified: {path}', flush=True)
         mapped = set(alignment.get("live_to_stored", {}).values())
         for entry in entries:
             for key in ("target", "reference"):
@@ -376,7 +383,8 @@ def process_task(args, task, source_dir, destination_dir):
             sample_frame = int(np.asarray(original["sample_frame"]).item())
             if episode_idx not in manifest_cache:
                 manifest_cache[episode_idx] = _load_manifest(
-                    args.manifest_dir, task, episode_idx
+                    args.manifest_dir, task, episode_idx,
+                    allow_mask_verified=getattr(args, 'allow_mask_verified_handles', False)
                 )
             schema, frames, entries = manifest_cache[episode_idx]
             entry, exact = _entry_for_frame(frames, entries, sample_frame)
@@ -441,6 +449,8 @@ def build_parser():
     parser.add_argument("--replay-dir", type=Path, required=True)
     parser.add_argument("--raw-data-dir", type=Path, required=True)
     parser.add_argument("--manifest-dir", type=Path, required=True)
+    parser.add_argument('--allow-mask-verified-handles', action='store_true',
+                        help='Explicitly accept mask-only identity provenance after geometry audit.')
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--task", action="append", default=[])
     parser.add_argument("--cameras", nargs="+", default=list(DEFAULT_CAMERAS))

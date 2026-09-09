@@ -6,6 +6,24 @@
 
 # 严格 Semantic-GT Target/Reference
 
+## 可选的 mask 身份验证（不代表点云几何通过）
+
+`ORACLE_HANDLE_ALIGNMENT=verified` 仍为默认：同时检查多视角 mask 和 1 cm 点云距离。
+若已配准视角的完整实例 mask 完全相同，但点云距离检查失败，可显式改为
+`ORACLE_HANDLE_ALIGNMENT=mask_verified`（仅用于 `MANIFEST_PHASE_SOURCE=demo_events`）。
+其余命令参数不变，无需关闭 `ORACLE_STRICT=1`。
+
+新模式仍要求至少两个视角、每个支持视角至少 16 像素、完整实例 mask 完全一致、
+映射唯一且无其他已配准视角的实质性冲突。隐藏实体不能靠这个模式猜测。
+点云偏差只审计，不阻止身份映射；不修正原始点云，也不保证所有 episode 都能通过。
+报告和 manifest 使用独立的 `status=mask_verified`、`geometry_verified=false`；
+逐候选视角包含 `geometry_passed` / `geometry_warnings`。
+
+后续 `tools/rewrite_replay_with_semantic_roles.py` 默认拒绝这种 manifest。
+检查几何审计并决定接受后，须显式添加 `--allow-mask-verified-handles`，
+输出到独立 buffer。正式几何可信的 upper-bound 实验仍应先定位并修复深度偏差，
+不能将 mask 身份验证通过描述为几何验证通过。
+
 正式 O2 upper-bound 不再使用最近距离、运动幅度、Qwen 或时域 ID 猜测角色。唯一语义
 契约是 `finetune/RLBench/configs/rlbench_o2_semantic_roles.yaml`：Target 是当前未完成
 子目标中必须直接接触、抓取或控制的实体；Reference 是该子目标终止条件中与 Target

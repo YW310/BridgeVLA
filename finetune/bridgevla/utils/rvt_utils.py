@@ -204,7 +204,7 @@ def get_eval_parser():
         help="Write one semantic-role audit image per evaluated episode.",
     )
     parser.add_argument(
-        "--oracle-handle-alignment", choices=("identity", "verified"),
+        "--oracle-handle-alignment", choices=("identity", "verified", "mask_verified"),
         default="verified",
         help="Stored-demo handle alignment; used only by demo_events.")
     parser.add_argument(

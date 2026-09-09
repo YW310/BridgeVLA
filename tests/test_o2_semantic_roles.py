@@ -428,14 +428,15 @@ def test_strict_reset_rejects_missing_semantic_selector():
         provider("open_drawer", task)
 
 
-def test_verified_demo_manifest_uses_saved_handles_and_reset_restores_live(tmp_path):
+@pytest.mark.parametrize('mode', ['verified', 'mask_verified'])
+def test_verified_demo_manifest_uses_saved_handles_and_reset_restores_live(tmp_path, mode):
     lid, jar0, jar1 = (FakeObject("jar_lid0", 87),
                        FakeObject("jar0", 88), FakeObject("jar1", 89))
     task = FakeTask([lid, jar0, jar1])
     task.lid, task.jars = lid, [jar0, jar1]
     value = RLBenchGTOracleProvider(
         ROLE_CONFIG, cameras=("front", "left_shoulder"), num_points=8,
-        handle_alignment="verified", alignment_output_dir=tmp_path,
+        handle_alignment=mode, alignment_output_dir=tmp_path,
         manifest_output_dir=tmp_path / "output")
     value.reset(SimpleNamespace(_task=task), "close_jar", 0, 0)
     mask = np.full((8, 8), 87)
@@ -450,6 +451,9 @@ def test_verified_demo_manifest_uses_saved_handles_and_reset_restores_live(tmp_p
             for cam in value.cameras
             for kind, size in (("intrinsics", 3), ("extrinsics", 4))
         }
+    if mode == 'mask_verified':
+        for cam in value.cameras:
+            getattr(stored, f'{cam}_point_cloud')[..., 2] += .016
     value.set_sample_frame(0)
     value.enrich(live, {})
     value.build_demo_event_manifest([stored, stored], [1])
@@ -458,11 +462,14 @@ def test_verified_demo_manifest_uses_saved_handles_and_reset_restores_live(tmp_p
     assert value._entries[0]["target_valid"]
     assert value._demo_phase_metadata["handle_namespace"] == "stored"
     report = json.loads((tmp_path / "close_jar" / "episode_0.json").read_text())
-    assert report["status"] == "verified"
+    assert report["status"] == mode
+    if mode == 'mask_verified':
+        assert report['geometry_verified'] is False
     assert report["live_to_stored"] == {"87": 99, "88": 93}
     manifest_path = (tmp_path / "output" / "semantic_role_manifests"
                      / "close_jar" / "episode_0.json")
     manifest = json.loads(manifest_path.read_text())
+    assert manifest['handle_alignment']['status'] == mode
     assert manifest["entries"][0]["target"]["handles"] == [99]
     assert set(manifest["source_frame0_masks"]) == set(value.cameras)
     value.reset(SimpleNamespace(_task=task), "close_jar", 0, 1)

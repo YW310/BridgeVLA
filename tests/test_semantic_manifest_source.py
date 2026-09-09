@@ -42,3 +42,13 @@ def test_stored_manifest_rejects_handles_outside_verified_map(tmp_path):
     _, frames, entries = rewrite._load_manifest(tmp_path, "close_jar", 0)
     assert frames == [0]
     assert entries[0]["target"]["handles"] == [99]
+    manifest['handle_alignment']['status'] = 'mask_verified'
+    path.write_text(json.dumps(manifest), encoding='utf-8')
+    with pytest.raises(ValueError, match='allow-mask-verified-handles'):
+        rewrite._load_manifest(tmp_path, 'close_jar', 0)
+    _, frames, _ = rewrite._load_manifest(tmp_path, 'close_jar', 0, allow_mask_verified=True)
+    assert frames == [0]
+    manifest['entries'][0]['target']['handles'] = [123]
+    path.write_text(json.dumps(manifest), encoding='utf-8')
+    with pytest.raises(ValueError, match='Unverified stored handles'):
+        rewrite._load_manifest(tmp_path, 'close_jar', 0, allow_mask_verified=True)
