@@ -426,3 +426,69 @@ def test_strict_reset_rejects_missing_semantic_selector():
     task = FakeTask([])
     with pytest.raises(SemanticRoleMappingError):
         provider("open_drawer", task)
+
+
+def test_verified_demo_manifest_uses_saved_handles_and_reset_restores_live(tmp_path):
+    lid, jar0, jar1 = (FakeObject("jar_lid0", 87),
+                       FakeObject("jar0", 88), FakeObject("jar1", 89))
+    task = FakeTask([lid, jar0, jar1])
+    task.lid, task.jars = lid, [jar0, jar1]
+    value = RLBenchGTOracleProvider(
+        ROLE_CONFIG, cameras=("front", "left_shoulder"), num_points=8,
+        handle_alignment="verified", alignment_output_dir=tmp_path,
+        manifest_output_dir=tmp_path / "output")
+    value.reset(SimpleNamespace(_task=task), "close_jar", 0, 0)
+    mask = np.full((8, 8), 87)
+    mask[:, 4:] = 88
+    live, stored = observation(mask), observation(mask)
+    stored.front_mask = np.where(mask == 87, 99, 93)
+    for obs in (live, stored):
+        obs.left_shoulder_mask = obs.front_mask.copy()
+        obs.left_shoulder_point_cloud = obs.front_point_cloud.copy()
+        obs.misc = {
+            f"{cam}_camera_{kind}": np.eye(size)
+            for cam in value.cameras
+            for kind, size in (("intrinsics", 3), ("extrinsics", 4))
+        }
+    value.set_sample_frame(0)
+    value.enrich(live, {})
+    value.build_demo_event_manifest([stored, stored], [1])
+    assert value._entries[0]["target"]["handles"] == [99]
+    assert value._entries[0]["reference"]["handles"] == [93]
+    assert value._entries[0]["target_valid"]
+    assert value._demo_phase_metadata["handle_namespace"] == "stored"
+    report = json.loads((tmp_path / "close_jar" / "episode_0.json").read_text())
+    assert report["status"] == "verified"
+    assert report["live_to_stored"] == {"87": 99, "88": 93}
+    manifest_path = (tmp_path / "output" / "semantic_role_manifests"
+                     / "close_jar" / "episode_0.json")
+    manifest = json.loads(manifest_path.read_text())
+    assert manifest["entries"][0]["target"]["handles"] == [99]
+    assert set(manifest["source_frame0_masks"]) == set(value.cameras)
+    value.reset(SimpleNamespace(_task=task), "close_jar", 0, 1)
+    assert value._stored_handle_map is None
+    assert value._build_assignment().target.handles == (87,)
+
+
+def test_verified_mapping_checks_future_phase_before_generating_any_entries(tmp_path):
+    cups = [FakeObject(name, h) for name, h in (("cup1", 11), ("cup2", 12), ("cup3", 13))]
+    value = RLBenchGTOracleProvider(
+        ROLE_CONFIG, cameras=("front", "left_shoulder"), handle_alignment="verified",
+        alignment_output_dir=tmp_path)
+    value.reset(SimpleNamespace(_task=FakeTask(cups)), "stack_cups", 0, 0)
+    obs = observation(np.tile([11, 12], (20, 20)), gripper_open=1.)
+    obs.left_shoulder_mask = obs.front_mask.copy()
+    obs.left_shoulder_point_cloud = obs.front_point_cloud.copy()
+    obs.misc = {
+        f"{cam}_camera_{kind}": np.eye(size)
+        for cam in value.cameras
+        for kind, size in (("intrinsics", 3), ("extrinsics", 4))
+    }
+    value.set_sample_frame(0)
+    value.enrich(obs, {})
+    with pytest.raises(SemanticRoleMappingError, match="cup3"):
+        value.build_demo_event_manifest([obs, obs], [1])
+    assert len(value._entries) == 1
+    assert not value._source_alignment_validated
+    report = json.loads((tmp_path / "stack_cups" / "episode_0.json").read_text())
+    assert report["status"] == "failed"

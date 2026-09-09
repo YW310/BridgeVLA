@@ -45,6 +45,8 @@ ORACLE_PROVIDER="${ORACLE_PROVIDER:-none}"
 ORACLE_STRICT="${ORACLE_STRICT:-0}"
 ORACLE_DEBUG="${ORACLE_DEBUG:-0}"
 ORACLE_NUM_POINTS="${ORACLE_NUM_POINTS:-512}"
+ORACLE_HANDLE_ALIGNMENT="${ORACLE_HANDLE_ALIGNMENT:-verified}"
+ORACLE_HANDLE_MAP_DIR="${ORACLE_HANDLE_MAP_DIR:-}"
 ORACLE_ROLE_CONFIG="${ORACLE_ROLE_CONFIG:-${SCRIPT_DIR}/configs/rlbench_o2_semantic_roles.yaml}"
 EXP_CFG_PATH="${EXP_CFG_PATH:-}"
 REPLAY_GROUND_TRUTH="${REPLAY_GROUND_TRUTH:-0}"
@@ -58,7 +60,9 @@ oracle_args=(
   --oracle-provider "${ORACLE_PROVIDER}"
   --oracle-role-config "${ORACLE_ROLE_CONFIG}"
   --oracle-num-points "${ORACLE_NUM_POINTS}"
+  --oracle-handle-alignment "${ORACLE_HANDLE_ALIGNMENT}"
 )
+[[ -n "${ORACLE_HANDLE_MAP_DIR}" ]] && oracle_args+=(--oracle-handle-map-dir "${ORACLE_HANDLE_MAP_DIR}")
 [[ "${ORACLE_STRICT}" == "1" ]] && oracle_args+=(--oracle-strict)
 [[ "${ORACLE_DEBUG}" == "1" ]] && oracle_args+=(--oracle-debug)
 exp_cfg_args=()

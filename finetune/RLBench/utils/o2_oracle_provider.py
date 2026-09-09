@@ -11,6 +11,7 @@ import fnmatch
 import hashlib
 import json
 import re
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
@@ -18,6 +19,7 @@ from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 import numpy as np
 import yaml
 from PIL import Image, ImageDraw
+from .oracle_handle_alignment import align_handles, HandleAlignmentError
 
 
 DEFAULT_CAMERAS = ("front", "left_shoulder", "right_shoulder", "wrist")
@@ -236,6 +238,10 @@ class RLBenchGTOracleProvider:
         strict: bool = True,
         seed: int = 0,
         debug_root: Optional[Path] = None,
+        handle_alignment: str = "identity",
+        handle_map_dir: Optional[Path] = None,
+        alignment_output_dir: Optional[Path] = None,
+        manifest_output_dir: Optional[Path] = None,
     ):
         if num_points <= 0:
             raise ValueError("num_points must be positive")
@@ -253,6 +259,18 @@ class RLBenchGTOracleProvider:
         self.strict = bool(strict)
         self.seed = int(seed)
         self.debug_root = None if debug_root is None else Path(debug_root)
+        if handle_alignment not in ("identity", "verified"):
+            raise ValueError("handle_alignment must be identity or verified")
+        self.handle_alignment = handle_alignment
+        self.handle_map_dir = None if handle_map_dir is None else Path(handle_map_dir)
+        self.alignment_output_dir = (
+            None if alignment_output_dir is None else Path(alignment_output_dir))
+        self.manifest_output_dir = (
+            None if manifest_output_dir is None else Path(manifest_output_dir))
+        self._live_initial_views = None
+        self._stored_handle_map = None
+        self._nonvisual_handles = set()
+        self._handle_alignment_audit = {}
         self._task_environment = None
         self._task = None
         self._index = None
@@ -303,6 +321,10 @@ class RLBenchGTOracleProvider:
         self._generation_attempt = int(generation_attempt)
         self._source_alignment_validated = False
         self._demo_phase_metadata = {}
+        self._live_initial_views = None
+        self._stored_handle_map = None
+        self._nonvisual_handles = set()
+        self._handle_alignment_audit = {}
         self._phase_index = 0
         self._step_index = 0
         self._sample_frame = None
@@ -395,6 +417,13 @@ class RLBenchGTOracleProvider:
     ) -> RoleEntity:
         handles = set(SceneObjectIndex.handles_with_descendants(objects))
         handles.difference_update(self._robot_handles)
+        if self._stored_handle_map is not None:
+            handles.difference_update(self._nonvisual_handles)
+            missing = handles.difference(self._stored_handle_map)
+            if missing:
+                raise SemanticRoleMappingError(
+                    f"Unmapped stored-demo handles for {semantic_name}: {sorted(missing)}")
+            handles = {self._stored_handle_map[handle] for handle in handles}
         if not handles:
             raise SemanticRoleMappingError(
                 f"Semantic object {semantic_name!r} has no non-robot handles"
@@ -905,7 +934,118 @@ class RLBenchGTOracleProvider:
         return points[indices].astype(np.float32, copy=False), True
 
     def enrich(self, obs, obs_dict: Mapping[str, object]) -> Dict[str, object]:
+        if self.handle_alignment == "verified" and self._step_index == 0:
+            self._live_initial_views = self._alignment_views(obs)
         return self._enrich(obs, obs_dict)
+
+    def _alignment_views(self, obs):
+        views = {}
+        misc = getattr(obs, "misc", None) or {}
+        for camera in self.cameras:
+            mask = getattr(obs, f"{camera}_mask", None)
+            cloud = getattr(obs, f"{camera}_point_cloud", None)
+            if mask is None or cloud is None:
+                continue
+            cloud = np.asarray(cloud)
+            if cloud.ndim == 3 and cloud.shape[0] == 3 and cloud.shape[-1] != 3:
+                cloud = np.moveaxis(cloud, 0, -1)
+            views[camera] = {
+                "mask": decode_handle_mask(mask).copy(), "cloud": cloud.copy(),
+                "intrinsics": deepcopy(misc.get(f"{camera}_camera_intrinsics")),
+                "extrinsics": deepcopy(misc.get(f"{camera}_camera_extrinsics")),
+            }
+        return views
+
+    def _prepare_stored_handles(self, obs, live_initial):
+        if self.handle_alignment == "identity":
+            return live_initial
+        report = {
+            "schema_version": "rlbench_handle_alignment_v1",
+            "task": self._task_name, "episode_idx": self._episode_idx,
+            "variation": self._variation, "status": "failed",
+            "thresholds": dict(min_pixels=16, min_views=2, min_precision=.9,
+                               min_recall=.9, max_world_distance_p95=.01),
+        }
+        original_phase = self._phase_index
+        try:
+            required = set()
+            for phase in range(self._phase_count()):
+                self._phase_index = phase
+                assignment = self._build_assignment()
+                for role in (assignment.target, assignment.reference):
+                    if role is not None and role.kind == "object":
+                        required.update(role.handles)
+            objects = {_object_handle(obj): obj for obj in self._index.objects}
+            names, excluded = {}, set()
+            for handle in sorted(required):
+                obj = objects.get(handle)
+                if obj is None:
+                    raise HandleAlignmentError(f"Role handle {handle} missing from scene index")
+                # Only simulator-confirmed non-renderable/non-shape descendants
+                # may be omitted. An occluded renderable shape still needs a map.
+                if hasattr(obj, "get_type") and (
+                    obj.get_type().name != "SHAPE" or not obj.is_renderable()
+                ):
+                    excluded.add(handle)
+                    continue
+                names[handle] = _canonical_name(_object_name(obj))
+            if len(set(names.values())) != len(names):
+                raise HandleAlignmentError("Ambiguous canonical scene object names")
+            metadata = None
+            if self.handle_map_dir is not None:
+                path = (self.handle_map_dir / self._task_name
+                        / f"episode_{self._episode_idx}.json")
+                with path.open(encoding="utf-8") as stream:
+                    metadata = json.load(stream)
+                report["metadata_path"] = str(path)
+            elif isinstance(getattr(obs, "misc", None), Mapping):
+                metadata = obs.misc.get("oracle_handle_metadata")
+                if metadata is not None:
+                    report["metadata_path"] = "demo[0].misc.oracle_handle_metadata"
+            declared = None
+            if metadata is not None:
+                expected = dict(
+                    schema_version="rlbench_name_to_handle_v1",
+                    task=self._task_name, episode_idx=self._episode_idx,
+                    variation=self._variation)
+                if not isinstance(metadata, Mapping) or any(
+                    metadata.get(k) != v for k, v in expected.items()
+                ):
+                    raise HandleAlignmentError("Acquisition mapping identity/schema mismatch")
+                declared = metadata.get("name_to_handle")
+                if not isinstance(declared, Mapping):
+                    raise HandleAlignmentError("Acquisition mapping needs name_to_handle")
+            mapping, evidence = align_handles(
+                self._live_initial_views or {}, self._alignment_views(obs), names, declared)
+            report.update(
+                status="verified", evidence=evidence,
+                live_to_stored={str(k): v for k, v in mapping.items()},
+                excluded_nonvisual_handles=sorted(excluded))
+            self._stored_handle_map = mapping
+            self._nonvisual_handles = excluded
+            self._handle_alignment_audit = report
+            translated = deepcopy(live_initial)
+            for key in ("target", "reference"):
+                role = translated.get(key)
+                if role is not None and role["kind"] == "object":
+                    role["handles"] = sorted({
+                        mapping[h] for h in role["handles"] if h not in excluded})
+            return translated
+        except Exception as exc:
+            self.stats["mapping_errors"] += 1
+            report.update(error=str(exc), evidence=getattr(exc, "evidence", {}))
+            raise SemanticRoleMappingError(
+                f"Handle alignment failed for {self._task_name} "
+                f"episode={self._episode_idx}: {exc}") from exc
+        finally:
+            self._phase_index = original_phase
+            if self.alignment_output_dir is not None:
+                path = (self.alignment_output_dir / self._task_name
+                        / f"episode_{self._episode_idx}.json")
+                path.parent.mkdir(parents=True, exist_ok=True)
+                temporary = path.with_suffix(".json.tmp")
+                temporary.write_text(json.dumps(report, indent=2), encoding="utf-8")
+                temporary.replace(path)
 
     def _enrich(
         self,
@@ -1123,6 +1263,7 @@ class RLBenchGTOracleProvider:
                 f"{self._task_name} demo_events requires a live reset frame before "
                 "stored-demo manifest generation"
             )
+        live_initial = self._prepare_stored_handles(demo[0], live_initial)
         self._validate_stored_initial(demo[0], live_initial)
         strategy_spec = self._demo_phase_strategy()
         strategy = str(strategy_spec["strategy"])
@@ -1195,6 +1336,15 @@ class RLBenchGTOracleProvider:
 
         self._source_alignment_validated = True
         self._demo_phase_metadata = {
+            "handle_namespace": "stored" if self._stored_handle_map is not None else "live",
+            "handle_alignment": self._handle_alignment_audit,
+            "source_frame0_masks": {
+                cam: hashlib.sha256(
+                    str(view["mask"].shape).encode("ascii")
+                    + np.asarray(view["mask"], dtype="<i8").tobytes()
+                ).hexdigest()
+                for cam, view in self._alignment_views(demo[0]).items()
+            },
             "phase_strategy": strategy,
             "phase_boundary_source": boundary_source,
             "phase_boundary_frames": list(boundary_frames),
@@ -1204,6 +1354,17 @@ class RLBenchGTOracleProvider:
             "contact_distances": list(contact_distances),
             "phase_count": phase_count,
         }
+        if self.manifest_output_dir is not None:
+            self._flush_current_manifest()
+            path = (self.manifest_output_dir / "semantic_role_manifests"
+                    / self._task_name / f"episode_{self._episode_idx}.json")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_suffix(".json.tmp")
+            temporary.write_text(json.dumps(
+                self._manifests[(self._task_name, self._episode_idx)], indent=2),
+                encoding="utf-8")
+            temporary.replace(path)
+        self._live_initial_views = None
         return {
             "phase_source": "demo_events",
             **self._demo_phase_metadata,

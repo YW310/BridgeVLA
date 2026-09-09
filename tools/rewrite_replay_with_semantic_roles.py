@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import bisect
+import hashlib
 import json
 import os
 import pickle
@@ -140,6 +141,18 @@ def _load_manifest(root: Path, task: str, episode_idx: int):
             "eval.py --ground-truth --oracle-provider rlbench_gt."
         )
     entries = sorted(entries, key=lambda entry: int(entry["sample_frame"]))
+    if manifest.get("handle_namespace") == "stored":
+        alignment = manifest.get("handle_alignment", {})
+        if alignment.get("status") != "verified" or not manifest.get("source_frame0_masks"):
+            raise ValueError(f"Missing verified stored-handle provenance: {path}")
+        mapped = set(alignment.get("live_to_stored", {}).values())
+        for entry in entries:
+            for key in ("target", "reference"):
+                role = entry.get(key)
+                if role and role["kind"] == "object" and not set(role["handles"]) <= mapped:
+                    raise ValueError(f"Unverified stored handles in {path}: {role}")
+    if manifest.get("source_frame0_masks"):
+        entries[0] = dict(entries[0], source_frame0_masks=manifest["source_frame0_masks"])
     frames = [int(entry["sample_frame"]) for entry in entries]
     if frames != sorted(set(frames)):
         raise ValueError(f"Manifest sample_frame values must be unique: {path}")
@@ -166,6 +179,22 @@ def _entry_for_frame(frames, entries, sample_frame: int):
             f"No semantic phase is defined at or before raw frame {sample_frame}"
         )
     return entries[index], frames[index] == sample_frame
+
+
+def _validate_source_masks(episode_dir, entries):
+    expected = entries[0].get("source_frame0_masks", {})
+    if not expected:
+        return  # Legacy manifests predate fingerprint recording.
+    masks = load_frame_masks(episode_dir, 0, tuple(expected))
+    for camera, fingerprint in expected.items():
+        mask = masks[camera]
+        actual = hashlib.sha256(
+            str(mask.shape).encode("ascii")
+            + np.asarray(mask, dtype="<i8").tobytes()).hexdigest()
+        if actual != fingerprint:
+            raise ValueError(
+                f"Manifest/raw source mask mismatch: {episode_dir}, {camera}, frame=0. "
+                "Use the same raw dataset and mask resolution as manifest generation.")
 
 
 def _role_points(role, masks, point_clouds):
@@ -353,6 +382,7 @@ def process_task(args, task, source_dir, destination_dir):
             entry, exact = _entry_for_frame(frames, entries, sample_frame)
             if episode_idx not in observation_cache:
                 episode_dir = resolve_episode_dir(args.raw_data_dir, task, episode_idx)
+                _validate_source_masks(episode_dir, entries)
                 observation_cache[episode_idx] = (
                     episode_dir, _load_low_dim_observations(episode_dir)
                 )

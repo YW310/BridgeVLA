@@ -77,6 +77,7 @@ entries，manifest 的 `generation_attempt` 从 1 开始记录最终采用的是
 TASKS="all" \
 REPLAY_GROUND_TRUTH=1 \
 MANIFEST_PHASE_SOURCE=demo_events \
+ORACLE_HANDLE_ALIGNMENT=verified \
 EVAL_DATAFOLDER=/home/yiwei/project/BridgeVLA/LPY/BridgeVLA_RLBench_TRAIN_DATA/train \
 SAVE_VIDEO=0 \
 ORACLE_PROVIDER=rlbench_gt \
@@ -122,9 +123,46 @@ live handles、各相机保存 mask 中的匹配像素数、有效点数和主�
   需检查数据目录、原始采集环境及名称到 handle 的映射。
 
 reset_to_demo 恢复场景初始条件，并不能据此保证跨 simulator 会话的 handle 编号相同。
-source_alignment_validated 仅表示现有首帧一致性检查通过，不是完整身份映射证明。
-若两套 handle 确实不同，需要原始语义名称到 handle 的映射或可验证的采集元数据；
-不能通过关闭 strict、统一偏移 ID 或选择附近实例来恢复严格 semantic-GT。
+demo_events 默认启用 ORACLE_HANDLE_ALIGNMENT=verified。在首次生成 phase 前，收集
+该 episode **所有 phase** 的 T/R 可渲染部件，建立一次 live→stored 映射，随后统一使用
+stored handles 提取保存帧点云。不可渲染的物理部件、dummy/joint 不需要 mask ID；
+首帧遮挡的可渲染部件仍必须有映射，不能默默忽略。
+
+| 参数或检查 | 行为 |
+| --- | --- |
+| ORACLE_HANDLE_ALIGNMENT=verified | 默认；仅用于 demo_events，在线 policy 仍使用 live handles |
+| ORACLE_HANDLE_ALIGNMENT=identity | 旧编号假设，仅用于已有同编号数据的兼容检查；不能解决编号错配 |
+| ORACLE_HANDLE_MAP_DIR | 可选原始采集映射根目录，文件为 task/episode_N.json；显式指定后缺文件或内容不完整会报错 |
+| 相机一致性 | 用于匹配的内外参必须存在且一致（绝对容差 1e-4），mask 和点云分辨率一致 |
+| 自动匹配证据 | 至少两个相机各有 16 个实例像素，mask 双向覆盖率均 ≥0.90，对应点的三维距离 P95 ≤1 cm，且 ≥95% 重合像素有有限点坐标 |
+| 冲突处理 | 相机之间有矛盾、对应关系不唯一、多对一、部件缺失均拒绝；不会调整阈值直到匹配成功 |
+
+优先读取显式文件，其次读取 demo[0].misc.oracle_handle_metadata；都没有时才尝试上述
+已标定多视角的 mask 对应。这是有几何证据的编号配准，**仍需检查真实数据的 audit**，
+并不等价于原始采集时记录的身份真值。manifest 用 source 区分 acquisition_metadata 与
+registered_masks；T/R 语义仍由任务配置决定。
+
+原始映射文件使用以下格式（数值仅示例，必须替换成采集时真实 ID，包含所有所需可渲染子部件）：
+
+```json
+{
+  "schema_version": "rlbench_name_to_handle_v1",
+  "task": "close_jar",
+  "episode_idx": 0,
+  "variation": 4,
+  "name_to_handle": {"jar_lid0": 12345, "jar0": 12346}
+}
+```
+
+映射元数据必须来自对应 episode；程序检查 task/variation/episode/schema，并拒绝可见区域
+与声明矛盾的映射。对于完全不可见部件，依赖采集元数据的真实性。失败证据即使
+ORACLE_DEBUG=0 也写入 semantic_oracle/handle_alignment/task/episode_N.json。
+
+每个成功 episode 的 manifest 立即原子落盘；后续 episode 失败不会丢失之前已完成的文件。
+manifest 的 handle_namespace=stored，handle_alignment 保存 live_to_stored 和各视角证据。
+离线重写器直接使用 stored handles，并检查原始第 0 帧 mask 的 SHA-256 指纹，防止对另一份
+数据应用映射。生成与重写必须使用相同 raw 数据及 mask 分辨率。无需重新生成 baseline replay。
+source_alignment_validated 表示相应检查通过；它不替代真实 simulator episode 的验收。
 
 对 18 个任务可把 `TASKS` 设为 `finetune/bridgevla/utils/rvt_utils.py` 中的完整任务列表。
 若 expert keypoint 数超过 `EPISODE_LENGTH`，离线重写器会拒绝不完整 manifest，不能静默

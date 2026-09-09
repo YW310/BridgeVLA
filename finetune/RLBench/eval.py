@@ -179,6 +179,8 @@ def eval(
     oracle_num_points=512,
     oracle_strict=False,
     oracle_debug=False,
+    oracle_handle_alignment="verified",
+    oracle_handle_map_dir=None,
 ):
     if ground_truth_retries < 0:
         raise ValueError("ground_truth_retries must be non-negative")
@@ -214,7 +216,21 @@ def eval(
             cameras=CAMERAS,
             strict=oracle_strict,
             debug_root=debug_root,
+            handle_alignment=(
+                oracle_handle_alignment if manifest_phase_source == "demo_events"
+                else "identity"),
+            handle_map_dir=oracle_handle_map_dir,
+            alignment_output_dir=(
+                Path(log_dir) / "semantic_oracle" / "handle_alignment"
+                if log_dir is not None else None),
+            manifest_output_dir=(
+                Path(log_dir) / "semantic_oracle"
+                if log_dir is not None and manifest_phase_source == "demo_events"
+                else None),
         )
+        if manifest_phase_source == "demo_events":
+            print(f"[Manifest] raw data: {eval_datafolder}; "
+                  f"handle alignment: {oracle_handle_alignment}", flush=True)
 
     gripper_mode = Discrete()
     arm_action_mode = EndEffectorPoseViaPlanning()
@@ -597,6 +613,8 @@ def _eval(args):
             oracle_num_points=args.oracle_num_points,
             oracle_strict=args.oracle_strict,
             oracle_debug=args.oracle_debug,
+            oracle_handle_alignment=args.oracle_handle_alignment,
+            oracle_handle_map_dir=args.oracle_handle_map_dir,
         )
         print(f"model {model_path}, scores {scores}")
         task_scores = {}

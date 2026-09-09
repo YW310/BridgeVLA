@@ -203,6 +203,13 @@ def get_eval_parser():
         action="store_true",
         help="Write one semantic-role audit image per evaluated episode.",
     )
+    parser.add_argument(
+        "--oracle-handle-alignment", choices=("identity", "verified"),
+        default="verified",
+        help="Stored-demo handle alignment; used only by demo_events.")
+    parser.add_argument(
+        "--oracle-handle-map-dir", default=None,
+        help="Optional acquisition mappings: ROOT/task/episode_N.json.")
     return parser
 
 

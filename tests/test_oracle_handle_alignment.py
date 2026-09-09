@@ -1,0 +1,76 @@
+import sys
+from copy import deepcopy
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "finetune" / "RLBench"))
+from utils.oracle_handle_alignment import align_handles, HandleAlignmentError
+
+
+def views():
+    mask = np.zeros((12, 12), dtype=np.int64)
+    mask[1:6, 1:6] = 87
+    mask[7:12, 7:12] = 88
+    rows, cols = np.indices(mask.shape)
+    cloud = np.stack((cols / 100., rows / 100., np.ones_like(rows)), axis=-1)
+    live = {
+        cam: dict(mask=mask.copy(), cloud=cloud.copy(),
+                  intrinsics=np.eye(3), extrinsics=np.eye(4))
+        for cam in ("front", "left_shoulder")
+    }
+    stored = deepcopy(live)
+    for data in stored.values():
+        data["mask"][mask == 87] = 99
+        data["mask"][mask == 88] = 93
+    return live, stored
+
+
+def test_registered_masks_recover_nonuniform_id_mapping():
+    live, stored = views()
+    mapping, report = align_handles(live, stored, {87: "lid", 88: "jar"})
+    assert mapping == {87: 99, 88: 93}
+    assert report["87"]["source"] == "registered_masks"
+    assert len(report["87"]["candidates"]["99"]) == 2
+
+
+@pytest.mark.parametrize("failure", ["camera", "geometry", "one_view", "split", "missing"])
+def test_unverified_correspondence_is_rejected(failure):
+    live, stored = views()
+    if failure == "camera":
+        stored["front"]["extrinsics"][0, 3] += .1
+    elif failure == "geometry":
+        stored["front"]["cloud"] += .1
+    elif failure == "one_view":
+        stored.pop("left_shoulder")
+    elif failure == "split":
+        for data in stored.values():
+            data["mask"][1:4, 1:6] = 100
+    else:
+        for data in stored.values():
+            data["mask"][data["mask"] == 99] = 0
+    with pytest.raises(HandleAlignmentError):
+        align_handles(live, stored, {87: "lid"})
+
+
+def test_numeric_identity_alone_is_not_evidence():
+    live, stored = views()
+    for data in stored.values():
+        data["mask"][data["mask"] == 93] = 87  # Same ID, wrong location.
+    mapping, _ = align_handles(live, stored, {87: "lid"})
+    assert mapping[87] == 99
+
+
+def test_acquisition_map_supports_occluded_shape_but_rejects_visible_conflict():
+    live, stored = views()
+    mapping, _ = align_handles(live, stored, {89: "hidden"}, {"hidden": 101})
+    assert mapping == {89: 101}
+    with pytest.raises(HandleAlignmentError):
+        align_handles(live, stored, {87: "lid"}, {"lid": 93})
+
+
+def test_two_entities_cannot_share_one_saved_id():
+    live, stored = views()
+    with pytest.raises(HandleAlignmentError, match="Non-injective"):
+        align_handles(live, stored, {89: "a", 90: "b"}, {"a": 101, "b": 101})
