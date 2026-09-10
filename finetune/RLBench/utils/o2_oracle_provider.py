@@ -643,7 +643,10 @@ class RLBenchGTOracleProvider:
             refs = self._attr_objects("target") or self._objects(
                 reference_spec["names"], "drag color target"
             )
-            reference = self._entity_object("color_target", refs)
+            reference = self._entity_site(
+                str(reference_spec.get("semantic_name", "color_target")),
+                self._expect_count(refs, 1, "drag color target")[0],
+            )
         elif name == "slide_block_to_color_target":
             selected = self._attr_objects("_block", "block") or self._objects(
                 target_spec["names"], "slide block"

@@ -32,6 +32,9 @@ precision/recall 均不低于 0.9，并且映射唯一。第三视角的小范�
 16 像素且没有候选映射，该部件以 `excluded_unobservable` 记入审计而不猜测 ID；只有
 同一实体至少还有一个其他部件通过多视角映射时才允许生成。若整个实体不可观测，仍会
 在 strict 模式中终止。
+`reach_and_drag` 是明确例外：RLBench 的彩色 `target0` 不出现在保存的实例 mask 中，
+因此 Reference 定义为其世界坐标中心 `site`，而不是伪造 object handle。Target 仍为
+`stick`；训练和在线测试复用同一配置，均通过现有 Gaussian site prior 表示 T/R 关系。
 点云偏差只审计，不阻止身份映射；不修正原始点云，也不保证所有 episode 都能通过。
 报告和 manifest 使用独立的 `status=mask_verified`、`geometry_verified=false`；
 逐候选视角包含 `geometry_passed` / `geometry_warnings`。

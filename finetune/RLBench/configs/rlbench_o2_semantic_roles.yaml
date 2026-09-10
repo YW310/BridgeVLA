@@ -135,7 +135,7 @@ tasks:
     resolver: reach_and_drag
     demo_phase: {strategy: single_success}
     target: {kind: object, names: [stick]}
-    reference: {kind: object, names: [target0]}
+    reference: {kind: site, names: [target0], semantic_name: color_target}
     completion: cube_on_target
 
   slide_block_to_color_target:
