@@ -489,6 +489,12 @@ def load_initial_model_checkpoint(agent, path):
             'Baseline checkpoint is incompatible with O2 initialization: '
             f'missing={disallowed_missing}, unexpected={unexpected}'
         )
+    if removed_fusion_keys:
+        print(
+            'WARNING: ignored deprecated post-hoc Oracle fusion weights '
+            f'({len(removed_fusion_keys)} tensors).',
+            flush=True,
+        )
     print(
         f'Initialized model weights from baseline checkpoint: {path}',
         flush=True,
@@ -651,12 +657,6 @@ def experiment(cmd_args):
     if cmd_args.init_checkpoint and cmd_args.resume_checkpoint:
         raise ValueError(
             '--init_checkpoint and --resume_checkpoint are mutually exclusive.'
-        )
-    if removed_fusion_keys:
-        print(
-            'WARNING: ignored deprecated post-hoc Oracle fusion weights '
-            f'({len(removed_fusion_keys)} tensors).',
-            flush=True,
         )
     if (
         cmd_args.train_oracle_adapter_only

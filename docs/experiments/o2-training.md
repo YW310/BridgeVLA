@@ -21,11 +21,12 @@ frozen visual feature x + [P_T, P_R] + 3D relation
               ↙           ↘
  translation head       R/G/C heads
         ↓                    ↑
-   decode waypoint ─── 同一位置采样 feature
+   decode waypoint ─── 推理时在同一位置采样 feature
 ```
 
 因此只有一份 O2 translation 输出 `trans`；旧的 `trans_raw`、`trans_fused` 及
-`OraclePriorFusion` 已删除。这样 translation 最终位置与 R/G/C 的 feature 采样位置一致。
+`OraclePriorFusion` 已删除。推理时 translation 最终位置与 R/G/C 的 feature 采样位置
+一致；训练时仍沿用 BridgeVLA 的 teacher forcing，在 GT `wpt_local` 处训练 R/G/C。
 
 <a id=o2-adapter-only></a>
 

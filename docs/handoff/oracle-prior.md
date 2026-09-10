@@ -246,7 +246,7 @@ P_v(x)=\exp\left(-\frac{d(x,M_v)^2}{2\sigma^2}\right)
 
     X_adapt = X + A_phi([X, downsample(P_T), downsample(P_R)])
     L = up0(X_adapt)
-    R, G, C = action_heads(X_adapt, decode(L))
+    R, G, C = action_heads(X_adapt, decode(L))  # 推理；训练使用 GT wpt_local
 
 `A_phi` 的输出层必须零初始化，因此启用 O2 后的初始输出严格等于 baseline；Oracle
 无效样本的 residual 必须强制为零。训练只保留实际参与 loss/decode 的 `trans`，

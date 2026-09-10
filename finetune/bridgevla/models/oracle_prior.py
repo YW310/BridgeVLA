@@ -2,7 +2,7 @@
 
 This module is deliberately independent of PaliGemma and the MVT feature
 extractor. It supports both the legacy single active instance and the fixed
-Target/Reference pair used by the relation-aware trainable fusion path.
+Target/Reference pair used by the relation-aware feature-adapter path.
 """
 
 from __future__ import annotations
@@ -129,7 +129,7 @@ def select_active_instance_points(
         )
 
     # Non-strict mode skips missing or ambiguous labels instead of choosing an
-    # arbitrary slot. The fusion head then falls back to raw BridgeVLA logits.
+    # arbitrary slot. The adapter residual is disabled for that sample.
     selected_valid = candidate_counts == 1
     selected_slots = torch.where(
         selected_valid,

@@ -625,8 +625,8 @@ class RVTAgent:
                 if allow_missing and not self.oracle_prior_strict:
                     if not self._oracle_missing_warning_shown:
                         print(
-                            'WARNING: ' + message + ' Falling back to raw '
-                            'BridgeVLA logits.', flush=True,
+                            'WARNING: ' + message + ' Falling back to base '
+                            'BridgeVLA features.', flush=True,
                         )
                         self._oracle_missing_warning_shown = True
                     return None, None, None
@@ -658,7 +658,7 @@ class RVTAgent:
                 if not self._oracle_missing_warning_shown:
                     print(
                         'WARNING: O2 Oracle fields are unavailable during act(); '
-                        'falling back to raw BridgeVLA logits. Missing: '
+                        'falling back to base BridgeVLA features. Missing: '
                         + ', '.join(missing),
                         flush=True,
                     )

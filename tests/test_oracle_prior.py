@@ -224,7 +224,7 @@ class OraclePriorTest(unittest.TestCase):
                 strict=True,
             )
 
-    def test_non_strict_ambiguous_gt_falls_back_to_raw(self):
+    def test_non_strict_ambiguous_gt_disables_adapter_residual(self):
         _, selected_valid, slots = select_active_instance_points(
             torch.zeros(1, 2, 4, 3),
             torch.ones(1, 2, dtype=torch.bool),
