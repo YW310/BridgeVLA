@@ -499,3 +499,61 @@ def test_verified_mapping_checks_future_phase_before_generating_any_entries(tmp_
     assert not value._source_alignment_validated
     report = json.loads((tmp_path / "stack_cups" / "episode_0.json").read_text())
     assert report["status"] == "failed"
+
+
+def test_mask_verified_omits_invisible_component_when_visible_sibling_maps(tmp_path):
+    stick = FakeObject('stick', 101)
+    target_visual = FakeObject('target0_visual', 103)
+    target = FakeObject('target0', 102, children=(target_visual,))
+    task = FakeTask([stick, target])
+    task.stick, task.target = stick, target
+    value = RLBenchGTOracleProvider(
+        ROLE_CONFIG, cameras=('front', 'left_shoulder'), num_points=8,
+        handle_alignment='mask_verified', alignment_output_dir=tmp_path,
+        manifest_output_dir=tmp_path / 'output')
+    value.reset(SimpleNamespace(_task=task), 'reach_and_drag', 13, 0)
+    mask = np.full((8, 8), 103)
+    mask[:4, :4] = 101
+    live, stored = observation(mask), observation(mask)
+    stored.front_mask = np.where(mask == 101, 201, 203)
+    for obs in (live, stored):
+        obs.left_shoulder_mask = obs.front_mask.copy()
+        obs.left_shoulder_point_cloud = obs.front_point_cloud.copy()
+        obs.misc = {
+            f'{cam}_camera_{kind}': np.eye(size)
+            for cam in value.cameras
+            for kind, size in (('intrinsics', 3), ('extrinsics', 4))
+        }
+    value.set_sample_frame(0)
+    value.enrich(live, {})
+    value.build_demo_event_manifest([stored, stored], [1])
+    entry = value._entries[0]
+    assert entry['target']['handles'] == [201]
+    assert entry['reference']['handles'] == [203]
+    report = json.loads(
+        (tmp_path / 'reach_and_drag' / 'episode_0.json').read_text())
+    assert report['excluded_unobservable_handles'] == [102]
+    assert report['evidence']['102']['source'] == 'excluded_unobservable'
+
+
+def test_mask_verified_rejects_wholly_unobservable_semantic_entity(tmp_path):
+    stick, target = FakeObject('stick', 101), FakeObject('target0', 102)
+    task = FakeTask([stick, target])
+    task.stick, task.target = stick, target
+    value = RLBenchGTOracleProvider(
+        ROLE_CONFIG, cameras=('front', 'left_shoulder'),
+        handle_alignment='mask_verified', alignment_output_dir=tmp_path)
+    value.reset(SimpleNamespace(_task=task), 'reach_and_drag', 13, 0)
+    live, stored = observation(np.full((8, 8), 101)), observation(np.full((8, 8), 201))
+    for obs in (live, stored):
+        obs.left_shoulder_mask = obs.front_mask.copy()
+        obs.left_shoulder_point_cloud = obs.front_point_cloud.copy()
+        obs.misc = {
+            f'{cam}_camera_{kind}': np.eye(size)
+            for cam in value.cameras
+            for kind, size in (('intrinsics', 3), ('extrinsics', 4))
+        }
+    value.set_sample_frame(0)
+    value.enrich(live, {})
+    with pytest.raises(SemanticRoleMappingError, match='no observable handle'):
+        value.build_demo_event_manifest([stored, stored], [1])

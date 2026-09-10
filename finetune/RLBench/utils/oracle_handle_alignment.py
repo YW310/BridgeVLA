@@ -33,7 +33,8 @@ def _interior(mask):
         padded[y:y+h, x:x+w] for y in range(3) for x in range(3)])
 
 
-def align_handles(live, stored, names, name_to_handle=None, *, mode='verified'):
+def align_handles(live, stored, names, name_to_handle=None, *, mode='verified',
+                  allow_unobservable=False):
     """Return live->stored mapping and auditable evidence for required shapes.
 
     Cameras contain mask, cloud, intrinsics and extrinsics arrays. An explicit
@@ -92,6 +93,10 @@ def align_handles(live, stored, names, name_to_handle=None, *, mode='verified'):
     }
     mapping, claimed = {}, {}
     for handle, name in sorted(names.items()):
+        live_pixels = {
+            camera: int((am == handle).sum())
+            for camera, (am, _, _, _) in views.items()
+        }
         candidates = set()
         for am, bm, _, _ in views.values():
             candidates.update(int(v) for v in np.unique(bm[am == handle]) if v != 0)
@@ -171,6 +176,12 @@ def align_handles(live, stored, names, name_to_handle=None, *, mode='verified'):
             if not contradictory and (agreeing >= 2 or (declared is not None and not mask_only)):
                 accepted.append(candidate)
         evidence[str(handle)] = dict(name=name, candidates=candidate_evidence)
+        if (not accepted and not candidates and allow_unobservable
+                and max(live_pixels.values(), default=0) < 16):
+            evidence[str(handle)].update(
+                source='excluded_unobservable',
+                live_pixels_by_camera=live_pixels)
+            continue
         if len(accepted) != 1:
             raise HandleAlignmentError(
                 f"Cannot uniquely verify {name} (live handle={handle}); "
@@ -188,6 +199,6 @@ def align_handles(live, stored, names, name_to_handle=None, *, mode='verified'):
         mapping[handle] = target
         evidence[str(handle)].update(
             stored_handle=target,
-            source=("exact_registered_masks" if mask_only else
+            source=("registered_mask_overlap" if mask_only else
                     "acquisition_metadata" if declared is not None else "registered_masks"))
     return mapping, evidence

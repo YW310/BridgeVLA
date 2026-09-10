@@ -28,6 +28,10 @@
 precision/recall 均不低于 0.9，并且映射唯一。第三视角的小范围轮廓栅格化差异只记入
 审计；单侧可见或 precision/recall 低于 0.5 的实质性冲突仍会否决。隐藏实体不能靠
 这个模式猜测。
+对于由多个 simulator handles 组成的同一语义实体，若某个部件在所有已配准视角均少于
+16 像素且没有候选映射，该部件以 `excluded_unobservable` 记入审计而不猜测 ID；只有
+同一实体至少还有一个其他部件通过多视角映射时才允许生成。若整个实体不可观测，仍会
+在 strict 模式中终止。
 点云偏差只审计，不阻止身份映射；不修正原始点云，也不保证所有 episode 都能通过。
 报告和 manifest 使用独立的 `status=mask_verified`、`geometry_verified=false`；
 逐候选视角包含 `geometry_passed` / `geometry_warnings`。

@@ -975,12 +975,15 @@ class RLBenchGTOracleProvider:
             report['geometry_policy'] = 'audit_only'
         try:
             required = set()
+            required_groups = []
             for phase in range(self._phase_count()):
                 self._phase_index = phase
                 assignment = self._build_assignment()
                 for role in (assignment.target, assignment.reference):
                     if role is not None and role.kind == "object":
                         required.update(role.handles)
+                        required_groups.append(
+                            (role.semantic_name, set(role.handles)))
             objects = {_object_handle(obj): obj for obj in self._index.objects}
             names, excluded = {}, set()
             for handle in sorted(required):
@@ -1023,11 +1026,21 @@ class RLBenchGTOracleProvider:
                     raise HandleAlignmentError("Acquisition mapping needs name_to_handle")
             mapping, evidence = align_handles(
                 self._live_initial_views or {}, self._alignment_views(obs), names, declared,
-                mode=self.handle_alignment)
+                mode=self.handle_alignment,
+                allow_unobservable=self.handle_alignment == 'mask_verified')
+            unobservable = set(names).difference(mapping)
+            for semantic_name, handles in required_groups:
+                visual_handles = handles.difference(excluded)
+                if visual_handles and not visual_handles.difference(unobservable):
+                    raise HandleAlignmentError(
+                        f"Semantic entity {semantic_name!r} has no observable handle "
+                        "with verified stored correspondence", evidence)
+            excluded.update(unobservable)
             report.update(
                 status=self.handle_alignment, evidence=evidence,
                 live_to_stored={str(k): v for k, v in mapping.items()},
-                excluded_nonvisual_handles=sorted(excluded))
+                excluded_nonvisual_handles=sorted(excluded.difference(unobservable)),
+                excluded_unobservable_handles=sorted(unobservable))
             if self.handle_alignment == 'mask_verified':
                 report['geometry_verified'] = False
                 print('[Manifest] mask_verified: identity inferred from high-overlap multi-view masks; '

@@ -149,7 +149,7 @@ def test_mask_verified_accepts_high_overlap_masks_but_audits_geometry():
     check = report['87']['candidates']['99']['front']
     assert check['passed'] and not check['geometry_passed']
     assert check['geometry_warnings'] == ['world_distance']
-    assert report['87']['source'] == 'exact_registered_masks'
+    assert report['87']['source'] == 'registered_mask_overlap'
     with pytest.raises(HandleAlignmentError):
         align_handles(live, stored, {87: 'lid'})
 
@@ -185,3 +185,23 @@ def test_mask_verified_allows_one_soft_disagreement_when_two_views_agree():
     wrist = report['87']['candidates']['99']['wrist']
     assert not wrist['passed']
     assert not wrist['hard_mask_conflict']
+
+
+def test_mask_verified_can_audit_unobservable_component_without_guessing():
+    live, stored = views()
+    mapping, report = align_handles(
+        live, stored, {87: 'lid', 89: 'invisible_component'},
+        mode='mask_verified', allow_unobservable=True)
+    assert mapping == {87: 99}
+    assert report['89']['source'] == 'excluded_unobservable'
+    assert report['89']['live_pixels_by_camera'] == {
+        'front': 0, 'left_shoulder': 0}
+
+
+def test_visible_component_without_candidate_is_not_excluded():
+    live, stored = views()
+    for data in stored.values():
+        data['mask'][data['mask'] == 99] = 0
+    with pytest.raises(HandleAlignmentError):
+        align_handles(live, stored, {87: 'lid'}, mode='mask_verified',
+                      allow_unobservable=True)
