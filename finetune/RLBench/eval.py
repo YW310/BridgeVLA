@@ -56,7 +56,8 @@ from utils.o2_oracle_provider import (
 from utils.eval_reporting import (
     EVAL_FIELDS, MANIFEST_FIELDS, atomic_write_json,
     build_eval_run_signature, evaluation_result, manifest_result,
-    numeric_task_scores, resumable_eval_episode, resumable_manifest)
+    numeric_task_scores, quarantine_file, resumable_eval_episode,
+    resumable_manifest)
 from utils.peract_utils_rlbench import (
     CAMERAS,
     SCENE_BOUNDS,
@@ -259,6 +260,11 @@ def eval(
         if manifest_phase_source == "demo_events":
             print(f"[Manifest] raw data: {eval_datafolder}; "
                   f"handle alignment: {oracle_handle_alignment}", flush=True)
+            print(
+                "[Manifest] output directory: "
+                f"{oracle_provider.manifest_output_dir / 'semantic_role_manifests'}",
+                flush=True,
+            )
 
     gripper_mode = Discrete()
     arm_action_mode = EndEffectorPoseViaPlanning()
@@ -354,7 +360,8 @@ def eval(
                         if resume_info['legacy_config_digest'] else "")
                     print(
                         f"[Manifest][RESUME] {tasks[task_id]} episode {ep} "
-                        f"already complete; skipped{suffix}", flush=True)
+                        f"already complete at {manifest_path}; "
+                        f"skipped{suffix}", flush=True)
                     failure_path = (
                         oracle_provider.manifest_output_dir
                         / "manifest_failures" / tasks[task_id]
@@ -362,9 +369,18 @@ def eval(
                     failure_path.unlink(missing_ok=True)
                     continue
                 if manifest_path.exists():
+                    rejected_path = quarantine_file(
+                        manifest_path,
+                        oracle_provider.manifest_output_dir
+                        / "rejected_semantic_role_manifests"
+                        / tasks[task_id],
+                    )
                     print(
                         f"[Manifest][RESUME] {tasks[task_id]} episode {ep} "
-                        f"will regenerate: {resume_error}", flush=True)
+                        f"will regenerate: {resume_error}. Incompatible file "
+                        f"moved from {manifest_path} to {rejected_path}",
+                        flush=True,
+                    )
             elif eval_resume:
                 episode_result_path = (
                     Path(log_dir) / "episode_results" / tasks[task_id]

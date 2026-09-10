@@ -23,7 +23,9 @@
   字段无效会重跑。
 - `MANIFEST_PHASE_SOURCE=demo_events` 时复用已验证的 manifest，显示
   `[Manifest][RESUME] ... skipped`。缺失、损坏、未完成、alignment 模式或当前 role
-  YAML 摘要不一致的 episode 会重新生成。
+  YAML 摘要不一致的 episode 会重新生成。启动时会打印本次实际读取的完整
+  `semantic_role_manifests` 路径；不兼容旧文件先无损移动到
+  `rejected_semantic_role_manifests/<task>/`，避免失败重试时旧文件继续混在有效目录。
 - `sim_replay` expert-action manifest 不能安全地从普通评估结果恢复；需要可恢复生成时使用
   `demo_events`。
 - resume 不支持同时保存视频或逐帧可视化，因为跳过的 episode 无法补回这些视觉产物。

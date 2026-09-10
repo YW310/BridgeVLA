@@ -16,7 +16,7 @@ sys.path.insert(0, str(ROOT / 'finetune' / 'RLBench'))
 from utils.eval_reporting import (
     EVAL_FIELDS, MANIFEST_FIELDS, atomic_write_json, build_eval_run_signature,
     evaluation_result, manifest_result, numeric_task_scores,
-    resumable_eval_episode, resumable_manifest)
+    quarantine_file, resumable_eval_episode, resumable_manifest)
 
 
 def accumulator():
@@ -174,6 +174,20 @@ def test_standard_eval_resume_is_signature_bound_and_atomic(tmp_path):
 
     info, error = resumable_eval_episode(path, 'place_cups', 7, 'different')
     assert info is None and error == 'run signature mismatch'
+
+
+def test_incompatible_manifest_is_quarantined_without_overwrite(tmp_path):
+    source = tmp_path / 'semantic_role_manifests' / 'episode_85.json'
+    source.parent.mkdir()
+    source.write_text('old', encoding='utf-8')
+    quarantine = tmp_path / 'rejected'
+    first = quarantine_file(source, quarantine)
+    assert first.name == 'episode_85.json'
+    assert first.read_text(encoding='utf-8') == 'old'
+    source.write_text('new', encoding='utf-8')
+    second = quarantine_file(source, quarantine)
+    assert second.name == 'episode_85.1.json'
+    assert second.read_text(encoding='utf-8') == 'new'
 
 
 def test_standard_eval_signature_changes_with_config_and_runtime_setting(tmp_path):

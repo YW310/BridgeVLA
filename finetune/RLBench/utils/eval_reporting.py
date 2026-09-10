@@ -116,6 +116,21 @@ def atomic_write_json(path, value):
     os.replace(str(temporary), str(path))
 
 
+def quarantine_file(path, directory):
+    """Move an incompatible cache entry aside without overwriting prior evidence."""
+    path, directory = Path(path), Path(directory)
+    if not path.is_file():
+        return None
+    directory.mkdir(parents=True, exist_ok=True)
+    target = directory / path.name
+    suffix = 1
+    while target.exists():
+        target = directory / f'{path.stem}.{suffix}{path.suffix}'
+        suffix += 1
+    os.replace(str(path), str(target))
+    return target
+
+
 def resumable_eval_episode(path, task, episode_idx, run_signature_sha256):
     """Return a verified standard-eval episode journal, else a rejection reason."""
     path = Path(path)
