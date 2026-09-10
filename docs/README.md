@@ -18,7 +18,8 @@ docs/
 │   ├── o2-training.md
 │   └── results.md
 ├── design/                           # 研究方案（非实现承诺）
-│   └── role-relation-prior.md
+│   ├── role-relation-prior.md        # 精简主线与实施顺序
+│   └── role-relation-details.md      # 公式、接口与验收细节
 └── handoff/                          # 实现背景与交接
     └── oracle-prior.md
 ```
@@ -38,7 +39,9 @@ O2 在训练和评估时使用 GT 实例，不能作为无 GT 的部署结果报
 
 ## 3. 研究设计
 
-[Role / relation / phase 设计](design/role-relation-prior.md)：BridgeVLA-ARE、当前 phase 下的候选选择、遮挡与物体视角、pair heatmap、cost 及验收条件。
+[精简设计](design/role-relation-prior.md)：ARE 主线、当前 phase 的候选与物体视角、pair heatmap、cost 决策及最小实现。
+
+[详细设计与验收](design/role-relation-details.md)：公式、监督、接口字段、相关工作、任务例子与验收反例；按需查阅。
 
 该文档描述下一阶段研究方案；请以其中的实现边界为准，不将方案视为已完成实现。
 
