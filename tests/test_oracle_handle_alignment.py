@@ -187,6 +187,34 @@ def test_mask_verified_allows_one_soft_disagreement_when_two_views_agree():
     assert not wrist['hard_mask_conflict']
 
 
+def test_mask_verified_does_not_treat_15_of_16_overlap_as_hard_conflict():
+    # Regression for insert_onto_square_peg episode 85: two exact views must
+    # not be vetoed because a third thin-ring silhouette differs by one pixel
+    # across the positive-evidence boundary.
+    live, stored = views()
+    live['right_shoulder'] = deepcopy(live['front'])
+    stored['right_shoulder'] = deepcopy(stored['front'])
+    live_mask = live['right_shoulder']['mask']
+    stored_mask = stored['right_shoulder']['mask']
+    live_mask[live_mask == 87] = 0
+    stored_mask[stored_mask == 99] = 0
+    selected = np.flatnonzero(live_mask == 0)[:16]
+    live_mask.flat[selected[:15]] = 87
+    stored_mask.flat[selected] = 99
+
+    mapping, report = align_handles(
+        live, stored, {87: 'square_ring'}, mode='mask_verified')
+
+    assert mapping == {87: 99}
+    check = report['87']['candidates']['99']['right_shoulder']
+    assert check['live_pixels'] == 15
+    assert check['stored_pixels'] == 16
+    assert check['precision'] == pytest.approx(15 / 16)
+    assert check['recall'] == 1.
+    assert not check['passed']
+    assert not check['hard_mask_conflict']
+
+
 def test_mask_verified_can_audit_unobservable_component_without_guessing():
     live, stored = views()
     mapping, report = align_handles(

@@ -158,10 +158,14 @@ def align_handles(live, stored, names, name_to_handle=None, *, mode='verified',
                     # in two views; geometry remains audit-only.
                     ok = (min(na, nb) >= 16
                           and precision >= .9 and recall >= .9)
+                    # Pixel count controls whether a view can vote positively;
+                    # it must not manufacture a contradiction by itself. For
+                    # example, 15/16 pixels with 15-pixel overlap is strong
+                    # supporting evidence, while 0/16 is still rejected by
+                    # precision/recall below the hard-conflict threshold.
                     hard_conflict = (
                         max(na, nb) >= 16
-                        and (min(na, nb) < 16
-                             or precision < .5 or recall < .5))
+                        and (precision < .5 or recall < .5))
                     checks[camera]['passed'] = bool(ok)
                     checks[camera]['hard_mask_conflict'] = bool(hard_conflict)
                     checks[camera]['geometry_warnings'] = [

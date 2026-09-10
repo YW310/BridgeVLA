@@ -59,6 +59,9 @@ manifest，也不会伪造 handle 映射；错误记录原子写入
 precision/recall 均不低于 0.9，并且映射唯一。第三视角的小范围轮廓栅格化差异只记入
 审计；单侧可见或 precision/recall 低于 0.5 的实质性冲突仍会否决。隐藏实体不能靠
 这个模式猜测。
+`min_pixels=16` 只决定某视角能否提供正向投票，不单独制造 hard conflict。例如
+15/16 像素且 15 像素重合属于弱支持，不会否决另外两个完全一致的视角；0/16 或
+precision/recall 低于 0.5 仍是 hard conflict。
 薄环等只在一个相机达到 16 像素的实体采用受限回退：候选必须全局唯一，并且只有一个
 可见检查、至少 32 像素、mask precision/recall 均不低于 0.98、点云 P95 距离不超过
 1 cm。报告以 `registered_mask_overlap_single_view_geometry` 标记；不满足任一条件仍拒绝。
