@@ -654,7 +654,22 @@ class RLBenchGTOracleProvider:
                 target_spec["names"], "slide block"
             )
             target = self._entity_object("block", selected)
-            reference = self._site_from_spec(reference_spec, "slide color target")
+            # The PerAct RLBench task creates success1..success4 dynamically in
+            # init_episode and does not retain the selected sensor as a task
+            # attribute. The registered DetectedCondition is the authoritative
+            # variation-specific termination definition.
+            success_detectors = _unique_scene_objects([
+                detector
+                for condition in getattr(self._task, "_success_conditions", ())
+                for detector in (getattr(condition, "_detector", None),)
+                if detector is not None
+            ])
+            success_detectors = self._expect_count(
+                success_detectors, 1, "slide color target success detector")
+            reference = self._entity_site(
+                str(reference_spec.get("semantic_name", "color_target")),
+                success_detectors[0],
+            )
         elif name == "stack_blocks":
             blocks = self._attr_objects("target_blocks")
             if blocks:

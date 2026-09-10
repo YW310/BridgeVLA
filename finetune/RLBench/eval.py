@@ -226,7 +226,15 @@ def eval(
     if manifest_continue_on_error and manifest_phase_source != "demo_events":
         raise ValueError(
             "manifest_continue_on_error is only valid with demo_events")
-    agent.eval()
+    manifest_only = manifest_phase_source == "demo_events"
+    if manifest_only:
+        if agent is not None:
+            raise ValueError(
+                "demo_events manifest generation must run without a model agent")
+    else:
+        if agent is None:
+            raise ValueError("model evaluation requires an agent")
+        agent.eval()
 
     camera_resolution = [IMAGE_SIZE, IMAGE_SIZE]
     use_rlbench_gt = oracle_provider_name == "rlbench_gt"
@@ -327,7 +335,34 @@ def eval(
     rollout_generator = RolloutGenerator(device)
     stats_accumulator = SimpleAccumulator(eval_video_fps=30)
 
-    eval_env.launch()
+    all_manifests_resumable = False
+    if eval_resume and manifest_phase_source == "demo_events":
+        assert oracle_provider is not None
+        task_name = tasks[0]
+        checks = [
+            resumable_manifest(
+                oracle_provider.manifest_output_dir
+                / "semantic_role_manifests" / task_name
+                / f"episode_{episode_idx}.json",
+                task_name,
+                episode_idx,
+                oracle_handle_alignment,
+                oracle_provider.role_config_sha256,
+            )[0]
+            for episode_idx in range(
+                start_episode, start_episode + eval_episodes)
+        ]
+        all_manifests_resumable = all(value is not None for value in checks)
+
+    environment_launched = not all_manifests_resumable
+    if environment_launched:
+        eval_env.launch()
+    else:
+        print(
+            "[Manifest][RESUME] All requested episodes are complete; "
+            "skipping CoppeliaSim launch.",
+            flush=True,
+        )
 
     current_task_id = -1
 
@@ -692,7 +727,8 @@ def eval(
 
     if oracle_provider is not None:
         oracle_provider.dump(Path(log_dir) / "semantic_oracle")
-    eval_env.shutdown()
+    if environment_launched:
+        eval_env.shutdown()
 
     if logging:
         csv_fp.close()
@@ -777,16 +813,31 @@ def _eval(args):
             )
 
   
-        agent = load_agent(
-            model_path=model_path,
-            exp_cfg_path=args.exp_cfg_path,
-            mvt_cfg_path=args.mvt_cfg_path,
-            eval_log_dir=args.eval_log_dir,
-            device=args.device,
-            use_input_place_with_mean=args.use_input_place_with_mean,
-        )
+        manifest_only = (
+            args.ground_truth and args.manifest_phase_source == "demo_events")
+        if manifest_only:
+            # Stored-demo semantic manifest generation never calls agent.act().
+            # Avoid loading PaliGemma/checkpoint shards both for fresh work and
+            # resume-only runs; the model path remains an output namespace for
+            # backward-compatible directory layout.
+            agent = None
+            print(
+                "Manifest generation is model-free; skipping PaliGemma and "
+                "checkpoint loading.",
+                flush=True,
+            )
+        else:
+            agent = load_agent(
+                model_path=model_path,
+                exp_cfg_path=args.exp_cfg_path,
+                mvt_cfg_path=args.mvt_cfg_path,
+                eval_log_dir=args.eval_log_dir,
+                device=args.device,
+                use_input_place_with_mean=args.use_input_place_with_mean,
+            )
         if args.oracle_provider == "rlbench_gt":
-            if not agent.oracle_prior_enabled and not args.ground_truth:
+            if (agent is not None and not agent.oracle_prior_enabled
+                    and not args.ground_truth):
                 raise ValueError(
                     "ORACLE_PROVIDER=rlbench_gt requires an O2 experiment config "
                     "with rvt.oracle_prior_mode=o2_gt_instance unless "
@@ -804,16 +855,16 @@ def _eval(args):
                         f"generation (strict={bool(args.oracle_strict)}, "
                         f"phase_source={args.manifest_phase_source})"
                     )
-            else:
+            elif agent is not None:
                 agent.oracle_prior_strict = bool(args.oracle_strict)
                 print(
                     "Evaluation branch: O2 semantic-GT Target/Reference fusion "
                     f"(strict={agent.oracle_prior_strict})"
                 )
-        elif agent.oracle_prior_enabled:
+        elif agent is not None and agent.oracle_prior_enabled:
             agent.oracle_prior_mode = "none"
             print("Evaluation branch: O2 checkpoint with raw BridgeVLA outputs")
-        else:
+        elif agent is not None:
             print("Evaluation branch: original baseline")
 
         agent_eval_log_dir = os.path.join(

@@ -85,7 +85,6 @@ class RolloutGenerator(object):
                 self._validate_ground_truth_actions(actions, eval_demo_seed)
         else:
             obs = env.reset()
-        agent.reset()
         if manifest_phase_source == "demo_events":
             manifest_info = env.build_manifest_from_demo_events()
             info = {
@@ -103,6 +102,7 @@ class RolloutGenerator(object):
                 info=info,
             )
             return
+        agent.reset()
         obs_history = {k: [np.array(v, dtype=self._get_type(v))] * timesteps for k, v in obs.items()}
         for step in range(episode_length):
 
@@ -239,7 +239,6 @@ class RolloutGenerator(object):
                 self._validate_ground_truth_actions(actions, eval_demo_seed)
         else:
             obs = env.reset()
-        agent.reset()
         if manifest_phase_source == "demo_events":
             manifest_info = env.build_manifest_from_demo_events()
             info = {
@@ -257,6 +256,7 @@ class RolloutGenerator(object):
                 info=info,
             )
             return
+        agent.reset()
         obs_history = {k: [np.array(v, dtype=self._get_type(v))] * timesteps for k, v in obs.items()}
         visualize_save_dir=os.path.join(visualize_save_dir,env._lang_goal)
         if not os.path.exists(visualize_save_dir):

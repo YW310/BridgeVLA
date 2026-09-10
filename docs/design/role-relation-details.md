@@ -1,6 +1,6 @@
 # BridgeVLA-ARE：详细设计与验收
 
-> 阅读入口：[精简设计](role-relation-prior.md)。本文保留 2026-09-07 的详细推导、接口与验收条件；2026-09-10 仅作分层整理，未新增实现或实验结论。
+> 阅读入口：[精简设计](role-relation-prior.md)。精简设计定义当前建议 MVP；本文保留更完整的推导、接口、扩展路线与验收条件，其中 learned execution risk、主动再观测和长期 belief/recovery 不属于首版实现承诺。
 
 [文档索引](../README.md) · [项目首页](../../README.md)
 

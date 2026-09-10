@@ -2,7 +2,11 @@
 
 [文档索引](../README.md) · [详细设计](role-relation-details.md) · [Oracle 交接](../handoff/oracle-prior.md) · [O2 实验](../experiments/o2-training.md)
 
-> 更新：2026-09-10。本文是未实现的研究方案；本轮只收敛文档，不代表新增代码或实验结论。公式、接口、相关工作与验收反例保留在详细设计中。
+> 更新：2026-09-10。本文是未实现的研究方案。主文档定义建议 MVP；详细设计保留完整扩展、公式和验收条件。
+
+**建议 MVP：phase-conditioned top-k object pairs + per-object view bank + pair-specific heatmaps + calibrated grounding cost。**
+
+Learned execution risk、主动再观测和通用长期记忆暂不作为首版贡献。
 
 ## 1. 主线：用 ARE 组织 object、relation 和 phase
 
@@ -46,12 +50,12 @@ Long-horizon 操作不是每步切换 relation，而是持续执行一个 edit�
 
 保留完整 baseline 时，输入预算为 `6+3|U|` 张图、`2+|U|` 组三视角 VLM 编码；`|U|≤4` 时最多 18 张图、6 组。pair head、3D recovery 和执行检查另计，是否可控必须实测，不能只凭候选少下结论。
 
-## 3. Cost 分开回答三个问题
+## 3. Pair cost：先选对对象，再判断动作是否可用
 
 | 输出 | 回答的问题 | 决策用途 |
 | --- | --- | --- |
 | Grounding：`p_G(g)` | T/R 绑定是否符合任务？ | 额外物体编码前排序；含候选漏召回的 `OTHER_G` |
-| Execution：`p_E(ready(a)\|g)` | 给定绑定下，这个完整动作是否可执行？ | 动作生成后检查与拒绝 |
+| Execution readiness | 给定绑定下，这个完整动作是否可执行？ | 首版由检查器给出；有 proposal outcome 后再学习 `p_E` |
 | Completion：`d_t` | 当前目标是否已经稳定成立？ | 与 keep 证据共同控制正常 phase 推进 |
 
 前两者可写为负对数 cost，但第一版**不做任意加权总分**：易执行不能补偿错误身份；heatmap 尖锐也不等于正确或可执行。
@@ -62,7 +66,7 @@ Long-horizon 操作不是每步切换 relation，而是持续执行一个 edit�
 - 最多对 `M≤2` 个完整 proposal 做较重检查；仅当任务允许多个等价绑定时，才可在它们之间按执行风险选择。
 - completion 只看已成立证据；遮挡、cost 升高或未来 completion hazard 都不直接触发完成。
 
-grounding 与 execution 分别在独立 episode 集上校准，未知检查项保留 unknown。只用成功示范不能声称学到了执行概率；缺少负例时先用可核验检查器并报告覆盖率。
+首版将 **grounding cost** 作为 learned pair score；support、IK 和碰撞只作为可核验的 validity gate。只有采集到模型 proposal 的成功／失败数据后，才学习并校准 execution probability。两类分数必须分开，未知检查项保留 unknown。
 
 ## 4. 最小实现：完整 baseline + 有条件的局部修正
 
@@ -74,17 +78,27 @@ grounding 与 execution 分别在独立 episode 集上校准，未知检查项�
 - **有界状态**：最多维护 committed pair 的两个短时几何 beliefs；跨 edit 的 keep 证据另存有容量限制、实体锚点和更新时间的 ledger。
 - **恢复不是免费原语**：REOBSERVE 必须有真实新观测和可验证控制器；没有时显式拒绝／结束尝试。baseline fallback 本身不保证安全。
 
-复用当前 O2 的 prior、adapter/fusion 与日志接口，但不把现有 Oracle 实现等同于 ARE。第一版不做完整图规划、任意视角搜索、长期全场景记忆或每 pair 独立 expert。
+复用当前 O2 的 prior、adapter/fusion 与日志接口，但不把现有 Oracle 实现等同于 ARE。
+
+首版只实现：
+
+1. teacher phase/edit 下的 T/R/NULL 候选与 calibrated grounding score；
+2. 去重后的 per-object 三视角编码；
+3. 每个合法 pair 的独立 translation heatmap 和 baseline residual；
+4. event-gated phase transition。
+
+首版不实现 learned execution-risk head、主动 REOBSERVE、完整图规划、任意视角搜索、长期全场景记忆或每 pair 独立 expert。
 
 ## 5. 验证顺序：先证明有用，再增加预测与控制
 
-1. **契约与基线**：先通过 zero-residual 等价、NULL、遮挡保留、support mask、完整动作检查等小型反例。
-2. **分开验证两条机制**：Oracle ARE-only 检验关系编辑条件化；Oracle PairHM 检验 pair heatmap。分别对比同监督／同计算的独立 heads 和 object-view 基线。
-3. **替换为预测候选**：加入 observed+tracked proposal、grounding、OTHER_G；逐步撤去 GT phase/crop，报告 pair recall 与部署误差。
-4. **再做执行与长链**：采集实际 proposal 的执行标签，接入 completion、keep 与可用恢复控制；最后联合训练并独立校准。
+1. **契约与基线**：通过 zero-residual 等价、NULL、support mask 与 pair 不混合等小型反例。
+2. **Oracle PairHM**：固定 GT phase 和 pair，只验证 per-object views 与 pair heatmap 是否优于等计算的 object-view／独立-head baseline。
+3. **预测 pair**：加入 phase-conditioned top-k、grounding cost 和 `OTHER_G`，报告 pair recall、校准和闭环收益。
+4. **关系切换**：加入 completion/keep 事件，验证长链中的过早切换、延迟切换和身份连续性。
+5. **可选扩展**：只有瓶颈明确且具备数据时，再加入 learned execution risk、belief/recovery 或主动观测。
 
-最终至少报告：总体闭环成功率、错误绑定、过早／延迟切换、keep violation、grounding/执行风险校准，以及端到端延迟、显存和总动作数。拒绝、超时和再观测代价不能从总体结果中剔除。
+最终至少报告：总体闭环成功率、错误绑定、过早／延迟切换、keep violation、grounding 校准、validity-gate coverage，以及端到端延迟、显存和总动作数。拒绝、超时和再观测代价不能从总体结果中剔除；只有启用 learned execution risk 时才报告其校准。
 
-ARE-only、PairHM、grounding cost、execution gate 分别决定保留与否；一个无收益不自动否定其他分支。只有得到匹配预算下的实测证据，才主张结构或效率收益；暂不宣称“最小充分状态”。
+PairHM、grounding cost 和 relation transition 逐级决定是否继续；上一阶段没有收益，不用后续复杂模块掩盖。只有得到匹配预算下的实测证据，才主张结构或效率收益；暂不宣称“最小充分状态”。
 
 完整公式、监督项、接口字段、任务例子与 11 项验收反例见 [详细设计](role-relation-details.md)。

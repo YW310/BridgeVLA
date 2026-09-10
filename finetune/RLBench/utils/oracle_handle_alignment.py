@@ -188,13 +188,24 @@ def align_handles(live, stored, names, name_to_handle=None, *, mode='verified',
                     for check in checks.values()
                 )
             )
-            if not contradictory and (
-                    agreeing >= 2 or single_view_geometry
-                    or (declared is not None and not mask_only)):
+            # In mask_verified mode the documented identity certificate is a
+            # quorum of two independently registered, high-overlap views.  A
+            # third camera can legitimately disagree because a thin/contact
+            # surface is occluded or crosses a raster boundary after reset;
+            # it must not veto two positive views.  With fewer than two votes
+            # we retain the conservative single-view geometry requirement.
+            accepted_by_mask_quorum = mask_only and agreeing >= 2
+            accepted_by_single_view = (
+                mask_only and not contradictory and single_view_geometry)
+            accepted_by_verified = (
+                not mask_only and not contradictory
+                and (agreeing >= 2 or declared is not None))
+            if (accepted_by_mask_quorum or accepted_by_single_view
+                    or accepted_by_verified):
                 accepted.append(candidate)
                 accepted_sources[candidate] = (
                     'single_view_mask_geometry'
-                    if single_view_geometry else 'multi_view_masks')
+                    if accepted_by_single_view else 'multi_view_masks')
         evidence[str(handle)] = dict(name=name, candidates=candidate_evidence)
         if (not accepted and not candidates and allow_unobservable
                 and max(live_pixels.values(), default=0) < 16):

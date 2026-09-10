@@ -154,7 +154,7 @@ def test_mask_verified_accepts_high_overlap_masks_but_audits_geometry():
         align_handles(live, stored, {87: 'lid'})
 
 
-@pytest.mark.parametrize('failure', ['one_view', 'low_overlap', 'split', 'hidden_metadata', 'third_view'])
+@pytest.mark.parametrize('failure', ['one_view', 'low_overlap', 'split', 'hidden_metadata'])
 def test_mask_verified_does_not_guess_identity(failure):
     live, stored = views()
     names, declared = {87: 'lid'}, None
@@ -167,12 +167,25 @@ def test_mask_verified_does_not_guess_identity(failure):
         stored['front']['mask'][1:4, 1:6] = 100
     elif failure == 'hidden_metadata':
         names, declared = {89: 'hidden'}, {'hidden': 101}
-    else:
-        live['wrist'] = deepcopy(live['front'])
-        stored['wrist'] = deepcopy(stored['front'])
-        stored['wrist']['mask'][1:5, 1:5] = 0
     with pytest.raises(HandleAlignmentError):
         align_handles(live, stored, names, declared, mode='mask_verified')
+
+
+def test_mask_verified_two_view_quorum_survives_third_view_conflict():
+    live, stored = views()
+    live['wrist'] = deepcopy(live['front'])
+    stored['wrist'] = deepcopy(stored['front'])
+    stored['wrist']['mask'][1:5, 1:5] = 0
+
+    mapping, report = align_handles(
+        live, stored, {87: 'small_or_partly_occluded_shape'},
+        mode='mask_verified')
+
+    assert mapping == {87: 99}
+    assert report['87']['candidates']['99']['front']['passed']
+    assert report['87']['candidates']['99']['left_shoulder']['passed']
+    assert report['87']['candidates']['99']['wrist']['hard_mask_conflict']
+    assert report['87']['source'] == 'registered_mask_overlap'
 
 
 def test_mask_verified_allows_one_soft_disagreement_when_two_views_agree():

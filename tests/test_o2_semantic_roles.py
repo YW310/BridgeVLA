@@ -192,6 +192,39 @@ def test_close_jar_merges_lid_children_and_selects_variation_jar(tmp_path):
     assert manifest["entries"][0]["phase_id"] == "close_jar:0"
 
 
+@pytest.mark.parametrize("variation", range(4))
+def test_slide_block_reference_comes_from_registered_success_detector(variation):
+    block = FakeObject("block", 10)
+    sites = [
+        FakeObject(f"success{index + 1}", 20 + index,
+                   position=(float(index), 0.0, 0.0))
+        for index in range(4)
+    ]
+    task = FakeTask([block, *sites])
+    task.block = block
+    task._success_conditions = [
+        SimpleNamespace(_detector=sites[variation])
+    ]
+    value = RLBenchGTOracleProvider(
+        ROLE_CONFIG, cameras=("front",), num_points=8, strict=True)
+    value.reset(
+        SimpleNamespace(_task=task),
+        "slide_block_to_color_target",
+        variation,
+        variation,
+    )
+
+    assignment = value._build_assignment()
+
+    assert assignment.target.semantic_name == "block"
+    assert assignment.target.handles == (10,)
+    assert assignment.reference.semantic_name == "color_target"
+    assert assignment.reference.kind == "site"
+    assert assignment.reference.handles == ()
+    np.testing.assert_allclose(
+        assignment.reference.site_position, sites[variation].position)
+
+
 def test_retry_discards_failed_manifest_attempt_before_restarting(tmp_path):
     lid = FakeObject("jar_lid0", 11)
     jar0 = FakeObject("jar0", 21)

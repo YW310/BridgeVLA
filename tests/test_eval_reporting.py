@@ -92,6 +92,15 @@ def test_eval_wires_separate_manifest_csv_and_tensorboard_namespace():
     assert 'eval_resume does not support sim_replay ground-truth execution' in source
     assert '[Manifest][FAILED]' in source
     assert 'rlbench_manifest_failure_v1' in source
+    assert 'Manifest generation is model-free; skipping PaliGemma' in source
+    assert 'demo_events manifest generation must run without a model agent' in source
+    assert 'All requested episodes are complete' in source
+    assert 'if environment_launched:' in source
+    rollout_source = (
+        ROOT / 'finetune/bridgevla/libs/YARR/yarr/utils/rollout_generator.py'
+    ).read_text(encoding='utf-8')
+    assert rollout_source.index('if manifest_phase_source == "demo_events":') < (
+        rollout_source.index('agent.reset()'))
     parser_source = (
         ROOT / 'finetune/bridgevla/utils/rvt_utils.py'
     ).read_text(encoding='utf-8')
