@@ -118,14 +118,7 @@ def load_agent(
 
     rvt = MVT(
         renderer_device=device,
-        oracle_prior_fusion=(
-            exp_cfg.rvt.oracle_prior_mode == 'o2_gt_instance'
-        ),
-        oracle_prior_hidden_channels=exp_cfg.oracle_prior_hidden_channels,
         oracle_prior_adapter_rank=exp_cfg.oracle_prior_adapter_rank,
-        oracle_prior_multiscale_fusion=(
-            exp_cfg.oracle_prior_multiscale_fusion
-        ),
         oracle_prior_relation=exp_cfg.rvt.oracle_prior_relation,
         oracle_relation_gated_adapter=exp_cfg.oracle_relation_gated_adapter,
         oracle_adapter_translation_only=exp_cfg.oracle_adapter_translation_only,
@@ -348,6 +341,7 @@ def eval(
                 episode_idx,
                 oracle_handle_alignment,
                 oracle_provider.role_config_sha256,
+                oracle_provider.task_resolver_version(task_name),
             )[0]
             for episode_idx in range(
                 start_episode, start_episode + eval_episodes)
@@ -386,7 +380,8 @@ def eval(
                     / f"episode_{ep}.json")
                 resume_info, resume_error = resumable_manifest(
                     manifest_path, tasks[task_id], ep, oracle_handle_alignment,
-                    oracle_provider.role_config_sha256)
+                    oracle_provider.role_config_sha256,
+                    oracle_provider.task_resolver_version(tasks[task_id]))
                 if resume_info is not None:
                     task_rewards.append(100.0)
                     logical_transitions += resume_info['logical_transitions']
@@ -512,6 +507,9 @@ def eval(
                                 'handle_alignment': oracle_handle_alignment,
                                 'role_config_sha256': (
                                     oracle_provider.role_config_sha256),
+                                'resolver_version': (
+                                    oracle_provider.task_resolver_version(
+                                        tasks[task_id])),
                             },
                         )
                         print(

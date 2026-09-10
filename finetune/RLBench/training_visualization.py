@@ -14,8 +14,7 @@ _COLUMNS = (
     ("input", "Input"),
     ("gt", "GT"),
     ("prior", "Oracle prior"),
-    ("raw_pred", "Raw pred"),
-    ("pred", "Fused pred"),
+    ("pred", "Adapted pred"),
 )
 
 
@@ -80,7 +79,7 @@ def _stage_montage(
     title_by_key = dict(_COLUMNS)
     column_order = (
         'input', 'gt', 'target_prior', 'reference_prior',
-        'prior', 'raw_pred', 'pred',
+        'prior', 'pred',
     )
     columns = tuple(
         (key, title_by_key[key])

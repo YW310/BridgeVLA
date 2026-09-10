@@ -42,6 +42,7 @@ from utils.get_dataset import get_dataset
 from bridgevla.utils.rvt_utils import (
     get_num_feat,
     RLBENCH_TASKS,
+    strip_deprecated_oracle_fusion_state,
 )
 from utils.peract_utils_rlbench import (
     CAMERAS,
@@ -53,7 +54,6 @@ from utils.peract_utils_rlbench import (
 from training_utils import (
     build_batch_plan,
     freeze_for_oracle_adaptation,
-    freeze_for_oracle_fusion,
     optimizer_steps_per_epoch,
     should_disable_rgc_loss,
 )
@@ -213,10 +213,8 @@ def train(
                     'total_loss_gain_pct',
                     'trans_loss',
                     'trans_loss_base',
-                    'trans_loss_raw',
                     'trans_loss_valid',
                     'trans_loss_base_valid',
-                    'trans_loss_raw_valid',
                     'oracle_prior_coverage',
                     'rot_loss_x',
                     'rot_loss_y',
@@ -379,10 +377,8 @@ def train_with_accumulation(
                     'total_loss_gain_pct',
                     'trans_loss',
                     'trans_loss_base',
-                    'trans_loss_raw',
                     'trans_loss_valid',
                     'trans_loss_base_valid',
-                    'trans_loss_raw_valid',
                     'oracle_prior_coverage',
                     'rot_loss_x',
                     'rot_loss_y',
@@ -445,7 +441,16 @@ def load_training_checkpoint(agent, path):
     if isinstance(model, DDP):
         model = model.module
 
-    model.load_state_dict(checkpoint["model_state"])
+    model_state, removed_fusion_keys = strip_deprecated_oracle_fusion_state(
+        checkpoint["model_state"]
+    )
+    if removed_fusion_keys:
+        raise RuntimeError(
+            'This checkpoint contains removed post-hoc Oracle fusion weights '
+            'and its optimizer state no longer matches the adapter-only model. '
+            'Load it with --init_checkpoint instead of --resume_checkpoint.'
+        )
+    model.load_state_dict(model_state)
 
     optimizer_state = checkpoint.get("optimizer_state")
     if optimizer_state is None:
@@ -469,9 +474,10 @@ def load_initial_model_checkpoint(agent, path):
     model = agent._network
     if isinstance(model, DDP):
         model = model.module
-    incompatible = model.load_state_dict(
-        checkpoint['model_state'], strict=False
+    model_state, removed_fusion_keys = strip_deprecated_oracle_fusion_state(
+        checkpoint['model_state']
     )
+    incompatible = model.load_state_dict(model_state, strict=False)
     unexpected = list(incompatible.unexpected_keys)
     disallowed_missing = [
         key for key in incompatible.missing_keys
@@ -646,16 +652,14 @@ def experiment(cmd_args):
         raise ValueError(
             '--init_checkpoint and --resume_checkpoint are mutually exclusive.'
         )
-    if (
-        cmd_args.train_oracle_fusion_only
-        and cmd_args.train_oracle_adapter_only
-    ):
-        raise ValueError('Choose only one Oracle-only training mode.')
-    if (
-        (
-            cmd_args.train_oracle_fusion_only
-            or cmd_args.train_oracle_adapter_only
+    if removed_fusion_keys:
+        print(
+            'WARNING: ignored deprecated post-hoc Oracle fusion weights '
+            f'({len(removed_fusion_keys)} tensors).',
+            flush=True,
         )
+    if (
+        cmd_args.train_oracle_adapter_only
         and not (cmd_args.init_checkpoint or cmd_args.resume_checkpoint)
     ):
         raise ValueError(
@@ -736,7 +740,6 @@ def experiment(cmd_args):
                 '--log_backend tensorboard'
             )
     if should_disable_rgc_loss(
-        cmd_args.train_oracle_fusion_only,
         cmd_args.train_oracle_adapter_only,
         exp_cfg.oracle_adapter_translation_only,
     ):
@@ -861,14 +864,7 @@ def experiment(cmd_args):
         load_pretrain=cmd_args.load_pretrain,
         pretrain_path=cmd_args.pretrain_path,
         flash_attention_2=exp_cfg.flash_attention_2,
-        oracle_prior_fusion=(
-            exp_cfg.rvt.oracle_prior_mode == 'o2_gt_instance'
-        ),
-        oracle_prior_hidden_channels=exp_cfg.oracle_prior_hidden_channels,
         oracle_prior_adapter_rank=exp_cfg.oracle_prior_adapter_rank,
-        oracle_prior_multiscale_fusion=(
-            exp_cfg.oracle_prior_multiscale_fusion
-        ),
         oracle_prior_relation=exp_cfg.rvt.oracle_prior_relation,
         oracle_relation_gated_adapter=exp_cfg.oracle_relation_gated_adapter,
         oracle_adapter_translation_only=(
@@ -877,18 +873,7 @@ def experiment(cmd_args):
         **mvt_cfg,
     )
     expected_oracle_params = None
-    if cmd_args.train_oracle_fusion_only:
-        if exp_cfg.rvt.oracle_prior_mode != 'o2_gt_instance':
-            raise ValueError(
-                '--train_oracle_fusion_only requires O2 mode.'
-            )
-        fusion_params = freeze_for_oracle_fusion(backbone)
-        expected_oracle_params = fusion_params
-        print(
-            'Freeze original BridgeVLA; train Oracle fusion only: '
-            f'{fusion_params / 1e6:.3f} million parameters'
-        )
-    elif cmd_args.train_oracle_adapter_only:
+    if cmd_args.train_oracle_adapter_only:
         if exp_cfg.rvt.oracle_prior_mode != 'o2_gt_instance':
             raise ValueError(
                 '--train_oracle_adapter_only requires O2 mode.'
@@ -900,7 +885,7 @@ def experiment(cmd_args):
         oracle_params = freeze_for_oracle_adaptation(backbone)
         expected_oracle_params = oracle_params
         print(
-            'Freeze original BridgeVLA; train Oracle adapter and fusion: '
+            'Freeze original BridgeVLA; train Oracle feature adapters: '
             f'{oracle_params:,} parameters ({oracle_params / 1e6:.3f}M)'
         )
     if exp_cfg.efficient_paligemma_forward:
@@ -1175,14 +1160,9 @@ if __name__ == "__main__":
         help='Freeze Gemma language-model parameters while training other heads.',
     )
     parser.add_argument(
-        '--train_oracle_fusion_only', action='store_true',
-        help='Freeze original BridgeVLA and train only O2 fusion heads.',
-    )
-    parser.add_argument(
         '--train_oracle_adapter_only', action='store_true',
         help=(
-            'Freeze original BridgeVLA and train O2 feature adapters plus '
-            'fusion heads.'
+            'Freeze original BridgeVLA and train only O2 feature adapters.'
         ),
     )
     parser.add_argument(

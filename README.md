@@ -70,7 +70,7 @@ bash train.sh --exp_cfg_path configs/rlbench_config.yaml \
 | Raw 数据转 replay | [Replay 生成](docs/guides/replay.md) |
 | Oracle 实例字段、参数和排错 | [Oracle replay](docs/guides/oracle-replay.md) |
 | 严格 simulator-GT 角色标注 | [Semantic-GT](docs/guides/semantic-gt.md) |
-| O2 Adapter/Fusion、消融、loss、可视化与测试 | [O2 实验](docs/experiments/o2-training.md) |
+| O2 Adapter、消融、loss、可视化与测试 | [O2 实验](docs/experiments/o2-training.md) |
 | 各 benchmark 评估命令 | [评估](docs/guides/evaluation.md) |
 | 论文结果、发布记录 | [结果与历史](docs/experiments/results.md) |
 | Phase / relation、物体视角、候选 cost 方案 | [研究设计](docs/design/role-relation-prior.md) |
@@ -96,13 +96,9 @@ bash train.sh --exp_cfg_path configs/rlbench_config.yaml \
 
 [o2-training](docs/experiments/o2-training.md#o2-training)
 
-<a id=o2-adapter-fusion></a>
+<a id=o2-adapter-only></a>
 
-[o2-adapter-fusion](docs/experiments/o2-training.md#o2-adapter-fusion)
-
-<a id=o2-fusion-only></a>
-
-[o2-fusion-only](docs/experiments/o2-training.md#o2-fusion-only)
+[o2-adapter-only](docs/experiments/o2-training.md#o2-adapter-only)
 
 <a id=o2-full-action></a>
 

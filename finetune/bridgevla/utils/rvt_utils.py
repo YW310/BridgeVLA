@@ -233,6 +233,22 @@ def get_eval_parser():
 
 
 
+_DEPRECATED_ORACLE_FUSION_KEYS = (
+    'oracle_prior_fusion1.',
+    'oracle_prior_fusion2.',
+)
+
+
+def strip_deprecated_oracle_fusion_state(model_state):
+    """Drop only removed post-hoc fusion weights from an old O2 checkpoint."""
+    filtered = {
+        key: value for key, value in model_state.items()
+        if not any(part in key for part in _DEPRECATED_ORACLE_FUSION_KEYS)
+    }
+    removed = sorted(set(model_state) - set(filtered))
+    return filtered, removed
+
+
 def load_agent(agent_path, agent=None, only_epoch=False, strict=False):
     if isinstance(agent, PreprocessAgent2):
         assert not only_epoch
@@ -251,24 +267,32 @@ def load_agent(agent_path, agent=None, only_epoch=False, strict=False):
         if isinstance(model, DDP):
             model = model.module
 
+        model_state, removed_fusion_keys = strip_deprecated_oracle_fusion_state(
+            checkpoint["model_state"]
+        )
+        if removed_fusion_keys:
+            print(
+                'WARNING: ignored deprecated post-hoc Oracle fusion weights '
+                f'({len(removed_fusion_keys)} tensors).'
+            )
         if strict:
-            model.load_state_dict(checkpoint["model_state"])
+            model.load_state_dict(model_state)
         else:
             try:
-                model.load_state_dict(checkpoint["model_state"])
+                model.load_state_dict(model_state)
             except RuntimeError:
                 try:
                     print(
                         "WARNING: loading states in mvt1. "
                         "Be cautious if you are using a two stage network."
                     )
-                    model.mvt1.load_state_dict(checkpoint["model_state"])
+                    model.mvt1.load_state_dict(model_state)
                 except RuntimeError:
                     print(
                         "WARNING: loading states with strict=False! "
                         "KNOW WHAT YOU ARE DOING!!"
                     )
-                    model.load_state_dict(checkpoint["model_state"], strict=False)
+                    model.load_state_dict(model_state, strict=False)
     return epoch
 
 

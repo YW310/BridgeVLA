@@ -162,7 +162,7 @@ def resumable_eval_episode(path, task, episode_idx, run_signature_sha256):
 
 
 def resumable_manifest(path, task, episode_idx, alignment_mode,
-                       role_config_sha256=None):
+                       role_config_sha256=None, resolver_version=None):
     """Return resume metadata for a complete manifest, else a rejection reason."""
     path = Path(path)
     if not path.is_file():
@@ -177,6 +177,9 @@ def resumable_manifest(path, task, episode_idx, alignment_mode,
         return None, 'task/episode mismatch'
     if manifest.get('phase_source') != 'demo_events':
         return None, 'phase_source is not demo_events'
+    if (resolver_version is not None
+            and manifest.get('resolver_version') != resolver_version):
+        return None, 'task resolver version mismatch'
     if not manifest.get('source_alignment_validated'):
         return None, 'source alignment was not validated'
     if manifest.get('handle_namespace') != 'stored':

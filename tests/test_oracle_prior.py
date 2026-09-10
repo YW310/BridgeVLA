@@ -7,7 +7,6 @@ from finetune.bridgevla.models import oracle_prior as oracle_prior_module
 
 from finetune.bridgevla.models.oracle_prior import (
     OraclePriorFeatureAdapter,
-    OraclePriorFusion,
     OracleRelationGatedFeatureAdapter,
     build_training_visualization_payload,
     choose_oracle_translation_loss,
@@ -20,41 +19,6 @@ from finetune.bridgevla.models.oracle_prior import (
 
 
 class OraclePriorTest(unittest.TestCase):
-    def test_fusion_is_identity_at_initialization(self):
-        logits = torch.randn(2, 3, 8, 8)
-        prior = torch.rand_like(logits)
-        fused = OraclePriorFusion(4)(
-            logits, prior, torch.tensor([True, True]),
-        )
-        torch.testing.assert_close(fused, logits)
-
-    def test_zero_initialized_fusion_still_receives_gradients(self):
-        fusion = OraclePriorFusion(4)
-        logits = torch.randn(1, 3, 4, 4)
-        prior = torch.rand_like(logits)
-        loss = fusion(logits, prior, torch.tensor([True])).square().mean()
-        loss.backward()
-        self.assertGreater(fusion.net[-1].weight.grad.abs().sum().item(), 0)
-
-    def test_multiscale_fusion_is_identity_and_receives_gradients(self):
-        fusion = OraclePriorFusion(4, multiscale=True)
-        logits = torch.randn(1, 2, 5, 5)
-        prior = torch.rand_like(logits)
-        fused = fusion(logits, prior, torch.tensor([True]))
-        torch.testing.assert_close(fused, logits)
-        fused.square().mean().backward()
-        self.assertGreater(
-            fusion.context[-1].weight.grad.abs().sum().item(), 0
-        )
-
-    def test_invalid_sample_remains_raw_after_fusion_learns(self):
-        logits = torch.randn(1, 1, 2, 2)
-        prior = torch.rand_like(logits)
-        fusion = OraclePriorFusion(4)
-        torch.nn.init.ones_(fusion.net[-1].weight)
-        fused = fusion(logits, prior, torch.tensor([False]))
-        torch.testing.assert_close(fused, logits)
-
     def test_feature_adapter_is_identity_and_receives_gradients(self):
         adapter = OraclePriorFeatureAdapter(8, rank=3)
         features = torch.randn(6, 8, 4, 4)
@@ -66,27 +30,19 @@ class OraclePriorTest(unittest.TestCase):
             adapter.feature_expand.weight.grad.abs().sum().item(), 0
         )
 
-    def test_recommended_oracle_modules_are_lightweight(self):
+    def test_recommended_oracle_adapters_are_lightweight(self):
         adapter = OraclePriorFeatureAdapter(
             2048, rank=16, prior_channels=2,
         )
-        fusion = OraclePriorFusion(
-            64, multiscale=True, prior_channels=2,
-        )
         per_stage = sum(p.numel() for p in adapter.parameters())
-        per_stage += sum(p.numel() for p in fusion.parameters())
-        self.assertEqual(per_stage * 2, 220548)
+        self.assertEqual(per_stage * 2, 135808)
 
-    def test_relation_gated_oracle_modules_are_lightweight(self):
+    def test_relation_gated_oracle_adapters_are_lightweight(self):
         adapter = OracleRelationGatedFeatureAdapter(
             2048, rank=16, prior_channels=2,
         )
-        fusion = OraclePriorFusion(
-            64, multiscale=True, prior_channels=2,
-        )
         per_stage = sum(p.numel() for p in adapter.parameters())
-        per_stage += sum(p.numel() for p in fusion.parameters())
-        self.assertEqual(per_stage * 2, 223878)
+        self.assertEqual(per_stage * 2, 139138)
 
     def test_feature_adapter_keeps_invalid_sample_unchanged(self):
         adapter = OraclePriorFeatureAdapter(4, rank=2)
@@ -137,19 +93,6 @@ class OraclePriorTest(unittest.TestCase):
         self.assertEqual(selected_valid.tolist(), [[True, False]])
         self.assertEqual(slots.tolist(), [[0, -1]])
         self.assertEqual(selected[:, 1].count_nonzero().item(), 0)
-
-    def test_relation_fusion_uses_pair_validity(self):
-        fusion = OraclePriorFusion(
-            4, multiscale=True, prior_channels=2,
-        )
-        torch.nn.init.ones_(fusion.net[-1].weight)
-        logits = torch.randn(2, 3, 5, 5)
-        prior = torch.rand(2, 3, 2, 5, 5)
-        fused = fusion(
-            logits, prior,
-            torch.tensor([[True, True], [True, False]]),
-        )
-        torch.testing.assert_close(fused[1], logits[1])
 
     def test_relation_adapter_is_identity_at_initialization(self):
         adapter = OraclePriorFeatureAdapter(
@@ -308,7 +251,6 @@ class OraclePriorTest(unittest.TestCase):
         batch_size, views, height, width = 1, 3, 4, 4
         stage_one = {
             'trans': torch.randn(batch_size, views, height, width),
-            'trans_raw': torch.randn(batch_size, views, height, width),
             'oracle_instance_prior': torch.rand(
                 batch_size, views, height, width
             ),
@@ -321,7 +263,6 @@ class OraclePriorTest(unittest.TestCase):
         }
         stage_two = {
             'trans': torch.randn(batch_size, views, height, width),
-            'trans_raw': torch.randn(batch_size, views, height, width),
             'oracle_instance_prior': torch.rand(
                 batch_size, views, height, width
             ),

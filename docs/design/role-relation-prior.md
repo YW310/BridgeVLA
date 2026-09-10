@@ -78,7 +78,7 @@ Long-horizon 操作不是每步切换 relation，而是持续执行一个 edit�
 - **有界状态**：最多维护 committed pair 的两个短时几何 beliefs；跨 edit 的 keep 证据另存有容量限制、实体锚点和更新时间的 ledger。
 - **恢复不是免费原语**：REOBSERVE 必须有真实新观测和可验证控制器；没有时显式拒绝／结束尝试。baseline fallback 本身不保证安全。
 
-复用当前 O2 的 prior、adapter/fusion 与日志接口，但不把现有 Oracle 实现等同于 ARE。
+复用当前 O2 的 prior、adapter 与日志接口，但不把现有 Oracle 实现等同于 ARE。
 
 首版只实现：
 

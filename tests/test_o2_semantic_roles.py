@@ -413,7 +413,11 @@ def test_stack_cups_demo_events_use_two_release_cycles():
 
 def test_push_buttons_demo_events_locate_ordered_gt_target_contacts():
     plates = [
-        FakeObject(f"target_button_topPlate{i}", 10 + i) for i in range(3)
+        FakeObject(
+            f"target_button_topPlate{i}", 10 + i,
+            position=(float(i), 0.0, 1.0),
+        )
+        for i in range(3)
     ]
     task = FakeTask(plates)
     task.target_topPlates = plates
@@ -432,6 +436,12 @@ def test_push_buttons_demo_events_locate_ordered_gt_target_contacts():
     value.set_sample_frame(0)
     value.enrich(demo[0], {})
 
+    assignment = value._build_assignment()
+    assert assignment.target.kind == "site"
+    assert assignment.target.semantic_name == "button0_contact_site"
+    assert assignment.target.handles == ()
+    np.testing.assert_allclose(assignment.target.site_position, [0.0, 0.0, 1.0])
+
     info = value.build_demo_event_manifest(demo, [1, 3])
 
     assert info["phase_strategy"] == "ordered_target_contact"
@@ -442,6 +452,12 @@ def test_push_buttons_demo_events_locate_ordered_gt_target_contacts():
     ]
     assert value._entries[1]["phase_advanced"] is True
     assert value._entries[-1]["completion_satisfied"] is True
+
+
+def test_push_buttons_resolver_version_invalidates_legacy_manifests():
+    assert RLBenchGTOracleProvider.task_resolver_version("push_buttons") == (
+        "push_buttons_contact_site_v2")
+    assert RLBenchGTOracleProvider.task_resolver_version("close_jar") is None
 
 
 def test_open_drawer_has_no_reference_and_is_not_mapping_error():

@@ -24,6 +24,12 @@ from .oracle_handle_alignment import align_handles, HandleAlignmentError
 
 DEFAULT_CAMERAS = ("front", "left_shoulder", "right_shoulder", "wrist")
 _COPPELIA_SUFFIX = re.compile(r"#\d+$")
+_TASK_RESOLVER_VERSIONS = {
+    # v1 used the top-plate mask handle.  Some RLBench scenes expose fewer
+    # than two pixels for that live handle even though the semantic contact
+    # position is available directly from the task object.
+    "push_buttons": "push_buttons_contact_site_v2",
+}
 
 
 class SemanticRoleMappingError(RuntimeError):
@@ -383,6 +389,11 @@ class RLBenchGTOracleProvider:
                 f"No semantic T/R mapping for task {self._task_name!r}"
             ) from exc
 
+    @staticmethod
+    def task_resolver_version(task_name: str) -> Optional[str]:
+        """Return a resume contract only for task resolvers with migrations."""
+        return _TASK_RESOLVER_VERSIONS.get(str(task_name))
+
     def _phase_count(self) -> int:
         task = self._task
         if self._task_name == "place_cups":
@@ -596,10 +607,19 @@ class RLBenchGTOracleProvider:
             plates = self._attr_objects("target_topPlates")
             if plates:
                 plates = self._expect_count(plates, 3, "push button top plates")
-            target = (
-                self._entity_object(f"button{phase}", [plates[phase]])
-                if plates else self._sequence_entity(target_spec, phase, "active button")
-            )
+            if not plates:
+                plate_name = str(target_spec["sequence"][phase])
+                plates = self._expect_count(
+                    self._objects([plate_name], "active button contact plate"),
+                    1,
+                    "active button contact plate",
+                )
+            # The contact plate's simulator object is authoritative for phase
+            # order, but its GT mask handle can be effectively unobservable at
+            # reset.  The exact object position is a better Oracle interaction
+            # site and avoids inventing a cross-session handle correspondence.
+            target = self._entity_site(
+                f"button{phase}_contact_site", plates[phase])
             reference = None
         elif name == "put_groceries_in_cupboard":
             groceries = self._attr_objects("groceries")
@@ -821,13 +841,11 @@ class RLBenchGTOracleProvider:
             )
 
         original_phase = self._phase_index
-        phase_handles = []
+        phase_targets = []
         try:
             for phase in range(self._phase_count()):
                 self._phase_index = phase
-                phase_handles.append(
-                    np.asarray(self._build_assignment().target.handles, dtype=np.int64)
-                )
+                phase_targets.append(self._build_assignment().target)
         finally:
             self._phase_index = original_phase
 
@@ -841,6 +859,11 @@ class RLBenchGTOracleProvider:
             ).reshape(-1)
             if gripper_pose.size < 3 or not np.isfinite(gripper_pose[:3]).all():
                 continue
+            for phase, target in enumerate(phase_targets):
+                if target.kind == "site":
+                    costs[phase, candidate_index] = float(np.linalg.norm(
+                        np.asarray(target.site_position, dtype=np.float64)
+                        - gripper_pose[:3]))
             for camera in self.cameras:
                 mask_value = getattr(obs, f"{camera}_mask", None)
                 cloud_value = getattr(obs, f"{camera}_point_cloud", None)
@@ -855,7 +878,10 @@ class RLBenchGTOracleProvider:
                         f"{self._task_name} frame {frame} {camera} mask/point-cloud "
                         f"mismatch: {mask.shape} vs {cloud.shape}"
                     )
-                for phase, handles in enumerate(phase_handles):
+                for phase, target in enumerate(phase_targets):
+                    if target.kind != "object":
+                        continue
+                    handles = np.asarray(target.handles, dtype=np.int64)
                     points = cloud[np.isin(mask, handles)]
                     points = points[np.isfinite(points).all(axis=1)]
                     if points.size:
@@ -1572,6 +1598,7 @@ class RLBenchGTOracleProvider:
         self._manifests[(self._task_name, self._episode_idx)] = {
             "schema_version": self.schema_version,
             "role_config_sha256": self.role_config_sha256,
+            "resolver_version": self.task_resolver_version(self._task_name),
             "task": self._task_name,
             "episode_idx": self._episode_idx,
             "variation": self._variation,

@@ -54,7 +54,6 @@ class RLBenchTrainingVisualizationTest(unittest.TestCase):
                 'target_prior': torch.rand(views, height, width),
                 'reference_prior': torch.rand(views, height, width),
                 'prior': torch.rand(views, height, width),
-                'raw_pred': torch.rand(views, height, width),
                 'pred': torch.rand(views, height, width),
             }
         }

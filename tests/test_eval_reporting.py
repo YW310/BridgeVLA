@@ -137,6 +137,27 @@ def test_resume_accepts_only_complete_current_manifest(tmp_path):
         'logical_transitions': 2, 'legacy_config_digest': False}
 
 
+def test_resume_rejects_stale_task_resolver_version(tmp_path):
+    value = complete_manifest()
+    path = tmp_path / 'episode_3.json'
+    path.write_text(__import__('json').dumps(value), encoding='utf-8')
+
+    info, error = resumable_manifest(
+        path, 'close_jar', 3, 'mask_verified', 'current',
+        'push_buttons_contact_site_v2')
+
+    assert info is None
+    assert error == 'task resolver version mismatch'
+
+    value['resolver_version'] = 'push_buttons_contact_site_v2'
+    path.write_text(__import__('json').dumps(value), encoding='utf-8')
+    info, error = resumable_manifest(
+        path, 'close_jar', 3, 'mask_verified', 'current',
+        'push_buttons_contact_site_v2')
+    assert error is None
+    assert info['logical_transitions'] == 2
+
+
 @pytest.mark.parametrize('mutation, reason', [
     (lambda value: value.update(role_config_sha256='old'), 'digest'),
     (lambda value: value.update(source_alignment_validated=False), 'alignment'),
