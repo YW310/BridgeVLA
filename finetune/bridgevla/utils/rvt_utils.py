@@ -219,6 +219,14 @@ def get_eval_parser():
             "--manifest-resume is a backward-compatible alias."
         ),
     )
+    parser.add_argument(
+        "--manifest-continue-on-error",
+        action="store_true",
+        help=(
+            "For demo_events only: record a failed episode without creating an "
+            "invalid manifest, then continue with later episodes."
+        ),
+    )
     return parser
 
 

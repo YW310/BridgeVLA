@@ -85,9 +85,13 @@ def test_eval_wires_separate_manifest_csv_and_tensorboard_namespace():
     assert '--start-episode "${START_EPISODE}"' in shell
     assert 'EVAL_RESUME="${EVAL_RESUME:-${MANIFEST_RESUME}}"' in shell
     assert '--eval-resume' in shell
+    assert 'MANIFEST_CONTINUE_ON_ERROR="${MANIFEST_CONTINUE_ON_ERROR:-0}"' in shell
+    assert '--manifest-continue-on-error' in shell
     assert 'TASKS=all expanded into 18 isolated task processes' in shell
     assert 'close_jar' in shell and 'turn_tap' in shell
     assert 'eval_resume does not support sim_replay ground-truth execution' in source
+    assert '[Manifest][FAILED]' in source
+    assert 'rlbench_manifest_failure_v1' in source
     parser_source = (
         ROOT / 'finetune/bridgevla/utils/rvt_utils.py'
     ).read_text(encoding='utf-8')

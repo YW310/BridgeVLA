@@ -51,7 +51,8 @@ from bridgevla.libs.peract.helpers import utils
 from utils.custom_rlbench_env import (
     CustomMultiTaskRLBenchEnv2 as CustomMultiTaskRLBenchEnv,
 )
-from utils.o2_oracle_provider import RLBenchGTOracleProvider
+from utils.o2_oracle_provider import (
+    RLBenchGTOracleProvider, SemanticRoleMappingError)
 from utils.eval_reporting import (
     EVAL_FIELDS, MANIFEST_FIELDS, atomic_write_json,
     build_eval_run_signature, evaluation_result, manifest_result,
@@ -188,6 +189,7 @@ def eval(
     eval_resume=False,
     eval_resume_signature=None,
     eval_resume_signature_sha256=None,
+    manifest_continue_on_error=False,
 ):
     if ground_truth_retries < 0:
         raise ValueError("ground_truth_retries must be non-negative")
@@ -220,6 +222,9 @@ def eval(
                  or not eval_resume_signature_sha256)):
         raise ValueError(
             "standard eval_resume requires an explicit run signature")
+    if manifest_continue_on_error and manifest_phase_source != "demo_events":
+        raise ValueError(
+            "manifest_continue_on_error is only valid with demo_events")
     agent.eval()
 
     camera_resolution = [IMAGE_SIZE, IMAGE_SIZE]
@@ -350,6 +355,11 @@ def eval(
                     print(
                         f"[Manifest][RESUME] {tasks[task_id]} episode {ep} "
                         f"already complete; skipped{suffix}", flush=True)
+                    failure_path = (
+                        oracle_provider.manifest_output_dir
+                        / "manifest_failures" / tasks[task_id]
+                        / f"episode_{ep}.json")
+                    failure_path.unlink(missing_ok=True)
                     continue
                 if manifest_path.exists():
                     print(
@@ -384,6 +394,7 @@ def eval(
                         f"[Evaluation][RESUME] {tasks[task_id]} episode {ep} "
                         f"will rerun: {resume_error}", flush=True)
             max_attempts = 1 + ground_truth_retries
+            episode_error = None
             for attempt in range(max_attempts):
                 episode_rollout = []
                 if not visualize:
@@ -430,6 +441,38 @@ def eval(
                         episode_rollout.append(replay_transition)
                 except StopIteration:
                     continue
+                except SemanticRoleMappingError as e:
+                    if (manifest_continue_on_error
+                            and manifest_phase_source == "demo_events"):
+                        episode_error = e
+                        failure_path = (
+                            oracle_provider.manifest_output_dir
+                            / "manifest_failures" / tasks[task_id]
+                            / f"episode_{ep}.json")
+                        atomic_write_json(
+                            failure_path,
+                            {
+                                'schema_version': 'rlbench_manifest_failure_v1',
+                                'status': 'failed',
+                                'task': tasks[task_id],
+                                'episode_idx': ep,
+                                'error_type': type(e).__name__,
+                                'error': str(e),
+                                'handle_alignment': oracle_handle_alignment,
+                                'role_config_sha256': (
+                                    oracle_provider.role_config_sha256),
+                            },
+                        )
+                        print(
+                            f"[Manifest][FAILED] {tasks[task_id]} episode {ep}: "
+                            f"{e}. Continuing; details: {failure_path}",
+                            flush=True,
+                        )
+                        break
+                    if oracle_provider is not None:
+                        oracle_provider.dump(Path(log_dir) / "semantic_oracle")
+                    eval_env.shutdown()
+                    raise
                 except Exception as e:
                     if oracle_provider is not None:
                         oracle_provider.dump(Path(log_dir) / "semantic_oracle")
@@ -451,6 +494,8 @@ def eval(
                         f"({attempt + 1}/{ground_truth_retries})."
                     )
 
+            if episode_error is not None:
+                continue
             attempts_used = attempt + 1
             retry_attempts_used += attempts_used - 1
             if reward > 0 and attempts_used > 1:
@@ -469,6 +514,13 @@ def eval(
             task_rewards.append(reward)
             task_lengths.append(episode_steps)
             logical_transitions += episode_steps
+            if (manifest_continue_on_error
+                    and manifest_phase_source == "demo_events"):
+                failure_path = (
+                    oracle_provider.manifest_output_dir
+                    / "manifest_failures" / task_name
+                    / f"episode_{ep}.json")
+                failure_path.unlink(missing_ok=True)
             if eval_resume and manifest_phase_source != "demo_events":
                 atomic_write_json(
                     Path(log_dir) / "episode_results" / task_name
@@ -783,6 +835,7 @@ def _eval(args):
             eval_resume=args.eval_resume,
             eval_resume_signature=eval_resume_signature,
             eval_resume_signature_sha256=eval_resume_signature_sha256,
+            manifest_continue_on_error=args.manifest_continue_on_error,
         )
         print(f"model {model_path}, scores {scores}")
         task_scores = {}

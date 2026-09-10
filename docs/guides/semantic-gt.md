@@ -38,6 +38,14 @@
 Manifest resume 会检查已保存的 mask 指纹是否存在，但为了在 simulator 启动前快速跳过，
 不会重新读取 raw mask 计算哈希；semantic replay 重写阶段仍会逐 episode 重算并严格比对。
 
+批量 strict 生成不希望因单个对齐错误停止时，可同时设置
+`MANIFEST_CONTINUE_ON_ERROR=1`。该开关只适用于 `demo_events`：失败 episode 不会生成
+manifest，也不会伪造 handle 映射；错误记录原子写入
+`semantic_oracle/manifest_failures/<task>/episode_N.json`，随后继续下一 episode。建议始终与
+`EVAL_RESUME=1` 配合；修复对齐问题后重跑相同命令，完整 episode 被跳过，失败 episode
+再次尝试，成功后旧 failure marker 自动删除。最终 `Generated Coverage` 小于 100% 就表示
+仍有失败项，不能把该批 manifest 当作完整训练输入。
+
 ## 可选的 mask 身份验证（不代表点云几何通过）
 
 `ORACLE_HANDLE_ALIGNMENT=verified` 仍为默认：同时检查多视角 mask 和 1 cm 点云距离。
@@ -142,6 +150,7 @@ TASKS="all" \
 REPLAY_GROUND_TRUTH=1 \
 MANIFEST_PHASE_SOURCE=demo_events \
 EVAL_RESUME=1 \
+MANIFEST_CONTINUE_ON_ERROR=1 \
 ORACLE_HANDLE_ALIGNMENT=verified \
 EVAL_DATAFOLDER=/home/yiwei/project/BridgeVLA/LPY/BridgeVLA_RLBench_TRAIN_DATA/train \
 SAVE_VIDEO=0 \

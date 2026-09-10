@@ -55,6 +55,7 @@ GT_REPLAY_RETRIES="${GT_REPLAY_RETRIES:-3}"
 MANIFEST_PHASE_SOURCE="${MANIFEST_PHASE_SOURCE:-sim_replay}"
 MANIFEST_RESUME="${MANIFEST_RESUME:-0}"
 EVAL_RESUME="${EVAL_RESUME:-${MANIFEST_RESUME}}"
+MANIFEST_CONTINUE_ON_ERROR="${MANIFEST_CONTINUE_ON_ERROR:-0}"
 if [[ -z "${SAVE_VIDEO+x}" ]]; then
   if [[ "${EVAL_RESUME}" == "1" ]]; then
     SAVE_VIDEO=0
@@ -84,6 +85,7 @@ ground_truth_args=()
 )
 resume_args=()
 [[ "${EVAL_RESUME}" == "1" ]] && resume_args+=(--eval-resume)
+[[ "${MANIFEST_CONTINUE_ON_ERROR}" == "1" ]] && resume_args+=(--manifest-continue-on-error)
 video_args=()
 [[ "${SAVE_VIDEO}" == "1" ]] && video_args+=(--save-video)
 visualize_args=(--visualize_root_dir "${VISUALIZE_ROOT_DIR}")
