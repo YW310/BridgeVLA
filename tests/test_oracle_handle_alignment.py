@@ -205,3 +205,37 @@ def test_visible_component_without_candidate_is_not_excluded():
     with pytest.raises(HandleAlignmentError):
         align_handles(live, stored, {87: 'lid'}, mode='mask_verified',
                       allow_unobservable=True)
+
+
+def single_view_ring(pixel_count=35, geometry_offset=0.):
+    live, stored = views()
+    live['left_shoulder']['mask'][live['left_shoulder']['mask'] == 87] = 0
+    stored['left_shoulder']['mask'][stored['left_shoulder']['mask'] == 99] = 0
+    front_live, front_stored = live['front']['mask'], stored['front']['mask']
+    front_live[front_live == 87] = 0
+    front_stored[front_stored == 99] = 0
+    selected = np.flatnonzero(front_live == 0)[:pixel_count]
+    front_live.flat[selected] = 87
+    front_stored.flat[selected] = 99
+    stored['front']['cloud'][..., 2] += geometry_offset
+    return live, stored
+
+
+def test_mask_verified_accepts_unique_geometry_verified_single_view_shape():
+    live, stored = single_view_ring()
+    mapping, report = align_handles(
+        live, stored, {87: 'square_ring'}, mode='mask_verified')
+    assert mapping == {87: 99}
+    assert report['87']['source'] == 'registered_mask_overlap_single_view_geometry'
+
+
+@pytest.mark.parametrize('failure', ['too_small', 'bad_geometry', 'second_visible_view'])
+def test_single_view_fallback_remains_conservative(failure):
+    live, stored = single_view_ring(
+        pixel_count=31 if failure == 'too_small' else 35,
+        geometry_offset=.02 if failure == 'bad_geometry' else 0.)
+    if failure == 'second_visible_view':
+        live['left_shoulder']['mask'][1:6, 1:6] = 87
+        stored['left_shoulder']['mask'][1:6, 1:5] = 99
+    with pytest.raises(HandleAlignmentError):
+        align_handles(live, stored, {87: 'square_ring'}, mode='mask_verified')

@@ -53,7 +53,15 @@ EXP_CFG_PATH="${EXP_CFG_PATH:-}"
 REPLAY_GROUND_TRUTH="${REPLAY_GROUND_TRUTH:-0}"
 GT_REPLAY_RETRIES="${GT_REPLAY_RETRIES:-3}"
 MANIFEST_PHASE_SOURCE="${MANIFEST_PHASE_SOURCE:-sim_replay}"
-SAVE_VIDEO="${SAVE_VIDEO:-1}"
+MANIFEST_RESUME="${MANIFEST_RESUME:-0}"
+EVAL_RESUME="${EVAL_RESUME:-${MANIFEST_RESUME}}"
+if [[ -z "${SAVE_VIDEO+x}" ]]; then
+  if [[ "${EVAL_RESUME}" == "1" ]]; then
+    SAVE_VIDEO=0
+  else
+    SAVE_VIDEO=1
+  fi
+fi
 VISUALIZE="${VISUALIZE:-0}"
 VISUALIZE_ROOT_DIR="${VISUALIZE_ROOT_DIR:-exp/RLBench_vis}"
 
@@ -74,6 +82,8 @@ ground_truth_args=()
   --ground-truth-retries "${GT_REPLAY_RETRIES}"
   --manifest-phase-source "${MANIFEST_PHASE_SOURCE}"
 )
+resume_args=()
+[[ "${EVAL_RESUME}" == "1" ]] && resume_args+=(--eval-resume)
 video_args=()
 [[ "${SAVE_VIDEO}" == "1" ]] && video_args+=(--save-video)
 visualize_args=(--visualize_root_dir "${VISUALIZE_ROOT_DIR}")
@@ -102,6 +112,31 @@ tasks=(
 if [[ -n "${TASKS:-}" ]]; then
   read -r -a tasks <<< "${TASKS}"
 fi
+if [[ "${EVAL_RESUME}" == "1" && "${#tasks[@]}" -eq 1 && "${tasks[0]}" == "all" ]]; then
+  # Resume must isolate task state. A single multi-task process cannot skip all
+  # resets for one task and still advance RLBench safely to the next task.
+  tasks=(
+    close_jar
+    reach_and_drag
+    insert_onto_square_peg
+    meat_off_grill
+    open_drawer
+    place_cups
+    place_wine_at_rack_location
+    push_buttons
+    put_groceries_in_cupboard
+    put_item_in_drawer
+    put_money_in_safe
+    light_bulb_in
+    slide_block_to_color_target
+    place_shape_in_shape_sorter
+    stack_blocks
+    stack_cups
+    sweep_to_dustpan_of_size
+    turn_tap
+  )
+  echo "[Evaluation][RESUME] TASKS=all expanded into 18 isolated task processes."
+fi
 
 for task in "${tasks[@]}"; do
   echo "=========================================="
@@ -122,6 +157,7 @@ for task in "${tasks[@]}"; do
     "${oracle_args[@]}" \
     "${exp_cfg_args[@]}" \
     "${ground_truth_args[@]}" \
+    "${resume_args[@]}" \
     "${video_args[@]}" \
     "${visualize_args[@]}"
   # --visualize_root_dir "exp/RLBench_vis" --save-video --visualize

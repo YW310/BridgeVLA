@@ -210,6 +210,15 @@ def get_eval_parser():
     parser.add_argument(
         "--oracle-handle-map-dir", default=None,
         help="Optional acquisition mappings: ROOT/task/episode_N.json.")
+    parser.add_argument(
+        "--eval-resume", "--manifest-resume", dest="eval_resume",
+        action="store_true",
+        help=(
+            "Resume completed episodes. Standard closed-loop evaluation uses "
+            "signature-bound episode journals; demo_events validates manifests. "
+            "--manifest-resume is a backward-compatible alias."
+        ),
+    )
     return parser
 
 

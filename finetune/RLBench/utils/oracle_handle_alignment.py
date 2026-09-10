@@ -109,6 +109,7 @@ def align_handles(live, stored, names, name_to_handle=None, *, mode='verified',
                 raise HandleAlignmentError(f"Invalid acquisition handle for {name}", evidence)
             candidates = {declared}
         accepted = []
+        accepted_sources = {}
         candidate_evidence = {}
         for candidate in sorted(candidates):
             checks, agreeing, contradictory = {}, 0, False
@@ -173,8 +174,23 @@ def align_handles(live, stored, names, name_to_handle=None, *, mode='verified',
             candidate_evidence[str(candidate)] = checks
             # Acquisition metadata is authoritative when the entity is
             # unobservable; visible contradictory evidence still rejects it.
-            if not contradictory and (agreeing >= 2 or (declared is not None and not mask_only)):
+            single_view_geometry = (
+                mask_only and len(candidates) == 1 and len(checks) == 1
+                and agreeing == 1
+                and all(
+                    check['geometry_passed']
+                    and min(check['live_pixels'], check['stored_pixels']) >= 32
+                    and check['precision'] >= .98 and check['recall'] >= .98
+                    for check in checks.values()
+                )
+            )
+            if not contradictory and (
+                    agreeing >= 2 or single_view_geometry
+                    or (declared is not None and not mask_only)):
                 accepted.append(candidate)
+                accepted_sources[candidate] = (
+                    'single_view_mask_geometry'
+                    if single_view_geometry else 'multi_view_masks')
         evidence[str(handle)] = dict(name=name, candidates=candidate_evidence)
         if (not accepted and not candidates and allow_unobservable
                 and max(live_pixels.values(), default=0) < 16):
@@ -199,6 +215,8 @@ def align_handles(live, stored, names, name_to_handle=None, *, mode='verified',
         mapping[handle] = target
         evidence[str(handle)].update(
             stored_handle=target,
-            source=("registered_mask_overlap" if mask_only else
+            source=(("registered_mask_overlap_single_view_geometry"
+                     if accepted_sources[target] == 'single_view_mask_geometry'
+                     else "registered_mask_overlap") if mask_only else
                     "acquisition_metadata" if declared is not None else "registered_masks"))
     return mapping, evidence

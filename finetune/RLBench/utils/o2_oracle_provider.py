@@ -246,6 +246,8 @@ class RLBenchGTOracleProvider:
         if num_points <= 0:
             raise ValueError("num_points must be positive")
         self.role_config_path = Path(role_config)
+        self.role_config_sha256 = hashlib.sha256(
+            self.role_config_path.read_bytes()).hexdigest()
         with self.role_config_path.open("r", encoding="utf-8") as stream:
             config = yaml.safe_load(stream)
         if not isinstance(config, Mapping) or not isinstance(config.get("tasks"), Mapping):
@@ -974,8 +976,12 @@ class RLBenchGTOracleProvider:
         if self.handle_alignment == "mask_verified":
             report['thresholds'].update(min_precision=.9, min_recall=.9,
                                         hard_conflict_precision=.5,
-                                        hard_conflict_recall=.5)
-            report['geometry_policy'] = 'audit_only'
+                                        hard_conflict_recall=.5,
+                                        single_view_min_pixels=32,
+                                        single_view_min_precision=.98,
+                                        single_view_min_recall=.98,
+                                        single_view_max_world_distance_p95=.01)
+            report['geometry_policy'] = 'audit_only_except_single_view_corroboration'
         try:
             required = set()
             required_groups = []
@@ -1046,8 +1052,9 @@ class RLBenchGTOracleProvider:
                 excluded_unobservable_handles=sorted(unobservable))
             if self.handle_alignment == 'mask_verified':
                 report['geometry_verified'] = False
-                print('[Manifest] mask_verified: identity inferred from high-overlap multi-view masks; '
-                      'geometry is audit-only, not certified. Review the alignment JSON '
+                print('[Manifest] mask_verified: identity inferred from high-overlap masks; '
+                      'global geometry is not certified (single-view fallback requires local '
+                      'geometry corroboration). Review the alignment JSON '
                       'before training.', flush=True)
             self._stored_handle_map = mapping
             self._nonvisual_handles = excluded
@@ -1549,6 +1556,7 @@ class RLBenchGTOracleProvider:
             return
         self._manifests[(self._task_name, self._episode_idx)] = {
             "schema_version": self.schema_version,
+            "role_config_sha256": self.role_config_sha256,
             "task": self._task_name,
             "episode_idx": self._episode_idx,
             "variation": self._variation,

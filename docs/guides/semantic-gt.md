@@ -13,9 +13,30 @@
 单个 episode 也会输出数值统计；缺失指标不再以 `unknown` 字符串写入 TensorBoard。
 若旧版在 TensorBoard 收尾时报错，已经逐 episode 原子保存的 manifest 仍保留，
 无需仅为该日志错误重新生成它们。
-批量生成中途在 episode `N` 停止时，可设置 `START_EPISODE=N`，并将
-`EVAL_EPISODES` 设为剩余数量；例如已完成 0--3 后使用
-`START_EPISODE=4 EVAL_EPISODES=96`。这里 `EVAL_EPISODES` 是本次运行数量，不是终止下标。
+批量运行中途在 episode `N` 停止时，推荐保留原命令并增加
+`EVAL_RESUME=1 SAVE_VIDEO=0 VISUALIZE=0`。这是通用恢复开关：
+
+- 标准 closed-loop 测试每完成一个 episode，就原子保存
+  `eval/<task>/<provider>/<model>/episode_results/<task>/episode_N.json`。重启时只有
+  checkpoint、实验/MVT 配置、数据目录、episode length、Oracle 关键参数和核心评估源码
+  的签名完全一致才会显示 `[Evaluation][RESUME] ... skipped`；签名不同、文件损坏或
+  字段无效会重跑。
+- `MANIFEST_PHASE_SOURCE=demo_events` 时复用已验证的 manifest，显示
+  `[Manifest][RESUME] ... skipped`。缺失、损坏、未完成、alignment 模式或当前 role
+  YAML 摘要不一致的 episode 会重新生成。
+- `sim_replay` expert-action manifest 不能安全地从普通评估结果恢复；需要可恢复生成时使用
+  `demo_events`。
+- resume 不支持同时保存视频或逐帧可视化，因为跳过的 episode 无法补回这些视觉产物。
+  直接调用 `eval.py` 时 resume 仅支持单任务；启用 resume 后，`eval.sh` 会把
+  `TASKS="all"` 展开成 18 个独立任务进程，避免跳过整个任务后 simulator task 状态错位。
+  因而全任务恢复时会有逐任务重新加载模型的启动开销。
+
+`MANIFEST_RESUME=1` 和 CLI `--manifest-resume` 仍是兼容别名，新命令统一使用
+`EVAL_RESUME=1` / `--eval-resume`。旧标准测试没有逐 episode 日志，第一次开启 resume
+仍需运行一次；之后才能自动跳过。也可手工使用
+`START_EPISODE=4 EVAL_EPISODES=96`，其中 `EVAL_EPISODES` 是本次运行数量，不是终止下标。
+Manifest resume 会检查已保存的 mask 指纹是否存在，但为了在 simulator 启动前快速跳过，
+不会重新读取 raw mask 计算哈希；semantic replay 重写阶段仍会逐 episode 重算并严格比对。
 
 ## 可选的 mask 身份验证（不代表点云几何通过）
 
@@ -28,6 +49,11 @@
 precision/recall 均不低于 0.9，并且映射唯一。第三视角的小范围轮廓栅格化差异只记入
 审计；单侧可见或 precision/recall 低于 0.5 的实质性冲突仍会否决。隐藏实体不能靠
 这个模式猜测。
+薄环等只在一个相机达到 16 像素的实体采用受限回退：候选必须全局唯一，并且只有一个
+可见检查、至少 32 像素、mask precision/recall 均不低于 0.98、点云 P95 距离不超过
+1 cm。报告以 `registered_mask_overlap_single_view_geometry` 标记；不满足任一条件仍拒绝。
+顶层 `geometry_policy=audit_only_except_single_view_corroboration` 表示全局点云几何仍未
+认证，但该受限回退确实使用当前实例的局部几何作为身份佐证。
 对于由多个 simulator handles 组成的同一语义实体，若某个部件在所有已配准视角均少于
 16 像素且没有候选映射，该部件以 `excluded_unobservable` 记入审计而不猜测 ID；只有
 同一实体至少还有一个其他部件通过多视角映射时才允许生成。若整个实体不可观测，仍会
@@ -115,6 +141,7 @@ entries，manifest 的 `generation_attempt` 从 1 开始记录最终采用的是
 TASKS="all" \
 REPLAY_GROUND_TRUTH=1 \
 MANIFEST_PHASE_SOURCE=demo_events \
+EVAL_RESUME=1 \
 ORACLE_HANDLE_ALIGNMENT=verified \
 EVAL_DATAFOLDER=/home/yiwei/project/BridgeVLA/LPY/BridgeVLA_RLBench_TRAIN_DATA/train \
 SAVE_VIDEO=0 \

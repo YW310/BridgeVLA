@@ -52,7 +52,10 @@ from utils.custom_rlbench_env import (
     CustomMultiTaskRLBenchEnv2 as CustomMultiTaskRLBenchEnv,
 )
 from utils.o2_oracle_provider import RLBenchGTOracleProvider
-from utils.eval_reporting import MANIFEST_FIELDS, manifest_result, numeric_task_scores
+from utils.eval_reporting import (
+    EVAL_FIELDS, MANIFEST_FIELDS, atomic_write_json,
+    build_eval_run_signature, evaluation_result, manifest_result,
+    numeric_task_scores, resumable_eval_episode, resumable_manifest)
 from utils.peract_utils_rlbench import (
     CAMERAS,
     SCENE_BOUNDS,
@@ -182,6 +185,9 @@ def eval(
     oracle_debug=False,
     oracle_handle_alignment="verified",
     oracle_handle_map_dir=None,
+    eval_resume=False,
+    eval_resume_signature=None,
+    eval_resume_signature_sha256=None,
 ):
     if ground_truth_retries < 0:
         raise ValueError("ground_truth_retries must be non-negative")
@@ -198,6 +204,22 @@ def eval(
                 "--oracle-provider rlbench_gt"
             )
         ground_truth_retries = 0
+    if eval_resume and (not logging or log_dir is None):
+        raise ValueError("eval_resume requires logging with an output directory")
+    if eval_resume and (save_video or visualize):
+        raise ValueError(
+            "eval_resume requires --save-video and --visualize to be disabled; "
+            "skipped episodes cannot recreate their visual artifacts")
+    if (eval_resume and replay_ground_truth
+            and manifest_phase_source != "demo_events"):
+        raise ValueError(
+            "eval_resume does not support sim_replay ground-truth execution; "
+            "use demo_events for resumable manifest generation")
+    if (eval_resume and manifest_phase_source != "demo_events"
+            and (eval_resume_signature is None
+                 or not eval_resume_signature_sha256)):
+        raise ValueError(
+            "standard eval_resume requires an explicit run signature")
     agent.eval()
 
     camera_resolution = [IMAGE_SIZE, IMAGE_SIZE]
@@ -248,6 +270,10 @@ def eval(
         tasks = RLBENCH_TASKS
         if verbose:
             print(f"evaluate on {len(tasks)} tasks: ", tasks)
+    if eval_resume and len(tasks) != 1:
+        raise ValueError(
+            "eval resume requires one task per eval.py process; eval.sh already "
+            "launches one process per task")
 
     for task in tasks:
         if task not in task_files:
@@ -300,12 +326,63 @@ def eval(
     scores = []
     for task_id in range(num_tasks):
         task_rewards = []
+        task_lengths = []
         logical_transitions = 0
         language_goals=[]
         retry_attempts_used = 0
         recovered_episodes = 0
         failed_after_retries = 0
         for ep in range(start_episode, start_episode + eval_episodes):
+            if eval_resume and manifest_phase_source == "demo_events":
+                manifest_path = (
+                    oracle_provider.manifest_output_dir
+                    / "semantic_role_manifests" / tasks[task_id]
+                    / f"episode_{ep}.json")
+                resume_info, resume_error = resumable_manifest(
+                    manifest_path, tasks[task_id], ep, oracle_handle_alignment,
+                    oracle_provider.role_config_sha256)
+                if resume_info is not None:
+                    task_rewards.append(100.0)
+                    logical_transitions += resume_info['logical_transitions']
+                    suffix = (
+                        " [legacy manifest: no role-config digest]"
+                        if resume_info['legacy_config_digest'] else "")
+                    print(
+                        f"[Manifest][RESUME] {tasks[task_id]} episode {ep} "
+                        f"already complete; skipped{suffix}", flush=True)
+                    continue
+                if manifest_path.exists():
+                    print(
+                        f"[Manifest][RESUME] {tasks[task_id]} episode {ep} "
+                        f"will regenerate: {resume_error}", flush=True)
+            elif eval_resume:
+                episode_result_path = (
+                    Path(log_dir) / "episode_results" / tasks[task_id]
+                    / f"episode_{ep}.json")
+                resume_info, resume_error = resumable_eval_episode(
+                    episode_result_path, tasks[task_id], ep,
+                    eval_resume_signature_sha256)
+                if resume_info is not None:
+                    reward = resume_info['reward']
+                    episode_steps = resume_info['length']
+                    attempts_used = resume_info['attempts_used']
+                    task_rewards.append(reward)
+                    task_lengths.append(episode_steps)
+                    logical_transitions += episode_steps
+                    retry_attempts_used += attempts_used - 1
+                    if reward > 0 and attempts_used > 1:
+                        recovered_episodes += 1
+                    elif reward <= 0:
+                        failed_after_retries += 1
+                    print(
+                        f"[Evaluation][RESUME] {tasks[task_id]} episode {ep} "
+                        f"already complete; score={reward}, "
+                        f"length={episode_steps}; skipped", flush=True)
+                    continue
+                if episode_result_path.exists():
+                    print(
+                        f"[Evaluation][RESUME] {tasks[task_id]} episode {ep} "
+                        f"will rerun: {resume_error}", flush=True)
             max_attempts = 1 + ground_truth_retries
             for attempt in range(max_attempts):
                 episode_rollout = []
@@ -388,8 +465,25 @@ def eval(
 
             task_name = tasks[task_id]
             reward = episode_rollout[-1].reward
+            episode_steps = len(episode_rollout)
             task_rewards.append(reward)
-            logical_transitions += len(episode_rollout)
+            task_lengths.append(episode_steps)
+            logical_transitions += episode_steps
+            if eval_resume and manifest_phase_source != "demo_events":
+                atomic_write_json(
+                    Path(log_dir) / "episode_results" / task_name
+                    / f"episode_{ep}.json",
+                    {
+                        'schema_version': 'rlbench_eval_episode_v1',
+                        'task': task_name,
+                        'episode_idx': ep,
+                        'reward': float(reward),
+                        'length': episode_steps,
+                        'attempts_used': attempts_used,
+                        'run_signature_sha256': eval_resume_signature_sha256,
+                        'run_signature': eval_resume_signature,
+                    },
+                )
             lang_goal = eval_env._lang_goal
             language_goals.append(lang_goal)
             if verbose:
@@ -422,24 +516,34 @@ def eval(
             # Only completed generator calls reach task_rewards; exceptions abort.
             result = manifest_result(task_name, len(task_rewards), eval_episodes, logical_transitions)
             if logging:
-                with open(os.path.join(log_dir, csv_file), 'a', newline='') as csv_fp:
-                    csv.DictWriter(csv_fp, fieldnames=MANIFEST_FIELDS).writerow(result)
+                mode = 'w' if eval_resume else 'a'
+                with open(os.path.join(log_dir, csv_file), mode, newline='') as csv_fp:
+                    writer = csv.DictWriter(csv_fp, fieldnames=MANIFEST_FIELDS)
+                    if eval_resume:
+                        writer.writeheader()
+                    writer.writerow(result)
         elif logging:
-            # writer csv first
-            with open(os.path.join(log_dir, csv_file), "a") as csv_fp:
-                fieldnames = ["task", "success rate", "length", "total_transitions"]
-                csv_writer = csv.DictWriter(csv_fp, fieldnames=fieldnames)
-                csv_results = {"task": task_name}
-                for s in summaries:
-                    if s.name == "eval_envs/return":
-                        csv_results["success rate"] = s.value
-                    elif s.name == "eval_envs/length":
-                        csv_results["length"] = s.value
-                    elif s.name == "eval_envs/total_transitions":
-                        csv_results["total_transitions"] = s.value
-                    if "eval" in s.name:
-                        s.name = "%s/%s" % (s.name, task_name)
-                csv_writer.writerow(csv_results)
+            if eval_resume:
+                result = evaluation_result(task_name, task_rewards, task_lengths)
+                with open(os.path.join(log_dir, csv_file), "w", newline='') as csv_fp:
+                    csv_writer = csv.DictWriter(csv_fp, fieldnames=EVAL_FIELDS)
+                    csv_writer.writeheader()
+                    csv_writer.writerow(result)
+            else:
+                # writer csv first
+                with open(os.path.join(log_dir, csv_file), "a") as csv_fp:
+                    csv_writer = csv.DictWriter(csv_fp, fieldnames=EVAL_FIELDS)
+                    csv_results = {"task": task_name}
+                    for s in summaries:
+                        if s.name == "eval_envs/return":
+                            csv_results["success rate"] = s.value
+                        elif s.name == "eval_envs/length":
+                            csv_results["length"] = s.value
+                        elif s.name == "eval_envs/total_transitions":
+                            csv_results["total_transitions"] = s.value
+                        if "eval" in s.name:
+                            s.name = "%s/%s" % (s.name, task_name)
+                    csv_writer.writerow(csv_results)
         else:
             for s in summaries:
                 if "eval" in s.name:
@@ -447,6 +551,8 @@ def eval(
 
         if manifest_phase_source == "demo_events":
             task_score = result['generated coverage']
+        elif eval_resume:
+            task_score = result['success rate']
         else:
             task_score = next((s.value for s in summaries
                                if s.name == f"eval_envs/return/{task_name}"), None)
@@ -556,6 +662,52 @@ def _eval(args):
         if model_idx is None:
             model_idx = 0
 
+        eval_resume_signature = None
+        eval_resume_signature_sha256 = None
+        if args.eval_resume and args.manifest_phase_source != "demo_events":
+            model_folder = os.path.dirname(model_path)
+            effective_exp_cfg = (
+                args.exp_cfg_path
+                if args.exp_cfg_path is not None
+                else os.path.join(model_folder, "exp_cfg.yaml")
+            )
+            effective_mvt_cfg = (
+                args.mvt_cfg_path
+                if args.mvt_cfg_path is not None
+                else os.path.join(model_folder, "mvt_cfg.yaml")
+            )
+            (
+                eval_resume_signature,
+                eval_resume_signature_sha256,
+            ) = build_eval_run_signature(
+                model_path,
+                effective_exp_cfg,
+                effective_mvt_cfg,
+                args.eval_datafolder,
+                episode_length=args.episode_length,
+                oracle_provider=args.oracle_provider,
+                oracle_role_config=args.oracle_role_config,
+                oracle_num_points=args.oracle_num_points,
+                oracle_strict=args.oracle_strict,
+                oracle_handle_alignment=args.oracle_handle_alignment,
+                use_input_place_with_mean=args.use_input_place_with_mean,
+                runtime_files=(
+                    Path(__file__),
+                    Path(__file__).parent / "utils" / "custom_rlbench_env.py",
+                    Path(__file__).parent / "utils" / "o2_oracle_provider.py",
+                    Path(bridgevla_agent.__file__),
+                    Path(__file__).parents[1]
+                    / "bridgevla" / "mvt" / "mvt.py",
+                    Path(__file__).parents[1] / "bridgevla" / "libs"
+                    / "YARR" / "yarr" / "utils" / "rollout_generator.py",
+                ),
+            )
+            print(
+                "Evaluation resume enabled; run signature: "
+                f"{eval_resume_signature_sha256[:12]}",
+                flush=True,
+            )
+
   
         agent = load_agent(
             model_path=model_path,
@@ -628,6 +780,9 @@ def _eval(args):
             oracle_debug=args.oracle_debug,
             oracle_handle_alignment=args.oracle_handle_alignment,
             oracle_handle_map_dir=args.oracle_handle_map_dir,
+            eval_resume=args.eval_resume,
+            eval_resume_signature=eval_resume_signature,
+            eval_resume_signature_sha256=eval_resume_signature_sha256,
         )
         print(f"model {model_path}, scores {scores}")
         task_scores = {}

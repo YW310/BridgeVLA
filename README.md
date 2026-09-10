@@ -57,6 +57,8 @@ bash train.sh --exp_cfg_path configs/rlbench_config.yaml \
 ### 评估
 
 在 `finetune/RLBench` 下修改 `eval.sh` 中的任务和 checkpoint 路径后执行 `bash eval.sh`。
+长时间测试可加 `EVAL_RESUME=1`，按 episode 自动恢复；参数签名、限制和结果位置见
+[Semantic-GT 的通用恢复说明](docs/guides/semantic-gt.md#严格-semantic-gt-targetreference)。
 其他 benchmark 见 [评估说明](docs/guides/evaluation.md)；O2 的 baseline/raw/GT 对照见 [O2 实验说明](docs/experiments/o2-training.md#o2-code-path)。
 
 ## 文档导航
