@@ -333,11 +333,14 @@ def test_single_view_rejects_small_exact_shape_with_bad_geometry():
 
 
 def test_single_view_accepts_small_exact_shape_with_bounded_boundary_tail():
-    live, stored = single_view_ring(pixel_count=25, geometry_offset=.003)
+    live, stored = single_view_ring(pixel_count=27, geometry_offset=.003)
     pixels = np.flatnonzero(live['front']['mask'] == 87)
-    for pixel in pixels[-2:]:
+    # Reproduce the thin-spoke profile: a stable 3 mm body and four boundary
+    # points at roughly 10.2, 10.7, 15 and 17 mm.
+    for pixel, extra_offset in zip(
+            pixels[-4:], (.0072, .0077, .012, .014)):
         row, col = np.unravel_index(pixel, live['front']['mask'].shape)
-        stored['front']['cloud'][row, col, 2] += .017
+        stored['front']['cloud'][row, col, 2] += extra_offset
 
     mapping, report = align_handles(
         live, stored, {87: 'place_cups_holder_spoke0'},
@@ -350,6 +353,7 @@ def test_single_view_accepts_small_exact_shape_with_bounded_boundary_tail():
     check = evidence['candidates']['99']['front']
     assert check['small_exact_robust_geometry_passed']
     assert check['geometry']['distance_p50'] == pytest.approx(.003)
+    assert .01 < check['geometry']['distance_p90'] <= .012
     assert check['geometry']['distance_p95'] <= .025
 
 

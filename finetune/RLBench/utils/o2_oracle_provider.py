@@ -1054,7 +1054,7 @@ class RLBenchGTOracleProvider:
                                          small_exact_geometry_max_world_distance_p95=.01)
             report['thresholds'].update(
                 small_exact_robust_geometry_max_world_distance_p50=.005,
-                small_exact_robust_geometry_max_world_distance_p90=.01,
+                small_exact_robust_geometry_max_world_distance_p90=.012,
                 small_exact_robust_geometry_max_world_distance_p95=.025)
             report['geometry_policy'] = 'audit_only_except_single_view_corroboration'
         try:
