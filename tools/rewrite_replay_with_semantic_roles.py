@@ -205,7 +205,38 @@ def _load_manifest(root: Path, task: str, episode_idx: int, allow_mask_verified=
                     f"{handles!r}")
             entity_mapped.update(handles)
         if entity_mapped:
-            if alignment.get("alignment_scope") == "semantic_entity_union":
+            alignment_scope = alignment.get("alignment_scope")
+            if alignment_scope == "mixed_entity_certificates":
+                certificates = alignment.get("evidence", {}).get(
+                    "entity_certificates", {})
+                if not isinstance(certificates, Mapping):
+                    raise ValueError(
+                        f"Missing per-entity alignment certificates in {path}")
+                live_to_stored = alignment.get("live_to_stored", {})
+                for live_handles, stored_handles in entity_mapping.items():
+                    certificate = certificates.get(live_handles)
+                    if not isinstance(certificate, Mapping):
+                        raise ValueError(
+                            f"Missing certificate for semantic entity "
+                            f"{live_handles!r} in {path}")
+                    certified_handles = set(certificate.get("stored_handles", ()))
+                    if certificate.get("source") == "individual_handles":
+                        try:
+                            expected = {
+                                live_to_stored[str(int(handle))]
+                                for handle in live_handles.split(",")
+                                if str(int(handle)) in live_to_stored
+                            }
+                        except (TypeError, ValueError):
+                            expected = set()
+                        valid = expected == set(stored_handles)
+                    else:
+                        valid = _semantic_entity_evidence_is_certified(certificate)
+                    if not valid or certified_handles != set(stored_handles):
+                        raise ValueError(
+                            f"Uncertified semantic entity mapping "
+                            f"{live_handles!r} in {path}")
+            elif alignment_scope == "semantic_entity_union":
                 entities = alignment.get("evidence", {}).get("entities", {})
                 if not isinstance(entities, Mapping):
                     raise ValueError(

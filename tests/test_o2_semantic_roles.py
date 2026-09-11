@@ -17,6 +17,7 @@ from utils.o2_oracle_provider import (  # noqa: E402
     SemanticRoleMappingError,
     decode_handle_mask,
 )
+import utils.o2_oracle_provider as oracle_provider_module  # noqa: E402
 from utils.rlbench_compat import rgb_handles_to_mask_safe  # noqa: E402
 
 
@@ -618,6 +619,66 @@ def test_verified_mapping_checks_future_phase_before_generating_any_entries(tmp_
     assert not value._source_alignment_validated
     report = json.loads((tmp_path / "stack_cups" / "episode_0.json").read_text())
     assert report["status"] == "failed"
+
+
+def test_mask_verified_fallback_keeps_individual_entity_certificates(
+        monkeypatch, tmp_path):
+    lid = FakeObject("jar_lid0", 87)
+    jars = [FakeObject("jar0", 88), FakeObject("jar1", 89)]
+    task = FakeTask([lid, *jars])
+    task.lid, task.jars = lid, jars
+    value = RLBenchGTOracleProvider(
+        ROLE_CONFIG, cameras=("front", "left_shoulder"), num_points=8,
+        handle_alignment="mask_verified", alignment_output_dir=tmp_path)
+    value.reset(SimpleNamespace(_task=task), "close_jar", 0, 0)
+    obs = observation(np.full((8, 8), 99))
+    obs.left_shoulder_mask = obs.front_mask.copy()
+    obs.left_shoulder_point_cloud = obs.front_point_cloud.copy()
+    obs.misc = {
+        f"{cam}_camera_{kind}": np.eye(size)
+        for cam in value.cameras
+        for kind, size in (("intrinsics", 3), ("extrinsics", 4))
+    }
+
+    def fake_align(_live, _stored, names, *_args, **_kwargs):
+        handles = set(names)
+        if handles == {87}:
+            return {87: 199}, {"87": {"stored_handle": 199}}
+        raise oracle_provider_module.HandleAlignmentError(
+            "individual failure", {"attempted_handles": sorted(handles)})
+
+    def fake_union(_live, _stored, handles, semantic_name):
+        assert handles == {88}
+        assert semantic_name == "target_jar"
+        return (193,), {
+            "source": "semantic_entity_union_mask_overlap",
+            "semantic_name": semantic_name,
+            "live_handles": [88],
+            "stored_handles": [193],
+            "views": {"front": {"passed": True},
+                      "left_shoulder": {"passed": True}},
+        }
+
+    monkeypatch.setattr(oracle_provider_module, "align_handles", fake_align)
+    monkeypatch.setattr(
+        oracle_provider_module, "align_semantic_handle_group", fake_union)
+    translated = value._prepare_stored_handles(obs, {
+        "target": {"kind": "object", "handles": [87]},
+        "reference": {"kind": "object", "handles": [88]},
+    })
+
+    assert translated["target"]["handles"] == [199]
+    assert translated["reference"]["handles"] == [193]
+    report = json.loads(
+        (tmp_path / "close_jar" / "episode_0.json").read_text())
+    assert report["alignment_scope"] == "mixed_entity_certificates"
+    assert report["live_to_stored"] == {"87": 199}
+    assert report["semantic_entity_to_stored"] == {
+        "87": [199], "88": [193]}
+    assert report["evidence"]["entity_certificates"]["87"][
+        "source"] == "individual_handles"
+    assert report["evidence"]["entity_certificates"]["88"][
+        "source"] == "semantic_entity_union_mask_overlap"
 
 
 def test_reach_and_drag_uses_color_target_site_without_mask_mapping(tmp_path):

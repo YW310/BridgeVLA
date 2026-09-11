@@ -1141,28 +1141,78 @@ class RLBenchGTOracleProvider:
                     "individual_alignment_error": str(individual_error),
                     "individual_alignment_evidence": individual_error.evidence,
                     "entities": {},
+                    "entity_certificates": {},
                 }
                 used_entity_union_fallback = True
+                # The aggregate attempt stops at its first failure. Retry each
+                # entity independently, retaining individual certificates even
+                # for handles that the aggregate attempt never reached.
+                mapping, entity_mapping, unobservable = {}, {}, set()
                 group_errors = []
                 for semantic_name, handles, visible_handles in visible_groups:
                     try:
-                        mapped, entity_evidence = align_semantic_handle_group(
-                            self._live_initial_views or {}, stored_views,
-                            visible_handles, semantic_name)
+                        local_mapping = {}
+                        try:
+                            local_mapping, local_evidence = align_handles(
+                                self._live_initial_views or {}, stored_views,
+                                {h: names[h] for h in visible_handles}, declared,
+                                mode=self.handle_alignment, allow_unobservable=True)
+                            if not local_mapping:
+                                raise HandleAlignmentError(
+                                    'No observable individually verified handle',
+                                    local_evidence)
+                            mapped = tuple(sorted(set(local_mapping.values())))
+                            entity_evidence = dict(
+                                source='individual_handles',
+                                live_handles=sorted(visible_handles),
+                                stored_handles=list(mapped),
+                                individual_alignment_evidence=local_evidence)
+                        except HandleAlignmentError as local_error:
+                            local_mapping = {}
+                            mapped, entity_evidence = align_semantic_handle_group(
+                                self._live_initial_views or {}, stored_views,
+                                visible_handles, semantic_name)
+                            entity_evidence['individual_alignment_error'] = str(local_error)
+                            entity_evidence['individual_alignment_evidence'] = local_error.evidence
+                        # Per-entity retries must not bypass the global identity
+                        # consistency checks of the original aggregate mapper.
+                        for previous_handles, previous_mapped in entity_mapping.items():
+                            if (not handles.intersection(previous_handles)
+                                    and set(mapped).intersection(previous_mapped)):
+                                raise HandleAlignmentError(
+                                    'Disjoint semantic entities claim the same stored handle',
+                                    entity_evidence)
+                        for handle, stored_handle in local_mapping.items():
+                            if ((handle in mapping and mapping[handle] != stored_handle)
+                                    or any(h != handle and s == stored_handle
+                                           for h, s in mapping.items())):
+                                raise HandleAlignmentError(
+                                    'Conflicting individual handle mappings', entity_evidence)
+                        if (frozenset(handles) in entity_mapping
+                                and entity_mapping[frozenset(handles)] != mapped):
+                            raise HandleAlignmentError(
+                                'Conflicting mappings for the same semantic entity',
+                                entity_evidence)
                     except HandleAlignmentError as group_error:
                         group_evidence["entities"][semantic_name] = (
                             group_error.evidence)
                         group_errors.append(
                             f"{semantic_name}: {group_error}")
                         continue
+                    mapping.update(local_mapping)
+                    if local_mapping:
+                        unobservable.update(visible_handles.difference(local_mapping))
                     entity_mapping[frozenset(handles)] = mapped
                     group_evidence["entities"][semantic_name] = entity_evidence
+                    group_evidence["entity_certificates"][
+                        ",".join(str(handle) for handle in sorted(handles))
+                    ] = entity_evidence
                 if group_errors:
                     raise HandleAlignmentError(
                         "Cannot verify semantic entities: "
                         + "; ".join(group_errors),
                         group_evidence) from individual_error
-                mapping = {}
+                excluded.update(unobservable)
                 evidence = group_evidence
             report.update(
                 status=self.handle_alignment, evidence=evidence,
@@ -1172,7 +1222,7 @@ class RLBenchGTOracleProvider:
                     for handles, mapped in entity_mapping.items()
                 },
                 alignment_scope=(
-                    'semantic_entity_union'
+                    'mixed_entity_certificates'
                     if used_entity_union_fallback else 'individual_handles'),
                 excluded_nonvisual_handles=sorted(excluded.difference(unobservable)),
                 excluded_unobservable_handles=(
@@ -1183,7 +1233,7 @@ class RLBenchGTOracleProvider:
                     print(
                         '[Manifest] mask_verified: individual child-handle '
                         'alignment failed; accepted strict semantic-entity '
-                        'multi-view mask certificates.', flush=True)
+                        'individual and/or multi-view mask certificates per entity.', flush=True)
                 print('[Manifest] mask_verified: identity inferred from high-overlap masks; '
                       'global geometry is not certified (single-view fallback requires local '
                       'geometry corroboration). Review the alignment JSON '

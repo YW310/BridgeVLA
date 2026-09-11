@@ -98,6 +98,7 @@ def test_stored_manifest_accepts_audited_semantic_entity_union_mapping(tmp_path)
         rewrite._load_manifest(
             tmp_path, 'meat_off_grill', 54, allow_mask_verified=True)
 
+
     entity_evidence.update(
         source='semantic_entity_union_asymmetric_multiview_mask_overlap',
         views={
@@ -149,3 +150,46 @@ def test_stored_manifest_accepts_audited_semantic_entity_union_mapping(tmp_path)
     with pytest.raises(ValueError, match='Uncertified semantic entity handles'):
         rewrite._load_manifest(
             tmp_path, 'meat_off_grill', 54, allow_mask_verified=True)
+
+
+def test_stored_manifest_validates_each_mixed_entity_certificate(tmp_path):
+    folder = tmp_path / 'close_jar'
+    folder.mkdir()
+    manifest = dict(
+        schema_version=rewrite.SEMANTIC_ROLE_SCHEMA,
+        phase_source='demo_events', source_alignment_validated=True,
+        handle_namespace='stored', source_frame0_masks={'front': 'digest'},
+        handle_alignment={
+            'status': 'mask_verified',
+            'alignment_scope': 'mixed_entity_certificates',
+            'live_to_stored': {'87': 199},
+            'semantic_entity_to_stored': {'87': [199], '88': [193]},
+            'evidence': {'entity_certificates': {
+                '87': {
+                    'source': 'individual_handles', 'live_handles': [87],
+                    'stored_handles': [199]},
+                '88': {
+                    'source': 'semantic_entity_union_mask_overlap',
+                    'live_handles': [88], 'stored_handles': [193],
+                    'views': {'front': {'passed': True},
+                              'left_shoulder': {'passed': True}}},
+            }},
+        },
+        expected_sample_frames=[0],
+        entries=[dict(
+            sample_frame=0, completion_satisfied=True,
+            target={'kind': 'object', 'handles': [199]},
+            reference={'kind': 'object', 'handles': [193]})],
+    )
+    path = folder / 'episode_0.json'
+    path.write_text(json.dumps(manifest), encoding='utf-8')
+    _, frames, _ = rewrite._load_manifest(
+        tmp_path, 'close_jar', 0, allow_mask_verified=True)
+    assert frames == [0]
+
+    manifest['handle_alignment']['evidence']['entity_certificates']['88'][
+        'stored_handles'] = [199]
+    path.write_text(json.dumps(manifest), encoding='utf-8')
+    with pytest.raises(ValueError, match='Uncertified semantic entity mapping'):
+        rewrite._load_manifest(
+            tmp_path, 'close_jar', 0, allow_mask_verified=True)
