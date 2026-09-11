@@ -26,7 +26,7 @@ class RLBenchTrainingUtilsTest(unittest.TestCase):
             return self._size
 
     class _Backbone:
-        def __init__(self):
+        def __init__(self, include_fusion=True):
             self.named = [
                 ('mvt1.model.weight', RLBenchTrainingUtilsTest._Parameter(100)),
                 (
@@ -38,6 +38,11 @@ class RLBenchTrainingUtilsTest(unittest.TestCase):
                     RLBenchTrainingUtilsTest._Parameter(5),
                 ),
             ]
+            if include_fusion:
+                self.named.append((
+                    'oracle_prior_fusion1.net.weight',
+                    RLBenchTrainingUtilsTest._Parameter(7),
+                ))
 
         def parameters(self):
             return [parameter for _, parameter in self.named]
@@ -86,10 +91,27 @@ class RLBenchTrainingUtilsTest(unittest.TestCase):
     def test_oracle_adaptation_freezes_original_backbone(self):
         backbone = self._Backbone()
         trainable = training_utils.freeze_for_oracle_adaptation(backbone)
-        self.assertEqual(trainable, 16)
+        self.assertEqual(trainable, 23)
         self.assertFalse(backbone.named[0][1].requires_grad)
         self.assertTrue(backbone.named[1][1].requires_grad)
         self.assertTrue(backbone.named[2][1].requires_grad)
+        self.assertTrue(backbone.named[3][1].requires_grad)
+
+    def test_no_fusion_config_trains_only_adapters(self):
+        backbone = self._Backbone(include_fusion=False)
+        trainable = training_utils.freeze_for_oracle_adaptation(backbone)
+        self.assertEqual(trainable, 16)
+
+    def test_o2_configs_select_fusion_explicitly(self):
+        config_dir = MODULE_PATH.parent / 'configs'
+        with_fusion = (
+            config_dir / 'rlbench_o2_semantic_gt.yaml'
+        ).read_text(encoding='utf-8')
+        without_fusion = (
+            config_dir / 'rlbench_o2_semantic_gt_no_fusion.yaml'
+        ).read_text(encoding='utf-8')
+        self.assertIn('oracle_prior_fusion: True', with_fusion)
+        self.assertIn('oracle_prior_fusion: False', without_fusion)
 
 
 if __name__ == '__main__':

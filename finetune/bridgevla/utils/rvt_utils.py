@@ -233,20 +233,31 @@ def get_eval_parser():
 
 
 
-_DEPRECATED_ORACLE_FUSION_KEYS = (
+_ORACLE_FUSION_KEYS = (
     'oracle_prior_fusion1.',
     'oracle_prior_fusion2.',
 )
 
 
-def strip_deprecated_oracle_fusion_state(model_state):
-    """Drop only removed post-hoc fusion weights from an old O2 checkpoint."""
+def strip_oracle_fusion_state(model_state):
+    """Drop post-hoc fusion weights for a model configured without fusion."""
     filtered = {
         key: value for key, value in model_state.items()
-        if not any(part in key for part in _DEPRECATED_ORACLE_FUSION_KEYS)
+        if not any(part in key for part in _ORACLE_FUSION_KEYS)
     }
     removed = sorted(set(model_state) - set(filtered))
     return filtered, removed
+
+
+def reconcile_oracle_fusion_state(model_state, model):
+    """Keep fusion weights only when the destination model enables fusion."""
+    target_has_fusion = any(
+        any(part in key for part in _ORACLE_FUSION_KEYS)
+        for key in model.state_dict()
+    )
+    if target_has_fusion:
+        return model_state, []
+    return strip_oracle_fusion_state(model_state)
 
 
 def load_agent(agent_path, agent=None, only_epoch=False, strict=False):
@@ -267,12 +278,13 @@ def load_agent(agent_path, agent=None, only_epoch=False, strict=False):
         if isinstance(model, DDP):
             model = model.module
 
-        model_state, removed_fusion_keys = strip_deprecated_oracle_fusion_state(
-            checkpoint["model_state"]
+        model_state, removed_fusion_keys = reconcile_oracle_fusion_state(
+            checkpoint["model_state"], model,
         )
         if removed_fusion_keys:
             print(
-                'WARNING: ignored deprecated post-hoc Oracle fusion weights '
+                'WARNING: ignored Oracle fusion weights because fusion is '
+                'disabled in the current config '
                 f'({len(removed_fusion_keys)} tensors).'
             )
         if strict:

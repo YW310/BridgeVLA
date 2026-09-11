@@ -805,6 +805,22 @@ class RVTAgent:
 
         return q_trans, rot_q, grip_q, collision_q, y_q, pts
 
+    def get_raw_q_trans(self, out, dims):
+        """Return detached pre-fusion translation logits when fusion is active."""
+        bs, nc, h, w = dims
+        if 'trans_raw' not in out:
+            return None
+        raw = out['trans_raw'].view(bs, nc, h * w).transpose(1, 2)
+        if self.stage_two:
+            stage_two_out = out['mvt2']
+            if 'trans_raw' not in stage_two_out:
+                return None
+            raw2 = stage_two_out['trans_raw'].view(
+                bs, nc, h * w,
+            ).transpose(1, 2)
+            raw = torch.cat((raw, raw2), dim=2)
+        return raw
+
     def get_base_q_trans(self, out, dims):
         '''Return detached translation logits before the Oracle adapter.'''
         bs, nc, h, w = dims
@@ -1048,6 +1064,7 @@ class RVTAgent:
         action_trans = self.get_action_trans(
             wpt_local, pts, out, dyn_cam_info, dims=(bs, nc, h, w)
         )
+        raw_q_trans = self.get_raw_q_trans(out, dims=(bs, nc, h, w))
         base_q_trans = self.get_base_q_trans(out, dims=(bs, nc, h, w))
         base_rot_q, base_grip_q, base_collision_q = self.get_base_q_rgc(
             out, bs,
@@ -1075,6 +1092,21 @@ class RVTAgent:
                 trans_loss,
                 trans_loss_valid,
                 self.oracle_valid_only_loss,
+            )
+            raw_trans_loss_values = (
+                self._cross_entropy_loss(raw_q_trans, action_trans)
+                if raw_q_trans is not None else None
+            )
+            raw_trans_loss = (
+                raw_trans_loss_values.mean()
+                if raw_trans_loss_values is not None else None
+            )
+            raw_trans_loss_valid = (
+                valid_oracle_translation_loss(
+                    raw_trans_loss_values, oracle_valid,
+                )
+                if oracle_valid is not None
+                and raw_trans_loss_values is not None else None
             )
             base_trans_loss_values = (
                 self._cross_entropy_loss(base_q_trans, action_trans)
@@ -1218,10 +1250,16 @@ class RVTAgent:
                 "collision_loss": collision_loss.item(),
                 "lr": self._optimizer.param_groups[0]["lr"],
             }
+            if raw_trans_loss is not None:
+                loss_log['trans_loss_raw'] = raw_trans_loss.item()
             if base_trans_loss is not None:
                 loss_log['trans_loss_base'] = base_trans_loss.item()
             if trans_loss_valid is not None:
                 loss_log['trans_loss_valid'] = trans_loss_valid.item()
+            if raw_trans_loss_valid is not None:
+                loss_log['trans_loss_raw_valid'] = (
+                    raw_trans_loss_valid.item()
+                )
             if base_trans_loss_valid is not None:
                 loss_log['trans_loss_base_valid'] = (
                     base_trans_loss_valid.item()
@@ -1557,10 +1595,10 @@ class RVTAgent:
                 )
             for stage_name, stage_out, stage_img in stage_outputs:
                 stage_dir = os.path.join(save_dir, stage_name)
-                adapted = translation_heatmap_probabilities(
+                final = translation_heatmap_probabilities(
                     stage_out['trans'][0]
                 )
-                visualize_images(stage_img, adapted, save_dir=stage_dir)
+                visualize_images(stage_img, final, save_dir=stage_dir)
                 if 'oracle_instance_prior' in stage_out:
                     if 'oracle_target_prior' in stage_out:
                         save_heatmap_views(
@@ -1582,9 +1620,20 @@ class RVTAgent:
                         'o2_prior',
                         stage_img,
                     )
-                    save_heatmap_views(
-                        adapted, stage_dir, 'o2_adapted', stage_img,
-                    )
+                    if 'trans_raw' in stage_out:
+                        raw = translation_heatmap_probabilities(
+                            stage_out['trans_raw'][0]
+                        )
+                        save_heatmap_views(
+                            raw, stage_dir, 'o2_pre_fusion', stage_img,
+                        )
+                        save_heatmap_views(
+                            final, stage_dir, 'o2_fused', stage_img,
+                        )
+                    else:
+                        save_heatmap_views(
+                            final, stage_dir, 'o2_adapted', stage_img,
+                        )
                 elif self.oracle_prior_enabled:
                     with open(
                         os.path.join(stage_dir, 'o2_unavailable.txt'),

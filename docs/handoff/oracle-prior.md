@@ -40,10 +40,10 @@
   主配置设置 `oracle_adapter_translation_only=False` 与 `peract.add_rgc_loss=True`，
   adapted feature 同时进入 translation、rotation、gripper、collision 分支；六项 loss
   联合更新新增 Adapter；
-- 推荐从已训练 baseline checkpoint 初始化，冻结原 BridgeVLA（包括 Gemma），只训练
-  relation-gated feature adapter，精确为 139,138 个参数（约 13.9 万）；
-- 正式 semantic-GT O2 参数集中在
-  `finetune/RLBench/configs/rlbench_o2_semantic_gt.yaml`；旧
+- 推荐从已训练 baseline checkpoint 初始化，冻结原 BridgeVLA（包括 Gemma）。无 fusion
+  配置训练 relation-gated feature adapter，精确为 139,138 个参数（约 13.9 万）；
+- `rlbench_o2_semantic_gt.yaml` 保留 Adapter+Fusion，
+  `rlbench_o2_semantic_gt_no_fusion.yaml` 是对齐的无 fusion 消融；旧
   `rlbench_o2_gt_instance.yaml` 保留给启发式 buffer 消融；checkpoint 和冻结模式仍作为
   运行时命令行参数；
 - 同一个 batch 内增加无梯度 baseline 动作支路，不重复 PaliGemma 前向；日志同时输出
@@ -241,17 +241,15 @@ P_v(x)=\exp\left(-\frac{d(x,M_v)^2}{2\sigma^2}\right)
 ## 8. Feature adapter
 
 设冻结 PaliGemma 的视觉特征为 `X`，Target 与 Reference 的 GT instance heatmap
-分别为 `P_T`、`P_R`。不使用固定 `alpha/floor` 或 post-hoc logit 约束，只训练
-低秩 feature adapter：
+分别为 `P_T`、`P_R`。无 fusion 配置只训练低秩 feature adapter：
 
     X_adapt = X + A_phi([X, downsample(P_T), downsample(P_R)])
     L = up0(X_adapt)
     R, G, C = action_heads(X_adapt, decode(L))  # 推理；训练使用 GT wpt_local
 
 `A_phi` 的输出层必须零初始化，因此启用 O2 后的初始输出严格等于 baseline；Oracle
-无效样本的 residual 必须强制为零。训练只保留实际参与 loss/decode 的 `trans`，
-以及诊断用的 `oracle_target_prior`、`oracle_reference_prior` 和
-`oracle_instance_prior`。
+无效样本的 residual 必须强制为零。`oracle_prior_fusion=True` 时在 `L` 后追加可训练
+logit residual，并保留 `trans_raw` 诊断；False 时 `trans` 直接来自 `L`。
 
 推荐主实验冻结原 BridgeVLA，只训练 adapter；完整动作 head 联合训练仅作为补充。
 不同设置必须分开报告，不能把重新微调整网的收益

@@ -27,6 +27,7 @@ from bridgevla.mvt.mvt_single import MVT as MVTSingle
 from bridgevla.mvt.config import get_cfg_defaults
 from bridgevla.models.oracle_prior import (
     OraclePriorFeatureAdapter,
+    OraclePriorFusion,
     OracleRelationGatedFeatureAdapter,
     rasterize_instance_points,
 )
@@ -68,7 +69,10 @@ class MVT(nn.Module):
         load_pretrain=False,
         pretrain_path=None,
         flash_attention_2=False,
+        oracle_prior_fusion=False,
+        oracle_prior_hidden_channels=16,
         oracle_prior_adapter_rank=0,
+        oracle_prior_multiscale_fusion=False,
         oracle_prior_relation=False,
         oracle_relation_gated_adapter=False,
         oracle_adapter_translation_only=False,
@@ -98,7 +102,10 @@ class MVT(nn.Module):
         del args["st_wpt_loc_aug"]
         del args["st_wpt_loc_inp_no_noise"]
         del args["img_aug_2"]
+        del args['oracle_prior_fusion']
+        del args['oracle_prior_hidden_channels']
         del args['oracle_prior_adapter_rank']
+        del args['oracle_prior_multiscale_fusion']
         del args['oracle_prior_relation']
         del args['oracle_relation_gated_adapter']
         del args['oracle_adapter_translation_only']
@@ -118,6 +125,22 @@ class MVT(nn.Module):
             oracle_adapter_translation_only
         )
         oracle_prior_channels = 2 if oracle_prior_relation else 1
+        self.oracle_prior_fusion1 = (
+            OraclePriorFusion(
+                oracle_prior_hidden_channels,
+                multiscale=oracle_prior_multiscale_fusion,
+                prior_channels=oracle_prior_channels,
+            )
+            if oracle_prior_fusion else None
+        )
+        self.oracle_prior_fusion2 = (
+            OraclePriorFusion(
+                oracle_prior_hidden_channels,
+                multiscale=oracle_prior_multiscale_fusion,
+                prior_channels=oracle_prior_channels,
+            )
+            if oracle_prior_fusion and stage_two else None
+        )
         # for verifying the input
         self.feat_ver = feat_ver
         self.img_feat_dim = img_feat_dim
@@ -250,10 +273,19 @@ class MVT(nn.Module):
             projected, valid, (self.img_size, self.img_size), sigma,
         )
 
-    @staticmethod
-    def _attach_oracle_instance_prior(stage_out, prior):
+    def _apply_oracle_instance_prior(
+        self, stage_out, prior, valid, first_stage,
+    ):
         if prior is None:
             return
+        fusion = (
+            self.oracle_prior_fusion1
+            if first_stage else self.oracle_prior_fusion2
+        )
+        if fusion is not None:
+            raw_logits = stage_out['trans']
+            stage_out['trans_raw'] = raw_logits.detach()
+            stage_out['trans'] = fusion(raw_logits, prior, valid)
         if prior.ndim == 5:
             stage_out['oracle_target_prior'] = prior[:, :, 0].detach()
             stage_out['oracle_reference_prior'] = prior[:, :, 1].detach()
@@ -479,7 +511,9 @@ class MVT(nn.Module):
             # forward_no_feat=False,
             **kwargs,
         )
-        self._attach_oracle_instance_prior(out, oracle_prior1)
+        self._apply_oracle_instance_prior(
+            out, oracle_prior1, oracle_prior_valid, True,
+        )
         out["mvt1_ori_img"]=img.clone().detach()
         def visualize_tensor(tensor, save_path=None):
             """
@@ -603,7 +637,9 @@ class MVT(nn.Module):
                 oracle_compute_base=oracle_compute_base,
                 **kwargs,
             )
-            self._attach_oracle_instance_prior(out_mvt2, oracle_prior2)
+            self._apply_oracle_instance_prior(
+                out_mvt2, oracle_prior2, oracle_prior_valid, False,
+            )
 
             out["wpt_local1"] = wpt_local_stage_one_noisy
             out["rev_trans"] = rev_trans 

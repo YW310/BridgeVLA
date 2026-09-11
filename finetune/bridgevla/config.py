@@ -46,7 +46,10 @@ _C.use_oracle_objects = False
 _C.oracle_semantic_audit = False
 _C.oracle_max_objects = 32
 _C.oracle_num_points = 512
+_C.oracle_prior_fusion = False
+_C.oracle_prior_hidden_channels = 16
 _C.oracle_prior_adapter_rank = 0
+_C.oracle_prior_multiscale_fusion = False
 _C.oracle_relation_gated_adapter = False
 # Keep Oracle feature residuals out of rotation/gripper/collision branches.
 _C.oracle_adapter_translation_only = False

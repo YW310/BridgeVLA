@@ -27,7 +27,10 @@ use_oracle_objects: True
 oracle_semantic_audit: True
 oracle_max_objects: 32
 oracle_num_points: 512
+oracle_prior_fusion: True
+oracle_prior_hidden_channels: 64
 oracle_prior_adapter_rank: 16
+oracle_prior_multiscale_fusion: True
 oracle_relation_gated_adapter: True
 oracle_adapter_translation_only: False
 
@@ -43,7 +46,7 @@ rvt:
   oracle_prior_mode: o2_gt_instance
   oracle_prior_sigma: 2.0
   oracle_prior_active_role: auto
-  # Visibility/no-reference is valid data and falls back role-wise to raw output.
+  # Visibility/no-reference is valid data and disables Oracle residuals.
   oracle_prior_strict: False
   oracle_prior_relation: True
   oracle_log_base_loss: True

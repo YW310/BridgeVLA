@@ -80,8 +80,9 @@ def freeze_for_oracle_adaptation(backbone) -> int:
     for parameter in backbone.parameters():
         parameter.requires_grad = False
     trainable = 0
+    oracle_names = ('oracle_prior_feature_adapter', 'oracle_prior_fusion')
     for name, parameter in backbone.named_parameters():
-        if 'oracle_prior_feature_adapter' in name:
+        if any(module_name in name for module_name in oracle_names):
             parameter.requires_grad = True
             trainable += parameter.numel()
     if trainable == 0:

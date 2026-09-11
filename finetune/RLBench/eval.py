@@ -118,7 +118,12 @@ def load_agent(
 
     rvt = MVT(
         renderer_device=device,
+        oracle_prior_fusion=exp_cfg.oracle_prior_fusion,
+        oracle_prior_hidden_channels=exp_cfg.oracle_prior_hidden_channels,
         oracle_prior_adapter_rank=exp_cfg.oracle_prior_adapter_rank,
+        oracle_prior_multiscale_fusion=(
+            exp_cfg.oracle_prior_multiscale_fusion
+        ),
         oracle_prior_relation=exp_cfg.rvt.oracle_prior_relation,
         oracle_relation_gated_adapter=exp_cfg.oracle_relation_gated_adapter,
         oracle_adapter_translation_only=exp_cfg.oracle_adapter_translation_only,
