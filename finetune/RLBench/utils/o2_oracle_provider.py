@@ -29,6 +29,9 @@ _TASK_RESOLVER_VERSIONS = {
     # than two pixels for that live handle even though the semantic contact
     # position is available directly from the task object.
     "push_buttons": "push_buttons_contact_site_v2",
+    # v1 used a drawer-shell mask as Reference.  The task's actual terminal
+    # relation is item detection by the variation-specific success sensor.
+    "put_item_in_drawer": "put_item_in_drawer_success_site_v2",
 }
 
 
@@ -635,21 +638,19 @@ class RLBenchGTOracleProvider:
                 target_spec["names"], "drawer item"
             )
             target = self._entity_object("item", selected)
-            drawer_joints = self._attr_objects("_joints")
-            if drawer_joints:
-                drawer_joints = self._expect_count(
-                    drawer_joints, 3, "drawer joints"
-                )
-            reference = (
-                self._entity_object(
-                    f"{('bottom', 'middle', 'top')[self._variation]}_drawer",
-                    [drawer_joints[self._variation]]
-                    + self._optional_objects(self._variant_names(reference_spec)),
-                )
-                if drawer_joints
-                else self._object_from_spec(
-                    reference_spec, "selected drawer interior"
-                )
+            success_detectors = _unique_scene_objects([
+                detector
+                for condition in getattr(self._task, "_success_conditions", ())
+                for detector in (getattr(condition, "_detector", None),)
+                if detector is not None
+            ])
+            success_detector = self._expect_count(
+                success_detectors, 1,
+                "put_item_in_drawer success detector",
+            )[0]
+            option = ("bottom", "middle", "top")[self._variation]
+            reference = self._entity_site(
+                f"{option}_drawer_success_site", success_detector
             )
         elif name == "put_money_in_safe":
             selected = self._attr_objects("money") or self._objects(

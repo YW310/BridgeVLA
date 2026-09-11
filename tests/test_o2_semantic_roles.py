@@ -460,6 +460,38 @@ def test_push_buttons_resolver_version_invalidates_legacy_manifests():
     assert RLBenchGTOracleProvider.task_resolver_version("close_jar") is None
 
 
+@pytest.mark.parametrize(
+    "variation,option", tuple(enumerate(("bottom", "middle", "top")))
+)
+def test_put_item_in_drawer_reference_is_registered_success_site(
+    variation, option
+):
+    item = FakeObject("item", 10)
+    detector = FakeObject(
+        f"success_{option}", 20, position=(0.1, float(variation), 0.75))
+    task = FakeTask([item, detector])
+    task._item = item
+    task._success_conditions = [SimpleNamespace(_detector=detector)]
+    value = RLBenchGTOracleProvider(
+        ROLE_CONFIG, cameras=("front",), num_points=8, strict=True)
+    value.reset(
+        SimpleNamespace(_task=task), "put_item_in_drawer",
+        variation, variation)
+
+    assignment = value._build_assignment()
+
+    assert assignment.target.semantic_name == "item"
+    assert assignment.target.kind == "object"
+    assert assignment.target.handles == (10,)
+    assert assignment.reference.semantic_name == f"{option}_drawer_success_site"
+    assert assignment.reference.kind == "site"
+    assert assignment.reference.handles == ()
+    np.testing.assert_allclose(
+        assignment.reference.site_position, detector.position)
+    assert RLBenchGTOracleProvider.task_resolver_version(
+        "put_item_in_drawer") == "put_item_in_drawer_success_site_v2"
+
+
 def test_open_drawer_has_no_reference_and_is_not_mapping_error():
     drawer = FakeObject("drawer_bottom", 31)
     task = FakeTask([drawer])
