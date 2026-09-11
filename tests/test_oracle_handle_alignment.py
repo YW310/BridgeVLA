@@ -421,6 +421,68 @@ def test_single_view_exact_mask_certificate_is_strict(
             live, stored, {87: 'drawer_bottom'}, mode='mask_verified')
 
 
+def single_view_dominant_mask():
+    shape = (20, 20)
+    live_mask = np.zeros(shape, dtype=np.int64)
+    stored_mask = np.zeros(shape, dtype=np.int64)
+    live_mask.flat[:184] = 87
+    stored_mask.flat[0] = 98
+    stored_mask.flat[1:184] = 99
+    stored_mask.flat[184:197] = 99
+    rows, cols = np.indices(shape)
+    live_cloud = np.stack(
+        (cols / 100., rows / 100., np.ones_like(rows)), axis=-1)
+    stored_cloud = live_cloud.copy()
+    stored_cloud[..., 2] += .03
+    live = {
+        'front': dict(
+            mask=live_mask, cloud=live_cloud,
+            intrinsics=np.eye(3), extrinsics=np.eye(4)),
+        'left_shoulder': dict(
+            mask=np.zeros(shape, dtype=np.int64), cloud=live_cloud.copy(),
+            intrinsics=np.eye(3), extrinsics=np.eye(4)),
+    }
+    stored = {
+        'front': dict(
+            mask=stored_mask, cloud=stored_cloud,
+            intrinsics=np.eye(3), extrinsics=np.eye(4)),
+        'left_shoulder': dict(
+            mask=np.zeros(shape, dtype=np.int64), cloud=live_cloud.copy(),
+            intrinsics=np.eye(3), extrinsics=np.eye(4)),
+    }
+    return live, stored
+
+
+def test_single_view_accepts_one_dominant_candidate_over_pixel_collision():
+    live, stored = single_view_dominant_mask()
+
+    mapping, report = align_handles(
+        live, stored, {87: 'drawer_top'}, mode='mask_verified')
+
+    assert mapping == {87: 99}
+    assert report['87']['source'] == (
+        'registered_mask_overlap_single_view_dominant_mask')
+    winner = report['87']['candidates']['99']['front']
+    assert winner['live_pixels'] == 184
+    assert winner['stored_pixels'] == 196
+    assert winner['precision'] == pytest.approx(183 / 196)
+    assert winner['recall'] == pytest.approx(183 / 184)
+    assert report['87']['candidates']['98']['front']['hard_mask_conflict']
+
+
+def test_single_view_rejects_two_viable_partial_candidates():
+    live, stored = single_view_dominant_mask()
+    # Split the live silhouette into two substantial candidates; neither has
+    # the required bidirectional overlap dominance.
+    stored['front']['mask'].flat[:92] = 98
+    stored['front']['mask'].flat[92:184] = 99
+    stored['front']['mask'].flat[184:197] = 0
+
+    with pytest.raises(HandleAlignmentError):
+        align_handles(
+            live, stored, {87: 'drawer_top'}, mode='mask_verified')
+
+
 def test_semantic_union_accepts_one_strong_and_one_three_pixel_exact_view():
     live, stored = single_view_boundary_noise()
     live['left_shoulder']['mask'][1, 1:4] = 87

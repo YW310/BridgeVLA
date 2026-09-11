@@ -8,6 +8,7 @@ import numpy as np
 
 
 SINGLE_VIEW_EXACT_MIN_PIXELS = 32
+SINGLE_VIEW_DOMINANT_MIN_PIXELS = 64
 
 
 class HandleAlignmentError(ValueError):
@@ -405,6 +406,23 @@ def align_handles(live, stored, names, name_to_handle=None, *, mode='verified',
                     for check in checks.values()
                 )
             )
+            # A one-pixel boundary collision may introduce a raw candidate that
+            # is obviously not a viable identity. Certify candidates after
+            # evidence evaluation instead of requiring the raw candidate set to
+            # contain one ID. The winning silhouette must be substantial, have
+            # at least 90% overlap in both directions and at least 99% in one
+            # direction. If two candidates satisfy this rule, the final
+            # len(accepted) check still rejects the ambiguity.
+            single_view_dominant_mask = (
+                mask_only and len(candidates) > 1 and agreeing == 1
+                and any(
+                    min(check['live_pixels'], check['stored_pixels'])
+                    >= SINGLE_VIEW_DOMINANT_MIN_PIXELS
+                    and min(check['precision'], check['recall']) >= .9
+                    and max(check['precision'], check['recall']) >= .99
+                    for check in checks.values()
+                )
+            )
             # In mask_verified mode the documented identity certificate is a
             # quorum of two independently registered, high-overlap views.  A
             # third camera can legitimately disagree because a thin/contact
@@ -414,7 +432,8 @@ def align_handles(live, stored, names, name_to_handle=None, *, mode='verified',
             accepted_by_mask_quorum = mask_only and agreeing >= 2
             accepted_by_single_view = (
                 mask_only and not contradictory
-                and (single_view_geometry or single_view_exact_mask))
+                and (single_view_geometry or single_view_exact_mask
+                     or single_view_dominant_mask))
             accepted_by_verified = (
                 not mask_only and not contradictory
                 and (agreeing >= 2 or declared is not None))
@@ -427,6 +446,8 @@ def align_handles(live, stored, names, name_to_handle=None, *, mode='verified',
                      else 'single_view_mask_geometry')
                     if single_view_geometry else
                     'single_view_exact_mask'
+                    if single_view_exact_mask else
+                    'single_view_dominant_mask'
                     if accepted_by_single_view else 'multi_view_masks')
         evidence[str(handle)] = dict(name=name, candidates=candidate_evidence)
         if (not accepted and not candidates and allow_unobservable
@@ -462,6 +483,10 @@ def align_handles(live, stored, names, name_to_handle=None, *, mode='verified',
                      "registered_mask_overlap_single_view_exact_mask"
                      if accepted_sources[target]
                      == 'single_view_exact_mask'
+                     else
+                     "registered_mask_overlap_single_view_dominant_mask"
+                     if accepted_sources[target]
+                     == 'single_view_dominant_mask'
                      else "registered_mask_overlap") if mask_only else
                     "acquisition_metadata" if declared is not None else "registered_masks"))
     return mapping, evidence
