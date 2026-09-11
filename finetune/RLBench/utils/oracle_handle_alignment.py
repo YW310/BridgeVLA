@@ -26,8 +26,19 @@ def _geometry_summary(ac, bc, selected):
     if delta.size:
         distances = np.linalg.norm(delta, axis=-1)
         result.update(distance_p50=float(np.median(distances)),
+                      distance_p90=float(np.quantile(distances, .90)),
                       distance_p95=float(np.quantile(distances, .95)),
+                      distance_max=float(np.max(distances)),
                       stored_minus_live_xyz_median=np.median(delta, axis=0).tolist())
+        # Audit only. Fractions use all selected pixels, so missing geometry
+        # cannot inflate the apparent support. Retain every distance for small
+        # silhouettes to distinguish a few outliers from widespread mismatch.
+        for label, threshold in (('5mm', .005), ('10mm', .01)):
+            count = int(np.count_nonzero(distances <= threshold))
+            result[f'pixels_within_{label}'] = count
+            result[f'fraction_within_{label}'] = count / result['selected_pixels']
+        if result['selected_pixels'] <= 64:
+            result['finite_distances_sorted_m'] = np.sort(distances).tolist()
     return result
 
 
@@ -331,6 +342,8 @@ def align_handles(live, stored, names, name_to_handle=None, *, mode='verified',
         accepted = []
         accepted_sources = {}
         candidate_evidence = {}
+        low_pixel_views = {}
+        candidate_assessments = {}
         for candidate in sorted(candidates):
             checks, agreeing, contradictory = {}, 0, False
             for camera, (am, bm, ac, bc) in views.items():
@@ -339,6 +352,14 @@ def align_handles(live, stored, names, name_to_handle=None, *, mode='verified',
                 # A camera with fewer than 16 pixels supplies no positive
                 # evidence. Substantial one-sided visibility is contradictory.
                 if max(na, nb) < 16:
+                    overlap = av & bv
+                    count = int(overlap.sum())
+                    low_pixel_views.setdefault(str(candidate), {})[camera] = dict(
+                        live_pixels=na, stored_pixels=nb, overlap_pixels=count,
+                        precision=count / max(nb, 1), recall=count / max(na, 1),
+                        used_for_individual_acceptance=False,
+                        reason='below_16_pixel_view_threshold',
+                        geometry=_geometry_summary(ac, bc, overlap))
                     continue
                 overlap = av & bv
                 count = int(overlap.sum())
@@ -488,6 +509,22 @@ def align_handles(live, stored, names, name_to_handle=None, *, mode='verified',
             accepted_by_verified = (
                 not mask_only and not contradictory
                 and (agreeing >= 2 or declared is not None))
+            candidate_assessments[str(candidate)] = dict(
+                candidate_accepted=bool(
+                    accepted_by_mask_quorum or accepted_by_single_view
+                    or accepted_by_verified),
+                raw_candidate_count=len(candidates),
+                checked_view_count=len(checks),
+                agreeing_view_count=agreeing,
+                contradictory_view=bool(contradictory),
+                certificates=dict(
+                    mask_quorum=bool(accepted_by_mask_quorum),
+                    single_view_geometry=bool(single_view_geometry),
+                    single_view_exact_mask=bool(single_view_exact_mask),
+                    single_view_small_exact_geometry=bool(
+                        single_view_small_exact_geometry),
+                    single_view_dominant_mask=bool(single_view_dominant_mask),
+                    verified=bool(accepted_by_verified)))
             if (accepted_by_mask_quorum or accepted_by_single_view
                     or accepted_by_verified):
                 accepted.append(candidate)
@@ -502,7 +539,10 @@ def align_handles(live, stored, names, name_to_handle=None, *, mode='verified',
                     if single_view_small_exact_geometry else
                     'single_view_dominant_mask'
                     if accepted_by_single_view else 'multi_view_masks')
-        evidence[str(handle)] = dict(name=name, candidates=candidate_evidence)
+        evidence[str(handle)] = dict(
+            name=name, candidates=candidate_evidence,
+            low_pixel_views=low_pixel_views,
+            candidate_assessments=candidate_assessments)
         if (not accepted and not candidates and allow_unobservable
                 and max(live_pixels.values(), default=0) < 16):
             evidence[str(handle)].update(

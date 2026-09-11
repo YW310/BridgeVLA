@@ -332,6 +332,53 @@ def test_single_view_rejects_small_exact_shape_with_bad_geometry():
             mode='mask_verified')
 
 
+def test_small_silhouette_audit_exposes_tail_without_accepting_mapping():
+    # Two outliers among 25 exact-mask pixels: a good median is insufficient
+    # for the existing single-view geometry certificate.
+    live, stored = single_view_ring(pixel_count=25, geometry_offset=.003)
+    pixels = np.flatnonzero(live['front']['mask'] == 87)
+    for pixel in pixels[-2:]:
+        row, col = np.unravel_index(pixel, live['front']['mask'].shape)
+        stored['front']['cloud'][row, col, 2] += .03
+    live['left_shoulder']['mask'][0, 0] = 87
+    stored['left_shoulder']['mask'][0, 0] = 99
+
+    with pytest.raises(HandleAlignmentError) as error:
+        align_handles(live, stored, {87: 'spoke'}, mode='mask_verified')
+
+    report = error.value.evidence['87']
+    check = report['candidates']['99']['front']
+    assert check['passed']  # Mask vote, not candidate acceptance.
+    assert not check['small_exact_geometry_passed']
+    geometry = check['geometry']
+    assert geometry['pixels_within_10mm'] == 23
+    assert geometry['fraction_within_10mm'] == pytest.approx(23 / 25)
+    assert geometry['distance_p50'] == pytest.approx(.003)
+    assert geometry['distance_p95'] > .01
+    assert geometry['finite_distances_sorted_m'] == pytest.approx(
+        [.003] * 23 + [.033] * 2)
+    assessment = report['candidate_assessments']['99']
+    assert not assessment['candidate_accepted']
+    assert assessment['checked_view_count'] == 1
+    weak = report['low_pixel_views']['99']['left_shoulder']
+    assert weak['overlap_pixels'] == 1
+    assert not weak['used_for_individual_acceptance']
+
+
+def test_small_silhouette_audit_counts_nonfinite_pixels_as_unsupported():
+    live, stored = single_view_ring(pixel_count=25, geometry_offset=.003)
+    pixels = np.flatnonzero(live['front']['mask'] == 87)
+    for pixel in pixels[-2:]:
+        row, col = np.unravel_index(pixel, live['front']['mask'].shape)
+        stored['front']['cloud'][row, col, 2] = np.nan
+    with pytest.raises(HandleAlignmentError) as error:
+        align_handles(live, stored, {87: 'spoke'}, mode='mask_verified')
+    geometry = error.value.evidence['87']['candidates']['99']['front']['geometry']
+    assert geometry['finite_pixels'] == 23
+    assert geometry['fraction_within_10mm'] == pytest.approx(23 / 25)
+    assert len(geometry['finite_distances_sorted_m']) == 23
+
+
 def single_view_boundary_noise(interior_offset=0., boundary_offset=.015):
     shape = (16, 16)
     live_mask = np.zeros(shape, dtype=np.int64)
