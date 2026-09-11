@@ -1,13 +1,55 @@
 import hashlib
 import json
+import pickle
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 import rewrite_replay_with_semantic_roles as rewrite
+
+
+def test_rewrite_can_explicitly_fallback_invalid_manifest_to_raw(
+        monkeypatch, tmp_path):
+    source_dir = tmp_path / 'source'
+    destination_dir = tmp_path / 'destination'
+    source_dir.mkdir()
+    with (source_dir / '0.replay').open('wb') as stream:
+        pickle.dump({
+            'terminal': np.asarray(0), 'episode_idx': np.asarray(7),
+            'sample_frame': np.asarray(12), 'baseline': np.asarray([3.]),
+        }, stream)
+    monkeypatch.setattr(
+        rewrite, '_load_manifest',
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            ValueError('source alignment failed')))
+    monkeypatch.setattr(rewrite, '_copy_metadata', lambda *args, **kwargs: None)
+    args = SimpleNamespace(
+        resume=False, overwrite=False, manifest_dir=tmp_path / 'manifests',
+        allow_mask_verified_handles=True,
+        fallback_invalid_manifests_to_raw=True,
+        raw_data_dir=tmp_path / 'raw', cameras=('front',),
+        max_objects=4, num_points=8, cache_frames=0, cache_episodes=1, seed=0,
+    )
+
+    assert rewrite.process_task(
+        args, 'place_shape_in_shape_sorter', source_dir, destination_dir) == 1
+
+    with (destination_dir / '0.replay').open('rb') as stream:
+        migrated = pickle.load(stream)
+    assert migrated['baseline'].tolist() == [3.]
+    assert not migrated['oracle_object_valid'].any()
+    assert not bool(migrated['oracle_target_role_valid'])
+    assert not bool(migrated['oracle_reference_role_valid'])
+    assert migrated['oracle_phase_source'].tolist() == ['']
+    stats = json.loads((
+        destination_dir / 'semantic_role_rewrite_stats.json').read_text())
+    assert stats['invalid_manifest_episodes'] == 1
+    assert stats['invalid_manifest_transitions'] == 1
+    assert stats['invalid_manifest_errors'] == {'7': 'source alignment failed'}
 
 
 def test_source_mask_fingerprint_rejects_wrong_raw_dataset(monkeypatch, tmp_path):

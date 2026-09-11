@@ -16,6 +16,7 @@ docs/
 │   └── evaluation.md
 ├── experiments/                      # 实验操作与结果
 │   ├── o2-training.md
+│   ├── relation-anchor.md
 │   └── results.md
 ├── design/                           # 研究方案（非实现承诺）
 │   ├── role-relation-prior.md        # 精简主线与实施顺序

@@ -45,6 +45,7 @@ from augment_replay_with_oracle_objects import (
 
 AUDIT_KEYS = (
     "oracle_role_schema_version",
+    "oracle_phase_source",
     "oracle_phase_id",
     "oracle_target_name",
     "oracle_reference_name",
@@ -462,12 +463,14 @@ def process_task(args, task, source_dir, destination_dir):
     files = _numeric_replay_files(source_dir)
     destination_dir.mkdir(parents=True, exist_ok=True)
     manifest_cache = {}
+    invalid_manifests = {}
     observation_cache = OrderedDict()
     frame_cache = FrameCache(args.cache_frames)
     stats = {
         "task": task, "files": 0, "mapping_error": 0,
         "not_visible_target": 0, "not_visible_reference": 0,
-        "no_reference": 0,
+        "no_reference": 0, "invalid_manifest_episodes": 0,
+        "invalid_manifest_transitions": 0, "invalid_manifest_errors": {},
     }
     for index, source in enumerate(files):
         destination = destination_dir / source.name
@@ -484,54 +487,74 @@ def process_task(args, task, source_dir, destination_dir):
         else:
             episode_idx = int(np.asarray(original["episode_idx"]).item())
             sample_frame = int(np.asarray(original["sample_frame"]).item())
-            if episode_idx not in manifest_cache:
-                manifest_cache[episode_idx] = _load_manifest(
-                    args.manifest_dir, task, episode_idx,
-                    allow_mask_verified=getattr(args, 'allow_mask_verified_handles', False)
-                )
-            schema, frames, entries = manifest_cache[episode_idx]
-            entry, exact = _entry_for_frame(frames, entries, sample_frame)
-            if episode_idx not in observation_cache:
-                episode_dir = resolve_episode_dir(args.raw_data_dir, task, episode_idx)
-                _validate_source_masks(episode_dir, entries)
-                observation_cache[episode_idx] = (
-                    episode_dir, _load_low_dim_observations(episode_dir)
-                )
-                while len(observation_cache) > args.cache_episodes:
-                    observation_cache.popitem(last=False)
+            if (episode_idx not in manifest_cache
+                    and episode_idx not in invalid_manifests):
+                try:
+                    manifest_cache[episode_idx] = _load_manifest(
+                        args.manifest_dir, task, episode_idx,
+                        allow_mask_verified=getattr(
+                            args, 'allow_mask_verified_handles', False)
+                    )
+                except (FileNotFoundError, ValueError) as exc:
+                    if not getattr(
+                            args, 'fallback_invalid_manifests_to_raw', False):
+                        raise
+                    invalid_manifests[episode_idx] = str(exc)
+                    stats["invalid_manifest_episodes"] += 1
+                    stats["invalid_manifest_errors"][str(episode_idx)] = str(exc)
+                    print(
+                        f"[WARNING] {task} episode {episode_idx}: invalid semantic "
+                        "manifest; writing empty Oracle fields so training uses the "
+                        f"raw branch. Reason: {exc}", flush=True)
+            if episode_idx in invalid_manifests:
+                oracle = empty_oracle_objects(args.max_objects, args.num_points)
+                audit = _empty_audit(args.max_objects)
+                stats["invalid_manifest_transitions"] += 1
             else:
-                observation_cache.move_to_end(episode_idx)
-            episode_dir, observations = observation_cache[episode_idx]
-            if not 0 <= sample_frame < len(observations):
-                stats["mapping_error"] += 1
-                raise ValueError(
-                    f"Replay/raw frame mismatch for {task} episode={episode_idx}: "
-                    f"sample_frame={sample_frame}, observations={len(observations)}"
+                schema, frames, entries = manifest_cache[episode_idx]
+                entry, exact = _entry_for_frame(frames, entries, sample_frame)
+                if episode_idx not in observation_cache:
+                    episode_dir = resolve_episode_dir(
+                        args.raw_data_dir, task, episode_idx)
+                    _validate_source_masks(episode_dir, entries)
+                    observation_cache[episode_idx] = (
+                        episode_dir, _load_low_dim_observations(episode_dir)
+                    )
+                    while len(observation_cache) > args.cache_episodes:
+                        observation_cache.popitem(last=False)
+                else:
+                    observation_cache.move_to_end(episode_idx)
+                episode_dir, observations = observation_cache[episode_idx]
+                if not 0 <= sample_frame < len(observations):
+                    stats["mapping_error"] += 1
+                    raise ValueError(
+                        f"Replay/raw frame mismatch for {task} episode={episode_idx}: "
+                        f"sample_frame={sample_frame}, observations={len(observations)}"
+                    )
+                cache_key = (task, episode_idx, sample_frame)
+                oracle = frame_cache.get(cache_key)
+                if oracle is None:
+                    oracle, target_valid, reference_valid = _build_oracle(
+                        task, episode_idx, sample_frame, entry, exact, episode_dir,
+                        observations[sample_frame], args.cameras, args.max_objects,
+                        args.num_points, args.seed,
+                    )
+                    frame_cache.put(cache_key, oracle)
+                else:
+                    target_valid = bool(
+                        np.any(oracle.valid & (oracle.roles == ORACLE_ROLE_TARGET))
+                    )
+                    reference_valid = bool(
+                        np.any(oracle.valid & (oracle.roles == ORACLE_ROLE_REFERENCE))
+                    )
+                audit = _audit_fields(
+                    schema, entry, target_valid, reference_valid, args.max_objects
                 )
-            cache_key = (task, episode_idx, sample_frame)
-            oracle = frame_cache.get(cache_key)
-            if oracle is None:
-                oracle, target_valid, reference_valid = _build_oracle(
-                    task, episode_idx, sample_frame, entry, exact, episode_dir,
-                    observations[sample_frame], args.cameras, args.max_objects,
-                    args.num_points, args.seed,
-                )
-                frame_cache.put(cache_key, oracle)
-            else:
-                target_valid = bool(
-                    np.any(oracle.valid & (oracle.roles == ORACLE_ROLE_TARGET))
-                )
-                reference_valid = bool(
-                    np.any(oracle.valid & (oracle.roles == ORACLE_ROLE_REFERENCE))
-                )
-            audit = _audit_fields(
-                schema, entry, target_valid, reference_valid, args.max_objects
-            )
-            stats["not_visible_target"] += int(not target_valid)
-            if entry.get("reference") is None:
-                stats["no_reference"] += 1
-            else:
-                stats["not_visible_reference"] += int(not reference_valid)
+                stats["not_visible_target"] += int(not target_valid)
+                if entry.get("reference") is None:
+                    stats["no_reference"] += 1
+                else:
+                    stats["not_visible_reference"] += int(not reference_valid)
         migrated = dict(original)
         migrated.update(oracle.as_replay_fields())
         migrated.update(audit)
@@ -554,6 +577,12 @@ def build_parser():
     parser.add_argument("--manifest-dir", type=Path, required=True)
     parser.add_argument('--allow-mask-verified-handles', action='store_true',
                         help='Explicitly accept mask-only identity provenance after geometry audit.')
+    parser.add_argument(
+        '--fallback-invalid-manifests-to-raw', action='store_true',
+        help=(
+            'Preserve transitions whose manifest is missing or invalid, but write '
+            'empty Oracle fields so O2 falls back to the raw branch. Fail-fast is '
+            'the default; ignored episode/transition counts are written to stats.'))
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--task", action="append", default=[])
     parser.add_argument("--cameras", nargs="+", default=list(DEFAULT_CAMERAS))

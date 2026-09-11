@@ -870,6 +870,7 @@ def experiment(cmd_args):
         oracle_adapter_translation_only=(
             exp_cfg.oracle_adapter_translation_only
         ),
+        oracle_relation_anchor_rank=exp_cfg.oracle_relation_anchor_rank,
         **mvt_cfg,
     )
     expected_oracle_params = None

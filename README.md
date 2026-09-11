@@ -71,6 +71,7 @@ bash train.sh --exp_cfg_path configs/rlbench_config.yaml \
 | Oracle 实例字段、参数和排错 | [Oracle replay](docs/guides/oracle-replay.md) |
 | 严格 simulator-GT 角色标注 | [Semantic-GT](docs/guides/semantic-gt.md) |
 | O2 Adapter、消融、loss、可视化与测试 | [O2 实验](docs/experiments/o2-training.md) |
+| O2 隐式 relation-anchor 模块与新配置 | [Relation anchor](docs/experiments/relation-anchor.md) |
 | 各 benchmark 评估命令 | [评估](docs/guides/evaluation.md) |
 | 论文结果、发布记录 | [结果与历史](docs/experiments/results.md) |
 | Phase / relation、物体视角、候选 cost 方案 | [研究设计](docs/design/role-relation-prior.md) |

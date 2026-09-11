@@ -53,6 +53,7 @@ class RLBenchTrainingVisualizationTest(unittest.TestCase):
                 'gt': torch.rand(views, height, width),
                 'target_prior': torch.rand(views, height, width),
                 'reference_prior': torch.rand(views, height, width),
+                'relation_anchor': torch.rand(views, height, width),
                 'prior': torch.rand(views, height, width),
                 'pred': torch.rand(views, height, width),
             }

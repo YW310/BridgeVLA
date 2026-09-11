@@ -81,7 +81,10 @@ def freeze_for_oracle_adaptation(backbone) -> int:
         parameter.requires_grad = False
     trainable = 0
     for name, parameter in backbone.named_parameters():
-        if 'oracle_prior_feature_adapter' in name:
+        if (
+            'oracle_prior_feature_adapter' in name
+            or 'oracle_prior_relation_anchor' in name
+        ):
             parameter.requires_grad = True
             trainable += parameter.numel()
     if trainable == 0:

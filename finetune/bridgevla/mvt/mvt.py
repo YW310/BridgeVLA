@@ -27,6 +27,7 @@ from bridgevla.mvt.mvt_single import MVT as MVTSingle
 from bridgevla.mvt.config import get_cfg_defaults
 from bridgevla.models.oracle_prior import (
     OraclePriorFeatureAdapter,
+    OracleRelationAnchorAdapter,
     OracleRelationGatedFeatureAdapter,
     rasterize_instance_points,
 )
@@ -72,10 +73,13 @@ class MVT(nn.Module):
         oracle_prior_relation=False,
         oracle_relation_gated_adapter=False,
         oracle_adapter_translation_only=False,
+        oracle_relation_anchor_rank=0,
     ):
         super().__init__()
         if oracle_prior_adapter_rank < 0:
             raise ValueError('oracle_prior_adapter_rank must be >= 0')
+        if oracle_relation_anchor_rank < 0:
+            raise ValueError('oracle_relation_anchor_rank must be >= 0')
         if oracle_relation_gated_adapter and not oracle_prior_relation:
             raise ValueError(
                 'oracle_relation_gated_adapter requires oracle_prior_relation'
@@ -83,6 +87,10 @@ class MVT(nn.Module):
         if oracle_relation_gated_adapter and oracle_prior_adapter_rank <= 0:
             raise ValueError(
                 'oracle_relation_gated_adapter requires adapter rank > 0'
+            )
+        if oracle_relation_anchor_rank > 0 and not oracle_prior_relation:
+            raise ValueError(
+                'oracle_relation_anchor_rank requires oracle_prior_relation'
             )
 
         from point_renderer.rvt_renderer import RVTBoxRenderer as BoxRenderer
@@ -102,6 +110,7 @@ class MVT(nn.Module):
         del args['oracle_prior_relation']
         del args['oracle_relation_gated_adapter']
         del args['oracle_adapter_translation_only']
+        del args['oracle_relation_anchor_rank']
 
         self.rot_ver = rot_ver
         self.num_rot = num_rot
@@ -117,6 +126,7 @@ class MVT(nn.Module):
         self.oracle_adapter_translation_only = bool(
             oracle_adapter_translation_only
         )
+        self.oracle_relation_anchor_rank = int(oracle_relation_anchor_rank)
         oracle_prior_channels = 2 if oracle_prior_relation else 1
         # for verifying the input
         self.feat_ver = feat_ver
@@ -152,6 +162,20 @@ class MVT(nn.Module):
                 prior_channels=oracle_prior_channels,
             )
             if use_adapter and stage_two else None
+        )
+        self.oracle_prior_relation_anchor1 = (
+            OracleRelationAnchorAdapter(
+                self.mvt1.vlm_dim, oracle_relation_anchor_rank,
+                prior_channels=oracle_prior_channels,
+            )
+            if oracle_relation_anchor_rank > 0 else None
+        )
+        self.oracle_prior_relation_anchor2 = (
+            OracleRelationAnchorAdapter(
+                self.mvt1.vlm_dim, oracle_relation_anchor_rank,
+                prior_channels=oracle_prior_channels,
+            )
+            if oracle_relation_anchor_rank > 0 and stage_two else None
         )
 
 
@@ -411,6 +435,7 @@ class MVT(nn.Module):
         oracle_prior_points=None,
         oracle_prior_valid=None,
         oracle_prior_sigma=2.0,
+        oracle_relation_state=None,
         oracle_compute_base=False,
         **kwargs,
     ):
@@ -469,11 +494,16 @@ class MVT(nn.Module):
             oracle_prior_heatmap=oracle_prior1,
             oracle_prior_valid=oracle_prior_valid,
             oracle_relation_points=oracle_prior_points,
+            oracle_relation_state=oracle_relation_state,
             oracle_adapter_translation_only=(
                 self.oracle_adapter_translation_only
             ),
             oracle_feature_adapter=(
                 self.oracle_prior_feature_adapter1
+                if oracle_prior1 is not None else None
+            ),
+            oracle_relation_anchor_adapter=(
+                self.oracle_prior_relation_anchor1
                 if oracle_prior1 is not None else None
             ),
             oracle_compute_base=oracle_compute_base,
@@ -594,11 +624,16 @@ class MVT(nn.Module):
                 oracle_prior_heatmap=oracle_prior2,
                 oracle_prior_valid=oracle_prior_valid,
                 oracle_relation_points=oracle_relation_points2,
+                oracle_relation_state=oracle_relation_state,
                 oracle_adapter_translation_only=(
                     self.oracle_adapter_translation_only
                 ),
                 oracle_feature_adapter=(
                     self.oracle_prior_feature_adapter2
+                    if oracle_prior2 is not None else None
+                ),
+                oracle_relation_anchor_adapter=(
+                    self.oracle_prior_relation_anchor2
                     if oracle_prior2 is not None else None
                 ),
                 oracle_compute_base=oracle_compute_base,

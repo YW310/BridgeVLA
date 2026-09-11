@@ -50,6 +50,8 @@ _C.oracle_prior_adapter_rank = 0
 _C.oracle_relation_gated_adapter = False
 # If true, keep Oracle feature residuals out of R/G/C branches.
 _C.oracle_adapter_translation_only = False
+# Optional translation-only implicit anchor on top of the relation adapter.
+_C.oracle_relation_anchor_rank = 0
 # arguments present in both peract and rvt
 # some of them donot support every possible combination in peract
 _C.peract = CN()

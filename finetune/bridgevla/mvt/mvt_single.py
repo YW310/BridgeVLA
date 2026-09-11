@@ -524,7 +524,9 @@ class MVT(nn.Module):
         oracle_prior_heatmap=None,
         oracle_prior_valid=None,
         oracle_feature_adapter=None,
+        oracle_relation_anchor_adapter=None,
         oracle_relation_points=None,
+        oracle_relation_state=None,
         oracle_adapter_translation_only=False,
         oracle_compute_base=False,
         **kwargs,
@@ -605,14 +607,21 @@ class MVT(nn.Module):
         base_action_features = x
         trans_base = None
         translation_features = x
+        relation_anchor = None
+        if (
+            oracle_compute_base
+            and (
+                oracle_feature_adapter is not None
+                or oracle_relation_anchor_adapter is not None
+            )
+        ):
+            with torch.no_grad():
+                trans_base = self.up0(x).view(
+                    bs, self.num_img, h, w,
+                )
         if oracle_feature_adapter is not None:
             if oracle_prior_heatmap is None or oracle_prior_valid is None:
                 raise ValueError('Oracle feature adapter requires prior and valid')
-            if oracle_compute_base:
-                with torch.no_grad():
-                    trans_base = self.up0(x).view(
-                        bs, self.num_img, h, w,
-                    )
             translation_features = oracle_feature_adapter(
                 x, oracle_prior_heatmap, oracle_prior_valid,
                 oracle_relation_points,
@@ -621,6 +630,21 @@ class MVT(nn.Module):
                 x,
                 translation_features,
                 oracle_adapter_translation_only,
+            )
+        if oracle_relation_anchor_adapter is not None:
+            if oracle_prior_heatmap is None or oracle_prior_valid is None:
+                raise ValueError(
+                    'Oracle relation anchor requires prior and valid'
+                )
+            translation_features, relation_anchor = (
+                oracle_relation_anchor_adapter(
+                    translation_features,
+                    oracle_prior_heatmap,
+                    oracle_prior_valid,
+                    oracle_relation_points,
+                    oracle_relation_state,
+                    return_anchor=True,
+                )
             )
         
         trans = self.up0(translation_features)
@@ -689,6 +713,16 @@ class MVT(nn.Module):
 
         out.update({"trans": trans})
 
+        if relation_anchor is not None:
+            relation_anchor = F.interpolate(
+                relation_anchor.reshape(
+                    bs * self.num_img, 1, *relation_anchor.shape[-2:]
+                ),
+                size=(h, w),
+                mode='bilinear',
+                align_corners=False,
+            ).reshape(bs, self.num_img, h, w)
+            out['oracle_relation_anchor'] = relation_anchor
         if trans_base is not None:
             out['trans_base'] = trans_base
         return out

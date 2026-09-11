@@ -380,6 +380,7 @@ class OracleRelationGatedFeatureAdapter(OraclePriorFeatureAdapter):
 
     def __init__(
         self, feature_channels: int, rank: int = 16, prior_channels: int = 2,
+        state_channels: int = 4,
     ):
         if prior_channels != 2:
             raise ValueError(
@@ -482,6 +483,166 @@ class OracleRelationGatedFeatureAdapter(OraclePriorFeatureAdapter):
         return features + residual * gate * valid
 
 
+class OracleRelationAnchorAdapter(nn.Module):
+    '''Translation-only spatial adapter conditioned on a Target/Reference pair.
+
+    It pools current visual-language features inside the existing projected
+    Target/Reference priors, combines them with task-agnostic 3-D relation
+    geometry, and predicts a soft spatial gate. It consumes neither phase
+    labels nor action anchors. A learned NULL token supports target-only phases.
+
+    The output projection is zero initialized, preserving the pre-existing
+    translation output when the module is first enabled.
+    '''
+
+    def __init__(
+        self, feature_channels: int, rank: int = 16, prior_channels: int = 2,
+    ):
+        super().__init__()
+        if feature_channels <= 0 or rank <= 0:
+            raise ValueError('feature_channels and rank must be positive')
+        if prior_channels != 2:
+            raise ValueError(
+                'Relation-anchor adapter requires Target/Reference channels'
+            )
+        self.feature_channels = feature_channels
+        self.rank = rank
+        self.prior_channels = prior_channels
+        self.state_channels = state_channels
+        self.feature_reduce = nn.Conv2d(feature_channels, rank, 1)
+        self.prior_project = nn.Conv2d(prior_channels, rank, 3, padding=1)
+        # Two visual tokens plus centers, extents, displacement, and validity.
+        self.query_encoder = nn.Sequential(
+            nn.Linear(2 * rank + 17 + state_channels, rank),
+            nn.GELU(),
+            nn.Linear(rank, rank),
+        )
+        self.null_reference = nn.Parameter(torch.zeros(rank))
+        self.feature_expand = nn.Conv2d(rank, feature_channels, 1)
+        nn.init.zeros_(self.feature_expand.weight)
+        nn.init.zeros_(self.feature_expand.bias)
+
+    def _relation_geometry(self, points, instance_valid, dtype, device):
+        if points is None:
+            raise ValueError(
+                'Relation-anchor adapter requires oracle relation points'
+            )
+        if points.ndim != 4 or points.shape[1] != 2 or points.shape[-1] != 3:
+            raise ValueError('relation points must have shape [B,2,P,3]')
+        batch_size = points.shape[0]
+        if instance_valid.shape != (batch_size, 2):
+            raise ValueError(
+                'Relation-anchor adapter requires instance_valid shape [B,2]'
+            )
+        points = points.to(device=device, dtype=dtype)
+        role_valid = instance_valid.to(device=device).bool()
+        valid_float = role_valid.to(dtype=dtype).unsqueeze(-1)
+        centers = points.mean(dim=2) * valid_float
+        extents = (points.amax(dim=2) - points.amin(dim=2)) * valid_float
+        displacement = (centers[:, 1] - centers[:, 0]) * valid_float[:, 1]
+        return torch.cat(
+            (
+                centers.reshape(batch_size, -1),
+                extents.reshape(batch_size, -1),
+                displacement,
+                valid_float.squeeze(-1),
+            ),
+            dim=1,
+        )
+
+    def forward(
+        self, features, prior, instance_valid, relation_points=None,
+        relation_state=None, *, return_anchor=False,
+    ):
+        if features.ndim != 4:
+            raise ValueError('features must have shape [B*V,C,H,W]')
+        if features.shape[1] != self.feature_channels:
+            raise ValueError('unexpected feature channel count')
+        if prior.ndim != 5:
+            raise ValueError('relation prior must have shape [B,V,2,H,W]')
+        batch_size, num_views, prior_channels = prior.shape[:3]
+        if prior_channels != self.prior_channels:
+            raise ValueError('unexpected prior channel count')
+        if features.shape[0] != batch_size * num_views:
+            raise ValueError('feature batch does not match prior batch and views')
+        if instance_valid.shape != (batch_size, 2):
+            raise ValueError(
+                'Relation-anchor adapter requires instance_valid shape [B,2]'
+            )
+
+        prior_features = prior.reshape(
+            batch_size * num_views, prior_channels, *prior.shape[-2:]
+        ).to(device=features.device, dtype=features.dtype)
+        prior_features = F.interpolate(
+            prior_features, size=features.shape[-2:], mode='bilinear',
+            align_corners=False,
+        )
+        reduced = self.feature_reduce(features)
+        height, width = reduced.shape[-2:]
+        reduced_views = reduced.view(
+            batch_size, num_views, self.rank, height, width,
+        )
+        prior_views = prior_features.view(
+            batch_size, num_views, prior_channels, height, width,
+        )
+
+        weights = prior_views / prior_views.sum(
+            dim=(-2, -1), keepdim=True,
+        ).clamp_min(1e-6)
+        role_tokens = torch.einsum(
+            'bvrhw,bvchw->bvrc', weights, reduced_views,
+        )
+        role_valid = instance_valid.to(device=features.device).bool()
+        target_token = (
+            role_tokens[:, :, 0] * role_valid[:, None, 0, None]
+        )
+        reference_valid = role_valid[:, None, 1, None]
+        null_reference = self.null_reference.to(
+            device=features.device, dtype=features.dtype,
+        ).view(1, 1, self.rank)
+        reference_token = torch.where(
+            reference_valid, role_tokens[:, :, 1], null_reference,
+        )
+        role_tokens = torch.stack((target_token, reference_token), dim=2)
+
+        geometry = self._relation_geometry(
+            relation_points, instance_valid, features.dtype, features.device,
+        )
+        geometry = geometry[:, None].expand(-1, num_views, -1)
+        if relation_state is None:
+            relation_state = features.new_zeros(
+                batch_size, self.state_channels,
+            )
+        if relation_state.shape != (batch_size, self.state_channels):
+            raise ValueError(
+                'relation_state must have shape '
+                f'[B,{self.state_channels}]'
+            )
+        relation_state = relation_state.to(
+            device=features.device, dtype=features.dtype,
+        )
+        relation_state = relation_state[:, None].expand(-1, num_views, -1)
+        query = self.query_encoder(torch.cat(
+            (role_tokens.flatten(2), geometry, relation_state), dim=-1,
+        ))
+        query = query.reshape(batch_size * num_views, self.rank, 1, 1)
+
+        spatial = reduced + self.prior_project(prior_features)
+        anchor_logits = (spatial * query).sum(dim=1, keepdim=True) / math.sqrt(
+            self.rank
+        )
+        anchor = torch.sigmoid(anchor_logits)
+        residual = self.feature_expand(F.gelu(spatial) * anchor)
+        # Target is required; Reference=False represents a valid NULL.
+        target_valid = role_valid[:, 0].to(
+            device=features.device, dtype=features.dtype,
+        ).repeat_interleave(num_views).view(-1, 1, 1, 1)
+        output = features + residual * target_valid
+        if return_anchor:
+            return output, anchor.view(batch_size, num_views, height, width)
+        return output
+
+
 def _translation_probabilities(logits: torch.Tensor) -> torch.Tensor:
     """Convert one sample of [V, H, W] logits to per-view probabilities."""
     if logits.ndim != 3:
@@ -555,6 +716,10 @@ def build_training_visualization_payload(
         if 'oracle_reference_prior' in stage_output:
             stage_payload['reference_prior'] = stage_output[
                 'oracle_reference_prior'
+            ][0]
+        if 'oracle_relation_anchor' in stage_output:
+            stage_payload['relation_anchor'] = stage_output[
+                'oracle_relation_anchor'
             ][0]
         payload[stage_name] = {
             key: value.detach().float().cpu()

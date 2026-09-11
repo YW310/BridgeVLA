@@ -685,14 +685,17 @@ class RVTAgent:
             strict=self.oracle_prior_strict,
         )
 
-    def _oracle_network_kwargs(self, points, valid):
+    def _oracle_network_kwargs(self, points, valid, relation_state=None):
         if points is None:
             return {}
-        return {
+        kwargs = {
             'oracle_prior_points': points,
             'oracle_prior_valid': valid,
             'oracle_prior_sigma': self.oracle_prior_sigma,
         }
+        if relation_state is not None:
+            kwargs['oracle_relation_state'] = relation_state
+        return kwargs
 
     def _get_one_hot_expert_actions(
         self,
@@ -882,6 +885,9 @@ class RVTAgent:
         oracle_points, oracle_valid, oracle_slots = (
             self._select_oracle_prior_points(replay_sample)
         )
+        relation_state = latest_replay_value(
+            replay_sample['low_dim_state'], 2,
+        ).float()
         tasks = replay_sample["tasks"]
         return_out = {}
         if oracle_valid is not None:
@@ -1037,7 +1043,9 @@ class RVTAgent:
             wpt_local=wpt_local if self._network.training else None,
             rot_x_y=rot_x_y if self.rot_ver == 1 else None,
             oracle_compute_base=(backprop and self.oracle_log_base_loss),
-            **self._oracle_network_kwargs(oracle_points, oracle_valid),
+            **self._oracle_network_kwargs(
+                oracle_points, oracle_valid, relation_state,
+            ),
             language_goal=replay_sample["lang_goal"]  
         )
         
@@ -1474,6 +1482,9 @@ class RVTAgent:
         oracle_points, oracle_valid, oracle_slots = (
             self._select_oracle_prior_points(observation, allow_missing=True)
         )
+        relation_state = latest_replay_value(
+            observation['low_dim_state'], 2,
+        ).float()
         language_goal =observation["language_goal"]
         obs, pcd = rlbench_utils._preprocess_inputs(observation, self.cameras)
         pc, img_feat = rvt_utils.get_pc_img_feat(
@@ -1525,7 +1536,9 @@ class RVTAgent:
             pc=pc,
             img_feat=img_feat,
             img_aug=0,  # no img augmentation while acting
-            **self._oracle_network_kwargs(oracle_points, oracle_valid),
+            **self._oracle_network_kwargs(
+                oracle_points, oracle_valid, relation_state,
+            ),
             language_goal=language_goal,
         )
         if visualize:
@@ -1582,6 +1595,13 @@ class RVTAgent:
                         'o2_prior',
                         stage_img,
                     )
+                    if 'oracle_relation_anchor' in stage_out:
+                        save_heatmap_views(
+                            stage_out['oracle_relation_anchor'][0],
+                            stage_dir,
+                            'o2_relation_anchor',
+                            stage_img,
+                        )
                     save_heatmap_views(
                         final, stage_dir, 'o2_adapted', stage_img,
                     )

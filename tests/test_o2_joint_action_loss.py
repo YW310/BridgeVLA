@@ -91,6 +91,20 @@ class O2JointActionLossTest(unittest.TestCase):
         self.assertIn('oracle_adapter_translation_only: False', config)
         self.assertIn('add_rgc_loss: True', config)
 
+    def test_relation_anchor_has_separate_opt_in_config(self):
+        config = (
+            FINETUNE_ROOT
+            / 'RLBench'
+            / 'configs'
+            / 'rlbench_o2_semantic_gt_relation_anchor.yaml'
+        ).read_text(encoding='utf-8')
+        self.assertIn(
+            'exp_id: rlbench_o2_semantic_gt_relation_anchor', config
+        )
+        self.assertIn('oracle_relation_anchor_rank: 16', config)
+        self.assertIn('oracle_relation_gated_adapter: True', config)
+        self.assertIn('oracle_adapter_translation_only: False', config)
+
 
 if __name__ == '__main__':
     unittest.main()

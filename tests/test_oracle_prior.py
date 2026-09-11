@@ -7,6 +7,7 @@ from finetune.bridgevla.models import oracle_prior as oracle_prior_module
 
 from finetune.bridgevla.models.oracle_prior import (
     OraclePriorFeatureAdapter,
+    OracleRelationAnchorAdapter,
     OracleRelationGatedFeatureAdapter,
     build_training_visualization_payload,
     choose_oracle_translation_loss,
@@ -43,6 +44,13 @@ class OraclePriorTest(unittest.TestCase):
         )
         per_stage = sum(p.numel() for p in adapter.parameters())
         self.assertEqual(per_stage * 2, 139138)
+
+    def test_relation_anchor_adapters_are_lightweight(self):
+        adapter = OracleRelationAnchorAdapter(
+            2048, rank=16, prior_channels=2,
+        )
+        per_stage = sum(p.numel() for p in adapter.parameters())
+        self.assertEqual(per_stage * 2, 138112)
 
     def test_feature_adapter_keeps_invalid_sample_unchanged(self):
         adapter = OraclePriorFeatureAdapter(4, rank=2)
@@ -132,6 +140,54 @@ class OraclePriorTest(unittest.TestCase):
         valid = torch.tensor([[True, True], [True, False]])
         adapted = adapter(features, prior, valid, points)
         torch.testing.assert_close(adapted[1], features[1])
+
+    def test_relation_anchor_is_identity_and_returns_view_anchor(self):
+        adapter = OracleRelationAnchorAdapter(
+            8, rank=3, prior_channels=2,
+        )
+        features = torch.randn(6, 8, 4, 4)
+        prior = torch.rand(2, 3, 2, 8, 8)
+        points = torch.randn(2, 2, 5, 3)
+        valid = torch.tensor([[True, True], [True, False]])
+        adapted, anchor = adapter(
+            features, prior, valid, points,
+            torch.randn(2, 4), return_anchor=True,
+        )
+        torch.testing.assert_close(adapted, features)
+        self.assertEqual(tuple(anchor.shape), (2, 3, 4, 4))
+        adapted.square().mean().backward()
+        self.assertGreater(
+            adapter.feature_expand.weight.grad.abs().sum().item(), 0
+        )
+
+    def test_relation_anchor_supports_null_reference(self):
+        adapter = OracleRelationAnchorAdapter(
+            4, rank=2, prior_channels=2,
+        )
+        torch.nn.init.ones_(adapter.feature_expand.weight)
+        features = torch.ones(1, 4, 3, 3)
+        prior = torch.zeros(1, 1, 2, 6, 6)
+        prior[:, :, 0, 1:5, 1:5] = 1
+        points = torch.zeros(1, 2, 5, 3)
+        points[:, 0] = 0.25
+        adapted = adapter(
+            features, prior, torch.tensor([[True, False]]), points,
+        )
+        self.assertFalse(torch.allclose(adapted, features))
+
+    def test_relation_anchor_keeps_missing_target_unchanged(self):
+        adapter = OracleRelationAnchorAdapter(
+            4, rank=2, prior_channels=2,
+        )
+        torch.nn.init.ones_(adapter.feature_expand.weight)
+        features = torch.randn(1, 4, 3, 3)
+        adapted = adapter(
+            features,
+            torch.rand(1, 1, 2, 6, 6),
+            torch.tensor([[False, True]]),
+            torch.randn(1, 2, 5, 3),
+        )
+        torch.testing.assert_close(adapted, features)
 
     def test_valid_oracle_translation_loss_ignores_incomplete_pairs(self):
         values = torch.tensor(
@@ -260,6 +316,9 @@ class OraclePriorTest(unittest.TestCase):
             'oracle_reference_prior': torch.rand(
                 batch_size, views, height, width
             ),
+            'oracle_relation_anchor': torch.rand(
+                batch_size, views, height, width
+            ),
         }
         stage_two = {
             'trans': torch.randn(batch_size, views, height, width),
@@ -298,6 +357,10 @@ class OraclePriorTest(unittest.TestCase):
         )
         self.assertEqual(
             payload['mvt1']['reference_prior'].shape,
+            (views, height, width),
+        )
+        self.assertEqual(
+            payload['mvt1']['relation_anchor'].shape,
             (views, height, width),
         )
         self.assertTrue(

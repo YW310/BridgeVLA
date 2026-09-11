@@ -11,6 +11,7 @@ from PIL import Image, ImageDraw
 _COLUMNS = (
     ('target_prior', 'Target prior'),
     ('reference_prior', 'Reference prior'),
+    ('relation_anchor', 'Relation anchor'),
     ("input", "Input"),
     ("gt", "GT"),
     ("prior", "Oracle prior"),
@@ -78,7 +79,7 @@ def _stage_montage(
     view_count, height, width, _ = inputs.shape
     title_by_key = dict(_COLUMNS)
     column_order = (
-        'input', 'gt', 'target_prior', 'reference_prior',
+        'input', 'gt', 'target_prior', 'reference_prior', 'relation_anchor',
         'prior', 'pred',
     )
     columns = tuple(

@@ -122,6 +122,7 @@ def load_agent(
         oracle_prior_relation=exp_cfg.rvt.oracle_prior_relation,
         oracle_relation_gated_adapter=exp_cfg.oracle_relation_gated_adapter,
         oracle_adapter_translation_only=exp_cfg.oracle_adapter_translation_only,
+        oracle_relation_anchor_rank=exp_cfg.oracle_relation_anchor_rank,
         **mvt_cfg,
     )
 
