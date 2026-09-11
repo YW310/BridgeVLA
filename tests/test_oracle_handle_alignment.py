@@ -360,6 +360,67 @@ def test_single_view_accepts_strict_interior_geometry_with_boundary_noise():
     assert check['interior_geometry']['distance_p95'] == 0.
 
 
+def single_view_large_exact_mask(pixel_count=100, *, stored_pixel_count=None,
+                                 geometry_offset=.03):
+    shape = (16, 16)
+    stored_pixel_count = (
+        pixel_count if stored_pixel_count is None else stored_pixel_count)
+    live_mask = np.zeros(shape, dtype=np.int64)
+    stored_mask = np.zeros(shape, dtype=np.int64)
+    live_mask.flat[:pixel_count] = 87
+    stored_mask.flat[:stored_pixel_count] = 99
+    rows, cols = np.indices(shape)
+    live_cloud = np.stack(
+        (cols / 100., rows / 100., np.ones_like(rows)), axis=-1)
+    stored_cloud = live_cloud.copy()
+    stored_cloud[..., 2] += geometry_offset
+    live = {
+        'front': dict(
+            mask=live_mask, cloud=live_cloud,
+            intrinsics=np.eye(3), extrinsics=np.eye(4)),
+        'left_shoulder': dict(
+            mask=np.zeros(shape, dtype=np.int64), cloud=live_cloud.copy(),
+            intrinsics=np.eye(3), extrinsics=np.eye(4)),
+    }
+    stored = {
+        'front': dict(
+            mask=stored_mask, cloud=stored_cloud,
+            intrinsics=np.eye(3), extrinsics=np.eye(4)),
+        'left_shoulder': dict(
+            mask=np.zeros(shape, dtype=np.int64), cloud=live_cloud.copy(),
+            intrinsics=np.eye(3), extrinsics=np.eye(4)),
+    }
+    return live, stored
+
+
+def test_single_view_accepts_unique_large_exact_mask_with_shifted_geometry():
+    live, stored = single_view_large_exact_mask()
+
+    mapping, report = align_handles(
+        live, stored, {87: 'drawer_bottom'}, mode='mask_verified')
+
+    assert mapping == {87: 99}
+    evidence = report['87']
+    assert evidence['source'] == (
+        'registered_mask_overlap_single_view_large_exact_mask')
+    check = evidence['candidates']['99']['front']
+    assert check['large_exact_mask_passed']
+    assert not check['geometry_passed']
+    assert not check['interior_geometry_passed']
+
+
+@pytest.mark.parametrize(
+    'pixel_count,stored_pixel_count',
+    [(95, 95), (100, 99)])
+def test_single_view_large_exact_mask_certificate_is_strict(
+        pixel_count, stored_pixel_count):
+    live, stored = single_view_large_exact_mask(
+        pixel_count, stored_pixel_count=stored_pixel_count)
+    with pytest.raises(HandleAlignmentError):
+        align_handles(
+            live, stored, {87: 'drawer_bottom'}, mode='mask_verified')
+
+
 def test_semantic_union_accepts_one_strong_and_one_three_pixel_exact_view():
     live, stored = single_view_boundary_noise()
     live['left_shoulder']['mask'][1, 1:4] = 87
