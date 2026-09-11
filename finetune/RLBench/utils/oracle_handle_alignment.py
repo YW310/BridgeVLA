@@ -7,7 +7,7 @@ occluded, merged or split instances rather than manufacture a semantic label.
 import numpy as np
 
 
-SINGLE_VIEW_LARGE_EXACT_MIN_PIXELS = 80
+SINGLE_VIEW_EXACT_MIN_PIXELS = 32
 
 
 class HandleAlignmentError(ValueError):
@@ -343,9 +343,9 @@ def align_handles(live, stored, names, name_to_handle=None, *, mode='verified',
                     interior_geometry=interior_geometry,
                     boundary_geometry=boundary_geometry,
                     interior_geometry_passed=interior_geometry_passed,
-                    large_exact_mask_passed=bool(
-                        min(na, nb) >= SINGLE_VIEW_LARGE_EXACT_MIN_PIXELS
-                        and precision >= .995 and recall >= .995))
+                    exact_mask_passed=bool(
+                        min(na, nb) >= SINGLE_VIEW_EXACT_MIN_PIXELS
+                        and precision == 1. and recall == 1.))
                 checks[camera]['geometry_passed'] = bool(
                     count and int(finite.sum()) >= .95 * count
                     and p95 is not None and p95 <= .01)
@@ -392,16 +392,16 @@ def align_handles(live, stored, names, name_to_handle=None, *, mode='verified',
                     not check['geometry_passed']
                     and check['interior_geometry_passed']
                     for check in checks.values()))
-            # Large articulated fixtures can be visible from only one camera,
-            # while a reset-to-demo discrepancy introduces a scene-wide point
-            # cloud offset. A unique, large, virtually exact silhouette is a
-            # stronger identity certificate than that unregistered geometry.
-            # Keep this unavailable to small objects and ambiguous candidates.
-            single_view_large_exact_mask = (
+            # Articulated fixtures can be visible from only one camera, while
+            # reset-to-demo introduces a scene-wide point-cloud offset. A
+            # unique, substantial and exactly equal silhouette is a stronger
+            # identity certificate than that unregistered geometry. The
+            # 32-pixel floor matches the existing strong-view definition.
+            single_view_exact_mask = (
                 mask_only and len(candidates) == 1 and len(checks) == 1
                 and agreeing == 1
                 and all(
-                    check['large_exact_mask_passed']
+                    check['exact_mask_passed']
                     for check in checks.values()
                 )
             )
@@ -414,7 +414,7 @@ def align_handles(live, stored, names, name_to_handle=None, *, mode='verified',
             accepted_by_mask_quorum = mask_only and agreeing >= 2
             accepted_by_single_view = (
                 mask_only and not contradictory
-                and (single_view_geometry or single_view_large_exact_mask))
+                and (single_view_geometry or single_view_exact_mask))
             accepted_by_verified = (
                 not mask_only and not contradictory
                 and (agreeing >= 2 or declared is not None))
@@ -426,7 +426,7 @@ def align_handles(live, stored, names, name_to_handle=None, *, mode='verified',
                      if single_view_uses_interior
                      else 'single_view_mask_geometry')
                     if single_view_geometry else
-                    'single_view_large_exact_mask'
+                    'single_view_exact_mask'
                     if accepted_by_single_view else 'multi_view_masks')
         evidence[str(handle)] = dict(name=name, candidates=candidate_evidence)
         if (not accepted and not candidates and allow_unobservable
@@ -459,9 +459,9 @@ def align_handles(live, stored, names, name_to_handle=None, *, mode='verified',
                      if accepted_sources[target]
                      == 'single_view_mask_interior_geometry'
                      else
-                     "registered_mask_overlap_single_view_large_exact_mask"
+                     "registered_mask_overlap_single_view_exact_mask"
                      if accepted_sources[target]
-                     == 'single_view_large_exact_mask'
+                     == 'single_view_exact_mask'
                      else "registered_mask_overlap") if mask_only else
                     "acquisition_metadata" if declared is not None else "registered_masks"))
     return mapping, evidence

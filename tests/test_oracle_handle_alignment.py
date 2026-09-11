@@ -360,8 +360,8 @@ def test_single_view_accepts_strict_interior_geometry_with_boundary_noise():
     assert check['interior_geometry']['distance_p95'] == 0.
 
 
-def single_view_large_exact_mask(pixel_count=95, *, stored_pixel_count=None,
-                                 geometry_offset=.03):
+def single_view_exact_mask(pixel_count=32, *, stored_pixel_count=None,
+                           geometry_offset=.03):
     shape = (16, 16)
     stored_pixel_count = (
         pixel_count if stored_pixel_count is None else stored_pixel_count)
@@ -393,8 +393,8 @@ def single_view_large_exact_mask(pixel_count=95, *, stored_pixel_count=None,
     return live, stored
 
 
-def test_single_view_accepts_unique_large_exact_mask_with_shifted_geometry():
-    live, stored = single_view_large_exact_mask()
+def test_single_view_accepts_unique_exact_mask_with_shifted_geometry():
+    live, stored = single_view_exact_mask()
 
     mapping, report = align_handles(
         live, stored, {87: 'drawer_bottom'}, mode='mask_verified')
@@ -402,19 +402,19 @@ def test_single_view_accepts_unique_large_exact_mask_with_shifted_geometry():
     assert mapping == {87: 99}
     evidence = report['87']
     assert evidence['source'] == (
-        'registered_mask_overlap_single_view_large_exact_mask')
+        'registered_mask_overlap_single_view_exact_mask')
     check = evidence['candidates']['99']['front']
-    assert check['large_exact_mask_passed']
+    assert check['exact_mask_passed']
     assert not check['geometry_passed']
     assert not check['interior_geometry_passed']
 
 
 @pytest.mark.parametrize(
     'pixel_count,stored_pixel_count',
-    [(79, 79), (100, 99)])
-def test_single_view_large_exact_mask_certificate_is_strict(
+    [(31, 31), (100, 99)])
+def test_single_view_exact_mask_certificate_is_strict(
         pixel_count, stored_pixel_count):
-    live, stored = single_view_large_exact_mask(
+    live, stored = single_view_exact_mask(
         pixel_count, stored_pixel_count=stored_pixel_count)
     with pytest.raises(HandleAlignmentError):
         align_handles(
@@ -474,11 +474,10 @@ def test_single_view_interior_geometry_gate_rejects_real_disagreement(
             live, stored, {87: 'chicken_visual'}, mode='mask_verified')
 
 
-@pytest.mark.parametrize('failure', ['too_small', 'bad_geometry', 'second_visible_view'])
+@pytest.mark.parametrize('failure', ['too_small', 'second_visible_view'])
 def test_single_view_fallback_remains_conservative(failure):
     live, stored = single_view_ring(
-        pixel_count=31 if failure == 'too_small' else 35,
-        geometry_offset=.02 if failure == 'bad_geometry' else 0.)
+        pixel_count=31 if failure == 'too_small' else 35)
     if failure == 'second_visible_view':
         live['left_shoulder']['mask'][1:6, 1:6] = 87
         stored['left_shoulder']['mask'][1:6, 1:5] = 99
