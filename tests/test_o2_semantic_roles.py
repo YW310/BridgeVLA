@@ -264,7 +264,9 @@ def test_retry_discards_failed_manifest_attempt_before_restarting(tmp_path):
 
 def test_place_cups_advances_only_after_condition_and_release():
     cups = [FakeObject(f"mug{i}", 10 + i) for i in range(3)]
-    spokes = [FakeObject(f"spoke{i}", 20 + i) for i in range(3)]
+    spokes = [
+        FakeObject(f"place_cups_holder_spoke{i}", 20 + i)
+        for i in range(3)]
     task = FakeTask(cups + spokes)
     task._cups = cups
     task._spokes = spokes
@@ -288,26 +290,34 @@ def test_place_cups_reference_does_not_absorb_descendant_spokes():
     spoke0 = FakeObject(
         "place_cups_holder_spoke0", 20, children=(spoke1, spoke2))
     task = FakeTask(cups + [spoke0])
-    task._cups = cups
-    task._spokes = [spoke0, spoke1, spoke2]
+    # Private task containers are deliberately reversed: semantic roles must
+    # still follow the canonical names in the role configuration.
+    task._cups = list(reversed(cups))
+    task._spokes = [spoke2, spoke1, spoke0]
     task._index = 2
     task._on_peg_conditions = [
         FakeCondition(), FakeCondition(), FakeCondition()]
     value = provider("place_cups", task)
 
     phase0 = value._build_assignment()
+    assert phase0.target.semantic_name == "mug0"
+    assert phase0.target.handles == (10,)
     assert phase0.reference.semantic_name == "holder_spoke0"
     assert phase0.reference.handles == (20,)
 
     value._phase_index = 1
     phase1 = value._build_assignment()
+    assert phase1.target.semantic_name == "mug1"
+    assert phase1.target.handles == (11,)
     assert phase1.reference.semantic_name == "holder_spoke1"
     assert phase1.reference.handles == (21,)
 
 
 def test_place_cups_demo_events_build_phase_manifest_without_sim_replay(tmp_path):
     cups = [FakeObject(f"mug{i}", 10 + i) for i in range(3)]
-    spokes = [FakeObject(f"spoke{i}", 20 + i) for i in range(3)]
+    spokes = [
+        FakeObject(f"place_cups_holder_spoke{i}", 20 + i)
+        for i in range(3)]
     task = FakeTask(cups + spokes)
     task._cups = cups
     task._spokes = spokes
@@ -346,7 +356,9 @@ def test_place_cups_demo_events_build_phase_manifest_without_sim_replay(tmp_path
 
 def test_place_cups_demo_events_require_one_release_per_phase():
     cups = [FakeObject(f"mug{i}", 10 + i) for i in range(3)]
-    spokes = [FakeObject(f"spoke{i}", 20 + i) for i in range(3)]
+    spokes = [
+        FakeObject(f"place_cups_holder_spoke{i}", 20 + i)
+        for i in range(3)]
     task = FakeTask(cups + spokes)
     task._cups = cups
     task._spokes = spokes
@@ -481,6 +493,8 @@ def test_push_buttons_demo_events_locate_ordered_gt_target_contacts():
 def test_push_buttons_resolver_version_invalidates_legacy_manifests():
     assert RLBenchGTOracleProvider.task_resolver_version("push_buttons") == (
         "push_buttons_contact_site_v2")
+    assert RLBenchGTOracleProvider.task_resolver_version("place_cups") == (
+        "place_cups_canonical_spoke_v2")
     assert RLBenchGTOracleProvider.task_resolver_version("close_jar") is None
 
 

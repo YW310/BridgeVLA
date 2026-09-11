@@ -26,6 +26,10 @@ from .oracle_handle_alignment import (
 DEFAULT_CAMERAS = ("front", "left_shoulder", "right_shoulder", "wrist")
 _COPPELIA_SUFFIX = re.compile(r"#\d+$")
 _TASK_RESOLVER_VERSIONS = {
+    # Legacy manifests trusted private _cups/_spokes list order and expanded a
+    # selected spoke through all descendants. Resolve the configured canonical
+    # name directly and keep each spoke as one reference entity.
+    "place_cups": "place_cups_canonical_spoke_v2",
     # v1 used the top-plate mask handle.  Some RLBench scenes expose fewer
     # than two pixels for that live handle even though the semantic contact
     # position is available directly from the task object.
@@ -516,10 +520,12 @@ class RLBenchGTOracleProvider:
     def _sequence_entity(
         self, spec, index: int, label: str, *,
         include_descendants: bool = True,
+        semantic_name: Optional[str] = None,
     ) -> RoleEntity:
         name = str(spec["sequence"][index])
         return self._entity_object(
-            name, self._objects([name], label),
+            name if semantic_name is None else str(semantic_name),
+            self._objects([name], label),
             include_descendants=include_descendants)
 
     def _build_assignment(self) -> RoleAssignment:
@@ -594,24 +600,16 @@ class RLBenchGTOracleProvider:
             target = self._entity_object("chicken" if self._variation == 0 else "steak", selected)
             reference = self._site_from_spec(reference_spec, "off-grill success site")
         elif name == "place_cups":
-            cups = self._attr_objects("_cups")
-            spokes = self._attr_objects("_spokes")
-            if cups:
-                cups = self._expect_count(cups, 3, "place_cups mugs")
-            if spokes:
-                spokes = self._expect_count(spokes, 3, "place_cups spokes")
-            target = (
-                self._entity_object(f"mug{phase}", [cups[phase]])
-                if cups else self._sequence_entity(target_spec, phase, "place_cups mug")
-            )
-            reference = (
-                self._entity_object(
-                    f"holder_spoke{phase}", [spokes[phase]],
-                    include_descendants=False)
-                if spokes else self._sequence_entity(
-                    reference_spec, phase, "place_cups spoke",
-                    include_descendants=False)
-            )
+            # The semantic order is defined by the configured canonical names,
+            # not by the task's private _cups/_spokes container order. Some
+            # vendored scene/task versions expose those containers in a
+            # different order, which can otherwise label spoke2 as spoke0.
+            target = self._sequence_entity(
+                target_spec, phase, "place_cups mug")
+            reference = self._sequence_entity(
+                reference_spec, phase, "place_cups spoke",
+                include_descendants=False,
+                semantic_name=f"holder_spoke{phase}")
         elif name == "place_shape_in_shape_sorter":
             shapes = self._attr_objects("shapes")
             if shapes:
