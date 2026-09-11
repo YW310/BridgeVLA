@@ -1126,9 +1126,15 @@ class RLBenchGTOracleProvider:
                 }
                 used_entity_union_fallback = True
                 for semantic_name, handles, visible_handles in visible_groups:
-                    mapped, entity_evidence = align_semantic_handle_group(
-                        self._live_initial_views or {}, stored_views,
-                        visible_handles, semantic_name)
+                    try:
+                        mapped, entity_evidence = align_semantic_handle_group(
+                            self._live_initial_views or {}, stored_views,
+                            visible_handles, semantic_name)
+                    except HandleAlignmentError as group_error:
+                        group_evidence["entities"][semantic_name] = (
+                            group_error.evidence)
+                        raise HandleAlignmentError(
+                            str(group_error), group_evidence) from group_error
                     entity_mapping[frozenset(handles)] = mapped
                     group_evidence["entities"][semantic_name] = entity_evidence
                 mapping = {}

@@ -103,25 +103,41 @@ def align_semantic_handle_group(live, stored, handles, semantic_name):
     # instance lies inside the live entity in at least two registered views.
     # This prevents a coincidental edge overlap from adding an unrelated object.
     candidate_votes = {}
-    for am, bm, _, _ in views.values():
+    candidate_details = {}
+    for camera, (am, bm, ac, bc) in views.items():
         live_entity = np.isin(am, tuple(handles))
         for candidate in np.unique(bm[live_entity]):
             candidate = int(candidate)
             if candidate <= 0:
                 continue
             stored_instance = bm == candidate
-            overlap = int((live_entity & stored_instance).sum())
+            selected = live_entity & stored_instance
+            overlap = int(selected.sum())
+            live_pixels = int(live_entity.sum())
             stored_pixels = int(stored_instance.sum())
+            stored_coverage = overlap / max(stored_pixels, 1)
+            live_coverage = overlap / max(live_pixels, 1)
             # A semantic entity may be split into thin visual sub-parts.  The
             # per-part threshold only proposes group members; the complete
             # union below still needs >=16 pixels and 90% bidirectional overlap
             # in two views.
-            if overlap >= 4 and overlap / max(stored_pixels, 1) >= .9:
+            proposed = overlap >= 4 and stored_coverage >= .9
+            candidate_details.setdefault(str(candidate), {})[camera] = {
+                "live_pixels": live_pixels,
+                "stored_pixels": stored_pixels,
+                "overlap_pixels": overlap,
+                "stored_coverage": stored_coverage,
+                "live_coverage": live_coverage,
+                "proposed": bool(proposed),
+                "geometry": _geometry_summary(ac, bc, selected),
+            }
+            if proposed:
                 candidate_votes[candidate] = candidate_votes.get(candidate, 0) + 1
     candidates = {
         candidate for candidate, votes in candidate_votes.items() if votes >= 2}
     evidence["candidate_votes"] = {
         str(candidate): votes for candidate, votes in sorted(candidate_votes.items())}
+    evidence["candidate_details"] = candidate_details
     evidence["stored_handles"] = sorted(candidates)
     if not candidates:
         raise HandleAlignmentError(

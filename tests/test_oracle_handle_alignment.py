@@ -185,8 +185,11 @@ def test_semantic_entity_union_rejects_low_overlap_candidate():
     for data in live.values():
         data['mask'][1:6, 1:3] = 86
         data['mask'][1:6, 4:6] = 0
-    with pytest.raises(HandleAlignmentError):
+    with pytest.raises(HandleAlignmentError) as error:
         align_semantic_handle_group(live, stored, {86, 87}, 'chicken')
+    details = error.value.evidence['candidate_details']['99']
+    assert details['front']['stored_coverage'] == pytest.approx(15 / 25)
+    assert not details['front']['proposed']
 
 
 @pytest.mark.parametrize('failure', ['one_view', 'low_overlap', 'split', 'hidden_metadata'])
