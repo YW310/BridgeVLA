@@ -26,10 +26,10 @@ from .oracle_handle_alignment import (
 DEFAULT_CAMERAS = ("front", "left_shoulder", "right_shoulder", "wrist")
 _COPPELIA_SUFFIX = re.compile(r"#\d+$")
 _TASK_RESOLVER_VERSIONS = {
-    # Legacy manifests trusted private _cups/_spokes list order and expanded a
-    # selected spoke through all descendants. Resolve the configured canonical
-    # name directly and keep each spoke as one reference entity.
-    "place_cups": "place_cups_canonical_spoke_v2",
+    # v1 trusted private _cups/_spokes order and expanded spoke descendants.
+    # v2 fixed canonical entities but treated every close-to-open transition as
+    # completion. v3 filters extra releases by the fixed ordered T/R relation.
+    "place_cups": "place_cups_ordered_release_relation_v3",
     # v1 used the top-plate mask handle.  Some RLBench scenes expose fewer
     # than two pixels for that live handle even though the semantic contact
     # position is available directly from the task object.
@@ -846,6 +846,147 @@ class RLBenchGTOracleProvider:
             and float(demo[frame].gripper_open) >= 0.5
         ]
 
+    def _ordered_release_relation_frames(
+        self,
+        demo: Sequence[object],
+        release_frames: Sequence[int],
+        max_distance: float,
+    ) -> Tuple[List[int], List[float]]:
+        """Select one ordered release for each already-defined reference.
+
+        Extra close-to-open transitions can be empty releases or re-grasps and
+        must not advance the phase. Semantic roles remain fixed by the task
+        resolver; proximity is used only to timestamp their completion events.
+        """
+        candidates = sorted(set(int(frame) for frame in release_frames))
+        phase_count = self._phase_count()
+        if len(candidates) < phase_count:
+            raise SemanticRoleMappingError(
+                f"{self._task_name} needs {phase_count} completed releases, "
+                f"but only detected {candidates}")
+
+        original_phase = self._phase_index
+        references = []
+        try:
+            for phase in range(phase_count):
+                self._phase_index = phase
+                reference = self._build_assignment().reference
+                if reference is None:
+                    raise SemanticRoleMappingError(
+                        f"{self._task_name} phase {phase} has no reference for "
+                        "release relation filtering")
+                references.append(reference)
+        finally:
+            self._phase_index = original_phase
+
+        reference_anchors = []
+        for reference in references:
+            if reference.kind == "site":
+                reference_anchors.append(
+                    np.asarray(reference.site_position, dtype=np.float64).reshape(1, 3))
+                continue
+            anchor = None
+            # Cup-holder spokes are fixed fixtures. Prefer the unobstructed
+            # initial observation, then fall back to release observations.
+            for anchor_frame in (0, *candidates):
+                anchor_obs = demo[anchor_frame]
+                masks = {
+                    camera: getattr(anchor_obs, f"{camera}_mask")
+                    for camera in self.cameras
+                    if getattr(anchor_obs, f"{camera}_mask", None) is not None}
+                point_clouds = {
+                    camera: getattr(anchor_obs, f"{camera}_point_cloud")
+                    for camera in self.cameras
+                    if getattr(anchor_obs, f"{camera}_point_cloud", None) is not None}
+                points, valid = self._sample_entity_points(
+                    reference, masks, point_clouds)
+                if valid:
+                    anchor = points.astype(np.float64, copy=False)
+                    break
+            reference_anchors.append(anchor)
+
+        costs = np.full(
+            (phase_count, len(candidates)), np.inf, dtype=np.float64)
+        for candidate_index, frame in enumerate(candidates):
+            obs = demo[frame]
+            gripper_pose = np.asarray(
+                getattr(obs, "gripper_pose", ()), dtype=np.float64
+            ).reshape(-1)
+            if gripper_pose.size < 3 or not np.isfinite(gripper_pose[:3]).all():
+                continue
+            for phase, reference in enumerate(references):
+                if reference.kind == "site":
+                    costs[phase, candidate_index] = float(np.linalg.norm(
+                        np.asarray(reference.site_position, dtype=np.float64)
+                        - gripper_pose[:3]))
+                elif reference_anchors[phase] is not None:
+                    costs[phase, candidate_index] = float(np.linalg.norm(
+                        reference_anchors[phase] - gripper_pose[:3],
+                        axis=1).min())
+            for camera in self.cameras:
+                mask_value = getattr(obs, f"{camera}_mask", None)
+                cloud_value = getattr(obs, f"{camera}_point_cloud", None)
+                if mask_value is None or cloud_value is None:
+                    continue
+                mask = decode_handle_mask(mask_value)
+                cloud = np.asarray(cloud_value)
+                if cloud.ndim == 3 and cloud.shape[0] == 3 and cloud.shape[-1] != 3:
+                    cloud = np.moveaxis(cloud, 0, -1)
+                if cloud.shape[:2] != mask.shape or cloud.shape[-1] != 3:
+                    raise SemanticRoleMappingError(
+                        f"{self._task_name} frame {frame} {camera} "
+                        f"mask/point-cloud mismatch: {mask.shape} vs {cloud.shape}")
+                for phase, reference in enumerate(references):
+                    if reference.kind != "object":
+                        continue
+                    points = cloud[np.isin(mask, reference.handles)]
+                    points = points[np.isfinite(points).all(axis=1)]
+                    if points.size:
+                        distance = np.linalg.norm(
+                            points.astype(np.float64, copy=False)
+                            - gripper_pose[:3], axis=1).min()
+                        costs[phase, candidate_index] = min(
+                            costs[phase, candidate_index], float(distance))
+
+        cumulative = np.full_like(costs, np.inf)
+        previous_index = np.full(costs.shape, -1, dtype=np.int64)
+        cumulative[0] = costs[0]
+        for phase in range(1, phase_count):
+            best_cost = np.inf
+            best_index = -1
+            for candidate_index in range(len(candidates)):
+                prior = candidate_index - 1
+                if prior >= 0 and cumulative[phase - 1, prior] < best_cost:
+                    best_cost = cumulative[phase - 1, prior]
+                    best_index = prior
+                if best_index >= 0 and np.isfinite(costs[phase, candidate_index]):
+                    cumulative[phase, candidate_index] = (
+                        best_cost + costs[phase, candidate_index])
+                    previous_index[phase, candidate_index] = best_index
+
+        final_index = int(np.argmin(cumulative[-1]))
+        if not np.isfinite(cumulative[-1, final_index]):
+            raise SemanticRoleMappingError(
+                f"Could not assign releases {candidates} to {phase_count} "
+                f"ordered {self._task_name} reference entities")
+        chosen_indices = [final_index]
+        for phase in range(phase_count - 1, 0, -1):
+            chosen_indices.append(int(previous_index[phase, chosen_indices[-1]]))
+        chosen_indices.reverse()
+        frames = [candidates[index] for index in chosen_indices]
+        distances = [
+            float(costs[phase, index])
+            for phase, index in enumerate(chosen_indices)]
+        too_far = [
+            (phase, frame, distance)
+            for phase, (frame, distance) in enumerate(zip(frames, distances))
+            if distance > max_distance]
+        if too_far:
+            raise SemanticRoleMappingError(
+                f"{self._task_name} ordered release/reference distance exceeds "
+                f"max_distance={max_distance:.3f} m: {too_far}")
+        return frames, distances
+
     def _ordered_target_contact_frames(
         self,
         demo: Sequence[object],
@@ -1503,6 +1644,8 @@ class RLBenchGTOracleProvider:
         strategy_spec = self._demo_phase_strategy()
         strategy = str(strategy_spec["strategy"])
         contact_distances: List[float] = []
+        detected_release_frames: List[int] = []
+        release_relation_distances: List[float] = []
         if strategy == "single_success":
             if phase_count != 1:
                 raise SemanticRoleMappingError(
@@ -1512,14 +1655,24 @@ class RLBenchGTOracleProvider:
             boundary_frames = [len(demo) - 1]
             boundary_source = "successful_demo_final_frame"
         elif strategy == "release_cycles":
-            boundary_frames = self._release_frames(demo)
-            if len(boundary_frames) != phase_count:
+            detected_release_frames = self._release_frames(demo)
+            boundary_frames = list(detected_release_frames)
+            if (self._task_name == "place_cups"
+                    and len(boundary_frames) > phase_count):
+                max_distance = float(strategy_spec.get("max_distance", .20))
+                boundary_frames, release_relation_distances = (
+                    self._ordered_release_relation_frames(
+                        demo, boundary_frames, max_distance))
+                boundary_source = (
+                    "gripper_close_to_open_filtered_by_ordered_reference_relation")
+            elif len(boundary_frames) != phase_count:
                 raise SemanticRoleMappingError(
                     f"{self._task_name} variation {self._variation} requires "
                     f"{phase_count} completed release cycles, but the stored demo "
                     f"contains {len(boundary_frames)} at frames {boundary_frames}."
                 )
-            boundary_source = "gripper_close_to_open"
+            else:
+                boundary_source = "gripper_close_to_open"
         elif strategy == "ordered_target_contact":
             max_distance = float(strategy_spec.get("max_distance", 0.20))
             if max_distance <= 0:
@@ -1586,6 +1739,8 @@ class RLBenchGTOracleProvider:
             "release_frames": (
                 list(boundary_frames) if strategy == "release_cycles" else []
             ),
+            "detected_release_frames": list(detected_release_frames),
+            "release_relation_distances": list(release_relation_distances),
             "contact_distances": list(contact_distances),
             "phase_count": phase_count,
         }

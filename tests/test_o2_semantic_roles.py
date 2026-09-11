@@ -374,6 +374,47 @@ def test_place_cups_demo_events_require_one_release_per_phase():
         value.build_demo_event_manifest(demo, [1, 2])
 
 
+def test_place_cups_filters_extra_release_by_ordered_reference_relation():
+    cups = [FakeObject(f"mug{i}", 10 + i) for i in range(3)]
+    spokes = [
+        FakeObject(f"place_cups_holder_spoke{i}", 20 + i)
+        for i in range(3)]
+    task = FakeTask(cups + spokes)
+    task._cups = cups
+    task._spokes = spokes
+    task._index = 2
+    task._on_peg_conditions = [FakeCondition() for _ in range(3)]
+    value = provider("place_cups", task)
+    masks = [[10, 11, 12], [20, 21, 22]]
+    states = (1., 0., 1., 0., 1., 0., 1., 0., 1.)
+    release_positions = {
+        2: [0., 1., 1., 0., 0., 0., 1.],
+        4: [9., 9., 1., 0., 0., 0., 1.],
+        6: [1., 1., 1., 0., 0., 0., 1.],
+        8: [2., 1., 1., 0., 0., 0., 1.],
+    }
+    demo = [
+        observation(
+            masks, gripper_open=state,
+            gripper_pose=release_positions.get(
+                frame, [0., 0., 1., 0., 0., 0., 1.]))
+        for frame, state in enumerate(states)]
+    # A placed cup can fully occlude its thin spoke at the release frame. The
+    # fixed reference location must still be recoverable from frame 0.
+    for frame in release_positions:
+        demo[frame].front_mask[1, :] = 0
+    value.set_sample_frame(0)
+    value.enrich(demo[0], {})
+
+    info = value.build_demo_event_manifest(demo, [2, 4, 6, 8])
+
+    assert info["detected_release_frames"] == [2, 4, 6, 8]
+    assert info["release_frames"] == [2, 6, 8]
+    assert info["release_relation_distances"] == pytest.approx([0., 0., 0.])
+    assert info["phase_boundary_source"] == (
+        "gripper_close_to_open_filtered_by_ordered_reference_relation")
+
+
 def test_single_phase_demo_events_support_non_gripper_task():
     drawer = FakeObject("drawer_bottom", 31)
     task = FakeTask([drawer])
@@ -495,7 +536,7 @@ def test_push_buttons_resolver_version_invalidates_legacy_manifests():
     assert RLBenchGTOracleProvider.task_resolver_version("push_buttons") == (
         "push_buttons_contact_site_v2")
     assert RLBenchGTOracleProvider.task_resolver_version("place_cups") == (
-        "place_cups_canonical_spoke_v2")
+        "place_cups_ordered_release_relation_v3")
     assert RLBenchGTOracleProvider.task_resolver_version("close_jar") is None
 
 
