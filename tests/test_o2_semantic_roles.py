@@ -263,7 +263,7 @@ def test_retry_discards_failed_manifest_attempt_before_restarting(tmp_path):
     assert len(manifest["entries"]) == 1
 
 
-def test_place_cups_advances_only_after_condition_and_release():
+def test_place_cups_advances_when_detector_condition_is_met_without_release():
     cups = [FakeObject(f"mug{i}", 10 + i) for i in range(3)]
     spokes = [
         FakeObject(f"place_cups_holder_spoke{i}", 20 + i)
@@ -278,8 +278,6 @@ def test_place_cups_advances_only_after_condition_and_release():
     assert value._entries[-1]["phase_id"] == "place_cups:0"
     task._on_peg_conditions[0].met = True
     value.enrich(observation([[10, 20], [11, 21]], gripper_open=0.0), {})
-    assert value._entries[-1]["phase_id"] == "place_cups:0"
-    value.enrich(observation([[10, 20], [11, 21]], gripper_open=1.0), {})
     assert value._entries[-1]["phase_id"] == "place_cups:1"
     assert value._entries[-1]["target"]["semantic_name"] == "mug1"
 
@@ -355,7 +353,7 @@ def test_place_cups_demo_events_build_phase_manifest_without_sim_replay(tmp_path
     assert manifest["phase_boundary_frames"] == [3, 5]
 
 
-def test_place_cups_demo_events_require_one_release_per_phase():
+def test_place_cups_demo_events_recover_missing_final_release_from_keypoints():
     cups = [FakeObject(f"mug{i}", 10 + i) for i in range(3)]
     spokes = [
         FakeObject(f"place_cups_holder_spoke{i}", 20 + i)
@@ -366,12 +364,29 @@ def test_place_cups_demo_events_require_one_release_per_phase():
     task._index = 1
     task._on_peg_conditions = [FakeCondition(), FakeCondition(), FakeCondition()]
     value = provider("place_cups", task)
-    demo = [observation([[10, 20]], gripper_open=state) for state in (1.0, 0.0, 1.0)]
+    masks = [[10, 11], [20, 21]]
+    states = (1.0, 0.0, 1.0, 0.0)
+    poses = (
+        [5., 5., 1., 0., 0., 0., 1.],
+        # This approach keypoint is closer than the later real release and must
+        # not displace that stronger completion evidence.
+        [0., 1., 1., 0., 0., 0., 1.],
+        [0., 1., 1., 0., 0., 0., 1.],
+        [1., 1., 1., 0., 0., 0., 1.],
+    )
+    demo = [
+        observation(masks, gripper_open=state, gripper_pose=pose)
+        for state, pose in zip(states, poses)]
     value.set_sample_frame(0)
     value.enrich(demo[0], {})
 
-    with pytest.raises(SemanticRoleMappingError, match="requires 2 completed"):
-        value.build_demo_event_manifest(demo, [1, 2])
+    info = value.build_demo_event_manifest(demo, [1, 2, 3])
+
+    assert info["detected_release_frames"] == [2]
+    assert info["release_frames"] == [2, 3]
+    assert info["release_relation_distances"] == pytest.approx([0., 0.])
+    assert info["phase_boundary_source"] == (
+        "keypoints_recovered_by_ordered_reference_relation")
 
 
 def test_place_cups_filters_extra_release_by_ordered_reference_relation():
@@ -412,7 +427,7 @@ def test_place_cups_filters_extra_release_by_ordered_reference_relation():
     assert info["release_frames"] == [2, 6, 8]
     assert info["release_relation_distances"] == pytest.approx([0., 0., 0.])
     assert info["phase_boundary_source"] == (
-        "gripper_close_to_open_filtered_by_ordered_reference_relation")
+        "keypoints_recovered_by_ordered_reference_relation")
 
 
 def test_single_phase_demo_events_support_non_gripper_task():
@@ -536,7 +551,7 @@ def test_push_buttons_resolver_version_invalidates_legacy_manifests():
     assert RLBenchGTOracleProvider.task_resolver_version("push_buttons") == (
         "push_buttons_contact_site_v2")
     assert RLBenchGTOracleProvider.task_resolver_version("place_cups") == (
-        "place_cups_ordered_release_relation_v3")
+        "place_cups_detector_relation_v4")
     assert RLBenchGTOracleProvider.task_resolver_version("close_jar") is None
 
 

@@ -29,7 +29,9 @@ _TASK_RESOLVER_VERSIONS = {
     # v1 trusted private _cups/_spokes order and expanded spoke descendants.
     # v2 fixed canonical entities but treated every close-to-open transition as
     # completion. v3 filters extra releases by the fixed ordered T/R relation.
-    "place_cups": "place_cups_ordered_release_relation_v3",
+    # v4 uses simulator detector conditions online and recovers missing stored-
+    # demo releases from ordered reference/keypoint evidence.
+    "place_cups": "place_cups_detector_relation_v4",
     # v1 used the top-plate mask handle.  Some RLBench scenes expose fewer
     # than two pixels for that live handle even though the semantic contact
     # position is available directly from the task object.
@@ -796,7 +798,10 @@ class RLBenchGTOracleProvider:
         released = bool(float(getattr(obs, "gripper_open", 0.0)) > 0.5)
         if self._task_name == "place_cups":
             conditions = getattr(task, "_on_peg_conditions", ())
-            return phase < len(conditions) and _condition_met(conditions[phase]) and released
+            # RLBench considers a cup placed when its detector condition is
+            # satisfied.  Some successful demonstrations terminate while the
+            # gripper is still closed, so release is not a valid prerequisite.
+            return phase < len(conditions) and _condition_met(conditions[phase])
         if self._task_name == "push_buttons":
             conditions = getattr(task, "goal_conditions", ())
             return phase < len(conditions) and _condition_met(conditions[phase])
@@ -846,24 +851,26 @@ class RLBenchGTOracleProvider:
             and float(demo[frame].gripper_open) >= 0.5
         ]
 
-    def _ordered_release_relation_frames(
+    def _ordered_reference_relation_frames(
         self,
         demo: Sequence[object],
-        release_frames: Sequence[int],
+        candidate_frames: Sequence[int],
         max_distance: float,
+        preferred_frames: Sequence[int] = (),
     ) -> Tuple[List[int], List[float]]:
-        """Select one ordered release for each already-defined reference.
+        """Select one ordered boundary for each already-defined reference.
 
-        Extra close-to-open transitions can be empty releases or re-grasps and
-        must not advance the phase. Semantic roles remain fixed by the task
-        resolver; proximity is used only to timestamp their completion events.
+        Close-to-open transitions can be missing (a successful demo may finish
+        while still gripping the last cup) or can contain empty releases and
+        re-grasps. Semantic roles remain fixed by the task resolver; proximity
+        is used only to timestamp completion events among known keypoints.
         """
-        candidates = sorted(set(int(frame) for frame in release_frames))
+        candidates = sorted(set(int(frame) for frame in candidate_frames))
         phase_count = self._phase_count()
         if len(candidates) < phase_count:
             raise SemanticRoleMappingError(
-                f"{self._task_name} needs {phase_count} completed releases, "
-                f"but only detected {candidates}")
+                f"{self._task_name} needs {phase_count} ordered phase-boundary "
+                f"candidates, but only received {candidates}")
 
         original_phase = self._phase_index
         references = []
@@ -874,7 +881,7 @@ class RLBenchGTOracleProvider:
                 if reference is None:
                     raise SemanticRoleMappingError(
                         f"{self._task_name} phase {phase} has no reference for "
-                        "release relation filtering")
+                        "phase-boundary relation recovery")
                 references.append(reference)
         finally:
             self._phase_index = original_phase
@@ -887,7 +894,7 @@ class RLBenchGTOracleProvider:
                 continue
             anchor = None
             # Cup-holder spokes are fixed fixtures. Prefer the unobstructed
-            # initial observation, then fall back to release observations.
+            # initial observation, then fall back to candidate observations.
             for anchor_frame in (0, *candidates):
                 anchor_obs = demo[anchor_frame]
                 masks = {
@@ -948,9 +955,20 @@ class RLBenchGTOracleProvider:
                         costs[phase, candidate_index] = min(
                             costs[phase, candidate_index], float(distance))
 
-        cumulative = np.full_like(costs, np.inf)
+        # A real close-to-open event is stronger boundary evidence than a plain
+        # action keypoint. Add one threshold-width penalty to non-release
+        # candidates for assignment only; retain raw metric distances for
+        # validation and audit output. An implausible release (> threshold) can
+        # therefore still lose to a geometrically valid keypoint.
+        preferred = {int(frame) for frame in preferred_frames}
+        selection_costs = costs.copy()
+        for candidate_index, frame in enumerate(candidates):
+            if frame not in preferred:
+                selection_costs[:, candidate_index] += max_distance
+
+        cumulative = np.full_like(selection_costs, np.inf)
         previous_index = np.full(costs.shape, -1, dtype=np.int64)
-        cumulative[0] = costs[0]
+        cumulative[0] = selection_costs[0]
         for phase in range(1, phase_count):
             best_cost = np.inf
             best_index = -1
@@ -959,15 +977,16 @@ class RLBenchGTOracleProvider:
                 if prior >= 0 and cumulative[phase - 1, prior] < best_cost:
                     best_cost = cumulative[phase - 1, prior]
                     best_index = prior
-                if best_index >= 0 and np.isfinite(costs[phase, candidate_index]):
+                if best_index >= 0 and np.isfinite(
+                        selection_costs[phase, candidate_index]):
                     cumulative[phase, candidate_index] = (
-                        best_cost + costs[phase, candidate_index])
+                        best_cost + selection_costs[phase, candidate_index])
                     previous_index[phase, candidate_index] = best_index
 
         final_index = int(np.argmin(cumulative[-1]))
         if not np.isfinite(cumulative[-1, final_index]):
             raise SemanticRoleMappingError(
-                f"Could not assign releases {candidates} to {phase_count} "
+                f"Could not assign candidates {candidates} to {phase_count} "
                 f"ordered {self._task_name} reference entities")
         chosen_indices = [final_index]
         for phase in range(phase_count - 1, 0, -1):
@@ -983,7 +1002,7 @@ class RLBenchGTOracleProvider:
             if distance > max_distance]
         if too_far:
             raise SemanticRoleMappingError(
-                f"{self._task_name} ordered release/reference distance exceeds "
+                f"{self._task_name} ordered boundary/reference distance exceeds "
                 f"max_distance={max_distance:.3f} m: {too_far}")
         return frames, distances
 
@@ -1658,13 +1677,24 @@ class RLBenchGTOracleProvider:
             detected_release_frames = self._release_frames(demo)
             boundary_frames = list(detected_release_frames)
             if (self._task_name == "place_cups"
-                    and len(boundary_frames) > phase_count):
+                    and len(boundary_frames) != phase_count):
                 max_distance = float(strategy_spec.get("max_distance", .20))
+                if max_distance <= 0:
+                    raise SemanticRoleMappingError(
+                        "place_cups demo_phase max_distance must be positive")
+                # A successful stored demo can finish with the last cup still
+                # grasped, so a close-to-open transition is not guaranteed for
+                # every detector completion. Include the expert keypoints and
+                # the successful final state, while retaining observed releases
+                # as stronger semantic evidence in the audit metadata.
+                candidates = sorted(set((
+                    *detected_release_frames, *expected, len(demo) - 1)))
                 boundary_frames, release_relation_distances = (
-                    self._ordered_release_relation_frames(
-                        demo, boundary_frames, max_distance))
+                    self._ordered_reference_relation_frames(
+                        demo, candidates, max_distance,
+                        preferred_frames=detected_release_frames))
                 boundary_source = (
-                    "gripper_close_to_open_filtered_by_ordered_reference_relation")
+                    "keypoints_recovered_by_ordered_reference_relation")
             elif len(boundary_frames) != phase_count:
                 raise SemanticRoleMappingError(
                     f"{self._task_name} variation {self._variation} requires "
