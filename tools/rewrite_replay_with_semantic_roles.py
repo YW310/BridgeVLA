@@ -136,6 +136,18 @@ def _semantic_entity_evidence_is_certified(evidence):
             view for view in views.values()
             if isinstance(view, Mapping) and view.get("hard_mask_conflict")]
         return len(supporting) >= 2 and bool(strong) and not conflicts
+    if source == "semantic_entity_union_thin_exact_multiview_mask_overlap":
+        supporting = [
+            view for view in views.values()
+            if isinstance(view, Mapping) and view.get("thin_identity_support")]
+        strong = [
+            view for view in views.values()
+            if isinstance(view, Mapping)
+            and view.get("thin_strong_identity_support")]
+        conflicts = [
+            view for view in views.values()
+            if isinstance(view, Mapping) and view.get("hard_mask_conflict")]
+        return len(supporting) >= 2 and bool(strong) and not conflicts
     return False
 
 

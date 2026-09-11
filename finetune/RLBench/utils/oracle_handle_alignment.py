@@ -9,6 +9,8 @@ import numpy as np
 
 SINGLE_VIEW_EXACT_MIN_PIXELS = 32
 SINGLE_VIEW_DOMINANT_MIN_PIXELS = 64
+THIN_ENTITY_STRONG_MIN_PIXELS = 8
+THIN_ENTITY_AUXILIARY_MIN_PIXELS = 2
 
 
 class HandleAlignmentError(ValueError):
@@ -125,7 +127,9 @@ def align_semantic_handle_group(live, stored, handles, semantic_name):
             # per-part threshold only proposes group members; the complete
             # union below still needs >=16 pixels and 90% bidirectional overlap
             # in two views.
-            proposed = overlap >= 3 and stored_coverage >= .9
+            proposed = (
+                overlap >= THIN_ENTITY_AUXILIARY_MIN_PIXELS
+                and stored_coverage >= .9)
             candidate_details.setdefault(str(candidate), {})[camera] = {
                 "live_pixels": live_pixels,
                 "stored_pixels": stored_pixels,
@@ -163,6 +167,12 @@ def align_semantic_handle_group(live, stored, handles, semantic_name):
             min(na, nb) >= 3 and precision >= .98 and recall >= .98)
         strong_identity_support = (
             min(na, nb) >= 32 and precision >= .98 and recall >= .98)
+        thin_identity_support = (
+            min(na, nb) >= THIN_ENTITY_AUXILIARY_MIN_PIXELS
+            and precision == 1. and recall == 1.)
+        thin_strong_identity_support = (
+            min(na, nb) >= THIN_ENTITY_STRONG_MIN_PIXELS
+            and precision == 1. and recall == 1.)
         hard_mask_conflict = (
             max(na, nb) >= 16 and (precision < .5 or recall < .5))
         checks[camera] = {
@@ -174,6 +184,9 @@ def align_semantic_handle_group(live, stored, handles, semantic_name):
             "passed": bool(passed),
             "identity_support": bool(identity_support),
             "strong_identity_support": bool(strong_identity_support),
+            "thin_identity_support": bool(thin_identity_support),
+            "thin_strong_identity_support": bool(
+                thin_strong_identity_support),
             "hard_mask_conflict": bool(hard_mask_conflict),
             "geometry": _geometry_summary(ac, bc, overlap),
         }
@@ -188,8 +201,17 @@ def align_semantic_handle_group(live, stored, handles, semantic_name):
     conflicting_views = sorted(
         camera for camera, check in checks.items()
         if check["hard_mask_conflict"])
+    thin_supporting_views = sorted(
+        camera for camera, check in checks.items()
+        if check["thin_identity_support"])
+    thin_strong_views = sorted(
+        camera for camera, check in checks.items()
+        if check["thin_strong_identity_support"])
     asymmetric_quorum = (
         len(strong_views) >= 1 and len(supporting_views) >= 2
+        and not conflicting_views)
+    thin_exact_quorum = (
+        len(thin_supporting_views) >= 2 and len(thin_strong_views) >= 1
         and not conflicting_views)
     if agreeing >= 2:
         source = "semantic_entity_union_mask_overlap"
@@ -197,21 +219,36 @@ def align_semantic_handle_group(live, stored, handles, semantic_name):
     elif asymmetric_quorum:
         source = "semantic_entity_union_asymmetric_multiview_mask_overlap"
         certificate_type = "one_strong_one_small_view"
+    elif thin_exact_quorum:
+        source = "semantic_entity_union_thin_exact_multiview_mask_overlap"
+        certificate_type = "thin_exact_two_view"
     else:
         raise HandleAlignmentError(
             f"Cannot verify semantic entity {semantic_name!r}: union mask "
             f"passed {agreeing} full views; supporting={supporting_views}, "
             f"strong={strong_views}, conflicts={conflicting_views}", evidence)
-    evidence["certificate"] = {
-        "type": certificate_type,
-        "auxiliary_min_pixels": 3,
-        "strong_min_pixels": 32,
-        "min_precision": .98,
-        "min_recall": .98,
-        "supporting_views": supporting_views,
-        "strong_views": strong_views,
-        "conflicting_views": conflicting_views,
-    }
+    if thin_exact_quorum and not (agreeing >= 2 or asymmetric_quorum):
+        evidence["certificate"] = {
+            "type": certificate_type,
+            "auxiliary_min_pixels": THIN_ENTITY_AUXILIARY_MIN_PIXELS,
+            "strong_min_pixels": THIN_ENTITY_STRONG_MIN_PIXELS,
+            "min_precision": 1.,
+            "min_recall": 1.,
+            "supporting_views": thin_supporting_views,
+            "strong_views": thin_strong_views,
+            "conflicting_views": conflicting_views,
+        }
+    else:
+        evidence["certificate"] = {
+            "type": certificate_type,
+            "auxiliary_min_pixels": 3,
+            "strong_min_pixels": 32,
+            "min_precision": .98,
+            "min_recall": .98,
+            "supporting_views": supporting_views,
+            "strong_views": strong_views,
+            "conflicting_views": conflicting_views,
+        }
     evidence["source"] = source
     return tuple(sorted(candidates)), evidence
 

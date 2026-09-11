@@ -524,6 +524,46 @@ def test_semantic_union_rejects_two_pixel_second_view():
             live, stored, {87}, 'top_drawer')
 
 
+def thin_exact_views(auxiliary_pixels=2):
+    live, stored = single_view_boundary_noise()
+    for values in (live, stored):
+        for view in values.values():
+            view['mask'].fill(0)
+    live['front']['mask'].flat[:auxiliary_pixels] = 87
+    stored['front']['mask'].flat[:auxiliary_pixels] = 99
+    live['left_shoulder']['mask'].flat[:8] = 87
+    stored['left_shoulder']['mask'].flat[:8] = 99
+    return live, stored
+
+
+def test_semantic_union_accepts_thin_exact_entity_in_two_views():
+    live, stored = thin_exact_views()
+
+    mapped, report = align_semantic_handle_group(
+        live, stored, {87}, 'holder_spoke0')
+
+    assert mapped == (99,)
+    assert report['source'] == (
+        'semantic_entity_union_thin_exact_multiview_mask_overlap')
+    assert report['certificate'] == {
+        'type': 'thin_exact_two_view',
+        'auxiliary_min_pixels': 2,
+        'strong_min_pixels': 8,
+        'min_precision': 1.,
+        'min_recall': 1.,
+        'supporting_views': ['front', 'left_shoulder'],
+        'strong_views': ['left_shoulder'],
+        'conflicting_views': [],
+    }
+
+
+def test_semantic_union_rejects_thin_entity_with_one_pixel_auxiliary_view():
+    live, stored = thin_exact_views(auxiliary_pixels=1)
+    with pytest.raises(HandleAlignmentError):
+        align_semantic_handle_group(
+            live, stored, {87}, 'holder_spoke0')
+
+
 @pytest.mark.parametrize(
     'interior_offset,boundary_offset',
     [(.006, .015), (0., .021)])

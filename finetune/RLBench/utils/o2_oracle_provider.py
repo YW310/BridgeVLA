@@ -1131,9 +1131,7 @@ class RLBenchGTOracleProvider:
                     (semantic_name, handles, handles.difference(excluded))
                     for semantic_name, handles in required_groups
                 ]
-                if (self.handle_alignment != 'mask_verified'
-                        or not any(len(handles) > 1
-                                   for _, handles, _ in visible_groups)):
+                if self.handle_alignment != 'mask_verified' or not visible_groups:
                     raise
                 group_evidence = {
                     "individual_alignment_error": str(individual_error),
@@ -1141,6 +1139,7 @@ class RLBenchGTOracleProvider:
                     "entities": {},
                 }
                 used_entity_union_fallback = True
+                group_errors = []
                 for semantic_name, handles, visible_handles in visible_groups:
                     try:
                         mapped, entity_evidence = align_semantic_handle_group(
@@ -1149,10 +1148,16 @@ class RLBenchGTOracleProvider:
                     except HandleAlignmentError as group_error:
                         group_evidence["entities"][semantic_name] = (
                             group_error.evidence)
-                        raise HandleAlignmentError(
-                            str(group_error), group_evidence) from group_error
+                        group_errors.append(
+                            f"{semantic_name}: {group_error}")
+                        continue
                     entity_mapping[frozenset(handles)] = mapped
                     group_evidence["entities"][semantic_name] = entity_evidence
+                if group_errors:
+                    raise HandleAlignmentError(
+                        "Cannot verify semantic entities: "
+                        + "; ".join(group_errors),
+                        group_evidence) from individual_error
                 mapping = {}
                 evidence = group_evidence
             report.update(
@@ -1173,8 +1178,8 @@ class RLBenchGTOracleProvider:
                 if used_entity_union_fallback:
                     print(
                         '[Manifest] mask_verified: individual child-handle '
-                        'alignment failed; accepted strict two-view semantic-'
-                        'entity union masks.', flush=True)
+                        'alignment failed; accepted strict semantic-entity '
+                        'multi-view mask certificates.', flush=True)
                 print('[Manifest] mask_verified: identity inferred from high-overlap masks; '
                       'global geometry is not certified (single-view fallback requires local '
                       'geometry corroboration). Review the alignment JSON '

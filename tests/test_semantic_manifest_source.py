@@ -123,3 +123,29 @@ def test_stored_manifest_accepts_audited_semantic_entity_union_mapping(tmp_path)
     with pytest.raises(ValueError, match='Uncertified semantic entity handles'):
         rewrite._load_manifest(
             tmp_path, 'meat_off_grill', 54, allow_mask_verified=True)
+
+    entity_evidence.update(
+        source='semantic_entity_union_thin_exact_multiview_mask_overlap',
+        views={
+            'front': {
+                'thin_identity_support': True,
+                'thin_strong_identity_support': False,
+                'hard_mask_conflict': False,
+            },
+            'right_shoulder': {
+                'thin_identity_support': True,
+                'thin_strong_identity_support': True,
+                'hard_mask_conflict': False,
+            },
+        },
+    )
+    path.write_text(json.dumps(manifest), encoding='utf-8')
+    _, frames, _ = rewrite._load_manifest(
+        tmp_path, 'meat_off_grill', 54, allow_mask_verified=True)
+    assert frames == [43]
+
+    entity_evidence['views']['front']['thin_identity_support'] = False
+    path.write_text(json.dumps(manifest), encoding='utf-8')
+    with pytest.raises(ValueError, match='Uncertified semantic entity handles'):
+        rewrite._load_manifest(
+            tmp_path, 'meat_off_grill', 54, allow_mask_verified=True)
