@@ -167,6 +167,19 @@ def test_semantic_entity_union_aligns_split_live_to_merged_stored_instance():
     assert all(view['passed'] for view in report['views'].values())
 
 
+def test_semantic_entity_union_aligns_one_live_visual_to_split_stored_parts():
+    live, stored = views()
+    for data in stored.values():
+        data['mask'][1:6, 1:3] = 100
+
+    mapped, report = align_semantic_handle_group(
+        live, stored, {87}, 'chicken')
+
+    assert mapped == (99, 100)
+    assert report['candidate_votes'] == {'99': 2, '100': 2}
+    assert all(view['passed'] for view in report['views'].values())
+
+
 def test_semantic_entity_union_rejects_low_overlap_candidate():
     live, stored = views()
     for data in live.values():

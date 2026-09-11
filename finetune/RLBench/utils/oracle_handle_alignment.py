@@ -112,7 +112,11 @@ def align_semantic_handle_group(live, stored, handles, semantic_name):
             stored_instance = bm == candidate
             overlap = int((live_entity & stored_instance).sum())
             stored_pixels = int(stored_instance.sum())
-            if overlap >= 16 and overlap / max(stored_pixels, 1) >= .9:
+            # A semantic entity may be split into thin visual sub-parts.  The
+            # per-part threshold only proposes group members; the complete
+            # union below still needs >=16 pixels and 90% bidirectional overlap
+            # in two views.
+            if overlap >= 4 and overlap / max(stored_pixels, 1) >= .9:
                 candidate_votes[candidate] = candidate_votes.get(candidate, 0) + 1
     candidates = {
         candidate for candidate, votes in candidate_votes.items() if votes >= 2}

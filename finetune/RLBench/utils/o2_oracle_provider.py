@@ -1116,8 +1116,8 @@ class RLBenchGTOracleProvider:
                     for semantic_name, handles in required_groups
                 ]
                 if (self.handle_alignment != 'mask_verified'
-                        or not any(len(visible) > 1
-                                   for _, _, visible in visible_groups)):
+                        or not any(len(handles) > 1
+                                   for _, handles, _ in visible_groups)):
                     raise
                 group_evidence = {
                     "individual_alignment_error": str(individual_error),
