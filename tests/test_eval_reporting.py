@@ -15,8 +15,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'finetune' / 'RLBench'))
 from utils.eval_reporting import (
     EVAL_FIELDS, MANIFEST_FIELDS, atomic_write_json, build_eval_run_signature,
-    evaluation_result, manifest_result, numeric_task_scores,
-    quarantine_file, resumable_eval_episode, resumable_manifest)
+    evaluation_result, generated_manifest_entry_count, manifest_result,
+    numeric_task_scores, quarantine_file, resumable_eval_episode,
+    resumable_manifest)
 
 
 def accumulator():
@@ -42,6 +43,23 @@ def test_completed_episode_metrics_are_numeric_and_drained(rewards, expected):
     assert values['eval_envs/return'] == expected
     assert values['eval_envs/length'] == 1
     assert stats.pop() == []
+
+
+def test_generated_manifest_entry_count_uses_sample_frames_not_rollout_length():
+    assert generated_manifest_entry_count(
+        {'sample_frames': [43, 57, 69, 100, 116]}) == 5
+
+
+@pytest.mark.parametrize('info', [
+    {},
+    {'sample_frames': []},
+    {'sample_frames': [2, 1]},
+    {'sample_frames': [1, 1]},
+    {'sample_frames': [False]},
+])
+def test_generated_manifest_entry_count_rejects_invalid_metadata(info):
+    with pytest.raises(ValueError, match='sample_frames'):
+        generated_manifest_entry_count(info)
 
 
 def test_no_completed_episode_is_not_reported_as_success():

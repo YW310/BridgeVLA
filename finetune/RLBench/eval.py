@@ -55,9 +55,9 @@ from utils.o2_oracle_provider import (
     RLBenchGTOracleProvider, SemanticRoleMappingError)
 from utils.eval_reporting import (
     EVAL_FIELDS, MANIFEST_FIELDS, atomic_write_json,
-    build_eval_run_signature, evaluation_result, manifest_result,
-    numeric_task_scores, quarantine_file, resumable_eval_episode,
-    resumable_manifest)
+    build_eval_run_signature, evaluation_result,
+    generated_manifest_entry_count, manifest_result, numeric_task_scores,
+    quarantine_file, resumable_eval_episode, resumable_manifest)
 from utils.peract_utils_rlbench import (
     CAMERAS,
     SCENE_BOUNDS,
@@ -565,9 +565,14 @@ def eval(
             task_name = tasks[task_id]
             reward = episode_rollout[-1].reward
             episode_steps = len(episode_rollout)
+            episode_logical_transitions = (
+                generated_manifest_entry_count(episode_rollout[-1].info)
+                if manifest_phase_source == "demo_events"
+                else episode_steps
+            )
             task_rewards.append(reward)
             task_lengths.append(episode_steps)
-            logical_transitions += episode_steps
+            logical_transitions += episode_logical_transitions
             if (manifest_continue_on_error
                     and manifest_phase_source == "demo_events"):
                 failure_path = (
@@ -597,7 +602,7 @@ def eval(
                     print(
                         f"Generated demo-event manifest for {task_name} "
                         f"| Episode {ep} | Logical transitions: "
-                        f"{len(episode_rollout)} | Lang Goal: {lang_goal}"
+                        f"{episode_logical_transitions} | Lang Goal: {lang_goal}"
                     )
                 else:
                     print(

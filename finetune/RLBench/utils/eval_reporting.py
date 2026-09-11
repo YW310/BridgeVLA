@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import os
+from collections.abc import Mapping
 from numbers import Real
 from pathlib import Path
 
@@ -21,6 +22,23 @@ def manifest_result(task, generated, requested, logical_transitions):
         raise ValueError('Manifest reporting requires 0 <= generated <= requested and requested > 0')
     return dict(zip(MANIFEST_FIELDS, (
         task, 100.0 * generated / requested, generated, requested, logical_transitions)))
+
+
+def generated_manifest_entry_count(transition_info):
+    """Return the number of semantic entries emitted by a demo-event rollout."""
+    if not isinstance(transition_info, Mapping):
+        raise ValueError('Manifest transition info must be a mapping')
+    sample_frames = transition_info.get('sample_frames')
+    if not isinstance(sample_frames, (list, tuple)) or not sample_frames:
+        raise ValueError(
+            'Demo-event manifest rollout must report a non-empty sample_frames sequence')
+    if (not all(isinstance(frame, int) and not isinstance(frame, bool)
+                and frame >= 0 for frame in sample_frames)
+            or list(sample_frames) != sorted(set(sample_frames))):
+        raise ValueError(
+            'Demo-event manifest sample_frames must be unique, sorted, '
+            'non-negative integers')
+    return len(sample_frames)
 
 
 def numeric_task_scores(scores):
