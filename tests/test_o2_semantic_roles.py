@@ -281,6 +281,30 @@ def test_place_cups_advances_only_after_condition_and_release():
     assert value._entries[-1]["target"]["semantic_name"] == "mug1"
 
 
+def test_place_cups_reference_does_not_absorb_descendant_spokes():
+    cups = [FakeObject(f"mug{i}", 10 + i) for i in range(3)]
+    spoke2 = FakeObject("place_cups_holder_spoke2", 22)
+    spoke1 = FakeObject("place_cups_holder_spoke1", 21)
+    spoke0 = FakeObject(
+        "place_cups_holder_spoke0", 20, children=(spoke1, spoke2))
+    task = FakeTask(cups + [spoke0])
+    task._cups = cups
+    task._spokes = [spoke0, spoke1, spoke2]
+    task._index = 2
+    task._on_peg_conditions = [
+        FakeCondition(), FakeCondition(), FakeCondition()]
+    value = provider("place_cups", task)
+
+    phase0 = value._build_assignment()
+    assert phase0.reference.semantic_name == "holder_spoke0"
+    assert phase0.reference.handles == (20,)
+
+    value._phase_index = 1
+    phase1 = value._build_assignment()
+    assert phase1.reference.semantic_name == "holder_spoke1"
+    assert phase1.reference.handles == (21,)
+
+
 def test_place_cups_demo_events_build_phase_manifest_without_sim_replay(tmp_path):
     cups = [FakeObject(f"mug{i}", 10 + i) for i in range(3)]
     spokes = [FakeObject(f"spoke{i}", 20 + i) for i in range(3)]

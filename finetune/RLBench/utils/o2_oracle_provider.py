@@ -432,9 +432,18 @@ class RLBenchGTOracleProvider:
         return list(objects)
 
     def _entity_object(
-        self, semantic_name: str, objects: Sequence[object]
+        self, semantic_name: str, objects: Sequence[object], *,
+        include_descendants: bool = True,
     ) -> RoleEntity:
-        handles = set(SceneObjectIndex.handles_with_descendants(objects))
+        if include_descendants:
+            handles = set(SceneObjectIndex.handles_with_descendants(objects))
+        else:
+            handles = set()
+            for obj in objects:
+                try:
+                    handles.add(_object_handle(obj))
+                except Exception:
+                    continue
         handles.difference_update(self._robot_handles)
         original_handles = frozenset(handles)
         if self._stored_handle_map is not None:
@@ -504,9 +513,14 @@ class RLBenchGTOracleProvider:
         semantic_name = "+".join(_canonical_name(_object_name(obj)) for obj in objects)
         return self._entity_object(semantic_name, objects)
 
-    def _sequence_entity(self, spec, index: int, label: str) -> RoleEntity:
+    def _sequence_entity(
+        self, spec, index: int, label: str, *,
+        include_descendants: bool = True,
+    ) -> RoleEntity:
         name = str(spec["sequence"][index])
-        return self._entity_object(name, self._objects([name], label))
+        return self._entity_object(
+            name, self._objects([name], label),
+            include_descendants=include_descendants)
 
     def _build_assignment(self) -> RoleAssignment:
         spec = self._task_spec()
@@ -591,8 +605,12 @@ class RLBenchGTOracleProvider:
                 if cups else self._sequence_entity(target_spec, phase, "place_cups mug")
             )
             reference = (
-                self._entity_object(f"holder_spoke{phase}", [spokes[phase]])
-                if spokes else self._sequence_entity(reference_spec, phase, "place_cups spoke")
+                self._entity_object(
+                    f"holder_spoke{phase}", [spokes[phase]],
+                    include_descendants=False)
+                if spokes else self._sequence_entity(
+                    reference_spec, phase, "place_cups spoke",
+                    include_descendants=False)
             )
         elif name == "place_shape_in_shape_sorter":
             shapes = self._attr_objects("shapes")
