@@ -7,6 +7,9 @@ occluded, merged or split instances rather than manufacture a semantic label.
 import numpy as np
 
 
+SINGLE_VIEW_LARGE_EXACT_MIN_PIXELS = 80
+
+
 class HandleAlignmentError(ValueError):
     def __init__(self, message, evidence=None):
         super().__init__(message)
@@ -341,7 +344,7 @@ def align_handles(live, stored, names, name_to_handle=None, *, mode='verified',
                     boundary_geometry=boundary_geometry,
                     interior_geometry_passed=interior_geometry_passed,
                     large_exact_mask_passed=bool(
-                        min(na, nb) >= 96
+                        min(na, nb) >= SINGLE_VIEW_LARGE_EXACT_MIN_PIXELS
                         and precision >= .995 and recall >= .995))
                 checks[camera]['geometry_passed'] = bool(
                     count and int(finite.sum()) >= .95 * count

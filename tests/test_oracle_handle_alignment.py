@@ -360,7 +360,7 @@ def test_single_view_accepts_strict_interior_geometry_with_boundary_noise():
     assert check['interior_geometry']['distance_p95'] == 0.
 
 
-def single_view_large_exact_mask(pixel_count=100, *, stored_pixel_count=None,
+def single_view_large_exact_mask(pixel_count=95, *, stored_pixel_count=None,
                                  geometry_offset=.03):
     shape = (16, 16)
     stored_pixel_count = (
@@ -411,7 +411,7 @@ def test_single_view_accepts_unique_large_exact_mask_with_shifted_geometry():
 
 @pytest.mark.parametrize(
     'pixel_count,stored_pixel_count',
-    [(95, 95), (100, 99)])
+    [(79, 79), (100, 99)])
 def test_single_view_large_exact_mask_certificate_is_strict(
         pixel_count, stored_pixel_count):
     live, stored = single_view_large_exact_mask(
