@@ -308,6 +308,70 @@ def test_mask_verified_accepts_unique_geometry_verified_single_view_shape():
     assert report['87']['source'] == 'registered_mask_overlap_single_view_geometry'
 
 
+def single_view_boundary_noise(interior_offset=0., boundary_offset=.015):
+    shape = (16, 16)
+    live_mask = np.zeros(shape, dtype=np.int64)
+    stored_mask = np.zeros(shape, dtype=np.int64)
+    live_mask[2:13, 2:13] = 87
+    stored_mask[2:13, 2:13] = 99
+    stored_mask[2, 2] = 0
+    rows, cols = np.indices(shape)
+    live_cloud = np.stack(
+        (cols / 100., rows / 100., np.ones_like(rows)), axis=-1)
+    stored_cloud = live_cloud.copy()
+    live_region = live_mask == 87
+    stored_region = stored_mask == 99
+    interior = np.zeros(shape, dtype=bool)
+    interior[3:12, 3:12] = True
+    boundary = (live_region & stored_region) & ~interior
+    stored_cloud[interior, 2] += interior_offset
+    stored_cloud[boundary, 2] += boundary_offset
+    live = {
+        'front': dict(
+            mask=live_mask, cloud=live_cloud,
+            intrinsics=np.eye(3), extrinsics=np.eye(4)),
+        'left_shoulder': dict(
+            mask=np.zeros(shape, dtype=np.int64), cloud=live_cloud.copy(),
+            intrinsics=np.eye(3), extrinsics=np.eye(4)),
+    }
+    stored = {
+        'front': dict(
+            mask=stored_mask, cloud=stored_cloud,
+            intrinsics=np.eye(3), extrinsics=np.eye(4)),
+        'left_shoulder': dict(
+            mask=np.zeros(shape, dtype=np.int64), cloud=live_cloud.copy(),
+            intrinsics=np.eye(3), extrinsics=np.eye(4)),
+    }
+    return live, stored
+
+
+def test_single_view_accepts_strict_interior_geometry_with_boundary_noise():
+    live, stored = single_view_boundary_noise()
+    mapping, report = align_handles(
+        live, stored, {87: 'chicken_visual'}, mode='mask_verified')
+    assert mapping == {87: 99}
+    evidence = report['87']
+    assert evidence['source'] == (
+        'registered_mask_overlap_single_view_interior_geometry')
+    check = evidence['candidates']['99']['front']
+    assert not check['geometry_passed']
+    assert check['interior_geometry_passed']
+    assert check['geometry']['distance_p95'] == pytest.approx(.015)
+    assert check['interior_geometry']['distance_p95'] == 0.
+
+
+@pytest.mark.parametrize(
+    'interior_offset,boundary_offset',
+    [(.006, .015), (0., .021)])
+def test_single_view_interior_geometry_gate_rejects_real_disagreement(
+        interior_offset, boundary_offset):
+    live, stored = single_view_boundary_noise(
+        interior_offset=interior_offset, boundary_offset=boundary_offset)
+    with pytest.raises(HandleAlignmentError):
+        align_handles(
+            live, stored, {87: 'chicken_visual'}, mode='mask_verified')
+
+
 @pytest.mark.parametrize('failure', ['too_small', 'bad_geometry', 'second_visible_view'])
 def test_single_view_fallback_remains_conservative(failure):
     live, stored = single_view_ring(

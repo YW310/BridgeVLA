@@ -285,11 +285,23 @@ def align_handles(live, stored, names, name_to_handle=None, *, mode='verified',
                 if p95 is None or p95 > .01:
                     reasons.append('world_distance')
                 interior = _interior(av) & _interior(bv)
+                geometry = _geometry_summary(ac, bc, overlap)
+                interior_geometry = _geometry_summary(ac, bc, interior)
+                boundary_geometry = _geometry_summary(ac, bc, overlap & ~interior)
+                interior_selected = int(interior_geometry.get('selected_pixels', 0))
+                interior_finite = int(interior_geometry.get('finite_pixels', 0))
+                interior_p95 = interior_geometry.get('distance_p95')
+                interior_geometry_passed = bool(
+                    interior_selected >= 32
+                    and interior_finite >= .95 * interior_selected
+                    and interior_p95 is not None and interior_p95 <= .005
+                    and p95 is not None and p95 <= .02)
                 checks[camera].update(
                     failure_reasons=reasons,
-                    geometry=_geometry_summary(ac, bc, overlap),
-                    interior_geometry=_geometry_summary(ac, bc, interior),
-                    boundary_geometry=_geometry_summary(ac, bc, overlap & ~interior))
+                    geometry=geometry,
+                    interior_geometry=interior_geometry,
+                    boundary_geometry=boundary_geometry,
+                    interior_geometry_passed=interior_geometry_passed)
                 checks[camera]['geometry_passed'] = bool(
                     count and int(finite.sum()) >= .95 * count
                     and p95 is not None and p95 <= .01)
@@ -323,12 +335,19 @@ def align_handles(live, stored, names, name_to_handle=None, *, mode='verified',
                 mask_only and len(candidates) == 1 and len(checks) == 1
                 and agreeing == 1
                 and all(
-                    check['geometry_passed']
+                    (check['geometry_passed']
+                     or check['interior_geometry_passed'])
                     and min(check['live_pixels'], check['stored_pixels']) >= 32
                     and check['precision'] >= .98 and check['recall'] >= .98
                     for check in checks.values()
                 )
             )
+            single_view_uses_interior = (
+                single_view_geometry
+                and any(
+                    not check['geometry_passed']
+                    and check['interior_geometry_passed']
+                    for check in checks.values()))
             # In mask_verified mode the documented identity certificate is a
             # quorum of two independently registered, high-overlap views.  A
             # third camera can legitimately disagree because a thin/contact
@@ -345,7 +364,9 @@ def align_handles(live, stored, names, name_to_handle=None, *, mode='verified',
                     or accepted_by_verified):
                 accepted.append(candidate)
                 accepted_sources[candidate] = (
-                    'single_view_mask_geometry'
+                    ('single_view_mask_interior_geometry'
+                     if single_view_uses_interior
+                     else 'single_view_mask_geometry')
                     if accepted_by_single_view else 'multi_view_masks')
         evidence[str(handle)] = dict(name=name, candidates=candidate_evidence)
         if (not accepted and not candidates and allow_unobservable
@@ -373,6 +394,10 @@ def align_handles(live, stored, names, name_to_handle=None, *, mode='verified',
             stored_handle=target,
             source=(("registered_mask_overlap_single_view_geometry"
                      if accepted_sources[target] == 'single_view_mask_geometry'
+                     else
+                     "registered_mask_overlap_single_view_interior_geometry"
+                     if accepted_sources[target]
+                     == 'single_view_mask_interior_geometry'
                      else "registered_mask_overlap") if mask_only else
                     "acquisition_metadata" if declared is not None else "registered_masks"))
     return mapping, evidence
