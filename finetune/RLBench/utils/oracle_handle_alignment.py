@@ -383,7 +383,12 @@ def align_handles(live, stored, names, name_to_handle=None, *, mode='verified',
                     interior_geometry_passed=interior_geometry_passed,
                     exact_mask_passed=bool(
                         min(na, nb) >= SINGLE_VIEW_EXACT_MIN_PIXELS
-                        and precision == 1. and recall == 1.))
+                        and precision == 1. and recall == 1.),
+                    small_exact_geometry_passed=bool(
+                        min(na, nb) >= 16
+                        and precision == 1. and recall == 1.
+                        and count and int(finite.sum()) >= .95 * count
+                        and p95 is not None and p95 <= .01))
                 checks[camera]['geometry_passed'] = bool(
                     count and int(finite.sum()) >= .95 * count
                     and p95 is not None and p95 <= .01)
@@ -443,6 +448,14 @@ def align_handles(live, stored, names, name_to_handle=None, *, mode='verified',
                     for check in checks.values()
                 )
             )
+            single_view_small_exact_geometry = (
+                mask_only and len(candidates) == 1 and len(checks) == 1
+                and agreeing == 1
+                and all(
+                    check['small_exact_geometry_passed']
+                    for check in checks.values()
+                )
+            )
             # A one-pixel boundary collision may introduce a raw candidate that
             # is obviously not a viable identity. Certify candidates after
             # evidence evaluation instead of requiring the raw candidate set to
@@ -470,6 +483,7 @@ def align_handles(live, stored, names, name_to_handle=None, *, mode='verified',
             accepted_by_single_view = (
                 mask_only and not contradictory
                 and (single_view_geometry or single_view_exact_mask
+                     or single_view_small_exact_geometry
                      or single_view_dominant_mask))
             accepted_by_verified = (
                 not mask_only and not contradictory
@@ -484,6 +498,8 @@ def align_handles(live, stored, names, name_to_handle=None, *, mode='verified',
                     if single_view_geometry else
                     'single_view_exact_mask'
                     if single_view_exact_mask else
+                    'single_view_small_exact_geometry'
+                    if single_view_small_exact_geometry else
                     'single_view_dominant_mask'
                     if accepted_by_single_view else 'multi_view_masks')
         evidence[str(handle)] = dict(name=name, candidates=candidate_evidence)
@@ -520,6 +536,10 @@ def align_handles(live, stored, names, name_to_handle=None, *, mode='verified',
                      "registered_mask_overlap_single_view_exact_mask"
                      if accepted_sources[target]
                      == 'single_view_exact_mask'
+                     else
+                     "registered_mask_overlap_single_view_small_exact_geometry"
+                     if accepted_sources[target]
+                     == 'single_view_small_exact_geometry'
                      else
                      "registered_mask_overlap_single_view_dominant_mask"
                      if accepted_sources[target]

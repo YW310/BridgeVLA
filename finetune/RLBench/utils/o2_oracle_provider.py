@@ -1045,9 +1045,13 @@ class RLBenchGTOracleProvider:
                                         hard_conflict_precision=.5,
                                         hard_conflict_recall=.5,
                                         single_view_min_pixels=32,
-                                        single_view_min_precision=.98,
-                                        single_view_min_recall=.98,
-                                        single_view_max_world_distance_p95=.01)
+                                         single_view_min_precision=.98,
+                                         single_view_min_recall=.98,
+                                         single_view_max_world_distance_p95=.01,
+                                         small_exact_geometry_min_pixels=16,
+                                         small_exact_geometry_min_precision=1.,
+                                         small_exact_geometry_min_recall=1.,
+                                         small_exact_geometry_max_world_distance_p95=.01)
             report['geometry_policy'] = 'audit_only_except_single_view_corroboration'
         try:
             required = set()

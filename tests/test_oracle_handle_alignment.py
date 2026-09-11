@@ -308,6 +308,30 @@ def test_mask_verified_accepts_unique_geometry_verified_single_view_shape():
     assert report['87']['source'] == 'registered_mask_overlap_single_view_geometry'
 
 
+def test_single_view_accepts_small_exact_shape_with_verified_geometry():
+    live, stored = single_view_ring(pixel_count=24, geometry_offset=.009)
+
+    mapping, report = align_handles(
+        live, stored, {87: 'place_cups_holder_spoke0'},
+        mode='mask_verified')
+
+    assert mapping == {87: 99}
+    evidence = report['87']
+    assert evidence['source'] == (
+        'registered_mask_overlap_single_view_small_exact_geometry')
+    check = evidence['candidates']['99']['front']
+    assert check['small_exact_geometry_passed']
+    assert check['world_distance_p95'] == pytest.approx(.009)
+
+
+def test_single_view_rejects_small_exact_shape_with_bad_geometry():
+    live, stored = single_view_ring(pixel_count=24, geometry_offset=.011)
+    with pytest.raises(HandleAlignmentError):
+        align_handles(
+            live, stored, {87: 'place_cups_holder_spoke0'},
+            mode='mask_verified')
+
+
 def single_view_boundary_noise(interior_offset=0., boundary_offset=.015):
     shape = (16, 16)
     live_mask = np.zeros(shape, dtype=np.int64)
@@ -579,7 +603,7 @@ def test_single_view_interior_geometry_gate_rejects_real_disagreement(
 @pytest.mark.parametrize('failure', ['too_small', 'second_visible_view'])
 def test_single_view_fallback_remains_conservative(failure):
     live, stored = single_view_ring(
-        pixel_count=31 if failure == 'too_small' else 35)
+        pixel_count=15 if failure == 'too_small' else 35)
     if failure == 'second_visible_view':
         live['left_shoulder']['mask'][1:6, 1:6] = 87
         stored['left_shoulder']['mask'][1:6, 1:5] = 99
