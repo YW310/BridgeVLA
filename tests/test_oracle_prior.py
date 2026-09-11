@@ -7,7 +7,6 @@ from finetune.bridgevla.models import oracle_prior as oracle_prior_module
 
 from finetune.bridgevla.models.oracle_prior import (
     OraclePriorFeatureAdapter,
-    OraclePriorFusion,
     OracleRelationGatedFeatureAdapter,
     build_training_visualization_payload,
     choose_oracle_translation_loss,
@@ -20,32 +19,6 @@ from finetune.bridgevla.models.oracle_prior import (
 
 
 class OraclePriorTest(unittest.TestCase):
-    def test_fusion_is_identity_at_initialization(self):
-        logits = torch.randn(2, 3, 8, 8)
-        prior = torch.rand_like(logits)
-        fused = OraclePriorFusion(4)(
-            logits, prior, torch.tensor([True, True]),
-        )
-        torch.testing.assert_close(fused, logits)
-
-    def test_zero_initialized_fusion_receives_gradients(self):
-        fusion = OraclePriorFusion(4)
-        logits = torch.randn(1, 3, 4, 4)
-        prior = torch.rand_like(logits)
-        fusion(logits, prior, torch.tensor([True])).square().mean().backward()
-        self.assertGreater(fusion.net[-1].weight.grad.abs().sum().item(), 0)
-
-    def test_relation_fusion_requires_complete_pair(self):
-        fusion = OraclePriorFusion(4, multiscale=True, prior_channels=2)
-        torch.nn.init.ones_(fusion.net[-1].weight)
-        logits = torch.randn(2, 3, 5, 5)
-        prior = torch.rand(2, 3, 2, 5, 5)
-        fused = fusion(
-            logits, prior,
-            torch.tensor([[True, True], [True, False]]),
-        )
-        torch.testing.assert_close(fused[1], logits[1])
-
     def test_feature_adapter_is_identity_and_receives_gradients(self):
         adapter = OraclePriorFeatureAdapter(8, rank=3)
         features = torch.randn(6, 8, 4, 4)
@@ -70,17 +43,6 @@ class OraclePriorTest(unittest.TestCase):
         )
         per_stage = sum(p.numel() for p in adapter.parameters())
         self.assertEqual(per_stage * 2, 139138)
-
-    def test_relation_adapter_plus_fusion_parameter_count(self):
-        adapter = OracleRelationGatedFeatureAdapter(
-            2048, rank=16, prior_channels=2,
-        )
-        fusion = OraclePriorFusion(
-            64, multiscale=True, prior_channels=2,
-        )
-        per_stage = sum(p.numel() for p in adapter.parameters())
-        per_stage += sum(p.numel() for p in fusion.parameters())
-        self.assertEqual(per_stage * 2, 223878)
 
     def test_feature_adapter_keeps_invalid_sample_unchanged(self):
         adapter = OraclePriorFeatureAdapter(4, rank=2)

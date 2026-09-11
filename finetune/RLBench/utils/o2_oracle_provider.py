@@ -19,7 +19,8 @@ from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 import numpy as np
 import yaml
 from PIL import Image, ImageDraw
-from .oracle_handle_alignment import align_handles, HandleAlignmentError
+from .oracle_handle_alignment import (
+    align_handles, align_semantic_handle_group, HandleAlignmentError)
 
 
 DEFAULT_CAMERAS = ("front", "left_shoulder", "right_shoulder", "wrist")
@@ -280,6 +281,7 @@ class RLBenchGTOracleProvider:
             None if manifest_output_dir is None else Path(manifest_output_dir))
         self._live_initial_views = None
         self._stored_handle_map = None
+        self._stored_entity_handle_map = {}
         self._nonvisual_handles = set()
         self._handle_alignment_audit = {}
         self._task_environment = None
@@ -302,7 +304,7 @@ class RLBenchGTOracleProvider:
             "steps_total": 0,
             "target_valid": 0,
             "reference_valid": 0,
-            "fusion_steps": 0,
+            "prior_steps": 0,
             "not_visible_target": 0,
             "not_visible_reference": 0,
             "no_reference": 0,
@@ -334,6 +336,7 @@ class RLBenchGTOracleProvider:
         self._demo_phase_metadata = {}
         self._live_initial_views = None
         self._stored_handle_map = None
+        self._stored_entity_handle_map = {}
         self._nonvisual_handles = set()
         self._handle_alignment_audit = {}
         self._phase_index = 0
@@ -433,13 +436,19 @@ class RLBenchGTOracleProvider:
     ) -> RoleEntity:
         handles = set(SceneObjectIndex.handles_with_descendants(objects))
         handles.difference_update(self._robot_handles)
+        original_handles = frozenset(handles)
         if self._stored_handle_map is not None:
-            handles.difference_update(self._nonvisual_handles)
-            missing = handles.difference(self._stored_handle_map)
-            if missing:
-                raise SemanticRoleMappingError(
-                    f"Unmapped stored-demo handles for {semantic_name}: {sorted(missing)}")
-            handles = {self._stored_handle_map[handle] for handle in handles}
+            entity_handles = self._stored_entity_handle_map.get(original_handles)
+            if entity_handles is not None:
+                handles = set(entity_handles)
+            else:
+                handles.difference_update(self._nonvisual_handles)
+                missing = handles.difference(self._stored_handle_map)
+                if missing:
+                    raise SemanticRoleMappingError(
+                        f"Unmapped stored-demo handles for {semantic_name}: "
+                        f"{sorted(missing)}")
+                handles = {self._stored_handle_map[handle] for handle in handles}
         if not handles:
             raise SemanticRoleMappingError(
                 f"Semantic object {semantic_name!r} has no non-robot handles"
@@ -1075,38 +1084,93 @@ class RLBenchGTOracleProvider:
                 declared = metadata.get("name_to_handle")
                 if not isinstance(declared, Mapping):
                     raise HandleAlignmentError("Acquisition mapping needs name_to_handle")
-            mapping, evidence = align_handles(
-                self._live_initial_views or {}, self._alignment_views(obs), names, declared,
-                mode=self.handle_alignment,
-                allow_unobservable=self.handle_alignment == 'mask_verified')
-            unobservable = set(names).difference(mapping)
-            for semantic_name, handles in required_groups:
-                visual_handles = handles.difference(excluded)
-                if visual_handles and not visual_handles.difference(unobservable):
-                    raise HandleAlignmentError(
-                        f"Semantic entity {semantic_name!r} has no observable handle "
-                        "with verified stored correspondence", evidence)
-            excluded.update(unobservable)
+            stored_views = self._alignment_views(obs)
+            entity_mapping = {}
+            unobservable = set()
+            used_entity_union_fallback = False
+            try:
+                mapping, evidence = align_handles(
+                    self._live_initial_views or {}, stored_views, names, declared,
+                    mode=self.handle_alignment,
+                    allow_unobservable=self.handle_alignment == 'mask_verified')
+                unobservable = set(names).difference(mapping)
+                for semantic_name, handles in required_groups:
+                    visual_handles = handles.difference(excluded)
+                    if visual_handles and not visual_handles.difference(unobservable):
+                        raise HandleAlignmentError(
+                            f"Semantic entity {semantic_name!r} has no observable handle "
+                            "with verified stored correspondence", evidence)
+                    mapped = {
+                        mapping[handle] for handle in visual_handles
+                        if handle not in unobservable
+                    }
+                    if mapped:
+                        entity_mapping[frozenset(handles)] = tuple(sorted(mapped))
+                excluded.update(unobservable)
+            except HandleAlignmentError as individual_error:
+                # Multi-part RLBench entities can be split/merged differently
+                # between live and saved instance masks.  Only mask_verified
+                # mode may fall back to a strict two-view union certificate.
+                visible_groups = [
+                    (semantic_name, handles, handles.difference(excluded))
+                    for semantic_name, handles in required_groups
+                ]
+                if (self.handle_alignment != 'mask_verified'
+                        or not any(len(visible) > 1
+                                   for _, _, visible in visible_groups)):
+                    raise
+                group_evidence = {
+                    "individual_alignment_error": str(individual_error),
+                    "individual_alignment_evidence": individual_error.evidence,
+                    "entities": {},
+                }
+                used_entity_union_fallback = True
+                for semantic_name, handles, visible_handles in visible_groups:
+                    mapped, entity_evidence = align_semantic_handle_group(
+                        self._live_initial_views or {}, stored_views,
+                        visible_handles, semantic_name)
+                    entity_mapping[frozenset(handles)] = mapped
+                    group_evidence["entities"][semantic_name] = entity_evidence
+                mapping = {}
+                evidence = group_evidence
             report.update(
                 status=self.handle_alignment, evidence=evidence,
                 live_to_stored={str(k): v for k, v in mapping.items()},
+                semantic_entity_to_stored={
+                    ",".join(str(handle) for handle in sorted(handles)): list(mapped)
+                    for handles, mapped in entity_mapping.items()
+                },
+                alignment_scope=(
+                    'semantic_entity_union'
+                    if used_entity_union_fallback else 'individual_handles'),
                 excluded_nonvisual_handles=sorted(excluded.difference(unobservable)),
-                excluded_unobservable_handles=sorted(unobservable))
+                excluded_unobservable_handles=(
+                    sorted(unobservable) if mapping else []))
             if self.handle_alignment == 'mask_verified':
                 report['geometry_verified'] = False
+                if used_entity_union_fallback:
+                    print(
+                        '[Manifest] mask_verified: individual child-handle '
+                        'alignment failed; accepted strict two-view semantic-'
+                        'entity union masks.', flush=True)
                 print('[Manifest] mask_verified: identity inferred from high-overlap masks; '
                       'global geometry is not certified (single-view fallback requires local '
                       'geometry corroboration). Review the alignment JSON '
                       'before training.', flush=True)
             self._stored_handle_map = mapping
+            self._stored_entity_handle_map = entity_mapping
             self._nonvisual_handles = excluded
             self._handle_alignment_audit = report
             translated = deepcopy(live_initial)
             for key in ("target", "reference"):
                 role = translated.get(key)
                 if role is not None and role["kind"] == "object":
-                    role["handles"] = sorted({
-                        mapping[h] for h in role["handles"] if h not in excluded})
+                    original_handles = frozenset(role["handles"])
+                    if original_handles in entity_mapping:
+                        role["handles"] = list(entity_mapping[original_handles])
+                    else:
+                        role["handles"] = sorted({
+                            mapping[h] for h in role["handles"] if h not in excluded})
             return translated
         except Exception as exc:
             self.stats["mapping_errors"] += 1
@@ -1192,7 +1256,7 @@ class RLBenchGTOracleProvider:
         self.stats["steps_total"] += 1
         self.stats["target_valid"] += int(target_valid)
         self.stats["reference_valid"] += int(reference_valid)
-        self.stats["fusion_steps"] += int(target_valid or reference_valid)
+        self.stats["prior_steps"] += int(target_valid or reference_valid)
         self.stats["not_visible_target"] += int(not target_valid)
         if assignment.reference is None:
             self.stats["no_reference"] += 1

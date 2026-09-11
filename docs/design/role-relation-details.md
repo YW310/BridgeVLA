@@ -9,7 +9,7 @@
 
 > 更新时间：2026-09-07（根据数学、监督与执行接口 review 修订）
 > 状态：顶会候选研究设计，尚未实现
-> 当前代码边界：仓库默认 `rvt2.yaml` 使用 coarse/refine 两阶段，每阶段渲染 `top/front/right` 三个正交视角，即 `3 x 2`；另已实现 GT Target/Reference point prior、两通道 relation prior、zero-init feature adapter，以及同一次 forward 中的 `trans_base` / `trans` 输出。post-hoc translation fusion 由 `oracle_prior_fusion` 配置控制；无 fusion 使用独立配置。本文提出的 phase-gated object candidates、per-object view bank、pair-specific heatmaps、pair reliability cost、关系编辑头与事件切换均是下一阶段工作。
+> 当前代码边界：仓库默认 `rvt2.yaml` 使用 coarse/refine 两阶段，每阶段渲染 `top/front/right` 三个正交视角，即 `3 x 2`；另已实现 GT Target/Reference point prior、两通道 relation prior、zero-init feature adapter，以及同一次 forward 中的 `trans_base` / `trans` 输出。post-hoc translation fusion 已删除。本文提出的 phase-gated object candidates、per-object view bank、pair-specific heatmaps、pair reliability cost、关系编辑头与事件切换均是下一阶段工作。
 
 ## 0. 最终判断
 
@@ -640,7 +640,7 @@ ARE-only 与 PairHM 分别验证；最终比较完整组合与相同监督/计�
 - `finetune/bridgevla/mvt/mvt_single.py`：已有 adapter 前的 feature `x`，并可同时产出 `trans_base`；
 - `finetune/bridgevla/libs/point-renderer/point_renderer/rvt_renderer.py`：默认 `rvt2.yaml` 实际使用的三视角 renderer；可复用 `top/front/right` cameras、`pc_depths` 与 3D heatmap recovery，但当前 `get_pt_loc_on_img` 丢弃 camera-space depth，且 recovery 跨 view 无权平均；
 - `finetune/bridgevla/mvt/renderer.py`：PyTorch3D fallback，定义五视角但不支持 `rend_three_views=True`；不要用它描述默认 BridgeVLA 的 view 数量；
-- `finetune/bridgevla/models/bridgevla_agent.py`：已有 Oracle point selection 与 base/raw/fused translation loss 日志。
+- `finetune/bridgevla/models/bridgevla_agent.py`：已有 Oracle point selection，以及配对的 base/adapted action loss 日志。
 
 ### 7.2 最小代码增量与接口契约
 

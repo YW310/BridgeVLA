@@ -41,7 +41,7 @@ from bridgevla.mvt.mvt import MVT
 from utils.get_dataset import get_dataset
 from bridgevla.utils.rvt_utils import (
     get_num_feat,
-    reconcile_oracle_fusion_state,
+    strip_deprecated_oracle_fusion_state,
     RLBENCH_TASKS,
 )
 from utils.peract_utils_rlbench import (
@@ -213,10 +213,8 @@ def train(
                     'total_loss_gain_pct',
                     'trans_loss',
                     'trans_loss_base',
-                    'trans_loss_raw',
                     'trans_loss_valid',
                     'trans_loss_base_valid',
-                    'trans_loss_raw_valid',
                     'oracle_prior_coverage',
                     'rot_loss_x',
                     'rot_loss_y',
@@ -379,10 +377,8 @@ def train_with_accumulation(
                     'total_loss_gain_pct',
                     'trans_loss',
                     'trans_loss_base',
-                    'trans_loss_raw',
                     'trans_loss_valid',
                     'trans_loss_base_valid',
-                    'trans_loss_raw_valid',
                     'oracle_prior_coverage',
                     'rot_loss_x',
                     'rot_loss_y',
@@ -445,14 +441,14 @@ def load_training_checkpoint(agent, path):
     if isinstance(model, DDP):
         model = model.module
 
-    model_state, removed_fusion_keys = reconcile_oracle_fusion_state(
-        checkpoint["model_state"], model,
+    model_state, removed_fusion_keys = strip_deprecated_oracle_fusion_state(
+        checkpoint["model_state"]
     )
     if removed_fusion_keys:
         raise RuntimeError(
-            'This checkpoint contains Oracle fusion weights, but fusion is '
-            'disabled in the current config and its optimizer state does not '
-            'match. Load it with --init_checkpoint, or enable fusion.'
+            'This checkpoint contains removed post-hoc Oracle fusion weights '
+            'and its optimizer state no longer matches the adapter-only model. '
+            'Load it with --init_checkpoint instead of --resume_checkpoint.'
         )
     model.load_state_dict(model_state)
 
@@ -478,8 +474,8 @@ def load_initial_model_checkpoint(agent, path):
     model = agent._network
     if isinstance(model, DDP):
         model = model.module
-    model_state, removed_fusion_keys = reconcile_oracle_fusion_state(
-        checkpoint['model_state'], model,
+    model_state, removed_fusion_keys = strip_deprecated_oracle_fusion_state(
+        checkpoint['model_state']
     )
     incompatible = model.load_state_dict(model_state, strict=False)
     unexpected = list(incompatible.unexpected_keys)
@@ -495,8 +491,7 @@ def load_initial_model_checkpoint(agent, path):
         )
     if removed_fusion_keys:
         print(
-            'WARNING: ignored Oracle fusion weights because fusion is '
-            'disabled in the current config '
+            'WARNING: ignored deprecated post-hoc Oracle fusion weights '
             f'({len(removed_fusion_keys)} tensors).',
             flush=True,
         )
@@ -869,12 +864,7 @@ def experiment(cmd_args):
         load_pretrain=cmd_args.load_pretrain,
         pretrain_path=cmd_args.pretrain_path,
         flash_attention_2=exp_cfg.flash_attention_2,
-        oracle_prior_fusion=exp_cfg.oracle_prior_fusion,
-        oracle_prior_hidden_channels=exp_cfg.oracle_prior_hidden_channels,
         oracle_prior_adapter_rank=exp_cfg.oracle_prior_adapter_rank,
-        oracle_prior_multiscale_fusion=(
-            exp_cfg.oracle_prior_multiscale_fusion
-        ),
         oracle_prior_relation=exp_cfg.rvt.oracle_prior_relation,
         oracle_relation_gated_adapter=exp_cfg.oracle_relation_gated_adapter,
         oracle_adapter_translation_only=(
@@ -1172,8 +1162,7 @@ if __name__ == "__main__":
     parser.add_argument(
         '--train_oracle_adapter_only', action='store_true',
         help=(
-            'Freeze original BridgeVLA and train configured O2 adapter/fusion '
-            'modules.'
+            'Freeze original BridgeVLA and train only O2 feature adapters.'
         ),
     )
     parser.add_argument(

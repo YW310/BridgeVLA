@@ -33,6 +33,127 @@ def _interior(mask):
         padded[y:y+h, x:x+w] for y in range(3) for x in range(3)])
 
 
+def align_semantic_handle_group(live, stored, handles, semantic_name):
+    """Verify a multi-handle entity by its union mask.
+
+    RLBench sometimes represents one semantic object with separate physical
+    and visual shapes.  Saved and live masks may split that entity differently,
+    so a one-to-one child-handle correspondence is unnecessarily strict.  This
+    fallback still requires a two-camera, high-overlap certificate for the
+    complete semantic entity and never uses numeric identity or proximity.
+    """
+    handles = {
+        int(handle) for handle in handles
+        if isinstance(handle, (int, np.integer)) and not isinstance(handle, bool)
+        and int(handle) > 0
+    }
+    if not handles:
+        raise HandleAlignmentError(
+            f"Semantic entity {semantic_name!r} has no visual live handles")
+
+    views, excluded = {}, {}
+    for camera in sorted(set(live) | set(stored)):
+        if camera not in live or camera not in stored:
+            excluded[camera] = {"reason": "missing_live_or_stored_view"}
+            continue
+        a, b = live[camera], stored[camera]
+        for key, shape in (("intrinsics", (3, 3)), ("extrinsics", (4, 4))):
+            try:
+                x = np.asarray(a.get(key), dtype=np.float64)
+                y = np.asarray(b.get(key), dtype=np.float64)
+            except (TypeError, ValueError):
+                excluded[camera] = {"reason": f"invalid_{key}"}
+                break
+            if (x.shape != shape or y.shape != shape
+                    or not np.isfinite(x).all() or not np.isfinite(y).all()
+                    or not np.allclose(x, y, atol=1e-4, rtol=0)):
+                excluded[camera] = {
+                    "reason": f"unregistered_{key}",
+                    "max_abs_difference": (
+                        float(np.max(np.abs(x - y)))
+                        if x.shape == y.shape == shape
+                        and np.isfinite(x).all() and np.isfinite(y).all()
+                        else None),
+                }
+                break
+        if camera in excluded:
+            continue
+        am, bm = a["mask"], b["mask"]
+        ac, bc = a["cloud"], b["cloud"]
+        if (am.ndim != 2 or am.shape != bm.shape
+                or ac.shape != (*am.shape, 3) or bc.shape != ac.shape):
+            excluded[camera] = {"reason": "mask_cloud_resolution_mismatch"}
+            continue
+        views[camera] = (am, bm, ac, bc)
+
+    evidence = {
+        "semantic_name": semantic_name,
+        "live_handles": sorted(handles),
+        "_registration": {
+            "used_cameras": sorted(views),
+            "excluded_cameras": excluded,
+        },
+    }
+    if len(views) < 2:
+        raise HandleAlignmentError(
+            f"Cannot verify semantic entity {semantic_name!r}: only "
+            f"{len(views)} registered camera pairs; need 2", evidence)
+
+    # A saved handle becomes a group candidate only when most of that saved
+    # instance lies inside the live entity in at least two registered views.
+    # This prevents a coincidental edge overlap from adding an unrelated object.
+    candidate_votes = {}
+    for am, bm, _, _ in views.values():
+        live_entity = np.isin(am, tuple(handles))
+        for candidate in np.unique(bm[live_entity]):
+            candidate = int(candidate)
+            if candidate <= 0:
+                continue
+            stored_instance = bm == candidate
+            overlap = int((live_entity & stored_instance).sum())
+            stored_pixels = int(stored_instance.sum())
+            if overlap >= 16 and overlap / max(stored_pixels, 1) >= .9:
+                candidate_votes[candidate] = candidate_votes.get(candidate, 0) + 1
+    candidates = {
+        candidate for candidate, votes in candidate_votes.items() if votes >= 2}
+    evidence["candidate_votes"] = {
+        str(candidate): votes for candidate, votes in sorted(candidate_votes.items())}
+    evidence["stored_handles"] = sorted(candidates)
+    if not candidates:
+        raise HandleAlignmentError(
+            f"Cannot verify semantic entity {semantic_name!r}: no saved handle "
+            "has strong overlap in two views", evidence)
+
+    checks, agreeing = {}, 0
+    for camera, (am, bm, ac, bc) in views.items():
+        live_entity = np.isin(am, tuple(handles))
+        stored_entity = np.isin(bm, tuple(candidates))
+        overlap = live_entity & stored_entity
+        na, nb, count = (
+            int(live_entity.sum()), int(stored_entity.sum()), int(overlap.sum()))
+        precision = count / max(nb, 1)
+        recall = count / max(na, 1)
+        passed = (
+            min(na, nb) >= 16 and precision >= .9 and recall >= .9)
+        checks[camera] = {
+            "live_pixels": na,
+            "stored_pixels": nb,
+            "overlap_pixels": count,
+            "precision": precision,
+            "recall": recall,
+            "passed": bool(passed),
+            "geometry": _geometry_summary(ac, bc, overlap),
+        }
+        agreeing += int(passed)
+    evidence["views"] = checks
+    if agreeing < 2:
+        raise HandleAlignmentError(
+            f"Cannot verify semantic entity {semantic_name!r}: union mask "
+            f"passed {agreeing} registered views; need 2", evidence)
+    evidence["source"] = "semantic_entity_union_mask_overlap"
+    return tuple(sorted(candidates)), evidence
+
+
 def align_handles(live, stored, names, name_to_handle=None, *, mode='verified',
                   allow_unobservable=False):
     """Return live->stored mapping and auditable evidence for required shapes.

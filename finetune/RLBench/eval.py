@@ -118,12 +118,7 @@ def load_agent(
 
     rvt = MVT(
         renderer_device=device,
-        oracle_prior_fusion=exp_cfg.oracle_prior_fusion,
-        oracle_prior_hidden_channels=exp_cfg.oracle_prior_hidden_channels,
         oracle_prior_adapter_rank=exp_cfg.oracle_prior_adapter_rank,
-        oracle_prior_multiscale_fusion=(
-            exp_cfg.oracle_prior_multiscale_fusion
-        ),
         oracle_prior_relation=exp_cfg.rvt.oracle_prior_relation,
         oracle_relation_gated_adapter=exp_cfg.oracle_relation_gated_adapter,
         oracle_adapter_translation_only=exp_cfg.oracle_adapter_translation_only,
@@ -866,12 +861,15 @@ def _eval(args):
             elif agent is not None:
                 agent.oracle_prior_strict = bool(args.oracle_strict)
                 print(
-                    "Evaluation branch: O2 semantic-GT Target/Reference fusion "
+                    "Evaluation branch: O2 semantic-GT Target/Reference adapter "
                     f"(strict={agent.oracle_prior_strict})"
                 )
         elif agent is not None and agent.oracle_prior_enabled:
             agent.oracle_prior_mode = "none"
-            print("Evaluation branch: O2 checkpoint with raw BridgeVLA outputs")
+            print(
+                "Evaluation branch: O2 checkpoint with prior disabled "
+                "(base feature path)"
+            )
         elif agent is not None:
             print("Evaluation branch: original baseline")
 

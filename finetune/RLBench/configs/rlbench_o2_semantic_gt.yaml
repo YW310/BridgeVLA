@@ -27,10 +27,7 @@ use_oracle_objects: True
 oracle_semantic_audit: True
 oracle_max_objects: 32
 oracle_num_points: 512
-oracle_prior_fusion: True
-oracle_prior_hidden_channels: 64
 oracle_prior_adapter_rank: 16
-oracle_prior_multiscale_fusion: True
 oracle_relation_gated_adapter: True
 oracle_adapter_translation_only: False
 

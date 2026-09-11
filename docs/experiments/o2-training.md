@@ -10,8 +10,7 @@ O2 选择当前状态下唯一的 Target 与 Reference，将完整点云按 `[T,
 三视角 prior，再通过低秩 relation-gated adapter 注入 PaliGemma 视觉特征。adapted
 feature 同时供 translation、rotation、gripper、collision 使用。
 
-post-hoc translation fusion 由顶层配置 `oracle_prior_fusion` 控制。推荐的无 fusion
-消融使用 `rlbench_o2_semantic_gt_no_fusion.yaml`，其结构为：
+当前结构不包含 post-hoc translation fusion：
 
 ```text
 frozen visual feature x + [P_T, P_R] + 3D relation
@@ -25,14 +24,9 @@ frozen visual feature x + [P_T, P_R] + 3D relation
    decode waypoint ─── 推理时在同一位置采样 feature
 ```
 
-无 fusion 配置只有一份 O2 translation 输出 `trans`。推理时 translation 最终位置与
+O2 只有一份 translation 输出 `trans`。推理时 translation 最终位置与
 R/G/C 的 feature 采样位置一致；训练时仍沿用 BridgeVLA 的 teacher forcing，在 GT
 `wpt_local` 处训练 R/G/C。
-
-`rlbench_o2_semantic_gt.yaml` 保留原 Adapter+Fusion 结构并显式设置
-`oracle_prior_fusion: True`。该路径输出 pre-fusion `trans_raw` 和最终 `trans`；post-hoc
-fusion 可能改变 translation，但 R/G/C 已经在 pre-fusion waypoint 处生成，因此该配置
-保留原实验行为，也保留原有的位置不一致风险。
 
 <a id=o2-adapter-only></a>
 
@@ -40,13 +34,13 @@ fusion 可能改变 translation，但 R/G/C 已经在 pre-fusion waypoint 处生
 
 ```bash
 bash train.sh \
-    --exp_cfg_path configs/rlbench_o2_semantic_gt_no_fusion.yaml \
+    --exp_cfg_path configs/rlbench_o2_semantic_gt.yaml \
     --train_replay_storage_dir /path/to/BridgeVLA_RLBench_SEMANTIC_GT_Buffer \
     --init_checkpoint /path/to/baseline/model_80.pth \
     --train_oracle_adapter_only
 ```
 
-无 fusion 配置使用双通道 T/R prior、rank-16 adapter 和显式 3D relation；两阶段共训练
+主配置使用双通道 T/R prior、rank-16 adapter 和显式 3D relation；两阶段共训练
 139,138 个参数。原 BridgeVLA（包括动作头）保持冻结，但六项动作 loss 的梯度会穿过
 冻结头更新 adapter：
 
@@ -70,7 +64,7 @@ total_loss = trans_loss
 
 ```bash
 bash train.sh \
-    --exp_cfg_path configs/rlbench_o2_semantic_gt_no_fusion.yaml \
+    --exp_cfg_path configs/rlbench_o2_semantic_gt.yaml \
     --train_replay_storage_dir /path/to/semantic_gt_buffer \
     --init_checkpoint /path/to/baseline/model_80.pth \
     --freeze_language_model \
@@ -81,10 +75,9 @@ bash train.sh \
 
 ## 关键开关
 
-无 fusion 配置已经设置：
+主配置已经设置：
 
 ```yaml
-oracle_prior_fusion: False
 oracle_prior_adapter_rank: 16
 oracle_relation_gated_adapter: True
 oracle_adapter_translation_only: False
@@ -99,7 +92,6 @@ rvt:
 ```
 
 - `rvt.oracle_prior_relation`：使用双通道 T/R prior，而非旧的单角色 prior。
-- `oracle_prior_fusion`：是否创建并执行 coarse/refine 的 post-hoc translation fusion。
 - `oracle_relation_gated_adapter`：用完整 T/R 点集显式编码相对几何。
 - `oracle_adapter_translation_only`：adapter 是否只影响 translation 分支。
 - `peract.add_rgc_loss`：R/G/C loss 是否加入总目标。
@@ -125,8 +117,8 @@ baseline feature；严格数据审计可设置 `rvt.oracle_prior_strict=True`。
 | `*_base` / 对应动作 loss | R/G/C 的配对分量 | 仅非 base 项 |
 | `trans_loss_base_valid` / `trans_loss_valid` | 完整 T/R pair 子集 | 后者仅在 valid-only 模式优化 |
 
-启用 fusion 时额外记录 `trans_loss_raw` 和 `trans_loss_raw_valid`，分别表示 fusion
-之前的 translation loss；关闭 fusion 时这两个指标不会出现。
+`trans_loss_raw` 与 `trans_loss_raw_valid` 已删除；它们在 adapter-only 结构中会与
+`trans_loss` 和 `trans_loss_valid` 重复。
 
 训练期配对 loss 用于定位收益，不能替代固定验证集与 closed-loop success。正式报告还应
 包含等训练步数、等可训练参数预算的 no-prior control。
@@ -136,14 +128,13 @@ baseline feature；严格数据审计可设置 `rvt.oracle_prior_strict=True`。
 ## Checkpoint
 
 - baseline → O2：使用 `--init_checkpoint`，adapter 零初始化，epoch/optimizer 从头开始。
-- 相同 fusion 配置的 O2 → 继续训练：使用 `--resume_checkpoint`。
-- Adapter+Fusion checkpoint → 无 fusion 配置：使用 `--init_checkpoint`；加载器忽略
-  fusion tensors 并保留 adapter 权重。
-- Adapter+Fusion checkpoint 不能用无 fusion 配置直接 `--resume_checkpoint`，因为
+- adapter-only O2 → 继续训练：使用 `--resume_checkpoint`。
+- 旧 Adapter+Fusion checkpoint → 当前结构：使用 `--init_checkpoint`；加载器忽略
+  已废弃的 fusion tensors 并保留 adapter 权重。
+- 旧 Adapter+Fusion checkpoint 不能直接 `--resume_checkpoint`，因为
   optimizer 参数组不同；代码会明确报错。
-- fusion 配置加载 Adapter+Fusion checkpoint 时保留 fusion tensors。
 
-评估加载根据当前配置保留或过滤 fusion keys，其他缺失或多余参数仍由 load 检查处理。
+评估加载会过滤已废弃的 fusion keys，其他缺失或多余参数仍由 load 检查处理。
 
 <a id=o2-code-path></a>
 
@@ -155,8 +146,7 @@ baseline feature；严格数据审计可设置 `rvt.oracle_prior_strict=True`。
 4. `mvt.py::_build_oracle_instance_prior` 为 coarse/refine 各生成三个正交视图的
    `[B,V,2,H,W]` prior。
 5. `OracleRelationGatedFeatureAdapter` 修改 feature；`mvt_single.py::forward` 从该
-   feature 同时预测 translation 与 R/G/C。启用 fusion 时，外层随后改写 `trans`；关闭时
-   外层只附加 prior 供诊断。
+   feature 同时预测 translation 与 R/G/C。外层只附加 prior 供诊断，不再改写 `trans`。
 6. `bridgevla_agent.py::update` 计算 adapter loss 和无梯度 base loss。
 
 <a id=o2-evaluation></a>
@@ -170,7 +160,7 @@ EXP_CFG_PATH=configs/rlbench_config.yaml ORACLE_PROVIDER=none bash eval.sh
 
 # O2 + semantic GT
 TASKS=place_cups MODEL_FOLDER=/path/to/o2 MODEL_NAME=model_last.pth \
-EXP_CFG_PATH=configs/rlbench_o2_semantic_gt_no_fusion.yaml \
+EXP_CFG_PATH=configs/rlbench_o2_semantic_gt.yaml \
 ORACLE_PROVIDER=rlbench_gt ORACLE_STRICT=1 ORACLE_DEBUG=1 bash eval.sh
 
 # 同一 O2 checkpoint 的 no-prior control
@@ -186,8 +176,8 @@ Oracle 上界，不应当作无 GT 的部署结果。
 ## 可视化
 
 评估设置 `VISUALIZE=1 VISUALIZE_ROOT_DIR=exp/RLBench_O2_vis`。每个 stage 保存输入、
-最终 heatmap、Target prior、Reference prior 与合并 prior。关闭 fusion 时最终图命名为
-`o2_adapted`；启用时同时保存 `o2_pre_fusion` 与 `o2_fused`。
+最终 `o2_adapted` heatmap、Target prior、Reference prior 与合并 prior；不再生成
+`o2_pre_fusion` 或 `o2_fused`。
 
 训练可视化由 YAML 的 `train_visualization` 控制，拼图展示 Input、GT、T/R prior、
 合并 prior 和最终 Pred。

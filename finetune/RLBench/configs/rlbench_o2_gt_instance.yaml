@@ -1,4 +1,4 @@
-# O2 experiment: train low-rank feature adapters and multiscale fusion heads.
+# O2 experiment: train low-rank feature adapters from heuristic instance roles.
 # Use with --init_checkpoint and --train_oracle_adapter_only.
 # Pass the augmented Oracle replay root with --train_replay_storage_dir.
 
@@ -29,10 +29,7 @@ train_visualization:
 use_oracle_objects: True
 oracle_max_objects: 32
 oracle_num_points: 512
-oracle_prior_fusion: True
-oracle_prior_hidden_channels: 64
 oracle_prior_adapter_rank: 16
-oracle_prior_multiscale_fusion: True
 oracle_relation_gated_adapter: True
 # Joint action training: route T/R-adapted features to translation and R/G/C.
 oracle_adapter_translation_only: False

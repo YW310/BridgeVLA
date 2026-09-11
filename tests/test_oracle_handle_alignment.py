@@ -6,7 +6,8 @@ import numpy as np
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "finetune" / "RLBench"))
-from utils.oracle_handle_alignment import align_handles, HandleAlignmentError
+from utils.oracle_handle_alignment import (
+    align_handles, align_semantic_handle_group, HandleAlignmentError)
 
 
 def views():
@@ -152,6 +153,27 @@ def test_mask_verified_accepts_high_overlap_masks_but_audits_geometry():
     assert report['87']['source'] == 'registered_mask_overlap'
     with pytest.raises(HandleAlignmentError):
         align_handles(live, stored, {87: 'lid'})
+
+
+def test_semantic_entity_union_aligns_split_live_to_merged_stored_instance():
+    live, stored = views()
+    for data in live.values():
+        data['mask'][1:6, 1:3] = 86
+    # The saved demo represents both live sub-parts with one instance ID.
+    mapped, report = align_semantic_handle_group(
+        live, stored, {86, 87}, 'chicken')
+    assert mapped == (99,)
+    assert report['source'] == 'semantic_entity_union_mask_overlap'
+    assert all(view['passed'] for view in report['views'].values())
+
+
+def test_semantic_entity_union_rejects_low_overlap_candidate():
+    live, stored = views()
+    for data in live.values():
+        data['mask'][1:6, 1:3] = 86
+        data['mask'][1:6, 4:6] = 0
+    with pytest.raises(HandleAlignmentError):
+        align_semantic_handle_group(live, stored, {86, 87}, 'chicken')
 
 
 @pytest.mark.parametrize('failure', ['one_view', 'low_overlap', 'split', 'hidden_metadata'])
