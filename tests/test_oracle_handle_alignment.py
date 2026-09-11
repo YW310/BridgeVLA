@@ -360,10 +360,10 @@ def test_single_view_accepts_strict_interior_geometry_with_boundary_noise():
     assert check['interior_geometry']['distance_p95'] == 0.
 
 
-def test_semantic_union_accepts_one_strong_and_one_small_exact_view():
+def test_semantic_union_accepts_one_strong_and_one_three_pixel_exact_view():
     live, stored = single_view_boundary_noise()
-    live['left_shoulder']['mask'][1, 1:6] = 87
-    stored['left_shoulder']['mask'][1, 1:6] = 99
+    live['left_shoulder']['mask'][1, 1:4] = 87
+    stored['left_shoulder']['mask'][1, 1:4] = 99
 
     mapped, report = align_semantic_handle_group(
         live, stored, {87}, 'bottom_drawer')
@@ -373,6 +373,10 @@ def test_semantic_union_accepts_one_strong_and_one_small_exact_view():
         'semantic_entity_union_asymmetric_multiview_mask_overlap')
     assert report['certificate'] == {
         'type': 'one_strong_one_small_view',
+        'auxiliary_min_pixels': 3,
+        'strong_min_pixels': 32,
+        'min_precision': .98,
+        'min_recall': .98,
         'supporting_views': ['front', 'left_shoulder'],
         'strong_views': ['front'],
         'conflicting_views': [],
@@ -386,6 +390,15 @@ def test_semantic_union_rejects_unreliable_small_second_view():
     with pytest.raises(HandleAlignmentError):
         align_semantic_handle_group(
             live, stored, {87}, 'bottom_drawer')
+
+
+def test_semantic_union_rejects_two_pixel_second_view():
+    live, stored = single_view_boundary_noise()
+    live['left_shoulder']['mask'][1, 1:3] = 87
+    stored['left_shoulder']['mask'][1, 1:3] = 99
+    with pytest.raises(HandleAlignmentError):
+        align_semantic_handle_group(
+            live, stored, {87}, 'top_drawer')
 
 
 @pytest.mark.parametrize(

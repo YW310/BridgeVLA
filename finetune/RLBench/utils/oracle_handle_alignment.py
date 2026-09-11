@@ -121,7 +121,7 @@ def align_semantic_handle_group(live, stored, handles, semantic_name):
             # per-part threshold only proposes group members; the complete
             # union below still needs >=16 pixels and 90% bidirectional overlap
             # in two views.
-            proposed = overlap >= 4 and stored_coverage >= .9
+            proposed = overlap >= 3 and stored_coverage >= .9
             candidate_details.setdefault(str(candidate), {})[camera] = {
                 "live_pixels": live_pixels,
                 "stored_pixels": stored_pixels,
@@ -156,7 +156,7 @@ def align_semantic_handle_group(live, stored, handles, semantic_name):
         passed = (
             min(na, nb) >= 16 and precision >= .9 and recall >= .9)
         identity_support = (
-            min(na, nb) >= 4 and precision >= .98 and recall >= .98)
+            min(na, nb) >= 3 and precision >= .98 and recall >= .98)
         strong_identity_support = (
             min(na, nb) >= 32 and precision >= .98 and recall >= .98)
         hard_mask_conflict = (
@@ -200,6 +200,10 @@ def align_semantic_handle_group(live, stored, handles, semantic_name):
             f"strong={strong_views}, conflicts={conflicting_views}", evidence)
     evidence["certificate"] = {
         "type": certificate_type,
+        "auxiliary_min_pixels": 3,
+        "strong_min_pixels": 32,
+        "min_precision": .98,
+        "min_recall": .98,
         "supporting_views": supporting_views,
         "strong_views": strong_views,
         "conflicting_views": conflicting_views,
