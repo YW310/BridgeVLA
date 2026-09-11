@@ -155,6 +155,12 @@ def align_semantic_handle_group(live, stored, handles, semantic_name):
         recall = count / max(na, 1)
         passed = (
             min(na, nb) >= 16 and precision >= .9 and recall >= .9)
+        identity_support = (
+            min(na, nb) >= 4 and precision >= .98 and recall >= .98)
+        strong_identity_support = (
+            min(na, nb) >= 32 and precision >= .98 and recall >= .98)
+        hard_mask_conflict = (
+            max(na, nb) >= 16 and (precision < .5 or recall < .5))
         checks[camera] = {
             "live_pixels": na,
             "stored_pixels": nb,
@@ -162,15 +168,43 @@ def align_semantic_handle_group(live, stored, handles, semantic_name):
             "precision": precision,
             "recall": recall,
             "passed": bool(passed),
+            "identity_support": bool(identity_support),
+            "strong_identity_support": bool(strong_identity_support),
+            "hard_mask_conflict": bool(hard_mask_conflict),
             "geometry": _geometry_summary(ac, bc, overlap),
         }
         agreeing += int(passed)
     evidence["views"] = checks
-    if agreeing < 2:
+    supporting_views = sorted(
+        camera for camera, check in checks.items()
+        if check["identity_support"])
+    strong_views = sorted(
+        camera for camera, check in checks.items()
+        if check["strong_identity_support"])
+    conflicting_views = sorted(
+        camera for camera, check in checks.items()
+        if check["hard_mask_conflict"])
+    asymmetric_quorum = (
+        len(strong_views) >= 1 and len(supporting_views) >= 2
+        and not conflicting_views)
+    if agreeing >= 2:
+        source = "semantic_entity_union_mask_overlap"
+        certificate_type = "two_full_views"
+    elif asymmetric_quorum:
+        source = "semantic_entity_union_asymmetric_multiview_mask_overlap"
+        certificate_type = "one_strong_one_small_view"
+    else:
         raise HandleAlignmentError(
             f"Cannot verify semantic entity {semantic_name!r}: union mask "
-            f"passed {agreeing} registered views; need 2", evidence)
-    evidence["source"] = "semantic_entity_union_mask_overlap"
+            f"passed {agreeing} full views; supporting={supporting_views}, "
+            f"strong={strong_views}, conflicts={conflicting_views}", evidence)
+    evidence["certificate"] = {
+        "type": certificate_type,
+        "supporting_views": supporting_views,
+        "strong_views": strong_views,
+        "conflicting_views": conflicting_views,
+    }
+    evidence["source"] = source
     return tuple(sorted(candidates)), evidence
 
 

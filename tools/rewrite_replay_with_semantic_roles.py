@@ -111,7 +111,32 @@ def _manifest_path(root: Path, task: str, episode_idx: int) -> Path:
     raise FileNotFoundError(
         f"Missing semantic manifest for {task} episode {episode_idx}; tried: "
         + ", ".join(str(path) for path in candidates)
-    )
+)
+
+
+def _semantic_entity_evidence_is_certified(evidence):
+    if not isinstance(evidence, Mapping):
+        return False
+    views = evidence.get("views", {})
+    if not isinstance(views, Mapping):
+        return False
+    source = evidence.get("source")
+    if source == "semantic_entity_union_mask_overlap":
+        return sum(
+            bool(view.get("passed")) for view in views.values()
+            if isinstance(view, Mapping)) >= 2
+    if source == "semantic_entity_union_asymmetric_multiview_mask_overlap":
+        supporting = [
+            view for view in views.values()
+            if isinstance(view, Mapping) and view.get("identity_support")]
+        strong = [
+            view for view in views.values()
+            if isinstance(view, Mapping) and view.get("strong_identity_support")]
+        conflicts = [
+            view for view in views.values()
+            if isinstance(view, Mapping) and view.get("hard_mask_conflict")]
+        return len(supporting) >= 2 and bool(strong) and not conflicts
+    return False
 
 
 def _load_manifest(root: Path, task: str, episode_idx: int, allow_mask_verified=False):
@@ -176,14 +201,7 @@ def _load_manifest(root: Path, task: str, episode_idx: int, allow_mask_verified=
                 certified = {
                     handle
                     for evidence in entities.values()
-                    if isinstance(evidence, Mapping)
-                    and evidence.get("source")
-                    == "semantic_entity_union_mask_overlap"
-                    and sum(
-                        bool(view.get("passed"))
-                        for view in evidence.get("views", {}).values()
-                        if isinstance(view, Mapping)
-                    ) >= 2
+                    if _semantic_entity_evidence_is_certified(evidence)
                     for handle in evidence.get("stored_handles", ())
                 }
                 if not entity_mapped <= certified:
