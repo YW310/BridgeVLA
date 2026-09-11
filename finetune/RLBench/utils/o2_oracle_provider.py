@@ -1052,6 +1052,10 @@ class RLBenchGTOracleProvider:
                                          small_exact_geometry_min_precision=1.,
                                          small_exact_geometry_min_recall=1.,
                                          small_exact_geometry_max_world_distance_p95=.01)
+            report['thresholds'].update(
+                small_exact_robust_geometry_max_world_distance_p50=.005,
+                small_exact_robust_geometry_max_world_distance_p90=.01,
+                small_exact_robust_geometry_max_world_distance_p95=.025)
             report['geometry_policy'] = 'audit_only_except_single_view_corroboration'
         try:
             required = set()
@@ -1169,9 +1173,18 @@ class RLBenchGTOracleProvider:
                                 individual_alignment_evidence=local_evidence)
                         except HandleAlignmentError as local_error:
                             local_mapping = {}
-                            mapped, entity_evidence = align_semantic_handle_group(
-                                self._live_initial_views or {}, stored_views,
-                                visible_handles, semantic_name)
+                            try:
+                                mapped, entity_evidence = align_semantic_handle_group(
+                                    self._live_initial_views or {}, stored_views,
+                                    visible_handles, semantic_name)
+                            except HandleAlignmentError as union_error:
+                                combined_evidence = dict(union_error.evidence)
+                                combined_evidence['individual_alignment_error'] = str(
+                                    local_error)
+                                combined_evidence[
+                                    'individual_alignment_evidence'] = local_error.evidence
+                                raise HandleAlignmentError(
+                                    str(union_error), combined_evidence) from union_error
                             entity_evidence['individual_alignment_error'] = str(local_error)
                             entity_evidence['individual_alignment_evidence'] = local_error.evidence
                         # Per-entity retries must not bypass the global identity

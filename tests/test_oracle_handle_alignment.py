@@ -332,6 +332,27 @@ def test_single_view_rejects_small_exact_shape_with_bad_geometry():
             mode='mask_verified')
 
 
+def test_single_view_accepts_small_exact_shape_with_bounded_boundary_tail():
+    live, stored = single_view_ring(pixel_count=25, geometry_offset=.003)
+    pixels = np.flatnonzero(live['front']['mask'] == 87)
+    for pixel in pixels[-2:]:
+        row, col = np.unravel_index(pixel, live['front']['mask'].shape)
+        stored['front']['cloud'][row, col, 2] += .017
+
+    mapping, report = align_handles(
+        live, stored, {87: 'place_cups_holder_spoke0'},
+        mode='mask_verified')
+
+    assert mapping == {87: 99}
+    evidence = report['87']
+    assert evidence['source'] == (
+        'registered_mask_overlap_single_view_small_exact_robust_geometry')
+    check = evidence['candidates']['99']['front']
+    assert check['small_exact_robust_geometry_passed']
+    assert check['geometry']['distance_p50'] == pytest.approx(.003)
+    assert check['geometry']['distance_p95'] <= .025
+
+
 def test_small_silhouette_audit_exposes_tail_without_accepting_mapping():
     # Two outliers among 25 exact-mask pixels: a good median is insufficient
     # for the existing single-view geometry certificate.

@@ -681,6 +681,54 @@ def test_mask_verified_fallback_keeps_individual_entity_certificates(
         "source"] == "semantic_entity_union_mask_overlap"
 
 
+def test_mask_verified_failure_keeps_individual_and_union_evidence(
+        monkeypatch, tmp_path):
+    lid = FakeObject("jar_lid0", 87)
+    jars = [FakeObject("jar0", 88), FakeObject("jar1", 89)]
+    task = FakeTask([lid, *jars])
+    task.lid, task.jars = lid, jars
+    value = RLBenchGTOracleProvider(
+        ROLE_CONFIG, cameras=("front", "left_shoulder"), num_points=8,
+        handle_alignment="mask_verified", alignment_output_dir=tmp_path)
+    value.reset(SimpleNamespace(_task=task), "close_jar", 0, 0)
+    obs = observation(np.full((8, 8), 99))
+    obs.left_shoulder_mask = obs.front_mask.copy()
+    obs.left_shoulder_point_cloud = obs.front_point_cloud.copy()
+    obs.misc = {
+        f"{cam}_camera_{kind}": np.eye(size)
+        for cam in value.cameras
+        for kind, size in (("intrinsics", 3), ("extrinsics", 4))
+    }
+
+    def fail_individual(_live, _stored, names, *_args, **_kwargs):
+        raise oracle_provider_module.HandleAlignmentError(
+            "individual failure", {"attempted_handles": sorted(names)})
+
+    def fail_union(_live, _stored, handles, semantic_name):
+        raise oracle_provider_module.HandleAlignmentError(
+            "union failure", {
+                "semantic_name": semantic_name,
+                "live_handles": sorted(handles)})
+
+    monkeypatch.setattr(
+        oracle_provider_module, "align_handles", fail_individual)
+    monkeypatch.setattr(
+        oracle_provider_module, "align_semantic_handle_group", fail_union)
+    with pytest.raises(SemanticRoleMappingError):
+        value._prepare_stored_handles(obs, {
+            "target": {"kind": "object", "handles": [87]},
+            "reference": {"kind": "object", "handles": [88]},
+        })
+
+    report = json.loads(
+        (tmp_path / "close_jar" / "episode_0.json").read_text())
+    evidence = report["evidence"]["entities"]["jar_lid"]
+    assert evidence["individual_alignment_error"] == "individual failure"
+    assert evidence["individual_alignment_evidence"] == {
+        "attempted_handles": [87]}
+    assert evidence["semantic_name"] == "jar_lid"
+
+
 def test_reach_and_drag_uses_color_target_site_without_mask_mapping(tmp_path):
     stick = FakeObject('stick', 101)
     target = FakeObject('target0', 102, position=(.2, -.1, .75))
