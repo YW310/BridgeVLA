@@ -153,6 +153,48 @@ def _load_manifest(root: Path, task: str, episode_idx: int, allow_mask_verified=
         if mask_verified:
             print(f'[WARNING] Using mask-only identity mapping; geometry not certified: {path}', flush=True)
         mapped = set(alignment.get("live_to_stored", {}).values())
+        entity_mapping = alignment.get("semantic_entity_to_stored", {})
+        if not isinstance(entity_mapping, Mapping):
+            raise ValueError(
+                f"Invalid semantic entity handle mapping in {path}")
+        entity_mapped = set()
+        for handles in entity_mapping.values():
+            if (not isinstance(handles, (list, tuple)) or not handles
+                    or any(isinstance(handle, bool)
+                           or not isinstance(handle, int) or handle <= 0
+                           for handle in handles)):
+                raise ValueError(
+                    f"Invalid semantic entity stored handles in {path}: "
+                    f"{handles!r}")
+            entity_mapped.update(handles)
+        if entity_mapped:
+            if alignment.get("alignment_scope") == "semantic_entity_union":
+                entities = alignment.get("evidence", {}).get("entities", {})
+                if not isinstance(entities, Mapping):
+                    raise ValueError(
+                        f"Missing semantic entity union evidence in {path}")
+                certified = {
+                    handle
+                    for evidence in entities.values()
+                    if isinstance(evidence, Mapping)
+                    and evidence.get("source")
+                    == "semantic_entity_union_mask_overlap"
+                    and sum(
+                        bool(view.get("passed"))
+                        for view in evidence.get("views", {}).values()
+                        if isinstance(view, Mapping)
+                    ) >= 2
+                    for handle in evidence.get("stored_handles", ())
+                }
+                if not entity_mapped <= certified:
+                    raise ValueError(
+                        f"Uncertified semantic entity handles in {path}: "
+                        f"{sorted(entity_mapped.difference(certified))}")
+            elif not entity_mapped <= mapped:
+                raise ValueError(
+                    f"Semantic entity mapping is not backed by individual "
+                    f"handle verification in {path}")
+            mapped.update(entity_mapped)
         for entry in entries:
             for key in ("target", "reference"):
                 role = entry.get(key)

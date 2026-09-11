@@ -52,3 +52,48 @@ def test_stored_manifest_rejects_handles_outside_verified_map(tmp_path):
     path.write_text(json.dumps(manifest), encoding='utf-8')
     with pytest.raises(ValueError, match='Unverified stored handles'):
         rewrite._load_manifest(tmp_path, 'close_jar', 0, allow_mask_verified=True)
+
+
+def test_stored_manifest_accepts_audited_semantic_entity_union_mapping(tmp_path):
+    folder = tmp_path / 'meat_off_grill'
+    folder.mkdir()
+    entity_evidence = {
+        'source': 'semantic_entity_union_mask_overlap',
+        'stored_handles': [99],
+        'views': {
+            'front': {'passed': True},
+            'left_shoulder': {'passed': True},
+        },
+    }
+    manifest = dict(
+        schema_version=rewrite.SEMANTIC_ROLE_SCHEMA,
+        phase_source='demo_events', source_alignment_validated=True,
+        handle_namespace='stored', source_frame0_masks={'front': 'digest'},
+        handle_alignment={
+            'status': 'mask_verified',
+            'alignment_scope': 'semantic_entity_union',
+            'live_to_stored': {},
+            'semantic_entity_to_stored': {'82,83': [99]},
+            'evidence': {'entities': {'chicken': entity_evidence}},
+        },
+        expected_sample_frames=[43],
+        entries=[dict(
+            sample_frame=43, completion_satisfied=True,
+            target={'kind': 'object', 'handles': [99]}, reference={
+                'kind': 'site', 'handles': [], 'site_position': [0., 0., 0.]})],
+    )
+    path = folder / 'episode_54.json'
+    path.write_text(json.dumps(manifest), encoding='utf-8')
+
+    _, frames, entries = rewrite._load_manifest(
+        tmp_path, 'meat_off_grill', 54, allow_mask_verified=True)
+
+    assert frames == [43]
+    assert entries[0]['target']['handles'] == [99]
+
+    manifest['handle_alignment']['evidence']['entities']['chicken']['views'][
+        'left_shoulder']['passed'] = False
+    path.write_text(json.dumps(manifest), encoding='utf-8')
+    with pytest.raises(ValueError, match='Uncertified semantic entity handles'):
+        rewrite._load_manifest(
+            tmp_path, 'meat_off_grill', 54, allow_mask_verified=True)
