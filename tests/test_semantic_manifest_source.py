@@ -12,6 +12,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 import rewrite_replay_with_semantic_roles as rewrite
 
 
+def test_rewrite_parser_supports_task_workers():
+    args = rewrite.build_parser().parse_args([
+        '--replay-dir', 'replay', '--raw-data-dir', 'raw',
+        '--manifest-dir', 'manifests', '--output-dir', 'output',
+        '--workers', '3',
+    ])
+    assert args.workers == 3
+
+
 def test_rewrite_can_explicitly_fallback_invalid_manifest_to_raw(
         monkeypatch, tmp_path):
     source_dir = tmp_path / 'source'

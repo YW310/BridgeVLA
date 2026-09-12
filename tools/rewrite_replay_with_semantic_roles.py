@@ -17,6 +17,7 @@ import os
 import pickle
 import shutil
 from collections import OrderedDict
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from functools import lru_cache
 from pathlib import Path
 from typing import Dict, Mapping, Optional, Sequence, Tuple
@@ -593,6 +594,12 @@ def build_parser():
         "--cache-episodes", type=int, default=2,
         help="Maximum low-dimensional episodes retained in memory.",
     )
+    parser.add_argument(
+        "--workers", type=int, default=1,
+        help=(
+            "Number of task-level worker processes. Each worker has independent "
+            "frame/episode caches; start with 2 on disk-backed datasets."),
+    )
     parser.add_argument("--seed", type=int, default=0)
     policy = parser.add_mutually_exclusive_group()
     policy.add_argument("--overwrite", action="store_true")
@@ -608,32 +615,65 @@ def main(argv: Optional[Sequence[str]] = None):
     args.output_dir = args.output_dir.resolve()
     if (
         args.max_objects < 2 or args.num_points <= 0
-        or args.cache_frames < 0 or args.cache_episodes < 1
+        or args.cache_frames < 0 or args.cache_episodes < 1 or args.workers < 1
     ):
         raise ValueError(
             "--max-objects must be at least 2; points must be positive and "
-            "frame cache non-negative; episode cache must be positive"
+            "frame cache non-negative; episode cache and workers must be positive"
         )
     task_dirs = discover_task_directories(args.replay_dir, args.task or ["all"])
     direct = bool(_numeric_replay_files(args.replay_dir))
+    jobs = [
+        (task, source_dir, args.output_dir if direct else args.output_dir / task)
+        for task, source_dir in task_dirs
+    ]
     total = 0
-    for task, source_dir in task_dirs:
-        destination = args.output_dir if direct else args.output_dir / task
-        try:
-            total += process_task(args, task, source_dir, destination)
-        except Exception as exc:
-            destination.mkdir(parents=True, exist_ok=True)
-            failure = {
-                "task": task,
-                "mapping_error": 1,
-                "error_type": type(exc).__name__,
-                "error": str(exc),
+
+    def record_failure(task, destination, exc):
+        destination.mkdir(parents=True, exist_ok=True)
+        failure = {
+            "task": task,
+            "mapping_error": 1,
+            "error_type": type(exc).__name__,
+            "error": str(exc),
+        }
+        with (destination / "semantic_role_rewrite_failure.json").open(
+            "w", encoding="utf-8"
+        ) as stream:
+            json.dump(failure, stream, indent=2, sort_keys=True)
+
+    if args.workers == 1 or len(jobs) <= 1:
+        for task, source_dir, destination in jobs:
+            try:
+                total += process_task(args, task, source_dir, destination)
+            except Exception as exc:
+                record_failure(task, destination, exc)
+                raise
+    else:
+        worker_count = min(args.workers, len(jobs))
+        print(
+            f"Parallel semantic rewrite: {worker_count} task workers; each "
+            "worker owns independent caches.", flush=True)
+        with ProcessPoolExecutor(max_workers=worker_count) as executor:
+            futures = {
+                executor.submit(
+                    process_task, args, task, source_dir, destination
+                ): (task, destination)
+                for task, source_dir, destination in jobs
             }
-            with (destination / "semantic_role_rewrite_failure.json").open(
-                "w", encoding="utf-8"
-            ) as stream:
-                json.dump(failure, stream, indent=2, sort_keys=True)
-            raise
+            for future in as_completed(futures):
+                task, destination = futures[future]
+                try:
+                    count = future.result()
+                except Exception as exc:
+                    record_failure(task, destination, exc)
+                    for pending in futures:
+                        pending.cancel()
+                    raise
+                total += count
+                print(
+                    f"[DONE] {task}: {count} semantic-GT replay files",
+                    flush=True)
     print(f"Done: {total} semantic-GT replay files", flush=True)
     return 0
 
