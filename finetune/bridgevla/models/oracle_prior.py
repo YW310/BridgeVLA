@@ -24,6 +24,15 @@ ORACLE_PRIOR_MODES = ("none", "o2_gt_instance")
 ORACLE_ACTIVE_ROLES = ("auto", "target", "reference")
 
 
+INTERNAL_OBJECT_SLOT_MODE = 'o2_internal_slots'
+ORACLE_PRIOR_MODES = (
+    *ORACLE_PRIOR_MODES,
+    'o2_predicted_relation',
+    INTERNAL_OBJECT_SLOT_MODE,
+)
+OBJECT_PRIOR_MODES = ORACLE_PRIOR_MODES
+
+
 def validate_oracle_prior_config(
     mode: str,
     sigma: float,
@@ -41,6 +50,35 @@ def validate_oracle_prior_config(
             f"Unknown oracle_prior_active_role={active_role!r}; expected one "
             f"of {ORACLE_ACTIVE_ROLES}."
         )
+
+
+def resolve_object_prior_mode(
+    object_prior_mode: str,
+    oracle_prior_mode: str,
+) -> str:
+    '''Resolve the generic mode while preserving legacy Oracle configs.'''
+    if object_prior_mode not in OBJECT_PRIOR_MODES:
+        raise ValueError(
+            f'Unknown object_prior_mode={object_prior_mode!r}; expected one of '
+            f'{OBJECT_PRIOR_MODES}.'
+        )
+    if oracle_prior_mode not in OBJECT_PRIOR_MODES:
+        raise ValueError(
+            f'Unknown oracle_prior_mode={oracle_prior_mode!r}; expected one of '
+            f'{OBJECT_PRIOR_MODES}.'
+        )
+    if (
+        object_prior_mode != 'none'
+        and oracle_prior_mode != 'none'
+        and object_prior_mode != oracle_prior_mode
+    ):
+        raise ValueError(
+            'object_prior_mode and legacy oracle_prior_mode select different '
+            'object sources'
+        )
+    if object_prior_mode != 'none':
+        return object_prior_mode
+    return oracle_prior_mode
 
 
 def latest_replay_value(value: torch.Tensor, expected_ndim: int) -> torch.Tensor:
@@ -267,7 +305,10 @@ def _relation_valid_mask(instance_valid, batch_size):
     if instance_valid.shape == (batch_size,):
         return instance_valid.bool()
     if instance_valid.ndim == 2 and instance_valid.shape[0] == batch_size:
-        return instance_valid.bool().all(dim=1)
+        # Target is mandatory; Reference=False is a valid NULL relation. Callers
+        # that know a Reference should exist but is unavailable must invalidate
+        # Target as well (the predicted-object input path already does this).
+        return instance_valid[:, 0].bool()
     raise ValueError('instance_valid must have shape [B] or [B,R]')
 
 
@@ -279,9 +320,12 @@ def valid_oracle_translation_loss(
         raise ValueError('oracle_valid_only_loss requires Oracle validity')
     if loss_values.ndim < 1:
         raise ValueError('translation loss must retain a batch dimension')
-    sample_valid = _relation_valid_mask(
-        oracle_valid, loss_values.shape[0],
-    )
+    if oracle_valid.ndim == 2:
+        sample_valid = oracle_valid.bool().all(dim=1)
+    else:
+        sample_valid = _relation_valid_mask(
+            oracle_valid, loss_values.shape[0],
+        )
     per_sample = loss_values.reshape(loss_values.shape[0], -1).mean(dim=1)
     valid_weight = sample_valid.to(
         device=per_sample.device, dtype=per_sample.dtype,
@@ -380,7 +424,6 @@ class OracleRelationGatedFeatureAdapter(OraclePriorFeatureAdapter):
 
     def __init__(
         self, feature_channels: int, rank: int = 16, prior_channels: int = 2,
-        state_channels: int = 4,
     ):
         if prior_channels != 2:
             raise ValueError(
@@ -438,7 +481,9 @@ class OracleRelationGatedFeatureAdapter(OraclePriorFeatureAdapter):
         )
         return torch.tanh(gamma), beta, torch.sigmoid(gate_logit)
 
-    def forward(self, features, prior, instance_valid, relation_points=None):
+    def _relation_components(
+        self, features, prior, instance_valid, relation_points=None,
+    ):
         if features.ndim != 4:
             raise ValueError('features must have shape [B*V,C,H,W]')
         if features.shape[1] != self.feature_channels:
@@ -480,49 +525,64 @@ class OracleRelationGatedFeatureAdapter(OraclePriorFeatureAdapter):
         valid = relation_valid.to(
             device=features.device, dtype=features.dtype,
         ).repeat_interleave(num_views).view(-1, 1, 1, 1)
-        return features + residual * gate * valid
+        shared_features = features + residual * gate * valid
+        return (
+            shared_features,
+            hidden,
+            batch_size,
+            num_views,
+        )
+
+    def forward(self, features, prior, instance_valid, relation_points=None):
+        shared_features, _, _, _ = self._relation_components(
+            features, prior, instance_valid, relation_points,
+        )
+        return shared_features
 
 
-class OracleRelationAnchorAdapter(nn.Module):
-    '''Translation-only spatial adapter conditioned on a Target/Reference pair.
+class OracleRelationAnchorFeatureAdapter(OracleRelationGatedFeatureAdapter):
+    '''Relation-gated adapter with a translation-anchor enhancement.
 
-    It pools current visual-language features inside the existing projected
-    Target/Reference priors, combines them with task-agnostic 3-D relation
-    geometry, and predicts a soft spatial gate. It consumes neither phase
-    labels nor action anchors. A learned NULL token supports target-only phases.
+    This is an enhancement of :class:`OracleRelationGatedFeatureAdapter`, not a
+    second adapter. The original relation residual remains the shared feature
+    path for rotation/gripper/collision. The same relation-conditioned hidden
+    feature is masked-pooled inside Target/Reference priors to predict a soft
+    spatial anchor and an extra translation-only residual.
 
-    The output projection is zero initialized, preserving the pre-existing
-    translation output when the module is first enabled.
+    No phase label or hand-authored action anchor is consumed. A learned NULL
+    token supports target-only samples. The anchor output projection is zero
+    initialized, so enabling this subclass preserves the original adapter's
+    output at initialization.
     '''
 
     def __init__(
-        self, feature_channels: int, rank: int = 16, prior_channels: int = 2,
+        self,
+        feature_channels: int,
+        rank: int = 16,
+        prior_channels: int = 2,
+        anchor_rank: int = 16,
+        state_channels: int = 3,
     ):
-        super().__init__()
-        if feature_channels <= 0 or rank <= 0:
-            raise ValueError('feature_channels and rank must be positive')
-        if prior_channels != 2:
+        super().__init__(feature_channels, rank, prior_channels)
+        if anchor_rank <= 0 or state_channels < 0:
             raise ValueError(
-                'Relation-anchor adapter requires Target/Reference channels'
+                'anchor_rank must be positive and state_channels non-negative'
             )
-        self.feature_channels = feature_channels
-        self.rank = rank
-        self.prior_channels = prior_channels
+        self.anchor_rank = anchor_rank
         self.state_channels = state_channels
-        self.feature_reduce = nn.Conv2d(feature_channels, rank, 1)
-        self.prior_project = nn.Conv2d(prior_channels, rank, 3, padding=1)
         # Two visual tokens plus centers, extents, displacement, and validity.
-        self.query_encoder = nn.Sequential(
-            nn.Linear(2 * rank + 17 + state_channels, rank),
+        self.anchor_query_encoder = nn.Sequential(
+            nn.Linear(2 * rank + 17 + state_channels, anchor_rank),
             nn.GELU(),
-            nn.Linear(rank, rank),
+            nn.Linear(anchor_rank, anchor_rank),
         )
         self.null_reference = nn.Parameter(torch.zeros(rank))
-        self.feature_expand = nn.Conv2d(rank, feature_channels, 1)
-        nn.init.zeros_(self.feature_expand.weight)
-        nn.init.zeros_(self.feature_expand.bias)
+        self.anchor_key = nn.Conv2d(rank, anchor_rank, 1)
+        self.anchor_expand = nn.Conv2d(rank, feature_channels, 1)
+        nn.init.zeros_(self.anchor_expand.weight)
+        nn.init.zeros_(self.anchor_expand.bias)
 
-    def _relation_geometry(self, points, instance_valid, dtype, device):
+    def _anchor_geometry(self, points, instance_valid, dtype, device):
         if points is None:
             raise ValueError(
                 'Relation-anchor adapter requires oracle relation points'
@@ -550,47 +610,45 @@ class OracleRelationAnchorAdapter(nn.Module):
             dim=1,
         )
 
-    def forward(
+    def forward_with_anchor(
         self, features, prior, instance_valid, relation_points=None,
-        relation_state=None, *, return_anchor=False,
+        relation_state=None,
     ):
-        if features.ndim != 4:
-            raise ValueError('features must have shape [B*V,C,H,W]')
-        if features.shape[1] != self.feature_channels:
-            raise ValueError('unexpected feature channel count')
-        if prior.ndim != 5:
-            raise ValueError('relation prior must have shape [B,V,2,H,W]')
-        batch_size, num_views, prior_channels = prior.shape[:3]
-        if prior_channels != self.prior_channels:
-            raise ValueError('unexpected prior channel count')
-        if features.shape[0] != batch_size * num_views:
-            raise ValueError('feature batch does not match prior batch and views')
-        if instance_valid.shape != (batch_size, 2):
-            raise ValueError(
-                'Relation-anchor adapter requires instance_valid shape [B,2]'
-            )
-
-        prior_features = prior.reshape(
-            batch_size * num_views, prior_channels, *prior.shape[-2:]
-        ).to(device=features.device, dtype=features.dtype)
-        prior_features = F.interpolate(
-            prior_features, size=features.shape[-2:], mode='bilinear',
-            align_corners=False,
+        (
+            shared_features,
+            relation_hidden,
+            batch_size,
+            num_views,
+        ) = self._relation_components(
+            features, prior, instance_valid, relation_points,
         )
-        reduced = self.feature_reduce(features)
-        height, width = reduced.shape[-2:]
-        reduced_views = reduced.view(
+        height, width = relation_hidden.shape[-2:]
+        hidden_views = relation_hidden.view(
             batch_size, num_views, self.rank, height, width,
         )
-        prior_views = prior_features.view(
-            batch_size, num_views, prior_channels, height, width,
+        # Area pooling retains more support for small/thin object masks than
+        # bilinear-sampling a 224px prior directly onto a 16px feature grid.
+        flat_prior = prior.reshape(
+            batch_size * num_views, self.prior_channels, *prior.shape[-2:]
+        ).to(device=features.device, dtype=features.dtype)
+        if flat_prior.shape[-2] >= height and flat_prior.shape[-1] >= width:
+            pooled_prior = F.interpolate(
+                flat_prior, size=(height, width), mode='area',
+            )
+        else:
+            pooled_prior = F.interpolate(
+                flat_prior, size=(height, width), mode='bilinear',
+                align_corners=False,
+            )
+        prior_views = pooled_prior.view(
+            batch_size, num_views, self.prior_channels, height, width,
         )
 
         weights = prior_views / prior_views.sum(
             dim=(-2, -1), keepdim=True,
         ).clamp_min(1e-6)
         role_tokens = torch.einsum(
-            'bvrhw,bvchw->bvrc', weights, reduced_views,
+            'bvrhw,bvchw->bvrc', weights, hidden_views,
         )
         role_valid = instance_valid.to(device=features.device).bool()
         target_token = (
@@ -605,7 +663,7 @@ class OracleRelationAnchorAdapter(nn.Module):
         )
         role_tokens = torch.stack((target_token, reference_token), dim=2)
 
-        geometry = self._relation_geometry(
+        geometry = self._anchor_geometry(
             relation_points, instance_valid, features.dtype, features.device,
         )
         geometry = geometry[:, None].expand(-1, num_views, -1)
@@ -622,25 +680,248 @@ class OracleRelationAnchorAdapter(nn.Module):
             device=features.device, dtype=features.dtype,
         )
         relation_state = relation_state[:, None].expand(-1, num_views, -1)
-        query = self.query_encoder(torch.cat(
+        query = self.anchor_query_encoder(torch.cat(
             (role_tokens.flatten(2), geometry, relation_state), dim=-1,
         ))
-        query = query.reshape(batch_size * num_views, self.rank, 1, 1)
+        query = query.reshape(
+            batch_size * num_views, self.anchor_rank, 1, 1,
+        )
 
-        spatial = reduced + self.prior_project(prior_features)
-        anchor_logits = (spatial * query).sum(dim=1, keepdim=True) / math.sqrt(
-            self.rank
+        anchor_logits = (
+            self.anchor_key(relation_hidden) * query
+        ).sum(dim=1, keepdim=True) / math.sqrt(
+            self.anchor_rank
         )
         anchor = torch.sigmoid(anchor_logits)
-        residual = self.feature_expand(F.gelu(spatial) * anchor)
+        residual = self.anchor_expand(F.gelu(relation_hidden) * anchor)
         # Target is required; Reference=False represents a valid NULL.
         target_valid = role_valid[:, 0].to(
             device=features.device, dtype=features.dtype,
         ).repeat_interleave(num_views).view(-1, 1, 1, 1)
-        output = features + residual * target_valid
-        if return_anchor:
-            return output, anchor.view(batch_size, num_views, height, width)
-        return output
+        translation_features = shared_features + residual * target_valid
+        return (
+            translation_features,
+            shared_features,
+            anchor.view(batch_size, num_views, height, width),
+        )
+
+    def forward(
+        self, features, prior, instance_valid, relation_points=None,
+        relation_state=None,
+    ):
+        translation_features, _, _ = self.forward_with_anchor(
+            features,
+            prior,
+            instance_valid,
+            relation_points,
+            relation_state,
+        )
+        return translation_features
+
+
+class InternalObjectSlotPredictor(nn.Module):
+    '''Predict Target/Reference masks and point sets from BridgeVLA features.
+
+    Learned slots attend jointly to all virtual-view tokens. Role heads then
+    mix unordered slot masks into Target and Reference priors, with an explicit
+    NULL alternative for Reference. GT object tensors are not consumed here.
+    '''
+
+    def __init__(
+        self,
+        feature_channels: int,
+        num_views: int,
+        num_slots: int = 6,
+        slot_dim: int = 128,
+        decoder_layers: int = 2,
+        num_heads: int = 4,
+        point_samples: int = 128,
+        confidence_threshold: float = 0.25,
+        state_channels: int = 3,
+    ):
+        super().__init__()
+        if feature_channels <= 0 or num_views <= 0 or num_slots <= 0:
+            raise ValueError('feature_channels, num_views and num_slots must be positive')
+        if slot_dim <= 0 or slot_dim % num_heads:
+            raise ValueError('slot_dim must be positive and divisible by num_heads')
+        if decoder_layers <= 0 or point_samples <= 0:
+            raise ValueError('decoder_layers and point_samples must be positive')
+        if not 0.0 <= confidence_threshold <= 1.0:
+            raise ValueError('confidence_threshold must be in [0, 1]')
+
+        self.num_views = num_views
+        self.num_slots = num_slots
+        self.slot_dim = slot_dim
+        self.point_samples = point_samples
+        self.confidence_threshold = confidence_threshold
+        self.state_channels = state_channels
+
+        self.feature_reduce = nn.Conv2d(feature_channels, slot_dim, 1)
+        self.mask_key = nn.Conv2d(slot_dim, slot_dim, 1)
+        self.mask_query = nn.Linear(slot_dim, slot_dim)
+        self.slot_queries = nn.Parameter(torch.randn(num_slots, slot_dim) * 0.02)
+        self.view_embedding = nn.Parameter(torch.randn(num_views, slot_dim) * 0.02)
+        self.xy_embedding = nn.Linear(2, slot_dim)
+        self.state_embedding = nn.Linear(state_channels, slot_dim)
+        decoder_layer = nn.TransformerDecoderLayer(
+            d_model=slot_dim,
+            nhead=num_heads,
+            dim_feedforward=4 * slot_dim,
+            dropout=0.0,
+            activation='gelu',
+            batch_first=True,
+            norm_first=True,
+        )
+        self.decoder = nn.TransformerDecoder(decoder_layer, decoder_layers)
+        self.objectness_head = nn.Linear(slot_dim, 1)
+        self.role_head = nn.Linear(slot_dim, 2)
+        self.reference_null_head = nn.Linear(slot_dim + state_channels, 1)
+        # Start below the validity threshold so a new predictor cannot perturb
+        # a pretrained policy before the auxiliary object loss has learned.
+        nn.init.constant_(self.objectness_head.bias, -2.0)
+
+    @staticmethod
+    def _xy_grid(height, width, device, dtype):
+        yy, xx = torch.meshgrid(
+            torch.linspace(-1.0, 1.0, height, device=device, dtype=dtype),
+            torch.linspace(-1.0, 1.0, width, device=device, dtype=dtype),
+            indexing='ij',
+        )
+        return torch.stack((xx, yy), dim=-1)
+
+    def _extract_points(self, role_prior, rendered_xyz, role_valid):
+        if rendered_xyz.ndim != 5 or rendered_xyz.shape[2] != 3:
+            raise ValueError('rendered_xyz must have shape [B,V,3,H,W]')
+        batch_size, num_views, _, height, width = rendered_xyz.shape
+        if num_views != self.num_views:
+            raise ValueError('rendered_xyz view count does not match predictor')
+        scores = F.interpolate(
+            role_prior.reshape(batch_size * num_views, 2, *role_prior.shape[-2:]),
+            size=(height, width),
+            mode='bilinear',
+            align_corners=False,
+        ).view(batch_size, num_views, 2, height, width)
+        xyz = rendered_xyz.permute(0, 1, 3, 4, 2).reshape(
+            batch_size, num_views * height * width, 3,
+        )
+        finite = torch.isfinite(xyz).all(dim=-1)
+        # The CUDA RVT renderer uses zero-valued feature pixels as background.
+        # Keep -1 support for alternate renderers used by older checkpoints.
+        background = (xyz == 0).all(dim=-1) | (xyz == -1).all(dim=-1)
+        xyz_valid = finite & ~background
+        scores = scores.permute(0, 2, 1, 3, 4).reshape(
+            batch_size, 2, num_views * height * width,
+        )
+        scores = scores.masked_fill(~xyz_valid[:, None], -1.0)
+        sample_count = min(self.point_samples, scores.shape[-1])
+        indices = scores.topk(sample_count, dim=-1).indices
+        xyz_roles = xyz[:, None].expand(-1, 2, -1, -1)
+        points = torch.gather(
+            xyz_roles, 2, indices.unsqueeze(-1).expand(-1, -1, -1, 3),
+        )
+        points = points * role_valid[:, :, None, None].to(points.dtype)
+        return points
+
+    def forward(self, features, rendered_xyz, relation_state=None):
+        if features.ndim != 4:
+            raise ValueError('features must have shape [B*V,C,H,W]')
+        if features.shape[0] % self.num_views:
+            raise ValueError('feature batch is not divisible by num_views')
+        batch_size = features.shape[0] // self.num_views
+        height, width = features.shape[-2:]
+        if rendered_xyz.shape[:2] != (batch_size, self.num_views):
+            raise ValueError('feature and rendered_xyz batches do not match')
+
+        reduced = self.feature_reduce(features).view(
+            batch_size, self.num_views, self.slot_dim, height, width,
+        )
+        grid = self._xy_grid(height, width, reduced.device, reduced.dtype)
+        position = self.xy_embedding(grid).permute(2, 0, 1)
+        memory = reduced + position[None, None]
+        memory = memory + self.view_embedding[None, :, :, None, None]
+        memory = memory.permute(0, 1, 3, 4, 2).reshape(
+            batch_size, self.num_views * height * width, self.slot_dim,
+        )
+
+        if relation_state is None:
+            relation_state = features.new_zeros(batch_size, self.state_channels)
+        if relation_state.shape != (batch_size, self.state_channels):
+            raise ValueError(
+                f'relation_state must have shape [B,{self.state_channels}]'
+            )
+        relation_state = relation_state.to(device=features.device, dtype=features.dtype)
+        state_token = self.state_embedding(relation_state)[:, None]
+        queries = self.slot_queries[None].expand(batch_size, -1, -1) + state_token
+        slots = self.decoder(queries, memory)
+
+        keys = self.mask_key(reduced.reshape(-1, self.slot_dim, height, width))
+        keys = keys.view(
+            batch_size, self.num_views, self.slot_dim, height, width,
+        )
+        mask_queries = self.mask_query(slots)
+        mask_logits = torch.einsum(
+            'bkd,bvdhw->bvkhw', mask_queries, keys,
+        ) / math.sqrt(self.slot_dim)
+        slot_masks = torch.sigmoid(mask_logits)
+        objectness_logits = self.objectness_head(slots).squeeze(-1)
+        role_logits = self.role_head(slots)
+        pooled_slot = slots.mean(dim=1)
+        reference_null_logit = self.reference_null_head(torch.cat(
+            (pooled_slot, relation_state), dim=-1,
+        )).squeeze(-1)
+
+        object_log_prob = F.logsigmoid(objectness_logits)
+        role_log_prob = F.log_softmax(role_logits, dim=-1)
+        target_weights = torch.softmax(
+            object_log_prob + role_log_prob[:, :, 0], dim=1,
+        )
+        reference_scores = object_log_prob + role_log_prob[:, :, 1]
+        reference_all = torch.softmax(torch.cat(
+            (reference_scores, reference_null_logit[:, None]), dim=1,
+        ), dim=1)
+        reference_weights = reference_all[:, :-1]
+        reference_null_probability = reference_all[:, -1]
+        target_prior = torch.einsum('bk,bvkhw->bvhw', target_weights, slot_masks)
+        reference_prior = torch.einsum(
+            'bk,bvkhw->bvhw', reference_weights, slot_masks,
+        )
+        role_prior = torch.stack((target_prior, reference_prior), dim=2)
+
+        object_probability = torch.sigmoid(objectness_logits)
+        target_confidence = (target_weights * object_probability).sum(dim=1)
+        reference_mass = 1.0 - reference_null_probability
+        normalized_reference = reference_weights / reference_mass[:, None].clamp_min(1e-6)
+        reference_confidence = reference_mass * (
+            normalized_reference * object_probability
+        ).sum(dim=1)
+        role_confidence = torch.stack(
+            (target_confidence, reference_confidence), dim=1,
+        )
+        target_valid = target_confidence >= self.confidence_threshold
+        reference_valid = reference_confidence >= self.confidence_threshold
+        reference_is_null = (
+            reference_null_probability >= 1.0 - self.confidence_threshold
+        )
+        # A low-confidence Reference is not automatically a semantic NULL.
+        # Use the pair only when Reference is found or NULL is itself confident.
+        target_valid = target_valid & (reference_valid | reference_is_null)
+        role_valid = torch.stack((target_valid, reference_valid), dim=1)
+        points = self._extract_points(role_prior, rendered_xyz, role_valid)
+
+        return {
+            'prior': role_prior,
+            'prior_logits': torch.logit(role_prior.clamp(1e-5, 1.0 - 1e-5)),
+            'points': points,
+            'valid': role_valid,
+            'confidence': role_confidence,
+            'slot_masks': slot_masks,
+            'mask_logits': mask_logits,
+            'objectness_logits': objectness_logits,
+            'role_logits': role_logits,
+            'reference_null_logit': reference_null_logit,
+            'reference_null_probability': reference_null_probability,
+            'reference_is_null': reference_is_null,
+        }
 
 
 def _translation_probabilities(logits: torch.Tensor) -> torch.Tensor:
@@ -717,10 +998,33 @@ def build_training_visualization_payload(
             stage_payload['reference_prior'] = stage_output[
                 'oracle_reference_prior'
             ][0]
+        if 'object_slot_prior' in stage_output:
+            slot_prior = stage_output['object_slot_prior'][0]
+            if slot_prior.shape[-2:] != (height, width):
+                slot_prior = F.interpolate(
+                    slot_prior.permute(1, 0, 2, 3),
+                    size=(height, width),
+                    mode='bilinear',
+                    align_corners=False,
+                ).permute(1, 0, 2, 3)
+            stage_payload['slot_target_pred'] = slot_prior[:, 0]
+            stage_payload['slot_reference_pred'] = slot_prior[:, 1]
+        if 'object_slot_target_prior' in stage_output:
+            slot_gt = stage_output['object_slot_target_prior'][0]
+            stage_payload['slot_target_gt'] = slot_gt[:, 0]
+            stage_payload['slot_reference_gt'] = slot_gt[:, 1]
         if 'oracle_relation_anchor' in stage_output:
-            stage_payload['relation_anchor'] = stage_output[
+            relation_anchor = stage_output[
                 'oracle_relation_anchor'
             ][0]
+            if relation_anchor.shape[-2:] != (height, width):
+                relation_anchor = F.interpolate(
+                    relation_anchor[:, None].float(),
+                    size=(height, width),
+                    mode='bilinear',
+                    align_corners=False,
+                )[:, 0]
+            stage_payload['relation_anchor'] = relation_anchor
         payload[stage_name] = {
             key: value.detach().float().cpu()
             for key, value in stage_payload.items()

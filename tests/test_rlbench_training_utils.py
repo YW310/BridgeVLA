@@ -38,8 +38,12 @@ class RLBenchTrainingUtilsTest(unittest.TestCase):
                     RLBenchTrainingUtilsTest._Parameter(5),
                 ),
                 (
-                    'oracle_prior_relation_anchor1.feature_expand.weight',
+                    'oracle_prior_feature_adapter1.anchor_expand.weight',
                     RLBenchTrainingUtilsTest._Parameter(7),
+                ),
+                (
+                    'object_slot_predictor1.slot_queries',
+                    RLBenchTrainingUtilsTest._Parameter(13),
                 ),
             ]
 
@@ -90,10 +94,11 @@ class RLBenchTrainingUtilsTest(unittest.TestCase):
     def test_oracle_adaptation_freezes_original_backbone(self):
         backbone = self._Backbone()
         trainable = training_utils.freeze_for_oracle_adaptation(backbone)
-        self.assertEqual(trainable, 23)
+        self.assertEqual(trainable, 36)
         self.assertFalse(backbone.named[0][1].requires_grad)
         self.assertTrue(backbone.named[1][1].requires_grad)
         self.assertTrue(backbone.named[2][1].requires_grad)
+        self.assertTrue(backbone.named[4][1].requires_grad)
 
 
 if __name__ == '__main__':

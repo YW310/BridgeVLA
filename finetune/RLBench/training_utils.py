@@ -83,10 +83,10 @@ def freeze_for_oracle_adaptation(backbone) -> int:
     for name, parameter in backbone.named_parameters():
         if (
             'oracle_prior_feature_adapter' in name
-            or 'oracle_prior_relation_anchor' in name
+            or 'object_slot_predictor' in name
         ):
             parameter.requires_grad = True
             trainable += parameter.numel()
     if trainable == 0:
-        raise ValueError('No Oracle adaptation parameters were created.')
+        raise ValueError('No object adaptation parameters were created.')
     return trainable

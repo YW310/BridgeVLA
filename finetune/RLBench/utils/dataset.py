@@ -32,6 +32,8 @@ def create_replay(
     use_oracle_objects: bool = False,
     oracle_max_objects: int = 32,
     oracle_num_points: int = 512,
+    use_predicted_objects: bool = False,
+    predicted_object_num_points: int = 512,
 ):
     trans_indicies_size = 3 * len(voxel_sizes)
     rot_and_grip_indicies_size = 3 + 1
@@ -158,6 +160,22 @@ def create_replay(
                 ),
             ]
         )
+    if use_predicted_objects:
+        for role in ('target', 'reference'):
+            extra_replay_elements.extend(
+                [
+                    ReplayElement(
+                        f'predicted_{role}_object_points',
+                        (predicted_object_num_points, 3),
+                        np.float32,
+                    ),
+                    ReplayElement(f'predicted_{role}_object_valid', (), bool),
+                    ReplayElement(f'predicted_{role}_present', (), bool),
+                    ReplayElement(
+                        f'predicted_{role}_confidence', (), np.float32,
+                    ),
+                ]
+            )
 
     replay_buffer = (
         UniformReplayBuffer(  # all tuples in the buffer have equal sample weighting

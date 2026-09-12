@@ -40,18 +40,31 @@ _C.train_visualization.tensorboard = True
 _C.train_visualization.output_dir = "train_visualizations"
 # Oracle object experiment: opt in only when loading an augmented replay copy.
 _C.use_oracle_objects = False
+# Consume Target/Reference point sets produced by an external object predictor.
+# This is mutually exclusive with use_oracle_objects.
+_C.use_predicted_objects = False
 # Require semantic-role provenance during training startup. The audit fields
 # remain in replay files for inspection and are intentionally excluded from
 # sampled network batches.
 _C.oracle_semantic_audit = False
 _C.oracle_max_objects = 32
 _C.oracle_num_points = 512
+_C.predicted_object_num_points = 512
 _C.oracle_prior_adapter_rank = 0
 _C.oracle_relation_gated_adapter = False
 # If true, keep Oracle feature residuals out of R/G/C branches.
 _C.oracle_adapter_translation_only = False
 # Optional translation-only implicit anchor on top of the relation adapter.
 _C.oracle_relation_anchor_rank = 0
+# Internal object-slot predictor. In o2_internal_slots mode Oracle objects are
+# supervision labels only and are never passed into the policy adapter.
+_C.object_slots = CN()
+_C.object_slots.enabled = False
+_C.object_slots.num_slots = 6
+_C.object_slots.slot_dim = 128
+_C.object_slots.decoder_layers = 2
+_C.object_slots.num_heads = 4
+_C.object_slots.point_samples = 128
 # arguments present in both peract and rvt
 # some of them donot support every possible combination in peract
 _C.peract = CN()
@@ -77,6 +90,13 @@ _C.rvt.place_with_mean = True
 _C.rvt.move_pc_in_bound = True
 # Optional privileged O2 prior. Defaults preserve the historical forward path.
 _C.rvt.oracle_prior_mode = 'none'
+# Generic source selector for new experiments. none preserves the legacy
+# oracle_prior_mode setting; predicted configs set o2_predicted_relation.
+_C.rvt.object_prior_mode = 'none'
+_C.rvt.object_prediction_confidence_threshold = 0.25
+_C.rvt.object_slot_mask_loss_weight = 1.0
+_C.rvt.object_slot_null_loss_weight = 0.25
+_C.rvt.object_slot_diversity_loss_weight = 0.01
 _C.rvt.oracle_prior_sigma = 2.0
 # Used only by the legacy single-prior path.
 _C.rvt.oracle_prior_active_role = 'auto'

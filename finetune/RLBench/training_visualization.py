@@ -9,6 +9,10 @@ from PIL import Image, ImageDraw
 
 
 _COLUMNS = (
+    ('slot_target_gt', 'Slot Target GT'),
+    ('slot_target_pred', 'Slot Target pred'),
+    ('slot_reference_gt', 'Slot Reference GT'),
+    ('slot_reference_pred', 'Slot Reference pred'),
     ('target_prior', 'Target prior'),
     ('reference_prior', 'Reference prior'),
     ('relation_anchor', 'Relation anchor'),
@@ -79,8 +83,9 @@ def _stage_montage(
     view_count, height, width, _ = inputs.shape
     title_by_key = dict(_COLUMNS)
     column_order = (
-        'input', 'gt', 'target_prior', 'reference_prior', 'relation_anchor',
-        'prior', 'pred',
+        'input', 'gt', 'slot_target_gt', 'slot_target_pred',
+        'slot_reference_gt', 'slot_reference_pred', 'target_prior',
+        'reference_prior', 'relation_anchor', 'prior', 'pred',
     )
     columns = tuple(
         (key, title_by_key[key])

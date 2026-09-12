@@ -47,6 +47,7 @@ import bridgevla.models.bridgevla_agent as bridgevla_agent
 import bridgevla.config as default_exp_cfg
 
 from bridgevla.mvt.mvt import MVT
+from bridgevla.models.oracle_prior import resolve_object_prior_mode
 from bridgevla.libs.peract.helpers import utils
 from utils.custom_rlbench_env import (
     CustomMultiTaskRLBenchEnv2 as CustomMultiTaskRLBenchEnv,
@@ -123,6 +124,15 @@ def load_agent(
         oracle_relation_gated_adapter=exp_cfg.oracle_relation_gated_adapter,
         oracle_adapter_translation_only=exp_cfg.oracle_adapter_translation_only,
         oracle_relation_anchor_rank=exp_cfg.oracle_relation_anchor_rank,
+        object_slots_enabled=exp_cfg.object_slots.enabled,
+        object_slot_num_slots=exp_cfg.object_slots.num_slots,
+        object_slot_dim=exp_cfg.object_slots.slot_dim,
+        object_slot_decoder_layers=exp_cfg.object_slots.decoder_layers,
+        object_slot_num_heads=exp_cfg.object_slots.num_heads,
+        object_slot_point_samples=exp_cfg.object_slots.point_samples,
+        object_slot_confidence_threshold=(
+            exp_cfg.rvt.object_prediction_confidence_threshold
+        ),
         **mvt_cfg,
     )
 
@@ -140,10 +150,14 @@ def load_agent(
 
 
     agent.build(training=False, device=device)
+    object_prior_mode = resolve_object_prior_mode(
+        exp_cfg.rvt.object_prior_mode,
+        exp_cfg.rvt.oracle_prior_mode,
+    )
     load_agent_state(
         model_path,
         agent,
-        strict=(exp_cfg.rvt.oracle_prior_mode == 'o2_gt_instance'),
+        strict=(object_prior_mode != 'none'),
     )
     agent.eval()
 
@@ -870,6 +884,16 @@ def _eval(args):
             print(
                 "Evaluation branch: O2 checkpoint with prior disabled "
                 "(base feature path)"
+            )
+        elif agent is not None and agent.predicted_object_prior_enabled:
+            print(
+                'Evaluation branch: predicted Target/Reference points '
+                '(observation fields supplied by an external predictor)'
+            )
+        elif agent is not None and agent.internal_object_slots_enabled:
+            print(
+                'Evaluation branch: internal Target/Reference slots '
+                '(no Oracle object input)'
             )
         elif agent is not None:
             print("Evaluation branch: original baseline")

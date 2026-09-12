@@ -34,6 +34,8 @@ def get_dataset(
     use_oracle_objects=False,
     oracle_max_objects=16,
     oracle_num_points=512,
+    use_predicted_objects=False,
+    predicted_object_num_points=512,
     sample_distribution_mode="transition_uniform",
 ):
 
@@ -46,6 +48,8 @@ def get_dataset(
         use_oracle_objects=use_oracle_objects,
         oracle_max_objects=oracle_max_objects,
         oracle_num_points=oracle_num_points,
+        use_predicted_objects=use_predicted_objects,
+        predicted_object_num_points=predicted_object_num_points,
     )
     if not only_train:
         test_replay_buffer = create_replay(
@@ -57,6 +61,8 @@ def get_dataset(
             use_oracle_objects=use_oracle_objects,
             oracle_max_objects=oracle_max_objects,
             oracle_num_points=oracle_num_points,
+            use_predicted_objects=use_predicted_objects,
+            predicted_object_num_points=predicted_object_num_points,
         )
 
     # load pre-trained language model

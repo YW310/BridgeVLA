@@ -17,8 +17,10 @@ Author: Peiyan Li
 Email: peiyan.li@cripac.ia.ac.cn
 '''
 
+import math
 import pprint
 import torch
+import torch.nn.functional as F
 import numpy as np
 import torch.nn as nn
 from scipy.spatial.transform import Rotation
@@ -35,6 +37,7 @@ from bridgevla.models.oracle_prior import (
     build_training_visualization_payload,
     choose_oracle_translation_loss,
     latest_replay_value,
+    resolve_object_prior_mode,
     select_active_instance_points,
     select_relation_instance_points,
     valid_oracle_translation_loss,
@@ -157,6 +160,16 @@ def save_heatmap_views(
 ) -> None:
     """Save one grayscale map and red heatmap overlay for every MVT view."""
     os.makedirs(save_dir, exist_ok=True)
+    if (
+        heatmap_tensor.ndim == 3
+        and heatmap_tensor.shape[-2:] != color_tensor.shape[-2:]
+    ):
+        heatmap_tensor = F.interpolate(
+            heatmap_tensor[:, None].float(),
+            size=color_tensor.shape[-2:],
+            mode='bilinear',
+            align_corners=False,
+        )[:, 0]
     heatmaps = heatmap_tensor.detach().float().cpu().numpy()
     color_imgs = color_tensor.detach().float().cpu().numpy().transpose(0, 2, 3, 1)
     if heatmaps.ndim != 3 or heatmaps.shape[0] != color_imgs.shape[0]:
@@ -441,12 +454,17 @@ class RVTAgent:
         rot_ver: int = 0,
         rot_x_y_aug: int = 2,
         oracle_prior_mode: str = 'none',
+        object_prior_mode: str = 'none',
+        object_prediction_confidence_threshold: float = 0.25,
         oracle_prior_sigma: float = 2.0,
         oracle_prior_active_role: str = 'auto',
         oracle_prior_strict: bool = False,
         oracle_prior_relation: bool = False,
         oracle_log_base_loss: bool = False,
         oracle_valid_only_loss: bool = False,
+        object_slot_mask_loss_weight: float = 1.0,
+        object_slot_null_loss_weight: float = 0.25,
+        object_slot_diversity_loss_weight: float = 0.01,
         log_dir="",
     ):
         self._network = network
@@ -474,20 +492,44 @@ class RVTAgent:
         self.log_dir = log_dir
         self.scene_bounds = scene_bounds
         self.cameras = cameras
-        validate_oracle_prior_config(
-            oracle_prior_mode, oracle_prior_sigma, oracle_prior_active_role,
+        effective_prior_mode = resolve_object_prior_mode(
+            object_prior_mode, oracle_prior_mode,
         )
-        if oracle_valid_only_loss and oracle_prior_mode != 'o2_gt_instance':
+        validate_oracle_prior_config(
+            effective_prior_mode, oracle_prior_sigma, oracle_prior_active_role,
+        )
+        if not 0.0 <= object_prediction_confidence_threshold <= 1.0:
+            raise ValueError(
+                'object_prediction_confidence_threshold must be in [0, 1]'
+            )
+        if oracle_valid_only_loss and effective_prior_mode != 'o2_gt_instance':
             raise ValueError(
                 'oracle_valid_only_loss requires O2 GT-instance mode'
             )
-        self.oracle_prior_mode = oracle_prior_mode
+        self.object_prior_mode = effective_prior_mode
+        # Legacy name retained for checkpoint/evaluation compatibility.
+        self.oracle_prior_mode = effective_prior_mode
+        self.object_prediction_confidence_threshold = float(
+            object_prediction_confidence_threshold
+        )
         self.oracle_prior_sigma = oracle_prior_sigma
         self.oracle_prior_active_role = oracle_prior_active_role
         self.oracle_prior_strict = oracle_prior_strict
         self.oracle_prior_relation = bool(oracle_prior_relation)
         self.oracle_log_base_loss = bool(oracle_log_base_loss)
         self.oracle_valid_only_loss = bool(oracle_valid_only_loss)
+        slot_loss_weights = (
+            object_slot_mask_loss_weight,
+            object_slot_null_loss_weight,
+            object_slot_diversity_loss_weight,
+        )
+        if any(weight < 0 for weight in slot_loss_weights):
+            raise ValueError('object slot loss weights must be non-negative')
+        self.object_slot_mask_loss_weight = float(object_slot_mask_loss_weight)
+        self.object_slot_null_loss_weight = float(object_slot_null_loss_weight)
+        self.object_slot_diversity_loss_weight = float(
+            object_slot_diversity_loss_weight
+        )
         self._oracle_missing_warning_shown = False
 
         print("Cameras:",self.cameras)
@@ -570,9 +612,107 @@ class RVTAgent:
     def oracle_prior_enabled(self):
         return self.oracle_prior_mode == 'o2_gt_instance'
 
+    @property
+    def predicted_object_prior_enabled(self):
+        return self.object_prior_mode == 'o2_predicted_relation'
+
+    @property
+    def internal_object_slots_enabled(self):
+        return self.object_prior_mode == 'o2_internal_slots'
+
+    @property
+    def object_prior_enabled(self):
+        return (
+            self.oracle_prior_mode == 'o2_gt_instance'
+            or self.predicted_object_prior_enabled
+            or self.internal_object_slots_enabled
+        )
+
     def _select_oracle_prior_points(self, replay_sample, allow_missing=False):
-        if not self.oracle_prior_enabled:
+        if not self.object_prior_enabled:
             return None, None, None
+        if self.internal_object_slots_enabled and allow_missing:
+            # Closed-loop inference is deliberately independent of Oracle
+            # object fields. Slots infer both roles from the current features.
+            return None, None, None
+        if self.predicted_object_prior_enabled:
+            roles = ('target', 'reference')
+            required = []
+            for role in roles:
+                required.extend(
+                    (
+                        f'predicted_{role}_object_points',
+                        f'predicted_{role}_object_valid',
+                        f'predicted_{role}_present',
+                        f'predicted_{role}_confidence',
+                    )
+                )
+            missing = [key for key in required if key not in replay_sample]
+            if missing:
+                message = (
+                    'Predicted-object input is missing required fields: '
+                    + ', '.join(missing)
+                )
+                if allow_missing and not self.oracle_prior_strict:
+                    if not self._oracle_missing_warning_shown:
+                        print(
+                            'WARNING: ' + message + ' Falling back to base '
+                            'BridgeVLA features.', flush=True,
+                        )
+                        self._oracle_missing_warning_shown = True
+                    return None, None, None
+                raise KeyError(message)
+            points = torch.stack(
+                [
+                    latest_replay_value(
+                        replay_sample[f'predicted_{role}_object_points'], 3,
+                    ).float()
+                    for role in roles
+                ],
+                dim=1,
+            )
+            valid = torch.stack(
+                [
+                    latest_replay_value(
+                        replay_sample[f'predicted_{role}_object_valid'], 1,
+                    ).bool()
+                    for role in roles
+                ],
+                dim=1,
+            )
+            present = torch.stack(
+                [
+                    latest_replay_value(
+                        replay_sample[f'predicted_{role}_present'], 1,
+                    ).bool()
+                    for role in roles
+                ],
+                dim=1,
+            )
+            confidence = torch.stack(
+                [
+                    latest_replay_value(
+                        replay_sample[f'predicted_{role}_confidence'], 1,
+                    ).float()
+                    for role in roles
+                ],
+                dim=1,
+            )
+            valid = (
+                valid
+                & present
+                & torch.isfinite(confidence)
+                & (confidence >= self.object_prediction_confidence_threshold)
+            )
+            # A semantically required but unavailable Reference is occluded or
+            # ungrounded, not NULL. Disable the whole pair for that sample.
+            unavailable_reference = present[:, 1] & ~valid[:, 1]
+            valid[:, 0] &= ~unavailable_reference
+            slots = torch.full(
+                (points.shape[0], 2), -1,
+                device=points.device, dtype=torch.long,
+            )
+            return points, valid, slots
         if self.oracle_prior_relation:
             pair_keys = (
                 'oracle_target_object_points',
@@ -687,6 +827,8 @@ class RVTAgent:
 
     def _oracle_network_kwargs(self, points, valid, relation_state=None):
         if points is None:
+            if self.internal_object_slots_enabled:
+                return {'oracle_relation_state': relation_state}
             return {}
         kwargs = {
             'oracle_prior_points': points,
@@ -696,6 +838,80 @@ class RVTAgent:
         if relation_state is not None:
             kwargs['oracle_relation_state'] = relation_state
         return kwargs
+
+    def _object_slot_auxiliary_losses(self, output, oracle_valid):
+        if not self.internal_object_slots_enabled:
+            return {}
+        if oracle_valid is None or oracle_valid.ndim != 2:
+            raise ValueError('Internal slot training requires role validity [B,2]')
+        stage_outputs = [output]
+        if self.stage_two:
+            stage_outputs.append(output['mvt2'])
+        sums = {'mask': 0.0, 'presence': 0.0, 'diversity': 0.0}
+        for stage_output in stage_outputs:
+            required = (
+                'object_slot_prior_logits',
+                'object_slot_target_prior',
+                'object_slot_masks',
+                'object_slot_objectness_logits',
+                'object_slot_reference_null_logit',
+            )
+            missing = [key for key in required if key not in stage_output]
+            if missing:
+                raise KeyError('Internal slot outputs are missing: ' + ', '.join(missing))
+            logits = stage_output['object_slot_prior_logits']
+            target = stage_output['object_slot_target_prior'].to(
+                device=logits.device, dtype=logits.dtype,
+            )
+            batch_size, num_views, _, height, width = logits.shape
+            target = F.interpolate(
+                target.reshape(batch_size * num_views, 2, *target.shape[-2:]),
+                size=(height, width),
+                mode='area',
+            ).view(batch_size, num_views, 2, height, width)
+            mask_values = F.binary_cross_entropy_with_logits(
+                logits, target, reduction='none',
+            ).mean(dim=(1, 3, 4))
+            valid = oracle_valid.to(device=logits.device).bool()
+            mask_loss = (
+                mask_values * valid.to(mask_values.dtype)
+            ).sum() / valid.sum().clamp_min(1)
+
+            objectness = stage_output['object_slot_objectness_logits']
+            any_object_logit = torch.logsumexp(objectness, dim=1) - math.log(
+                objectness.shape[1]
+            )
+            target_present = valid[:, 0].to(objectness.dtype)
+            target_presence_loss = F.binary_cross_entropy_with_logits(
+                any_object_logit, target_present,
+            )
+            reference_null_loss = F.binary_cross_entropy_with_logits(
+                stage_output['object_slot_reference_null_logit'],
+                (~valid[:, 1]).to(objectness.dtype),
+            )
+            presence_loss = target_presence_loss + reference_null_loss
+
+            masks = stage_output['object_slot_masks'].permute(0, 2, 1, 3, 4)
+            masks = masks.flatten(2)
+            normalized_masks = F.normalize(masks, dim=-1, eps=1e-6)
+            overlap = torch.matmul(
+                normalized_masks, normalized_masks.transpose(1, 2),
+            )
+            slot_count = overlap.shape[1]
+            if slot_count > 1:
+                identity = torch.eye(
+                    slot_count, device=overlap.device, dtype=overlap.dtype,
+                )[None]
+                diversity_loss = (
+                    overlap * (1.0 - identity)
+                ).sum() / (batch_size * slot_count * (slot_count - 1))
+            else:
+                diversity_loss = overlap.new_zeros(())
+            sums['mask'] = sums['mask'] + mask_loss
+            sums['presence'] = sums['presence'] + presence_loss
+            sums['diversity'] = sums['diversity'] + diversity_loss
+        stage_count = len(stage_outputs)
+        return {name: value / stage_count for name, value in sums.items()}
 
     def _get_one_hot_expert_actions(
         self,
@@ -887,7 +1103,7 @@ class RVTAgent:
         )
         relation_state = latest_replay_value(
             replay_sample['low_dim_state'], 2,
-        ).float()
+        ).float()[:, :3]
         tasks = replay_sample["tasks"]
         return_out = {}
         if oracle_valid is not None:
@@ -1049,6 +1265,31 @@ class RVTAgent:
             language_goal=replay_sample["lang_goal"]  
         )
         
+        if self.internal_object_slots_enabled:
+            slot_stages = [out]
+            if self.stage_two:
+                slot_stages.append(out['mvt2'])
+            slot_confidence = torch.stack(
+                [stage['object_slot_confidence'] for stage in slot_stages]
+            ).mean(dim=0)
+            slot_valid = torch.stack(
+                [stage['object_slot_valid'].float() for stage in slot_stages]
+            ).mean(dim=0)
+            return_out.update({
+                'object_slot_target_confidence': (
+                    slot_confidence[:, 0].mean().item()
+                ),
+                'object_slot_reference_confidence': (
+                    slot_confidence[:, 1].mean().item()
+                ),
+                'object_slot_target_valid_rate': (
+                    slot_valid[:, 0].mean().item()
+                ),
+                'object_slot_reference_valid_rate': (
+                    slot_valid[:, 1].mean().item()
+                ),
+            })
+
         q_trans, rot_q, grip_q, collision_q, y_q, pts = self.get_q(
             out, dims=(bs, nc, h, w)
         )
@@ -1177,13 +1418,27 @@ class RVTAgent:
                         action_collision_one_hot.argmax(-1),
                     ).mean()
 
-            total_loss = (
+            action_total_loss = (
                 optimized_trans_loss
                 + rot_loss_x
                 + rot_loss_y
                 + rot_loss_z
                 + grip_loss
                 + collision_loss
+            )
+            total_loss = action_total_loss
+            object_slot_losses = self._object_slot_auxiliary_losses(
+                out, oracle_valid,
+            )
+            if object_slot_losses:
+                total_loss = (
+                    total_loss
+                    + self.object_slot_mask_loss_weight
+                    * object_slot_losses['mask']
+                    + self.object_slot_null_loss_weight
+                    * object_slot_losses['presence']
+                    + self.object_slot_diversity_loss_weight
+                    * object_slot_losses['diversity']
             )
             base_total_loss = None
             if base_trans_loss is not None:
@@ -1226,6 +1481,17 @@ class RVTAgent:
                 "collision_loss": collision_loss.item(),
                 "lr": self._optimizer.param_groups[0]["lr"],
             }
+            if object_slot_losses:
+                loss_log['action_total_loss'] = action_total_loss.item()
+                loss_log.update({
+                    'object_slot_mask_loss': object_slot_losses['mask'].item(),
+                    'object_slot_presence_loss': (
+                        object_slot_losses['presence'].item()
+                    ),
+                    'object_slot_diversity_loss': (
+                        object_slot_losses['diversity'].item()
+                    ),
+                })
             if base_trans_loss is not None:
                 loss_log['trans_loss_base'] = base_trans_loss.item()
             if trans_loss_valid is not None:
@@ -1235,7 +1501,7 @@ class RVTAgent:
                     base_trans_loss_valid.item()
                 )
             if base_total_loss is not None:
-                total_loss_gain = base_total_loss - total_loss.detach()
+                total_loss_gain = base_total_loss - action_total_loss.detach()
                 loss_log['total_loss_base'] = base_total_loss.item()
                 loss_log['total_loss_gain'] = total_loss_gain.item()
                 loss_log['total_loss_gain_pct'] = (
@@ -1484,7 +1750,7 @@ class RVTAgent:
         )
         relation_state = latest_replay_value(
             observation['low_dim_state'], 2,
-        ).float()
+        ).float()[:, :3]
         language_goal =observation["language_goal"]
         obs, pcd = rlbench_utils._preprocess_inputs(observation, self.cameras)
         pc, img_feat = rvt_utils.get_pc_img_feat(
@@ -1605,7 +1871,7 @@ class RVTAgent:
                     save_heatmap_views(
                         final, stage_dir, 'o2_adapted', stage_img,
                     )
-                elif self.oracle_prior_enabled:
+                elif self.object_prior_enabled:
                     with open(
                         os.path.join(stage_dir, 'o2_unavailable.txt'),
                         'w',

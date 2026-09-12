@@ -1,6 +1,6 @@
-# O2 relation-anchor experiment. This enhances the existing relation adapter;
-# train all action branches; the new implicit anchor affects translation only.
-exp_id: rlbench_o2_semantic_gt_relation_anchor
+# Internal object-slot experiment. Oracle objects provide auxiliary heatmap
+# labels during training only; the policy adapter receives predicted slots.
+exp_id: rlbench_o2_internal_slots
 tasks: all
 bs: 48
 num_workers: 4
@@ -24,15 +24,25 @@ train_visualization:
   tensorboard: True
   output_dir: train_visualizations
 
+# These fields are labels, not policy inputs, in o2_internal_slots mode.
 use_oracle_objects: True
 oracle_semantic_audit: True
 oracle_max_objects: 32
 oracle_num_points: 512
+use_predicted_objects: False
+
 oracle_prior_adapter_rank: 16
 oracle_relation_gated_adapter: True
 oracle_adapter_translation_only: False
-# Zero disables the module. Rank 16 adds one anchor per coarse/refine view.
 oracle_relation_anchor_rank: 16
+
+object_slots:
+  enabled: True
+  num_slots: 6
+  slot_dim: 128
+  decoder_layers: 2
+  num_heads: 4
+  point_samples: 128
 
 peract:
   lr: 4e-5
@@ -43,10 +53,15 @@ peract:
 rvt:
   place_with_mean: False
   img_aug: 0.0
-  oracle_prior_mode: o2_gt_instance
+  object_prior_mode: o2_internal_slots
+  oracle_prior_mode: none
+  object_prediction_confidence_threshold: 0.25
+  object_slot_mask_loss_weight: 1.0
+  object_slot_null_loss_weight: 0.25
+  object_slot_diversity_loss_weight: 0.01
   oracle_prior_sigma: 2.0
   oracle_prior_active_role: auto
-  oracle_prior_strict: False
+  oracle_prior_strict: True
   oracle_prior_relation: True
-  oracle_log_base_loss: True
+  oracle_log_base_loss: False
   oracle_valid_only_loss: False

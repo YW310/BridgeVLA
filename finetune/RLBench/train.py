@@ -38,6 +38,7 @@ import bridgevla.models.bridgevla_agent as bridgevla_agent
 import bridgevla.mvt.config as mvt_cfg_mod
 
 from bridgevla.mvt.mvt import MVT
+from bridgevla.models.oracle_prior import resolve_object_prior_mode
 from utils.get_dataset import get_dataset
 from bridgevla.utils.rvt_utils import (
     get_num_feat,
@@ -102,6 +103,49 @@ def _validate_semantic_replay_schema(replay_root):
             raise ValueError(
                 f'Unsupported semantic role schema {schema!r} in {candidate}'
             )
+
+
+def _validate_predicted_replay_schema(replay_root, num_points):
+    root = Path(replay_root)
+    candidates = []
+    direct = next(root.glob('*.replay'), None)
+    if direct is not None:
+        candidates.append(direct)
+    else:
+        for task_dir in root.iterdir():
+            if task_dir.is_dir():
+                candidate = next(task_dir.glob('*.replay'), None)
+                if candidate is not None:
+                    candidates.append(candidate)
+    if not candidates:
+        raise FileNotFoundError(
+            f'No replay files found under predicted-object replay root: {root}'
+        )
+    required = {
+        f'predicted_{role}_{suffix}'
+        for role in ('target', 'reference')
+        for suffix in (
+            'object_points', 'object_valid', 'present', 'confidence',
+        )
+    }
+    for candidate in candidates:
+        with candidate.open('rb') as stream:
+            transition = pickle.load(stream)
+        missing = sorted(required.difference(transition))
+        if missing:
+            raise ValueError(
+                'Predicted-object replay is missing required fields in '
+                f'{candidate}: {missing}'
+            )
+        for role in ('target', 'reference'):
+            shape = np.asarray(
+                transition[f'predicted_{role}_object_points']
+            ).shape
+            if shape != (num_points, 3):
+                raise ValueError(
+                    f'{candidate}: predicted_{role}_object_points has shape '
+                    f'{shape}, expected {(num_points, 3)}'
+                )
 
 def _scalar_metrics(values):
     metrics = {}
@@ -482,6 +526,7 @@ def load_initial_model_checkpoint(agent, path):
     disallowed_missing = [
         key for key in incompatible.missing_keys
         if 'oracle_prior_' not in key
+        and 'object_slot_predictor' not in key
         and not key.endswith('language_model.lm_head.weight')
     ]
     if unexpected or disallowed_missing:
@@ -690,17 +735,60 @@ def experiment(cmd_args):
         exp_cfg.exp_id += f"_{cmd_args.exp_cfg_opts}"
     if cmd_args.mvt_cfg_opts != "":
         exp_cfg.exp_id += f"_{cmd_args.mvt_cfg_opts}"
+    object_prior_mode = resolve_object_prior_mode(
+        exp_cfg.rvt.object_prior_mode,
+        exp_cfg.rvt.oracle_prior_mode,
+    )
+    if exp_cfg.use_oracle_objects and exp_cfg.use_predicted_objects:
+        raise ValueError(
+            'use_oracle_objects and use_predicted_objects are mutually exclusive'
+        )
+    if object_prior_mode == 'o2_gt_instance' and not exp_cfg.use_oracle_objects:
+        raise ValueError('GT object mode requires use_oracle_objects=True')
+    if object_prior_mode == 'o2_internal_slots':
+        if not exp_cfg.use_oracle_objects:
+            raise ValueError(
+                'Internal slot training requires Oracle objects as labels'
+            )
+        if exp_cfg.use_predicted_objects:
+            raise ValueError('Internal slots do not consume predicted replay fields')
+        if not exp_cfg.object_slots.enabled:
+            raise ValueError('Internal slot mode requires object_slots.enabled=True')
+        if not exp_cfg.rvt.oracle_prior_relation:
+            raise ValueError('Internal slots require oracle_prior_relation=True')
+        if not exp_cfg.oracle_relation_gated_adapter:
+            raise ValueError('Internal slots require the relation-gated adapter')
+        if exp_cfg.oracle_prior_adapter_rank <= 0:
+            raise ValueError('Internal slots require adapter rank > 0')
+    elif exp_cfg.object_slots.enabled:
+        raise ValueError(
+            'object_slots.enabled=True requires object_prior_mode=o2_internal_slots'
+        )
     if (
-        exp_cfg.rvt.oracle_prior_mode != 'none'
-        and not exp_cfg.use_oracle_objects
+        object_prior_mode == 'o2_predicted_relation'
+        and not exp_cfg.use_predicted_objects
     ):
         raise ValueError(
-            'O2 prior requires use_oracle_objects=True and an augmented replay.'
+            'Predicted relation mode requires use_predicted_objects=True'
         )
-    if exp_cfg.use_oracle_objects and not cmd_args.train_replay_storage_dir:
+    if (
+        object_prior_mode == 'o2_predicted_relation'
+        and not exp_cfg.rvt.oracle_prior_relation
+    ):
         raise ValueError(
-            'Oracle replay training requires an explicit '
-            '--train_replay_storage_dir pointing to the augmented replay root.'
+            'Predicted Target/Reference mode requires oracle_prior_relation=True'
+        )
+    if object_prior_mode == 'none' and (
+        exp_cfg.use_oracle_objects or exp_cfg.use_predicted_objects
+    ):
+        raise ValueError('Object replay fields are enabled but object mode is none')
+    uses_object_replay = (
+        exp_cfg.use_oracle_objects or exp_cfg.use_predicted_objects
+    )
+    if uses_object_replay and not cmd_args.train_replay_storage_dir:
+        raise ValueError(
+            'Object-prior training requires an explicit '
+            '--train_replay_storage_dir pointing to the augmented replay root'
         )
     train_replay_storage_dir = os.path.abspath(
         os.path.expanduser(
@@ -708,15 +796,26 @@ def experiment(cmd_args):
         )
     )
     if (
-        exp_cfg.use_oracle_objects
+        uses_object_replay
         and not os.path.isdir(train_replay_storage_dir)
     ):
         raise FileNotFoundError(
-            'Oracle replay root does not exist: '
+            'Object replay root does not exist: '
             f'{train_replay_storage_dir}'
         )
     if exp_cfg.oracle_semantic_audit:
+        if not exp_cfg.use_oracle_objects:
+            raise ValueError('oracle_semantic_audit requires Oracle GT input')
         _validate_semantic_replay_schema(train_replay_storage_dir)
+    if exp_cfg.use_predicted_objects:
+        if cmd_args.refresh_replay:
+            raise ValueError(
+                'Predicted-object replay is produced externally; do not use '
+                '--refresh_replay'
+            )
+        _validate_predicted_replay_schema(
+            train_replay_storage_dir, exp_cfg.predicted_object_num_points,
+        )
     reduced_hardware_mode = exp_cfg.global_batch_size > 0
     if reduced_hardware_mode and exp_cfg.checkpoint_every_epochs <= 0:
         raise ValueError('checkpoint_every_epochs must be > 0')
@@ -839,6 +938,8 @@ def experiment(cmd_args):
         use_oracle_objects=exp_cfg.use_oracle_objects,
         oracle_max_objects=exp_cfg.oracle_max_objects,
         oracle_num_points=exp_cfg.oracle_num_points,
+        use_predicted_objects=exp_cfg.use_predicted_objects,
+        predicted_object_num_points=exp_cfg.predicted_object_num_points,
     )
     train_dataset, _ = get_dataset_func()
     t_end = time.time()
@@ -871,13 +972,22 @@ def experiment(cmd_args):
             exp_cfg.oracle_adapter_translation_only
         ),
         oracle_relation_anchor_rank=exp_cfg.oracle_relation_anchor_rank,
+        object_slots_enabled=exp_cfg.object_slots.enabled,
+        object_slot_num_slots=exp_cfg.object_slots.num_slots,
+        object_slot_dim=exp_cfg.object_slots.slot_dim,
+        object_slot_decoder_layers=exp_cfg.object_slots.decoder_layers,
+        object_slot_num_heads=exp_cfg.object_slots.num_heads,
+        object_slot_point_samples=exp_cfg.object_slots.point_samples,
+        object_slot_confidence_threshold=(
+            exp_cfg.rvt.object_prediction_confidence_threshold
+        ),
         **mvt_cfg,
     )
     expected_oracle_params = None
     if cmd_args.train_oracle_adapter_only:
-        if exp_cfg.rvt.oracle_prior_mode != 'o2_gt_instance':
+        if object_prior_mode == 'none':
             raise ValueError(
-                '--train_oracle_adapter_only requires O2 mode.'
+                '--train_object_adapter_only requires an object-prior mode.'
             )
         if exp_cfg.oracle_prior_adapter_rank <= 0:
             raise ValueError(
@@ -886,7 +996,7 @@ def experiment(cmd_args):
         oracle_params = freeze_for_oracle_adaptation(backbone)
         expected_oracle_params = oracle_params
         print(
-            'Freeze original BridgeVLA; train configured Oracle modules: '
+            'Freeze original BridgeVLA; train configured object modules: '
             f'{oracle_params:,} parameters ({oracle_params / 1e6:.3f}M)'
         )
     if exp_cfg.efficient_paligemma_forward:
@@ -1161,9 +1271,10 @@ if __name__ == "__main__":
         help='Freeze Gemma language-model parameters while training other heads.',
     )
     parser.add_argument(
-        '--train_oracle_adapter_only', action='store_true',
+        '--train_object_adapter_only', '--train_oracle_adapter_only',
+        dest='train_oracle_adapter_only', action='store_true',
         help=(
-            'Freeze original BridgeVLA and train only O2 feature adapters.'
+            'Freeze original BridgeVLA and train object slots plus adapters.'
         ),
     )
     parser.add_argument(
@@ -1174,7 +1285,8 @@ if __name__ == "__main__":
         default=None,
         help=(
             'Training replay root. Required explicitly when '
-            'use_oracle_objects=True; otherwise defaults to the legacy '
+            'use_oracle_objects/use_predicted_objects=True; otherwise defaults '
+            'to the legacy '
             'TRAIN_REPLAY_STORAGE_DIR.'
         ),
     )

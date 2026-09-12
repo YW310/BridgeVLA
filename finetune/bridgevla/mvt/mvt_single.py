@@ -524,11 +524,12 @@ class MVT(nn.Module):
         oracle_prior_heatmap=None,
         oracle_prior_valid=None,
         oracle_feature_adapter=None,
-        oracle_relation_anchor_adapter=None,
         oracle_relation_points=None,
         oracle_relation_state=None,
         oracle_adapter_translation_only=False,
         oracle_compute_base=False,
+        object_slot_predictor=None,
+        object_slot_target_heatmap=None,
         **kwargs,
     ):
         """
@@ -540,6 +541,9 @@ class MVT(nn.Module):
         bs, num_img, img_feat_dim, h, w = img.shape
         assert num_img == self.num_img
         assert h == w == self.img_size
+        if object_slot_predictor is not None and img_feat_dim < 6:
+            raise ValueError('Internal object slots require rendered XYZ and RGB channels')
+        rendered_xyz = img[:, :, 0:3] if object_slot_predictor is not None else None
         # only use rgb part
         # print("input image feature shape:",img.shape)
         img = img[:,:, 3:6, :, :] # bs,3,3,224,224
@@ -604,17 +608,19 @@ class MVT(nn.Module):
             )
         )
         x=x.to(torch.float32)
+        object_slot_output = None
+        if object_slot_predictor is not None:
+            object_slot_output = object_slot_predictor(
+                x, rendered_xyz, oracle_relation_state,
+            )
+            oracle_prior_heatmap = object_slot_output['prior']
+            oracle_prior_valid = object_slot_output['valid']
+            oracle_relation_points = object_slot_output['points']
         base_action_features = x
         trans_base = None
         translation_features = x
         relation_anchor = None
-        if (
-            oracle_compute_base
-            and (
-                oracle_feature_adapter is not None
-                or oracle_relation_anchor_adapter is not None
-            )
-        ):
+        if oracle_compute_base and oracle_feature_adapter is not None:
             with torch.no_grad():
                 trans_base = self.up0(x).view(
                     bs, self.num_img, h, w,
@@ -622,30 +628,33 @@ class MVT(nn.Module):
         if oracle_feature_adapter is not None:
             if oracle_prior_heatmap is None or oracle_prior_valid is None:
                 raise ValueError('Oracle feature adapter requires prior and valid')
-            translation_features = oracle_feature_adapter(
-                x, oracle_prior_heatmap, oracle_prior_valid,
-                oracle_relation_points,
+            anchor_forward = getattr(
+                oracle_feature_adapter, 'forward_with_anchor', None,
             )
-            translation_features, x = route_oracle_adapter_features(
-                x,
-                translation_features,
-                oracle_adapter_translation_only,
-            )
-        if oracle_relation_anchor_adapter is not None:
-            if oracle_prior_heatmap is None or oracle_prior_valid is None:
-                raise ValueError(
-                    'Oracle relation anchor requires prior and valid'
-                )
-            translation_features, relation_anchor = (
-                oracle_relation_anchor_adapter(
+            if anchor_forward is not None:
+                (
                     translation_features,
+                    shared_features,
+                    relation_anchor,
+                ) = anchor_forward(
+                    x,
                     oracle_prior_heatmap,
                     oracle_prior_valid,
                     oracle_relation_points,
                     oracle_relation_state,
-                    return_anchor=True,
                 )
-            )
+                if not oracle_adapter_translation_only:
+                    x = shared_features
+            else:
+                translation_features = oracle_feature_adapter(
+                    x, oracle_prior_heatmap, oracle_prior_valid,
+                    oracle_relation_points,
+                )
+                translation_features, x = route_oracle_adapter_features(
+                    x,
+                    translation_features,
+                    oracle_adapter_translation_only,
+                )
         
         trans = self.up0(translation_features)
         trans = trans.view(bs, self.num_img, h, w)
@@ -713,16 +722,35 @@ class MVT(nn.Module):
 
         out.update({"trans": trans})
 
-        if relation_anchor is not None:
-            relation_anchor = F.interpolate(
-                relation_anchor.reshape(
-                    bs * self.num_img, 1, *relation_anchor.shape[-2:]
+        if object_slot_output is not None:
+            out.update({
+                'object_slot_prior': object_slot_output['prior'],
+                'object_slot_prior_logits': object_slot_output['prior_logits'],
+                'object_slot_masks': object_slot_output['slot_masks'],
+                'object_slot_mask_logits': object_slot_output['mask_logits'],
+                'object_slot_objectness_logits': (
+                    object_slot_output['objectness_logits']
                 ),
-                size=(h, w),
-                mode='bilinear',
-                align_corners=False,
-            ).reshape(bs, self.num_img, h, w)
-            out['oracle_relation_anchor'] = relation_anchor
+                'object_slot_role_logits': object_slot_output['role_logits'],
+                'object_slot_reference_null_logit': (
+                    object_slot_output['reference_null_logit']
+                ),
+                'object_slot_reference_null_probability': (
+                    object_slot_output['reference_null_probability']
+                ),
+                'object_slot_reference_is_null': (
+                    object_slot_output['reference_is_null']
+                ),
+                'object_slot_confidence': object_slot_output['confidence'],
+                'object_slot_valid': object_slot_output['valid'],
+            })
+            if object_slot_target_heatmap is not None:
+                out['object_slot_target_prior'] = object_slot_target_heatmap.detach()
+
+        if relation_anchor is not None:
+            # Keep this diagnostic low-resolution and graph-free. Callers
+            # resize it only when visualization is explicitly requested.
+            out['oracle_relation_anchor'] = relation_anchor.detach()
         if trans_base is not None:
             out['trans_base'] = trans_base
         return out

@@ -26,8 +26,9 @@ import bridgevla.mvt.utils as mvt_utils
 from bridgevla.mvt.mvt_single import MVT as MVTSingle
 from bridgevla.mvt.config import get_cfg_defaults
 from bridgevla.models.oracle_prior import (
+    InternalObjectSlotPredictor,
     OraclePriorFeatureAdapter,
-    OracleRelationAnchorAdapter,
+    OracleRelationAnchorFeatureAdapter,
     OracleRelationGatedFeatureAdapter,
     rasterize_instance_points,
 )
@@ -74,6 +75,13 @@ class MVT(nn.Module):
         oracle_relation_gated_adapter=False,
         oracle_adapter_translation_only=False,
         oracle_relation_anchor_rank=0,
+        object_slots_enabled=False,
+        object_slot_num_slots=6,
+        object_slot_dim=128,
+        object_slot_decoder_layers=2,
+        object_slot_num_heads=4,
+        object_slot_point_samples=128,
+        object_slot_confidence_threshold=0.25,
     ):
         super().__init__()
         if oracle_prior_adapter_rank < 0:
@@ -92,6 +100,20 @@ class MVT(nn.Module):
             raise ValueError(
                 'oracle_relation_anchor_rank requires oracle_prior_relation'
             )
+        if oracle_relation_anchor_rank > 0 and not oracle_relation_gated_adapter:
+            raise ValueError(
+                'oracle_relation_anchor_rank enhances the relation-gated adapter'
+            )
+        if oracle_relation_anchor_rank > 0 and oracle_prior_adapter_rank <= 0:
+            raise ValueError(
+                'oracle_relation_anchor_rank requires adapter rank > 0'
+            )
+        if object_slots_enabled and not oracle_prior_relation:
+            raise ValueError('object slots require oracle_prior_relation=True')
+        if object_slots_enabled and not oracle_relation_gated_adapter:
+            raise ValueError('object slots require the relation-gated adapter')
+        if object_slots_enabled and oracle_prior_adapter_rank <= 0:
+            raise ValueError('object slots require adapter rank > 0')
 
         from point_renderer.rvt_renderer import RVTBoxRenderer as BoxRenderer
 
@@ -111,6 +133,13 @@ class MVT(nn.Module):
         del args['oracle_relation_gated_adapter']
         del args['oracle_adapter_translation_only']
         del args['oracle_relation_anchor_rank']
+        del args['object_slots_enabled']
+        del args['object_slot_num_slots']
+        del args['object_slot_dim']
+        del args['object_slot_decoder_layers']
+        del args['object_slot_num_heads']
+        del args['object_slot_point_samples']
+        del args['object_slot_confidence_threshold']
 
         self.rot_ver = rot_ver
         self.num_rot = num_rot
@@ -127,6 +156,7 @@ class MVT(nn.Module):
             oracle_adapter_translation_only
         )
         self.oracle_relation_anchor_rank = int(oracle_relation_anchor_rank)
+        self.object_slots_enabled = bool(object_slots_enabled)
         oracle_prior_channels = 2 if oracle_prior_relation else 1
         # for verifying the input
         self.feat_ver = feat_ver
@@ -145,37 +175,46 @@ class MVT(nn.Module):
             renderer=self.renderer,
         )  # we have merged mvt1 and mvt2
         use_adapter = oracle_prior_adapter_rank > 0
-        adapter_class = (
-            OracleRelationGatedFeatureAdapter
-            if oracle_relation_gated_adapter else OraclePriorFeatureAdapter
-        )
+        if oracle_relation_anchor_rank > 0:
+            adapter_class = OracleRelationAnchorFeatureAdapter
+        elif oracle_relation_gated_adapter:
+            adapter_class = OracleRelationGatedFeatureAdapter
+        else:
+            adapter_class = OraclePriorFeatureAdapter
+        adapter_kwargs = {'prior_channels': oracle_prior_channels}
+        if oracle_relation_anchor_rank > 0:
+            adapter_kwargs['anchor_rank'] = oracle_relation_anchor_rank
         self.oracle_prior_feature_adapter1 = (
             adapter_class(
                 self.mvt1.vlm_dim, oracle_prior_adapter_rank,
-                prior_channels=oracle_prior_channels,
+                **adapter_kwargs,
             )
             if use_adapter else None
         )
         self.oracle_prior_feature_adapter2 = (
             adapter_class(
                 self.mvt1.vlm_dim, oracle_prior_adapter_rank,
-                prior_channels=oracle_prior_channels,
+                **adapter_kwargs,
             )
             if use_adapter and stage_two else None
         )
-        self.oracle_prior_relation_anchor1 = (
-            OracleRelationAnchorAdapter(
-                self.mvt1.vlm_dim, oracle_relation_anchor_rank,
-                prior_channels=oracle_prior_channels,
-            )
-            if oracle_relation_anchor_rank > 0 else None
+        slot_kwargs = {
+            'feature_channels': self.mvt1.vlm_dim,
+            'num_views': self.num_img,
+            'num_slots': object_slot_num_slots,
+            'slot_dim': object_slot_dim,
+            'decoder_layers': object_slot_decoder_layers,
+            'num_heads': object_slot_num_heads,
+            'point_samples': object_slot_point_samples,
+            'confidence_threshold': object_slot_confidence_threshold,
+        }
+        self.object_slot_predictor1 = (
+            InternalObjectSlotPredictor(**slot_kwargs)
+            if self.object_slots_enabled else None
         )
-        self.oracle_prior_relation_anchor2 = (
-            OracleRelationAnchorAdapter(
-                self.mvt1.vlm_dim, oracle_relation_anchor_rank,
-                prior_channels=oracle_prior_channels,
-            )
-            if oracle_relation_anchor_rank > 0 and stage_two else None
+        self.object_slot_predictor2 = (
+            InternalObjectSlotPredictor(**slot_kwargs)
+            if self.object_slots_enabled and stage_two else None
         )
 
 
@@ -483,6 +522,9 @@ class MVT(nn.Module):
             oracle_prior_points, oracle_prior_valid, True, None,
             oracle_prior_sigma,
         )
+        policy_prior1 = None if self.object_slots_enabled else oracle_prior1
+        policy_valid1 = None if self.object_slots_enabled else oracle_prior_valid
+        policy_points1 = None if self.object_slots_enabled else oracle_prior_points
         
    
         out = self.mvt1(
@@ -491,26 +533,27 @@ class MVT(nn.Module):
             rot_x_y=rot_x_y,
             language_goal=language_goal,
             forward_no_feat=True,
-            oracle_prior_heatmap=oracle_prior1,
-            oracle_prior_valid=oracle_prior_valid,
-            oracle_relation_points=oracle_prior_points,
+            oracle_prior_heatmap=policy_prior1,
+            oracle_prior_valid=policy_valid1,
+            oracle_relation_points=policy_points1,
             oracle_relation_state=oracle_relation_state,
+            object_slot_predictor=self.object_slot_predictor1,
+            object_slot_target_heatmap=(
+                oracle_prior1 if self.object_slots_enabled else None
+            ),
             oracle_adapter_translation_only=(
                 self.oracle_adapter_translation_only
             ),
             oracle_feature_adapter=(
                 self.oracle_prior_feature_adapter1
-                if oracle_prior1 is not None else None
-            ),
-            oracle_relation_anchor_adapter=(
-                self.oracle_prior_relation_anchor1
-                if oracle_prior1 is not None else None
+                if oracle_prior1 is not None or self.object_slots_enabled else None
             ),
             oracle_compute_base=oracle_compute_base,
             # forward_no_feat=False,
             **kwargs,
         )
-        self._attach_oracle_instance_prior(out, oracle_prior1)
+        if not self.object_slots_enabled:
+            self._attach_oracle_instance_prior(out, oracle_prior1)
         out["mvt1_ori_img"]=img.clone().detach()
         def visualize_tensor(tensor, save_path=None):
             """
@@ -621,25 +664,32 @@ class MVT(nn.Module):
                 rot_x_y=rot_x_y,
                 language_goal=language_goal,
                 forward_no_feat=False,
-                oracle_prior_heatmap=oracle_prior2,
-                oracle_prior_valid=oracle_prior_valid,
-                oracle_relation_points=oracle_relation_points2,
+                oracle_prior_heatmap=(
+                    None if self.object_slots_enabled else oracle_prior2
+                ),
+                oracle_prior_valid=(
+                    None if self.object_slots_enabled else oracle_prior_valid
+                ),
+                oracle_relation_points=(
+                    None if self.object_slots_enabled else oracle_relation_points2
+                ),
                 oracle_relation_state=oracle_relation_state,
+                object_slot_predictor=self.object_slot_predictor2,
+                object_slot_target_heatmap=(
+                    oracle_prior2 if self.object_slots_enabled else None
+                ),
                 oracle_adapter_translation_only=(
                     self.oracle_adapter_translation_only
                 ),
                 oracle_feature_adapter=(
                     self.oracle_prior_feature_adapter2
-                    if oracle_prior2 is not None else None
-                ),
-                oracle_relation_anchor_adapter=(
-                    self.oracle_prior_relation_anchor2
-                    if oracle_prior2 is not None else None
+                    if oracle_prior2 is not None or self.object_slots_enabled else None
                 ),
                 oracle_compute_base=oracle_compute_base,
                 **kwargs,
             )
-            self._attach_oracle_instance_prior(out_mvt2, oracle_prior2)
+            if not self.object_slots_enabled:
+                self._attach_oracle_instance_prior(out_mvt2, oracle_prior2)
 
             out["wpt_local1"] = wpt_local_stage_one_noisy
             out["rev_trans"] = rev_trans 

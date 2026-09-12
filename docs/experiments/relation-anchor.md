@@ -2,24 +2,25 @@
 
 [文档索引](../README.md) · [O2 训练](o2-training.md) · [研究设计](../design/role-relation-prior.md)
 
-该实验在现有 Target/Reference relation adapter 之后增加一个仅作用于
-translation 的轻量模块。它不使用 phase 标签、contact 标签或手工
-action-anchor。
+该实验直接增强现有 `OracleRelationGatedFeatureAdapter`，不再串联第二个
+adapter。它不使用 phase、contact 或手工 action-anchor 标签。
 
     PaliGemma feature + T/R prior + T/R 3-D geometry
-                             |
-                             +-- existing relation adapter -- R/G/C
-                             |
-                             +-- implicit relation anchor --- translation head
+                             │
+                    relation-conditioned hidden
+                             ├── 原 relation residual ── shared feature ── R/G/C
+                             └── masked pooling + spatial anchor
+                                                  └──── translation residual
 
-Relation query 由 T/R 区域内的 masked-pooled feature、T/R 中心与尺度、
-相对位移以及已有的四维 low-dimensional state 组成。Reference 无效时使用
-learned NULL token；Target 无效时 residual 关闭。输出投影为零初始化，因此
-新模块刚启用时保持旧模型的 translation 输出。
+Relation query 复用原 adapter 的 relation-conditioned hidden，并结合 T/R
+区域 masked pooling、中心/尺度、相对位移和当前夹爪的三维观测状态。归一化
+timestep 不进入 query，避免把演示进度当作 phase 捷径。Reference 无效时使用
+learned NULL token；Target 无效时 translation residual 关闭。
 
-Anchor 只在 feature 层进行 residual modulation。它不会与最终 translation
-logit 相加，也不会改变 rotation/gripper/collision 的 feature 路径。训练直接
-沿用现有 translation loss，不需要新增 replay 字段。
+原 adapter 的参数名和 shared feature 路径保持不变；新增 `anchor_*` 参数也位于
+`oracle_prior_feature_adapter1/2` 内。Anchor 只在 feature 层调制 translation，
+不会 post-hoc 修改 heatmap。新增输出投影零初始化，启用时先严格退化为原
+relation adapter。训练沿用现有 translation loss，不新增 replay 字段。
 
 ## 配置
 
@@ -36,8 +37,12 @@ logit 相加，也不会改变 rotation/gripper/collision 的 feature 路径。�
     oracle_adapter_translation_only: False
     oracle_relation_anchor_rank: 16
 
-将 oracle_relation_anchor_rank 设为 0 可完全关闭新模块。训练与闭环可视化中
-会输出 relation_anchor / o2_relation_anchor，用于检查 anchor 是否从 object
-occupancy 收缩到 phase-dependent action region。验收时应同时比较 decoded
-argmax、1/2/5 voxel recall、三维 waypoint error 和 closed-loop success；
-不能只依据 translation cross-entropy。
+`oracle_relation_anchor_rank: 0` 使用原 `OracleRelationGatedFeatureAdapter`；
+大于 0 时在同一个 adapter 内启用 anchor 分支。训练与闭环可视化会输出
+`relation_anchor` / `o2_relation_anchor`。验收应同时比较 decoded argmax、
+1/2/5 voxel recall、三维 waypoint error 和 closed-loop success，不能只看
+translation cross-entropy。
+
+当前 `reference_valid=False` 仍无法区分“语义上没有 Reference”和“Reference
+存在但被遮挡”。因此 NULL 分支只适用于前一种情况；接入预测 object 时应把
+`reference_present` 与 `reference_visible` 分开，遮挡不能伪装成 NULL。
