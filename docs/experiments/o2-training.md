@@ -6,9 +6,12 @@
 
 # O2：训练 Target/Reference GT Adapter
 
-O2 选择当前状态下唯一的 Target 与 Reference，将完整点云按 `[T,R]` 投影为双通道
-三视角 prior，再通过低秩 relation-gated adapter 注入 PaliGemma 视觉特征。adapted
-feature 同时供 translation、rotation、gripper、collision 使用。
+O2 选择当前状态下唯一的 Target 与 Reference，将两者的固定大小 XYZ 集合按 `[T,R]`
+投影为双通道三视角 prior，再通过低秩 relation-gated adapter 注入 PaliGemma 视觉特征。
+`object` 使用完整可见表面点云；`site` 使用 OBB（或显式 2 cm fallback box）的定向
+区域点集，表示边界见
+[Semantic-GT: 交互实体几何表示](../guides/semantic-gt.md#semantic-gt-entity-geometry)。
+adapted feature 同时供 translation、rotation、gripper、collision 使用。
 
 当前结构不包含 post-hoc translation fusion：
 

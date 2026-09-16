@@ -21,6 +21,15 @@ import yaml
 from PIL import Image, ImageDraw
 from .oracle_handle_alignment import (
     align_handles, align_semantic_handle_group, HandleAlignmentError)
+from .site_geometry import (
+    DEFAULT_FALLBACK_EXTENT_M,
+    SEMANTIC_ROLE_SCHEMA,
+    SITE_GEOMETRY_PRIMITIVE,
+    SiteGeometry,
+    sample_site_geometry,
+    site_geometry_from_object,
+    validate_fallback_extent,
+)
 
 
 DEFAULT_CAMERAS = ("front", "left_shoulder", "right_shoulder", "wrist")
@@ -52,6 +61,7 @@ class RoleEntity:
     kind: str
     handles: Tuple[int, ...] = ()
     site_position: Optional[np.ndarray] = None
+    site_geometry: Optional[SiteGeometry] = None
 
     def audit_dict(self) -> Dict[str, object]:
         return {
@@ -62,6 +72,11 @@ class RoleEntity:
                 None
                 if self.site_position is None
                 else np.asarray(self.site_position).astype(float).tolist()
+            ),
+            'site_geometry': (
+                None
+                if self.site_geometry is None
+                else self.site_geometry.audit_dict()
             ),
         }
 
@@ -269,9 +284,28 @@ class RLBenchGTOracleProvider:
         if not isinstance(config, Mapping) or not isinstance(config.get("tasks"), Mapping):
             raise ValueError("semantic role YAML must contain a tasks mapping")
         self.schema_version = str(config.get("schema_version", ""))
-        if not self.schema_version:
-            raise ValueError("semantic role YAML must define schema_version")
+        if self.schema_version != SEMANTIC_ROLE_SCHEMA:
+            raise ValueError(
+                f"unsupported semantic role schema {self.schema_version!r}; "
+                f"expected {SEMANTIC_ROLE_SCHEMA!r}"
+            )
         self.task_specs = dict(config["tasks"])
+        site_defaults = config.get("site_geometry_defaults", {})
+        if not isinstance(site_defaults, Mapping):
+            raise ValueError("site_geometry_defaults must be a mapping")
+        primitive = str(
+            site_defaults.get("primitive", SITE_GEOMETRY_PRIMITIVE)
+        )
+        if primitive != SITE_GEOMETRY_PRIMITIVE:
+            raise ValueError(
+                f"unsupported site geometry primitive {primitive!r}; "
+                f"expected {SITE_GEOMETRY_PRIMITIVE!r}"
+            )
+        self.site_fallback_extent_m = validate_fallback_extent(
+            site_defaults.get(
+                "fallback_extent_m", DEFAULT_FALLBACK_EXTENT_M
+            )
+        )
         self.num_points = int(num_points)
         self.cameras = tuple(cameras)
         self.strict = bool(strict)
@@ -470,9 +504,43 @@ class RLBenchGTOracleProvider:
             )
         return RoleEntity(semantic_name, "object", tuple(sorted(handles)))
 
-    def _entity_site(self, semantic_name: str, obj) -> RoleEntity:
+    def _entity_site(
+        self,
+        semantic_name: str,
+        obj,
+        geometry_spec: Optional[Mapping[str, object]] = None,
+    ) -> RoleEntity:
+        if geometry_spec is not None and not isinstance(geometry_spec, Mapping):
+            raise SemanticRoleMappingError(
+                f"{semantic_name} site_geometry must be a mapping"
+            )
+        geometry_spec = geometry_spec or {}
+        primitive = str(
+            geometry_spec.get("primitive", SITE_GEOMETRY_PRIMITIVE)
+        )
+        if primitive != SITE_GEOMETRY_PRIMITIVE:
+            raise SemanticRoleMappingError(
+                f"unsupported site geometry primitive {primitive!r}"
+            )
+        try:
+            fallback_extent = validate_fallback_extent(
+                geometry_spec.get(
+                    "fallback_extent_m", self.site_fallback_extent_m
+                )
+            )
+            site_position = _object_position(obj)
+            geometry = site_geometry_from_object(
+                obj, site_position, fallback_extent
+            )
+        except ValueError as exc:
+            raise SemanticRoleMappingError(
+                f"invalid site geometry for {semantic_name!r}: {exc}"
+            ) from exc
         return RoleEntity(
-            semantic_name, "site", (), _object_position(obj)
+            semantic_name=semantic_name,
+            kind="site",
+            site_position=site_position,
+            site_geometry=geometry,
         )
 
     def _attr_objects(self, *attribute_names: str) -> List[object]:
@@ -511,7 +579,9 @@ class RLBenchGTOracleProvider:
         if selected is None:
             selected = objects[0]
         semantic_name = str(spec.get("semantic_name", _canonical_name(_object_name(selected))))
-        return self._entity_site(semantic_name, selected)
+        return self._entity_site(
+            semantic_name, selected, spec.get("site_geometry")
+        )
 
     def _object_from_spec(self, spec: Mapping[str, object], label: str) -> RoleEntity:
         names = self._variant_names(spec)
@@ -624,7 +694,11 @@ class RLBenchGTOracleProvider:
             if drops:
                 drops = self._expect_count(drops, 5, "shape sorter drop points")
             reference = (
-                self._entity_site("sorter_slot", drops[self._variation])
+                self._entity_site(
+                    "sorter_slot",
+                    drops[self._variation],
+                    reference_spec.get("site_geometry"),
+                )
                 if drops else self._site_from_spec(reference_spec, "sorter drop point")
             )
         elif name == "place_wine_at_rack_location":
@@ -649,7 +723,10 @@ class RLBenchGTOracleProvider:
             # reset.  The exact object position is a better Oracle interaction
             # site and avoids inventing a cross-session handle correspondence.
             target = self._entity_site(
-                f"button{phase}_contact_site", plates[phase])
+                f"button{phase}_contact_site",
+                plates[phase],
+                target_spec.get("site_geometry"),
+            )
             reference = None
         elif name == "put_groceries_in_cupboard":
             groceries = self._attr_objects("groceries")
@@ -677,7 +754,9 @@ class RLBenchGTOracleProvider:
             )[0]
             option = ("bottom", "middle", "top")[self._variation]
             reference = self._entity_site(
-                f"{option}_drawer_success_site", success_detector
+                f"{option}_drawer_success_site",
+                success_detector,
+                reference_spec.get("site_geometry"),
             )
         elif name == "put_money_in_safe":
             selected = self._attr_objects("money") or self._objects(
@@ -696,6 +775,7 @@ class RLBenchGTOracleProvider:
             reference = self._entity_site(
                 str(reference_spec.get("semantic_name", "color_target")),
                 self._expect_count(refs, 1, "drag color target")[0],
+                reference_spec.get("site_geometry"),
             )
         elif name == "slide_block_to_color_target":
             selected = self._attr_objects("_block", "block") or self._objects(
@@ -717,6 +797,7 @@ class RLBenchGTOracleProvider:
             reference = self._entity_site(
                 str(reference_spec.get("semantic_name", "color_target")),
                 success_detectors[0],
+                reference_spec.get("site_geometry"),
             )
         elif name == "stack_blocks":
             blocks = self._attr_objects("target_blocks")
@@ -1134,8 +1215,13 @@ class RLBenchGTOracleProvider:
         if entity is None:
             return np.zeros((self.num_points, 3), dtype=np.float32), False
         if entity.kind == "site":
-            point = np.asarray(entity.site_position, dtype=np.float32).reshape(1, 3)
-            return np.repeat(point, self.num_points, axis=0), True
+            if entity.site_geometry is None:
+                raise SemanticRoleMappingError(
+                    f"site {entity.semantic_name!r} has no site_geometry"
+                )
+            return sample_site_geometry(
+                entity.site_geometry, self.num_points
+            ), True
         collected = []
         handles = np.asarray(entity.handles, dtype=np.int64)
         for camera in self.cameras:

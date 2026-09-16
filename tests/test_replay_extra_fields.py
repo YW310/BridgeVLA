@@ -18,7 +18,7 @@ def test_disk_replay_ignores_semantic_audit_only_fields():
     transition = {
         "action": np.asarray([1.0], dtype=np.float32),
         "oracle_role_schema_version": np.asarray(
-            ["rlbench_o2_semantic_roles_v1"], dtype=object
+            ["rlbench_o2_semantic_roles_v2"], dtype=object
         ),
     }
     _copy_required_disk_fields(store, transition, 7, 3)

@@ -86,6 +86,8 @@ def _validate_semantic_replay_schema(replay_root):
         'oracle_target_kind', 'oracle_reference_kind',
         'oracle_target_handles', 'oracle_reference_handles',
         'oracle_target_role_valid', 'oracle_reference_role_valid',
+        'oracle_target_geometry_source',
+        'oracle_reference_geometry_source',
     }
     for candidate in candidates:
         with candidate.open('rb') as stream:
@@ -99,7 +101,7 @@ def _validate_semantic_replay_schema(replay_root):
         schema = str(
             np.asarray(transition['oracle_role_schema_version']).reshape(-1)[0]
         )
-        if schema != 'rlbench_o2_semantic_roles_v1':
+        if schema != 'rlbench_o2_semantic_roles_v2':
             raise ValueError(
                 f'Unsupported semantic role schema {schema!r} in {candidate}'
             )

@@ -8,6 +8,8 @@ from collections.abc import Mapping
 from numbers import Real
 from pathlib import Path
 
+from .site_geometry import SEMANTIC_ROLE_SCHEMA, SiteGeometry
+
 
 MANIFEST_FIELDS = [
     'task', 'generated coverage', 'generated episodes',
@@ -189,7 +191,7 @@ def resumable_manifest(path, task, episode_idx, alignment_mode,
         manifest = json.loads(path.read_text(encoding='utf-8'))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         return None, f'unreadable: {exc}'
-    if manifest.get('schema_version') != 'rlbench_o2_semantic_roles_v1':
+    if manifest.get('schema_version') != SEMANTIC_ROLE_SCHEMA:
         return None, 'schema mismatch'
     if manifest.get('task') != task or manifest.get('episode_idx') != episode_idx:
         return None, 'task/episode mismatch'
@@ -235,6 +237,10 @@ def resumable_manifest(path, task, episode_idx, alignment_mode,
                         or not all(isinstance(v, Real) and math.isfinite(v)
                                    for v in position)):
                     return None, f'{key} site position is invalid'
+                try:
+                    SiteGeometry.from_mapping(role.get('site_geometry'))
+                except (TypeError, ValueError):
+                    return None, f'{key} site geometry is invalid'
             else:
                 return None, f'{key} kind is invalid'
     saved_digest = manifest.get('role_config_sha256')

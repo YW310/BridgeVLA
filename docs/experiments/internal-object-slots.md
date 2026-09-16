@@ -21,6 +21,15 @@ supervision heatmaps. `MVT.forward()` explicitly replaces their policy-side
 prior, validity, and geometry with `None` before calling `MVTSingle`; only slot
 predictions reach the adapter. Evaluation asks for no Oracle object fields.
 
+This is currently a role-centric, single-frame experiment, not a complete
+scene-entity model: it predicts T/R heatmaps and then samples role XYZ points,
+but does not retain a task-relevant set of object/part/region geometries or
+temporal tracks. The shared XYZ geometry contract and the current OBB/fallback
+box `site` approximation are defined in
+[Semantic-GT: interaction entity geometry](../guides/semantic-gt.md#semantic-gt-entity-geometry).
+Future entity slots should preserve that set until phase-conditioned role
+binding instead of discarding all non-selected entities early.
+
 ## Configuration
 
 Use `configs/rlbench_o2_internal_slots.yaml`. The important controls are:

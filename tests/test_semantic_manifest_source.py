@@ -12,6 +12,26 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 import rewrite_replay_with_semantic_roles as rewrite
 
 
+def site_role(
+    center=(0.0, 0.0, 0.0),
+    extent=(0.02, 0.02, 0.02),
+    source='fallback_box',
+):
+    return {
+        'semantic_name': 'site',
+        'kind': 'site',
+        'handles': [],
+        'site_position': list(center),
+        'site_geometry': {
+            'primitive': 'box_volume',
+            'center_world': list(center),
+            'rotation_world': np.eye(3).tolist(),
+            'extent': list(extent),
+            'source': source,
+        },
+    }
+
+
 def test_rewrite_parser_supports_task_workers():
     args = rewrite.build_parser().parse_args([
         '--replay-dir', 'replay', '--raw-data-dir', 'raw',
@@ -130,8 +150,8 @@ def test_stored_manifest_accepts_audited_semantic_entity_union_mapping(tmp_path)
         expected_sample_frames=[43],
         entries=[dict(
             sample_frame=43, completion_satisfied=True,
-            target={'kind': 'object', 'handles': [99]}, reference={
-                'kind': 'site', 'handles': [], 'site_position': [0., 0., 0.]})],
+            target={'kind': 'object', 'handles': [99]},
+            reference=site_role())],
     )
     path = folder / 'episode_54.json'
     path.write_text(json.dumps(manifest), encoding='utf-8')
@@ -141,6 +161,7 @@ def test_stored_manifest_accepts_audited_semantic_entity_union_mapping(tmp_path)
 
     assert frames == [43]
     assert entries[0]['target']['handles'] == [99]
+    assert entries[0]['reference']['site_geometry']['source'] == 'fallback_box'
 
     manifest['handle_alignment']['evidence']['entities']['chicken']['views'][
         'left_shoulder']['passed'] = False
@@ -237,10 +258,81 @@ def test_stored_manifest_validates_each_mixed_entity_certificate(tmp_path):
     _, frames, _ = rewrite._load_manifest(
         tmp_path, 'close_jar', 0, allow_mask_verified=True)
     assert frames == [0]
-
     manifest['handle_alignment']['evidence']['entity_certificates']['88'][
         'stored_handles'] = [199]
     path.write_text(json.dumps(manifest), encoding='utf-8')
     with pytest.raises(ValueError, match='Uncertified semantic entity mapping'):
         rewrite._load_manifest(
             tmp_path, 'close_jar', 0, allow_mask_verified=True)
+
+
+def test_v1_manifest_is_explicitly_rejected(tmp_path):
+    folder = tmp_path / 'close_jar'
+    folder.mkdir()
+    (folder / 'episode_0.json').write_text(json.dumps({
+        'schema_version': 'rlbench_o2_semantic_roles_v1',
+    }), encoding='utf-8')
+
+    with pytest.raises(ValueError, match='Unsupported semantic role schema'):
+        rewrite._load_manifest(tmp_path, 'close_jar', 0)
+
+
+def test_v2_manifest_rejects_site_without_geometry(tmp_path):
+    folder = tmp_path / 'close_jar'
+    folder.mkdir()
+    (folder / 'episode_0.json').write_text(json.dumps({
+        'schema_version': rewrite.SEMANTIC_ROLE_SCHEMA,
+        'expected_sample_frames': [0],
+        'entries': [{
+            'sample_frame': 0,
+            'completion_satisfied': True,
+            'target': {
+                'semantic_name': 'legacy_site',
+                'kind': 'site',
+                'handles': [],
+                'site_position': [0.0, 0.0, 0.0],
+            },
+            'reference': None,
+        }],
+    }), encoding='utf-8')
+
+    with pytest.raises(ValueError, match='site_geometry'):
+        rewrite._load_manifest(tmp_path, 'close_jar', 0)
+
+
+def test_site_geometry_rewrite_uses_region_points_and_exact_descriptor_audit():
+    role = site_role(
+        center=(1.0, 2.0, 3.0),
+        extent=(0.2, 0.4, 0.6),
+        source='object_bbox',
+    )
+    raw = rewrite._role_points(role, {}, {}, 32)
+    oracle = rewrite.empty_oracle_objects(4, 32)
+
+    valid, count = rewrite._fill_slot(
+        oracle, 0, rewrite.ORACLE_ROLE_TARGET, role, raw, 32,
+        np.random.default_rng(0),
+    )
+
+    assert valid
+    assert count == 32
+    assert len(np.unique(oracle.points[0], axis=0)) > 1
+    np.testing.assert_allclose(oracle.centers[0], [1.0, 2.0, 3.0])
+    np.testing.assert_allclose(oracle.sizes[0], [0.2, 0.4, 0.6])
+    local = oracle.points[0] - oracle.centers[0]
+    assert np.all(np.abs(local) <= oracle.sizes[0] / 2.0 + 1e-6)
+    audit = rewrite._audit_fields(
+        rewrite.SEMANTIC_ROLE_SCHEMA,
+        {
+            'phase_id': 'phase0',
+            'target': role,
+            'reference': None,
+        },
+        True,
+        False,
+        4,
+    )
+    assert audit['oracle_target_geometry_source'].tolist() == ['object_bbox']
+    assert audit['oracle_reference_geometry_source'].tolist() == ['none']
+    empty = rewrite._empty_audit(4)
+    assert empty['oracle_target_geometry_source'].tolist() == ['none']

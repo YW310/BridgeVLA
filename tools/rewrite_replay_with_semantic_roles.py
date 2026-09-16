@@ -16,6 +16,7 @@ import json
 import os
 import pickle
 import shutil
+import sys
 from collections import OrderedDict
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from functools import lru_cache
@@ -23,6 +24,17 @@ from pathlib import Path
 from typing import Dict, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_RLBENCH_ROOT = _REPO_ROOT / "finetune" / "RLBench"
+if str(_RLBENCH_ROOT) not in sys.path:
+    sys.path.insert(0, str(_RLBENCH_ROOT))
+
+from utils.site_geometry import (
+    SEMANTIC_ROLE_SCHEMA,
+    SiteGeometry,
+    sample_site_geometry,
+)
 
 from augment_replay_with_oracle_objects import (
     DEFAULT_CAMERAS,
@@ -56,10 +68,9 @@ AUDIT_KEYS = (
     "oracle_reference_handles",
     "oracle_target_role_valid",
     "oracle_reference_role_valid",
+    "oracle_target_geometry_source",
+    "oracle_reference_geometry_source",
 )
-SEMANTIC_ROLE_SCHEMA = "rlbench_o2_semantic_roles_v1"
-
-
 class FrameCache:
     def __init__(self, capacity: int):
         self.capacity = max(0, int(capacity))
@@ -180,6 +191,23 @@ def _load_manifest(root: Path, task: str, episode_idx: int, allow_mask_verified=
             "eval.py --ground-truth --oracle-provider rlbench_gt."
         )
     entries = sorted(entries, key=lambda entry: int(entry["sample_frame"]))
+    for entry in entries:
+        for key in ("target", "reference"):
+            role = entry.get(key)
+            if role and role.get("kind") == "site":
+                try:
+                    position = np.asarray(
+                        role.get("site_position"), dtype=np.float64
+                    )
+                    if position.shape != (3,) or not np.all(np.isfinite(position)):
+                        raise ValueError(
+                            "site_position must be a finite [3] vector"
+                        )
+                    SiteGeometry.from_mapping(role.get("site_geometry"))
+                except ValueError as exc:
+                    raise ValueError(
+                        f"Invalid v2 {key} site_geometry in {path}: {exc}"
+                    ) from exc
     if manifest.get("handle_namespace") == "stored":
         alignment = manifest.get("handle_alignment", {})
         mask_verified = alignment.get('status') == 'mask_verified'
@@ -309,14 +337,12 @@ def _validate_source_masks(episode_dir, entries):
                 "Use the same raw dataset and mask resolution as manifest generation.")
 
 
-def _role_points(role, masks, point_clouds):
+def _role_points(role, masks, point_clouds, num_points):
     if role is None:
         return np.empty((0, 3), dtype=np.float32)
     if role["kind"] == "site":
-        position = np.asarray(role.get("site_position"), dtype=np.float32).reshape(-1)
-        if position.size != 3 or not np.isfinite(position).all():
-            raise ValueError(f"Invalid semantic site position: {position}")
-        return position.reshape(1, 3)
+        geometry = SiteGeometry.from_mapping(role.get("site_geometry"))
+        return sample_site_geometry(geometry, num_points)
     handles = np.asarray(role.get("handles", ()), dtype=np.int64)
     if handles.size == 0:
         raise ValueError(f"Semantic object has no handles: {role}")
@@ -340,15 +366,20 @@ def _fill_slot(oracle, slot, role_code, role, raw_points, num_points, rng):
     if role is None or raw_points.size == 0:
         return False, 0
     if role["kind"] == "site":
-        sampled = np.repeat(raw_points[:1], num_points, axis=0)
+        geometry = SiteGeometry.from_mapping(role.get("site_geometry"))
+        sampled = raw_points
+        center = geometry.center_world.astype(np.float32)
+        size = geometry.extent.astype(np.float32)
     else:
         indices = rng.choice(
             len(raw_points), size=num_points, replace=len(raw_points) < num_points
         )
         sampled = raw_points[indices]
+        center = raw_points.mean(axis=0, dtype=np.float64).astype(np.float32)
+        size = np.ptp(raw_points, axis=0).astype(np.float32)
     oracle.points[slot] = sampled.astype(np.float32, copy=False)
-    oracle.centers[slot] = raw_points.mean(axis=0, dtype=np.float64).astype(np.float32)
-    oracle.sizes[slot] = np.ptp(raw_points, axis=0).astype(np.float32)
+    oracle.centers[slot] = center
+    oracle.sizes[slot] = size
     oracle.ids[slot] = slot
     oracle.valid[slot] = True
     oracle.roles[slot] = role_code
@@ -364,8 +395,12 @@ def _build_oracle(
         episode_dir, sample_frame, cameras, observation
     )
     oracle = empty_oracle_objects(max_objects, num_points)
-    target_raw = _role_points(entry["target"], masks, point_clouds)
-    reference_raw = _role_points(entry.get("reference"), masks, point_clouds)
+    target_raw = _role_points(
+        entry["target"], masks, point_clouds, num_points
+    )
+    reference_raw = _role_points(
+        entry.get("reference"), masks, point_clouds, num_points
+    )
     rng = _stable_frame_rng(seed, task, episode_idx, sample_frame)
     target_valid, target_count = _fill_slot(
         oracle, 0, ORACLE_ROLE_TARGET, entry["target"], target_raw, num_points, rng
@@ -408,6 +443,19 @@ def _raw_handles(role):
     return np.asarray(role.get("handles", ()), dtype=np.int64)
 
 
+def _geometry_source(role):
+    if role is None:
+        return "none"
+    kind = role.get("kind")
+    if kind == "site":
+        return SiteGeometry.from_mapping(
+            role.get("site_geometry")
+        ).source
+    if kind == "object":
+        return "object_mask"
+    return "none"
+
+
 def _audit_fields(schema, entry, target_valid, reference_valid, max_objects):
     target = entry["target"]
     reference = entry.get("reference")
@@ -426,6 +474,8 @@ def _audit_fields(schema, entry, target_valid, reference_valid, max_objects):
         "oracle_reference_handles": _raw_handles(reference),
         "oracle_target_role_valid": np.asarray(target_valid, dtype=np.bool_),
         "oracle_reference_role_valid": np.asarray(reference_valid, dtype=np.bool_),
+        "oracle_target_geometry_source": text(_geometry_source(target)),
+        "oracle_reference_geometry_source": text(_geometry_source(reference)),
     }
 
 

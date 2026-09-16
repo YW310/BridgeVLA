@@ -127,7 +127,7 @@ def test_eval_wires_separate_manifest_csv_and_tensorboard_namespace():
 
 def complete_manifest():
     return {
-        'schema_version': 'rlbench_o2_semantic_roles_v1',
+        'schema_version': 'rlbench_o2_semantic_roles_v2',
         'role_config_sha256': 'current',
         'task': 'close_jar', 'episode_idx': 3,
         'phase_source': 'demo_events', 'source_alignment_validated': True,
@@ -141,7 +141,16 @@ def complete_manifest():
              'target': {'kind': 'object', 'handles': [99]}, 'reference': None},
             {'sample_frame': 5, 'completion_satisfied': True,
              'target': {'kind': 'object', 'handles': [99]},
-             'reference': {'kind': 'site', 'site_position': [.1, .2, .3]}},
+             'reference': {
+                 'kind': 'site', 'site_position': [.1, .2, .3],
+                 'site_geometry': {
+                     'primitive': 'box_volume',
+                     'center_world': [.1, .2, .3],
+                     'rotation_world': np.eye(3).tolist(),
+                     'extent': [.02, .02, .02],
+                     'source': 'fallback_box',
+                 },
+             }},
         ],
     }
 
@@ -182,6 +191,8 @@ def test_resume_rejects_stale_task_resolver_version(tmp_path):
     (lambda value: value['entries'][-1].update(completion_satisfied=False), 'completion'),
     (lambda value: value.update(expected_sample_frames=[0, 4, 5]), 'coverage'),
     (lambda value: value['entries'][0]['target'].update(handles=[123]), 'handles'),
+    (lambda value: value['entries'][-1]['reference'].pop(
+        'site_geometry'), 'geometry'),
 ])
 def test_resume_regenerates_stale_or_incomplete_manifest(tmp_path, mutation, reason):
     value = complete_manifest()

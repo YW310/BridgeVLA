@@ -25,11 +25,16 @@ ROLE_CONFIG = ROOT / "finetune" / "RLBench" / "configs" / "rlbench_o2_semantic_r
 
 
 class FakeObject:
-    def __init__(self, name, handle, position=(0.0, 0.0, 0.0), children=()):
+    def __init__(
+        self, name, handle, position=(0.0, 0.0, 0.0), children=(),
+        bounding_box=None, matrix=None,
+    ):
         self.name = name
         self.handle = handle
         self.position = position
         self.children = list(children)
+        self.bounding_box = bounding_box
+        self.matrix = matrix
 
     def get_name(self):
         return self.name
@@ -39,6 +44,16 @@ class FakeObject:
 
     def get_position(self):
         return self.position
+
+    def get_bounding_box(self):
+        if self.bounding_box is None:
+            raise NotImplementedError("bounding box unavailable")
+        return self.bounding_box
+
+    def get_matrix(self):
+        if self.matrix is None:
+            raise NotImplementedError("matrix unavailable")
+        return self.matrix
 
     def get_objects_in_tree(self, exclude_base=True, first_generation_only=False):
         output = [] if exclude_base else [self]
@@ -109,7 +124,11 @@ def provider(task_name, task, tmp_path=None, strict=True):
 def test_role_config_covers_exact_bridgevla_18_tasks():
     with ROLE_CONFIG.open("r", encoding="utf-8") as stream:
         config = yaml.safe_load(stream)
-    assert config["schema_version"] == "rlbench_o2_semantic_roles_v1"
+    assert config["schema_version"] == "rlbench_o2_semantic_roles_v2"
+    assert config["site_geometry_defaults"] == {
+        "primitive": "box_volume",
+        "fallback_extent_m": [0.02, 0.02, 0.02],
+    }
     assert len(config["tasks"]) == 18
     assert set(config["tasks"]) == {
         "close_jar", "insert_onto_square_peg", "light_bulb_in",
@@ -131,6 +150,78 @@ def test_role_config_covers_exact_bridgevla_18_tasks():
     } == {"place_cups", "stack_blocks", "stack_cups"}
     assert strategies["push_buttons"] == "ordered_target_contact"
     assert sum(strategy == "single_success" for strategy in strategies.values()) == 14
+
+
+def test_provider_rejects_legacy_v1_role_config(tmp_path):
+    config_path = tmp_path / "roles.yaml"
+    config_path.write_text(
+        "schema_version: rlbench_o2_semantic_roles_v1\ntasks: {}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="expected.*v2"):
+        RLBenchGTOracleProvider(config_path)
+
+
+def test_online_site_sampling_uses_oriented_region_points():
+    rotation = np.asarray([
+        [0.0, -1.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0],
+    ])
+    transform = np.eye(4)
+    transform[:3, :3] = rotation
+    transform[:3, 3] = [0.5, -0.25, 1.0]
+    site = FakeObject(
+        "site", 9,
+        position=(0.5, -0.25, 1.0),
+        bounding_box=[-0.1, 0.1, -0.2, 0.2, 0.0, 0.0],
+        matrix=transform,
+    )
+    value = RLBenchGTOracleProvider(
+        ROLE_CONFIG, cameras=("front",), num_points=16, strict=True)
+    entity = value._entity_site("test_site", site)
+
+    points, valid = value._sample_entity_points(entity, {}, {})
+
+    assert valid
+    assert entity.site_geometry.source == "object_bbox"
+    assert len(np.unique(points, axis=0)) > 1
+    local = (
+        points - entity.site_geometry.center_world
+    ) @ entity.site_geometry.rotation_world
+    assert np.all(
+        np.abs(local) <= entity.site_geometry.extent / 2.0 + 1e-6)
+
+
+def test_site_role_can_override_only_the_fallback_extent():
+    value = RLBenchGTOracleProvider(
+        ROLE_CONFIG, cameras=("front",), num_points=8, strict=True)
+    site = FakeObject("site", 9, position=(-0.5, 0.25, 1.0))
+
+    entity = value._entity_site(
+        "test_site", site,
+        {"primitive": "box_volume", "fallback_extent_m": [0.04, 0.06, 0.08]},
+    )
+
+    assert entity.site_geometry.source == "fallback_box"
+    np.testing.assert_allclose(
+        entity.site_geometry.extent, [0.04, 0.06, 0.08])
+    with pytest.raises(SemanticRoleMappingError, match="primitive"):
+        value._entity_site(
+            "test_site", site, {"primitive": "sphere_volume"})
+
+
+def test_object_mask_sampling_path_is_unchanged():
+    drawer = FakeObject("drawer_bottom", 31)
+    value = provider("open_drawer", FakeTask([drawer]))
+
+    output = value.enrich(observation([[31, 31], [0, 0]]), {})
+
+    points = output["oracle_target_object_points"]
+    expected = np.asarray([[0.0, 0.0, 1.0], [1.0, 0.0, 1.0]])
+    assert output["oracle_target_object_valid"]
+    assert points.shape == (8, 3)
+    assert all(np.any(np.all(point == expected, axis=1)) for point in points)
 
 
 def test_decode_rgb_handle_mask_does_not_mutate_read_only_input():
@@ -194,7 +285,9 @@ def test_close_jar_merges_lid_children_and_selects_variation_jar(tmp_path):
 
 
 @pytest.mark.parametrize("variation", range(4))
-def test_slide_block_reference_comes_from_registered_success_detector(variation):
+def test_slide_block_reference_comes_from_registered_success_detector(
+    variation, tmp_path
+):
     block = FakeObject("block", 10)
     sites = [
         FakeObject(f"success{index + 1}", 20 + index,
@@ -206,8 +299,15 @@ def test_slide_block_reference_comes_from_registered_success_detector(variation)
     task._success_conditions = [
         SimpleNamespace(_detector=sites[variation])
     ]
+    with ROLE_CONFIG.open("r", encoding="utf-8") as stream:
+        config = yaml.safe_load(stream)
+    config["tasks"]["slide_block_to_color_target"]["reference"][
+        "site_geometry"
+    ] = {"fallback_extent_m": [0.04, 0.06, 0.08]}
+    config_path = tmp_path / "roles.yaml"
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
     value = RLBenchGTOracleProvider(
-        ROLE_CONFIG, cameras=("front",), num_points=8, strict=True)
+        config_path, cameras=("front",), num_points=8, strict=True)
     value.reset(
         SimpleNamespace(_task=task),
         "slide_block_to_color_target",
@@ -224,6 +324,9 @@ def test_slide_block_reference_comes_from_registered_success_detector(variation)
     assert assignment.reference.handles == ()
     np.testing.assert_allclose(
         assignment.reference.site_position, sites[variation].position)
+    assert assignment.reference.site_geometry.source == "fallback_box"
+    np.testing.assert_allclose(
+        assignment.reference.site_geometry.extent, [0.04, 0.06, 0.08])
 
 
 def test_retry_discards_failed_manifest_attempt_before_restarting(tmp_path):
@@ -534,6 +637,7 @@ def test_push_buttons_demo_events_locate_ordered_gt_target_contacts():
     assert assignment.target.semantic_name == "button0_contact_site"
     assert assignment.target.handles == ()
     np.testing.assert_allclose(assignment.target.site_position, [0.0, 0.0, 1.0])
+    assert assignment.target.site_geometry.source == "fallback_box"
 
     info = value.build_demo_event_manifest(demo, [1, 3])
 
@@ -814,6 +918,9 @@ def test_reach_and_drag_uses_color_target_site_without_mask_mapping(tmp_path):
     assert entry['reference']['kind'] == 'site'
     assert entry['reference']['handles'] == []
     assert entry['reference']['site_position'] == pytest.approx([.2, -.1, .75])
+    assert entry['reference']['site_geometry']['source'] == 'fallback_box'
+    assert entry['reference']['site_geometry']['extent'] == pytest.approx(
+        [.02, .02, .02])
     report = json.loads(
         (tmp_path / 'reach_and_drag' / 'episode_0.json').read_text())
     assert set(report['live_to_stored']) == {'101'}

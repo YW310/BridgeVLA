@@ -72,8 +72,8 @@ precision/recall 低于 0.5 仍是 hard conflict。
 同一实体至少还有一个其他部件通过多视角映射时才允许生成。若整个实体不可观测，仍会
 在 strict 模式中终止。
 `reach_and_drag` 是明确例外：RLBench 的彩色 `target0` 不出现在保存的实例 mask 中，
-因此 Reference 定义为其世界坐标中心 `site`，而不是伪造 object handle。Target 仍为
-`stick`；训练和在线测试复用同一配置，均通过现有 Gaussian site prior 表示 T/R 关系。
+因此 Reference 定义为 `site`，而不是伪造 object handle。Target 仍为 `stick`；当前
+兼容表示及后续统一几何约定见 [交互实体几何表示](#semantic-gt-entity-geometry)。
 点云偏差只审计，不阻止身份映射；不修正原始点云，也不保证所有 episode 都能通过。
 报告和 manifest 使用独立的 `status=mask_verified`、`geometry_verified=false`；
 逐候选视角包含 `geometry_passed` / `geometry_warnings`。
@@ -89,6 +89,43 @@ precision/recall 低于 0.5 仍是 hard conflict。
 构成空间关系的唯一物体或 site。单物体关节任务没有 Reference。一个语义实体可合并
 多个 simulator handles，phase 只在 live RLBench 成功条件满足后推进。
 
+<a id="semantic-gt-entity-geometry"></a>
+
+### 交互实体几何表示
+
+predicted/internal-slot 路线的统一目标是将语义角色与几何载体分开：instruction 决定
+整项任务相关的实体集合，phase 再从中绑定当前唯一的 Target/Reference。当前 V1 replay
+接口统一使用固定大小的 XYZ 集合：
+
+```text
+G_xyz = {x_i ∈ R^3}_{i=1..N}
+```
+
+`kind=object` 从四视角实例 mask 的可见表面点云采样。`kind=site` 使用
+`SiteGeometry(primitive=box_volume)`：记录世界坐标 `center_world [3]`、
+`rotation_world [3,3]`、完整边长 `extent [3]` 和 `source`，再用确定性的低差异采样生成
+定向体积点集。几何优先来自 PyRep 对象局部 bounding box 与 world matrix；平面或线形
+bbox 保留其零 extent 轴。仅当 bbox 接口缺失或三轴全为零时，才以对象位置为中心生成
+`[0.02,0.02,0.02] m` 的 `fallback_box`。这个 fallback 是人为交互 kernel，不是传感器
+或 dummy 的真实物理体积。`site_position` 仍单独保留，供 phase/contact 距离判断使用。
+
+全局 fallback 在 semantic-role YAML 中配置为：
+
+```yaml
+site_geometry_defaults:
+  primitive: box_volume
+  fallback_extent_m: [0.02, 0.02, 0.02]
+```
+
+单个 site role 可在 `site_geometry.fallback_extent_m` 覆盖边长；V1 不接受其他
+primitive。
+
+manifest 与离线重写器使用 `rlbench_o2_semantic_roles_v2`，完整序列化上述描述；旧 v1
+manifest 会被拒绝，不能静默恢复为重复中心点。当前 schema 仍只有 XYZ 与 valid；
+normal、weight、置信度和未被当前 phase 选中的完整实体集合属于后续版本。已有 semantic
+manifest 与 semantic-GT buffer 必须重新生成；网络输入 shape 和参数结构未变，已有 O2
+checkpoint 可继续加载。
+
 | 任务类型 | Target / Reference | phase 规则 |
 | --- | --- | --- |
 | 单关节 | `open_drawer`、`push_buttons`、`turn_tap`：T 为源码指定的可动部件，R 不存在 | 对应 joint condition 满足 |
@@ -97,10 +134,9 @@ precision/recall 低于 0.5 仍是 hard conflict。
 | 工具任务 | `reach_and_drag`：stick/target；`sweep_to_dustpan_of_size`：broom/dustpan site | 不新增第三个 Tool 通道 |
 | 几何选择 | `insert_onto_square_peg`：ring/与 `success_centre` 对齐的 pillar | 四个 detector 同时满足 |
 
-Reference `kind=object` 时从四视角 GT handle mask 提取完整点云；`kind=site` 时读取
-success sensor/dummy 的 world position，并重复到 `oracle_num_points` 后走原有 Gaussian
-projection。site 只用于 Oracle upper-bound，manifest 和 replay audit 字段都会显式记录
-`kind=site`。
+manifest 会记录完整 `site_geometry`；replay audit 还记录
+`oracle_{target,reference}_geometry_source`，以区分 `object_mask`、`object_bbox`、
+`fallback_box` 和 `none`，这些字段不输入网络。
 
 正式生成前先对全部 variation 做 strict reset 审计（不需要 checkpoint）：
 
@@ -278,7 +314,7 @@ python tools/rewrite_replay_with_semantic_roles.py \
 
 工具保留 action、图像、点云、语言、`episode_idx/sample_frame` 和其他 baseline 字段；只
 替换六个 Oracle tensor，并增加不输入网络的审计字段：schema version、phase ID、T/R
-semantic name、kind、原始 handle 集合、`oracle_phase_source` 及各角色 valid。输出中的 T/R 使用固定小 slot ID
+semantic name、kind、几何来源、原始 handle 集合、`oracle_phase_source` 及各角色 valid。输出中的 T/R 使用固定小 slot ID
 `0/1`，不会把上千万的 simulator handle 当作显示 ID；真实 handle 仍保存在 audit 字段。
 
 严格行为如下：

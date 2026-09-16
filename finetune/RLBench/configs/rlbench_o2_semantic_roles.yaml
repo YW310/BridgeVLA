@@ -1,4 +1,7 @@
-schema_version: rlbench_o2_semantic_roles_v1
+schema_version: rlbench_o2_semantic_roles_v2
+site_geometry_defaults:
+  primitive: box_volume
+  fallback_extent_m: [0.02, 0.02, 0.02]
 
 # This file is the single semantic contract shared by the online RLBench GT
 # provider and the offline Oracle-field rewriter.  Object names are resolved
