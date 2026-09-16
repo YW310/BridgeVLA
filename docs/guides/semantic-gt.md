@@ -184,22 +184,44 @@ manifest 生成只回放 expert action，不调用 policy，因此可以使用�
 entries，manifest 的 `generation_attempt` 从 1 开始记录最终采用的是第几次尝试。若全部重试仍失败，
 保留最后一次失败 manifest，离线重写器会因最终 `completion_satisfied=False` 拒绝使用。
 
-18 个任务均支持不重新执行动作的 stored-demo phase 模式：
+18 个任务均支持不重新执行动作的 stored-demo phase 模式。推荐先设置本机路径，再使用
+完整参数生成 v2 manifest：
 
 ```bash
+export REPO=/home/yiwei/project/BridgeVLA
+export RAW_DATA=$REPO/LPY/BridgeVLA_RLBench_TRAIN_DATA/train
+export MODEL_FOLDER=$REPO/checkpoints/RLBench
+export MODEL_NAME=model_80.pth
+
+cd "$REPO/finetune/RLBench"
+
 TASKS="all" \
+MODEL_FOLDER="$MODEL_FOLDER" \
+MODEL_NAME="$MODEL_NAME" \
+EXP_CFG_PATH="$REPO/finetune/RLBench/configs/rlbench_config.yaml" \
+EVAL_DATAFOLDER="$RAW_DATA" \
+START_EPISODE=0 \
+EVAL_EPISODES=100 \
+EPISODE_LENGTH=50 \
+DEVICE=0 \
 REPLAY_GROUND_TRUTH=1 \
 MANIFEST_PHASE_SOURCE=demo_events \
 EVAL_RESUME=1 \
 MANIFEST_CONTINUE_ON_ERROR=1 \
-ORACLE_HANDLE_ALIGNMENT=verified \
-EVAL_DATAFOLDER=/home/yiwei/project/BridgeVLA/LPY/BridgeVLA_RLBench_TRAIN_DATA/train \
-SAVE_VIDEO=0 \
 ORACLE_PROVIDER=rlbench_gt \
+ORACLE_ROLE_CONFIG="$REPO/finetune/RLBench/configs/rlbench_o2_semantic_roles.yaml" \
+ORACLE_NUM_POINTS=512 \
+ORACLE_HANDLE_ALIGNMENT=verified \
 ORACLE_STRICT=1 \
 ORACLE_DEBUG=0 \
+SAVE_VIDEO=0 \
+VISUALIZE=0 \
 bash eval.sh
 ```
+
+按实际数据量修改 `EVAL_EPISODES`；若 expert keypoint 数超过当前上限，应增大
+`EPISODE_LENGTH`。`EVAL_RESUME=1` 会把 `TASKS="all"` 展开成 18 个独立任务进程，
+并自动重新生成缺失、损坏、旧 v1 或与当前 role YAML 摘要不一致的 manifest。
 
 该模式不调用 simulator `step()`，因此没有 IK、路径规划或接触重放失败，也不需要重试。
 18 个任务使用 YAML 中逐任务声明的严格策略：
