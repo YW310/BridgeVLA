@@ -14,6 +14,17 @@ SMALL_EXACT_ROBUST_MAX_DISTANCE_P90 = .012
 SMALL_EXACT_ROBUST_MAX_DISTANCE_P95 = .025
 THIN_ENTITY_STRONG_MIN_PIXELS = 8
 THIN_ENTITY_AUXILIARY_MIN_PIXELS = 2
+RELOCATED_MIN_PIXELS = 16
+RELOCATED_MIN_VIEWS = 2
+RELOCATED_SUPPORT_AREA_RATIO = 4.
+RELOCATED_MIN_PIXEL_RATIO = .4
+RELOCATED_MAX_PIXEL_RATIO = 2.5
+RELOCATED_MAX_CENTROID_SHIFT = .15
+RELOCATED_MAX_EXTENT_ERROR = .012
+RELOCATED_MAX_CENTERED_DISTANCE_P50 = .005
+RELOCATED_MAX_CENTERED_DISTANCE_P90 = .010
+RELOCATED_MAX_CENTERED_DISTANCE_P95 = .015
+RELOCATED_MAX_POINTS = 256
 
 
 class HandleAlignmentError(ValueError):
@@ -51,6 +62,201 @@ def _interior(mask):
     h, w = mask.shape
     return np.logical_and.reduce([
         padded[y:y+h, x:x+w] for y in range(3) for x in range(3)])
+
+
+def _sample_points(points, limit=RELOCATED_MAX_POINTS):
+    '''Return a deterministic bounded subset for quadratic shape comparison.'''
+    points = np.asarray(points, dtype=np.float64)
+    if len(points) <= limit:
+        return points
+    indices = np.linspace(0, len(points) - 1, limit, dtype=np.int64)
+    return points[indices]
+
+
+def _centered_shape_summary(live_points, stored_points):
+    '''Compare two visible surfaces after removing their independent centers.'''
+    live_points = _sample_points(live_points)
+    stored_points = _sample_points(stored_points)
+    result = {
+        'live_finite_points': int(len(live_points)),
+        'stored_finite_points': int(len(stored_points)),
+    }
+    if not len(live_points) or not len(stored_points):
+        return result
+
+    live_center = np.median(live_points, axis=0)
+    stored_center = np.median(stored_points, axis=0)
+    live_centered = live_points - live_center
+    stored_centered = stored_points - stored_center
+    live_extent = np.quantile(live_points, .95, axis=0) - np.quantile(
+        live_points, .05, axis=0)
+    stored_extent = np.quantile(stored_points, .95, axis=0) - np.quantile(
+        stored_points, .05, axis=0)
+    distances = np.linalg.norm(
+        live_centered[:, None, :] - stored_centered[None, :, :], axis=-1)
+    nearest_live = np.min(distances, axis=1)
+    nearest_stored = np.min(distances, axis=0)
+
+    def symmetric_quantile(q):
+        return float(max(
+            np.quantile(nearest_live, q),
+            np.quantile(nearest_stored, q)))
+
+    result.update(
+        live_center=live_center.tolist(),
+        stored_center=stored_center.tolist(),
+        centroid_shift=float(np.linalg.norm(stored_center - live_center)),
+        live_extent=live_extent.tolist(),
+        stored_extent=stored_extent.tolist(),
+        extent_error_max=float(np.max(np.abs(stored_extent - live_extent))),
+        centered_distance_p50=symmetric_quantile(.50),
+        centered_distance_p90=symmetric_quantile(.90),
+        centered_distance_p95=symmetric_quantile(.95),
+    )
+    return result
+
+
+def _relocated_instance_candidate(views, live_handle, overlap_candidates):
+    '''Find one moved saved instance using a centered-geometry quorum.
+
+    This is unavailable for ordinary low-overlap or split masks. It is enabled
+    only when the live silhouette lands on a saved instance at least four
+    times larger in two views: the signature of exposed support geometry.
+    '''
+    trigger_details = {}
+    broad_candidates = []
+    material_candidates = []
+    for candidate in sorted(overlap_candidates):
+        candidate_views = {}
+        broad_views = 0
+        material_views = 0
+        non_broad_material = False
+        for camera, (am, bm, _, _) in views.items():
+            live_mask = am == live_handle
+            stored_mask = bm == candidate
+            live_pixels = int(live_mask.sum())
+            stored_pixels = int(stored_mask.sum())
+            overlap_pixels = int((live_mask & stored_mask).sum())
+            area_ratio = stored_pixels / max(live_pixels, 1)
+            material = (
+                live_pixels >= RELOCATED_MIN_PIXELS
+                and stored_pixels >= RELOCATED_MIN_PIXELS
+                and overlap_pixels >= 2)
+            broad = material and area_ratio >= RELOCATED_SUPPORT_AREA_RATIO
+            material_views += int(material)
+            broad_views += int(broad)
+            non_broad_material |= material and not broad
+            candidate_views[camera] = dict(
+                live_pixels=live_pixels,
+                stored_pixels=stored_pixels,
+                overlap_pixels=overlap_pixels,
+                stored_to_live_area_ratio=area_ratio,
+                material_overlap=bool(material),
+                broad_support=bool(broad))
+        trigger_details[str(candidate)] = candidate_views
+        if material_views:
+            material_candidates.append(candidate)
+        if broad_views >= RELOCATED_MIN_VIEWS and not non_broad_material:
+            broad_candidates.append(candidate)
+
+    trigger = bool(
+        material_candidates
+        and set(material_candidates).issubset(broad_candidates))
+    evidence = {
+        'triggered': trigger,
+        'required_support_area_ratio': RELOCATED_SUPPORT_AREA_RATIO,
+        'required_support_views': RELOCATED_MIN_VIEWS,
+        'overlap_candidates': trigger_details,
+        'material_overlap_candidates': material_candidates,
+        'broad_support_candidates': broad_candidates,
+        'candidates': {},
+    }
+    if not trigger:
+        evidence['reason'] = 'overlap_candidates_are_not_exclusively_broad_support'
+        return None, evidence
+
+    stored_handles = sorted({
+        int(value)
+        for _, (_, mask, _, _) in views.items()
+        for value in np.unique(mask)
+        if int(value) > 0
+    })
+    passing = []
+    for candidate in stored_handles:
+        checks = {}
+        agreeing = 0
+        for camera, (am, bm, ac, bc) in views.items():
+            live_mask = am == live_handle
+            stored_mask = bm == candidate
+            live_pixels = int(live_mask.sum())
+            stored_pixels = int(stored_mask.sum())
+            pixel_ratio = stored_pixels / max(live_pixels, 1)
+            live_valid = live_mask & np.isfinite(ac).all(axis=-1)
+            stored_valid = stored_mask & np.isfinite(bc).all(axis=-1)
+            geometry = _centered_shape_summary(
+                ac[live_valid], bc[stored_valid])
+            reasons = []
+            if min(live_pixels, stored_pixels) < RELOCATED_MIN_PIXELS:
+                reasons.append('insufficient_pixels')
+            if not (RELOCATED_MIN_PIXEL_RATIO <= pixel_ratio
+                    <= RELOCATED_MAX_PIXEL_RATIO):
+                reasons.append('pixel_ratio')
+            if int(live_valid.sum()) < .95 * live_pixels or int(
+                    stored_valid.sum()) < .95 * stored_pixels:
+                reasons.append('insufficient_finite_geometry')
+            gates = (
+                ('centroid_shift', RELOCATED_MAX_CENTROID_SHIFT),
+                ('extent_error_max', RELOCATED_MAX_EXTENT_ERROR),
+                ('centered_distance_p50',
+                 RELOCATED_MAX_CENTERED_DISTANCE_P50),
+                ('centered_distance_p90',
+                 RELOCATED_MAX_CENTERED_DISTANCE_P90),
+                ('centered_distance_p95',
+                 RELOCATED_MAX_CENTERED_DISTANCE_P95),
+            )
+            for key, maximum in gates:
+                if geometry.get(key) is None or geometry[key] > maximum:
+                    reasons.append(key)
+            passed = not reasons
+            agreeing += int(passed)
+            checks[camera] = dict(
+                live_pixels=live_pixels,
+                stored_pixels=stored_pixels,
+                stored_to_live_pixel_ratio=pixel_ratio,
+                geometry=geometry,
+                passed=bool(passed),
+                failure_reasons=reasons)
+        accepted = agreeing >= RELOCATED_MIN_VIEWS
+        evidence['candidates'][str(candidate)] = {
+            'agreeing_view_count': agreeing,
+            'candidate_accepted': bool(accepted),
+            'views': checks,
+        }
+        if accepted:
+            passing.append(candidate)
+
+    evidence['passing_candidates'] = passing
+    evidence['certificate'] = {
+        'type': 'relocated_centered_geometry_two_view',
+        'min_views': RELOCATED_MIN_VIEWS,
+        'min_pixels': RELOCATED_MIN_PIXELS,
+        'pixel_ratio_range': [
+            RELOCATED_MIN_PIXEL_RATIO, RELOCATED_MAX_PIXEL_RATIO],
+        'max_centroid_shift': RELOCATED_MAX_CENTROID_SHIFT,
+        'max_extent_error': RELOCATED_MAX_EXTENT_ERROR,
+        'max_centered_distance_p50':
+            RELOCATED_MAX_CENTERED_DISTANCE_P50,
+        'max_centered_distance_p90':
+            RELOCATED_MAX_CENTERED_DISTANCE_P90,
+        'max_centered_distance_p95':
+            RELOCATED_MAX_CENTERED_DISTANCE_P95,
+    }
+    if len(passing) != 1:
+        evidence['reason'] = (
+            'ambiguous_relocated_candidates' if passing
+            else 'no_relocated_candidate_passed')
+        return None, evidence
+    return passing[0], evidence
 
 
 def align_semantic_handle_group(live, stored, handles, semantic_name):
@@ -568,10 +774,20 @@ def align_handles(live, stored, names, name_to_handle=None, *, mode='verified',
                     if single_view_small_exact_robust_geometry else
                     'single_view_dominant_mask'
                     if accepted_by_single_view else 'multi_view_masks')
+        relocated_evidence = None
+        if mask_only and declared is None and not accepted:
+            relocated, relocated_evidence = _relocated_instance_candidate(
+                views, handle, candidates)
+            if relocated is not None:
+                accepted.append(relocated)
+                accepted_sources[relocated] = 'relocated_centered_geometry'
+                evidence['_used_relocated_geometry'] = True
         evidence[str(handle)] = dict(
             name=name, candidates=candidate_evidence,
             low_pixel_views=low_pixel_views,
             candidate_assessments=candidate_assessments)
+        if relocated_evidence is not None:
+            evidence[str(handle)]['relocated_instance'] = relocated_evidence
         if (not accepted and not candidates and allow_unobservable
                 and max(live_pixels.values(), default=0) < 16):
             evidence[str(handle)].update(
@@ -619,4 +835,7 @@ def align_handles(live, stored, names, name_to_handle=None, *, mode='verified',
                      == 'single_view_dominant_mask'
                      else "registered_mask_overlap") if mask_only else
                     "acquisition_metadata" if declared is not None else "registered_masks"))
+        if accepted_sources[target] == 'relocated_centered_geometry':
+            evidence[str(handle)]['source'] = (
+                'registered_centered_geometry_relocation')
     return mapping, evidence

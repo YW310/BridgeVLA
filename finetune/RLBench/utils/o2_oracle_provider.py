@@ -1488,15 +1488,25 @@ class RLBenchGTOracleProvider:
                     sorted(unobservable) if mapping else []))
             if self.handle_alignment == 'mask_verified':
                 report['geometry_verified'] = False
+                report['relocated_geometry_verified'] = bool(
+                    evidence.get('_used_relocated_geometry', False))
                 if used_entity_union_fallback:
                     print(
                         '[Manifest] mask_verified: individual child-handle '
                         'alignment failed; accepted strict semantic-entity '
                         'individual and/or multi-view mask certificates per entity.', flush=True)
-                print('[Manifest] mask_verified: identity inferred from high-overlap masks; '
-                      'global geometry is not certified (single-view fallback requires local '
-                      'geometry corroboration). Review the alignment JSON '
-                      'before training.', flush=True)
+                if report['relocated_geometry_verified']:
+                    print(
+                        '[Manifest] mask_verified: a moved instance was certified '
+                        'by unique centered geometry in at least two views.',
+                        flush=True)
+                else:
+                    print(
+                        '[Manifest] mask_verified: identity inferred from '
+                        'high-overlap masks.', flush=True)
+                print(
+                    '[Manifest] global scene geometry is not certified. Review '
+                    'the alignment JSON before training.', flush=True)
             self._stored_handle_map = mapping
             self._stored_entity_handle_map = entity_mapping
             self._nonvisual_handles = excluded

@@ -104,6 +104,13 @@ precision/recall 低于 0.5 仍是 hard conflict。
 报告和 manifest 使用独立的 `status=mask_verified`、`geometry_verified=false`；
 逐候选视角包含 `geometry_passed` / `geometry_warnings`。
 
+若 live 小实例在至少两个视角都落到面积大于自身 4 倍的 stored 支撑面上，说明
+`reset_to_demo` 后可动物体可能发生了位移。此时才会启用全局小实例搜索：分别对点云去中心，
+要求至少两个视角同时通过像素规模、3D 尺寸和双向表面距离检查，并且只能有一个候选通过。
+成功时记录 `source=registered_centered_geometry_relocation` 和
+`relocated_geometry_verified=true`；重复同形候选、普通低 overlap、split mask 或无候选仍严格拒绝。
+该局部证书不代表整幅场景几何对齐，因此 `geometry_verified` 仍保持 `false`。
+
 后续 `tools/rewrite_replay_with_semantic_roles.py` 默认拒绝这种 manifest。
 检查几何审计并决定接受后，须显式添加 `--allow-mask-verified-handles`，
 输出到独立 buffer。正式几何可信的 upper-bound 实验仍应先定位并修复深度偏差，

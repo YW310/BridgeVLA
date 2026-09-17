@@ -681,3 +681,46 @@ def test_single_view_fallback_remains_conservative(failure):
         stored['left_shoulder']['mask'][1:6, 1:5] = 99
     with pytest.raises(HandleAlignmentError):
         align_handles(live, stored, {87: 'square_ring'}, mode='mask_verified')
+
+
+def relocated_instance_views(*, ambiguous=False):
+    live, stored = views()
+    for data in live.values():
+        data['mask'].fill(0)
+        data['mask'][1:5, 1:5] = 87
+    for data in stored.values():
+        data['mask'].fill(48)
+        data['mask'][8:12, 8:12] = 99
+        if ambiguous:
+            data['mask'][8:12, 0:4] = 100
+    return live, stored
+
+
+def test_mask_verified_recovers_uniquely_shaped_relocated_instance():
+    live, stored = relocated_instance_views()
+
+    mapping, report = align_handles(
+        live, stored, {87: 'cylinder'}, mode='mask_verified')
+
+    assert mapping == {87: 99}
+    evidence = report['87']
+    assert evidence['source'] == 'registered_centered_geometry_relocation'
+    relocation = evidence['relocated_instance']
+    assert relocation['triggered']
+    assert relocation['broad_support_candidates'] == [48]
+    assert relocation['passing_candidates'] == [99]
+    assert relocation['candidates']['99']['agreeing_view_count'] == 2
+    assert report['_used_relocated_geometry'] is True
+
+
+def test_mask_verified_rejects_ambiguous_relocated_instances():
+    live, stored = relocated_instance_views(ambiguous=True)
+
+    with pytest.raises(HandleAlignmentError) as error:
+        align_handles(
+            live, stored, {87: 'cylinder'}, mode='mask_verified')
+
+    relocation = error.value.evidence['87']['relocated_instance']
+    assert relocation['triggered']
+    assert relocation['passing_candidates'] == [99, 100]
+    assert relocation['reason'] == 'ambiguous_relocated_candidates'

@@ -154,10 +154,15 @@ Oracle object 只作 teacher/label，不能进入部署 forward。adapter 是 St
 
 | 瓶颈 | 可选扩展 |
 | --- | --- |
-| 小物体局部分辨率不足 | committed T/R local refine |
+| 投影碰撞或小物体分辨率不足 | optional T/R role-layered refine |
 | 同类物体绑定歧义 | bounded multi-hypothesis pair search |
 | 单帧状态历史混淆 | longer recurrent state / explicit progress |
 | 真实执行安全不足 | calibrated execution-risk model |
+
+`role-layered refine` 只作为待验证扩展：coarse stage 先产生 soft T/R point membership，refine
+stage 再将 committed Target 与 Reference 独立投影，减少它们与 distractors 的 z-buffer 竞争。
+它复用共享 scene/VLM feature，不为每个 object 重新运行 VLM。该方法只能恢复原点云中已经存在、
+但在虚拟投影中被覆盖的点；无法补全真实相机没有观测到的表面。
 
 ## 6. 实施与验收
 

@@ -277,11 +277,61 @@ ablation，不能成为部署依赖。
 
 | 触发条件 | 扩展 | 首版状态 |
 | --- | --- | --- |
-| 小物体分辨率不足 | committed T/R local views | 不启用 |
+| 投影碰撞或小物体分辨率不足 | T/R role-layered orthographic refine | 待验证，不启用 |
 | soft roles 召回不足 | bounded pair hypotheses | 不启用 |
 | 明确存在历史混淆 | longer recurrent state / explicit progress | 不启用 |
 | endpoint 可达但执行失败 | execution-risk calibration | 不启用 |
 | assembly 需要接触位点 | contact/keypoint head | 不启用 |
+
+### 7.1 Object-layered Orthographic Refine
+
+该扩展针对 BridgeVLA/RVT 类正交投影的两个问题：不同物体投到同一像素后的 z-buffer 覆盖，以及
+小物体在全局视图中分辨率过低。它不能解决原始 RGB-D 未观测到的真实传感器遮挡。
+
+| 情况 | 是否可改善 |
+| --- | --- |
+| 点已存在于输入点云，但被其他物体在虚拟投影中覆盖 | 是，分角色独立 rasterize |
+| Target 太小，全局投影只占少量像素 | 是，使用 object-centered bounded scale |
+| 物体表面未被任何真实相机观测 | 否，需要多相机、temporal memory 或 active perception |
+
+建议只改 refine stage：
+
+```text
+global point cloud
+→ 原 coarse top/front/right views
+→ soft T/R role membership
+→ lift membership to 3D points
+→ separately render Target and Reference layers
+→ fuse global + T-layer + R-layer + relative geometry
+→ shared full-action decoder
+```
+
+每个 role layer 使用 world-aligned `top/front/right`，中心来自预测 object center，尺度由 object
+extent 乘固定 margin 后裁剪到上下界。首版不学习任意相机旋转。Reference 为 NULL 时不渲染
+Reference layer，使用 learned NULL embedding。
+
+为避免重新引入 post-hoc fusion，分层视图只作为 decoder 输入：translation、rotation、gripper
+和 collision 仍从同一最终 feature 预测。保留 global branch 以提供障碍物与 workspace context；
+role confidence 只控制 local layer 的权重，不能把低置信 crop 当作确定事实。
+
+```text
+F_action = Fuse(
+  F_global,
+  confidence_T * F_T,
+  confidence_R * F_R,
+  relative_geometry
+)
+```
+
+推荐按成本递增比较：
+
+1. 原 global views；
+2. global views + T/R soft mask/depth channels；
+3. global views + independently rasterized T/R layers；
+4. 额外真实视角或 active perception。
+
+若第 2 项已解决问题，不增加 local rendering；若点云本身缺失，第 3 项不应有效。报告 projection
+support recall、heatmap error、额外延迟/显存和 closed-loop success，避免仅凭可视化判断收益。
 
 ## 8. 实施优先级与方法边界
 
