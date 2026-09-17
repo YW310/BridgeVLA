@@ -45,14 +45,17 @@ from augment_replay_with_oracle_objects import (
     _copy_metadata,
     _load_low_dim_observations,
     _numeric_replay_files,
+    _scene_points_for_visualization,
     _same_original_value,
     _stable_frame_rng,
     discover_task_directories,
     empty_oracle_objects,
+    load_frame_rgb_images,
     load_frame_masks,
     load_raw_frame_point_clouds,
     resolve_episode_dir,
     validate_oracle_objects,
+    visualize_oracle_objects,
 )
 
 
@@ -510,6 +513,274 @@ def _atomic_write(destination, original, migrated, oracle):
             temporary.unlink()
 
 
+def _scalar(value, key):
+    values = np.asarray(value).reshape(-1)
+    if values.size != 1:
+        raise ValueError(f'{key} must contain exactly one value; got {values.shape}')
+    return values[0]
+
+
+def _oracle_from_replay(transition, max_objects, num_points):
+    missing = sorted(set(ORACLE_KEYS).difference(transition))
+    if missing:
+        raise ValueError(f'Semantic replay is missing Oracle fields: {missing}')
+    valid = np.asarray(transition['oracle_object_valid'])
+    oracle = OracleObjects(
+        points=np.asarray(transition['oracle_object_points']),
+        centers=np.asarray(transition['oracle_object_centers']),
+        sizes=np.asarray(transition['oracle_object_sizes']),
+        ids=np.asarray(transition['oracle_object_ids']),
+        valid=valid,
+        roles=np.asarray(transition['oracle_object_roles']),
+        raw_point_counts=(),
+        discovered_objects=int(valid.sum()),
+        filtered_objects=0,
+    )
+    validate_oracle_objects(oracle, max_objects, num_points)
+    return oracle
+
+
+def _validate_semantic_transition(transition, max_objects, num_points, source=None):
+    missing = sorted(set(AUDIT_KEYS).difference(transition))
+    if missing:
+        raise ValueError(f'Semantic replay is missing audit fields: {missing}')
+    schema = str(_scalar(
+        transition['oracle_role_schema_version'], 'oracle_role_schema_version'))
+    if schema != SEMANTIC_ROLE_SCHEMA:
+        raise ValueError(
+            f'Unsupported semantic replay schema {schema!r}; '
+            f'expected {SEMANTIC_ROLE_SCHEMA!r}')
+    oracle = _oracle_from_replay(transition, max_objects, num_points)
+    target_present = bool(np.any(
+        oracle.valid & (oracle.roles == ORACLE_ROLE_TARGET)))
+    reference_present = bool(np.any(
+        oracle.valid & (oracle.roles == ORACLE_ROLE_REFERENCE)))
+    target_audit = bool(_scalar(
+        transition['oracle_target_role_valid'], 'oracle_target_role_valid'))
+    reference_audit = bool(_scalar(
+        transition['oracle_reference_role_valid'],
+        'oracle_reference_role_valid'))
+    if target_present != target_audit:
+        raise ValueError(
+            'Target role-valid audit disagrees with oracle_object_roles')
+    if reference_present != reference_audit:
+        raise ValueError(
+            'Reference role-valid audit disagrees with oracle_object_roles')
+    for label, role_code in (
+        ('target', ORACLE_ROLE_TARGET),
+        ('reference', ORACLE_ROLE_REFERENCE),
+    ):
+        kind = str(_scalar(
+            transition[f'oracle_{label}_kind'], f'oracle_{label}_kind'))
+        geometry_source = str(_scalar(
+            transition[f'oracle_{label}_geometry_source'],
+            f'oracle_{label}_geometry_source'))
+        slots = np.flatnonzero(
+            oracle.valid & (oracle.roles == role_code))
+        if len(slots) > 1:
+            raise ValueError(f'Semantic replay has multiple {label} slots')
+        if kind == 'site':
+            if geometry_source not in ('object_bbox', 'fallback_box'):
+                raise ValueError(
+                    f'{label} site has invalid geometry source '
+                    f'{geometry_source!r}')
+            if len(slots) == 1:
+                unique = np.unique(
+                    np.round(oracle.points[int(slots[0])], decimals=7), axis=0)
+                if len(unique) < 2:
+                    raise ValueError(
+                        f'{label} site still uses a repeated center point')
+        elif kind == 'object':
+            if geometry_source != 'object_mask':
+                raise ValueError(
+                    f'{label} object has invalid geometry source '
+                    f'{geometry_source!r}')
+        elif kind == 'none':
+            if geometry_source != 'none' or len(slots):
+                raise ValueError(
+                    f'{label} none role contains geometry or a valid slot')
+        else:
+            raise ValueError(f'Unknown {label} kind {kind!r}')
+    if source is not None:
+        replaced = set(ORACLE_KEYS) | set(AUDIT_KEYS)
+        for key, value in source.items():
+            if (
+                key not in replaced
+                and (
+                    key not in transition
+                    or not _same_original_value(value, transition[key])
+                )
+            ):
+                raise ValueError(
+                    f'Semantic rewrite changed baseline field {key!r}')
+    return oracle
+
+
+def _validate_task_output(args, task, source_dir, destination_dir):
+    source_files = _numeric_replay_files(source_dir)
+    output_files = _numeric_replay_files(destination_dir)
+    source_names = {path.name for path in source_files}
+    output_names = {path.name for path in output_files}
+    missing = sorted(source_names - output_names)
+    extra = sorted(output_names - source_names)
+    if missing or extra:
+        raise ValueError(
+            f'{task} replay file set mismatch: missing={missing[:5]}, '
+            f'extra={extra[:5]}')
+    report = {
+        'task': task,
+        'schema_version': SEMANTIC_ROLE_SCHEMA,
+        'files': len(output_files),
+        'nonterminal_files': 0,
+        'target_valid': 0,
+        'reference_valid': 0,
+        'site_roles': 0,
+        'fallback_box_roles': 0,
+        'raw_fallback_files': 0,
+        'phase_sources': {},
+        'valid': True,
+    }
+    source_by_name = {path.name: path for path in source_files}
+    for output_path in output_files:
+        with source_by_name[output_path.name].open('rb') as stream:
+            source = pickle.load(stream)
+        with output_path.open('rb') as stream:
+            transition = pickle.load(stream)
+        oracle = _validate_semantic_transition(
+            transition, args.max_objects, args.num_points, source=source)
+        terminal = int(np.asarray(transition.get('terminal', -1)).item())
+        if terminal == -1:
+            continue
+        report['nonterminal_files'] += 1
+        report['target_valid'] += int(np.any(
+            oracle.valid & (oracle.roles == ORACLE_ROLE_TARGET)))
+        report['reference_valid'] += int(np.any(
+            oracle.valid & (oracle.roles == ORACLE_ROLE_REFERENCE)))
+        phase_source = str(_scalar(
+            transition['oracle_phase_source'], 'oracle_phase_source'))
+        report['raw_fallback_files'] += int(not phase_source)
+        report['phase_sources'][phase_source] = (
+            report['phase_sources'].get(phase_source, 0) + 1)
+        for label in ('target', 'reference'):
+            kind = str(_scalar(
+                transition[f'oracle_{label}_kind'],
+                f'oracle_{label}_kind'))
+            geometry_source = str(_scalar(
+                transition[f'oracle_{label}_geometry_source'],
+                f'oracle_{label}_geometry_source'))
+            report['site_roles'] += int(kind == 'site')
+            report['fallback_box_roles'] += int(
+                geometry_source == 'fallback_box')
+    report_path = destination_dir / 'semantic_role_validation.json'
+    with report_path.open('w', encoding='utf-8') as stream:
+        json.dump(report, stream, indent=2, sort_keys=True)
+    files_count = report['files']
+    nonterminal_count = report['nonterminal_files']
+    site_count = report['site_roles']
+    fallback_count = report['raw_fallback_files']
+    print(
+        f'[VALIDATED] {task}: {files_count} replay files; '
+        f'nonterminal={nonterminal_count}; site_roles={site_count}; '
+        f'raw_fallback={fallback_count}; report={report_path}',
+        flush=True)
+    return report
+
+
+def _visualization_files(files, index, every):
+    if index is not None:
+        matches = [path for path in files if int(path.stem) == index]
+        if not matches:
+            raise FileNotFoundError(f'Missing replay index {index}')
+        return matches
+    if every > 0:
+        return list(files[::every])
+    return []
+
+
+def _visualize_task_output(args, task, destination_dir):
+    files = _numeric_replay_files(destination_dir)
+    selected = _visualization_files(
+        files, args.visualize_index, args.visualize_every)
+    output_dir = args.visualize_output_dir / task
+    count = 0
+    for replay_path in selected:
+        replay_index = int(replay_path.stem)
+        with replay_path.open('rb') as stream:
+            transition = pickle.load(stream)
+        oracle = _validate_semantic_transition(
+            transition, args.max_objects, args.num_points)
+        terminal = int(np.asarray(transition.get('terminal', -1)).item())
+        episode_idx = None
+        sample_frame = None
+        camera_images = {}
+        camera_masks = {}
+        group_by_id = {}
+        if terminal != -1:
+            episode_idx = int(np.asarray(transition['episode_idx']).item())
+            sample_frame = int(np.asarray(transition['sample_frame']).item())
+            episode_dir = resolve_episode_dir(
+                args.raw_data_dir, task, episode_idx)
+            camera_images = load_frame_rgb_images(
+                episode_dir, sample_frame, args.cameras)
+            camera_masks = load_frame_masks(
+                episode_dir, sample_frame, args.cameras)
+            for handle in np.asarray(
+                    transition['oracle_target_handles']).reshape(-1):
+                group_by_id[int(handle)] = 0
+            for handle in np.asarray(
+                    transition['oracle_reference_handles']).reshape(-1):
+                group_by_id[int(handle)] = 1
+        scene_points = None
+        if not args.visualize_objects_only:
+            scene_points = _scene_points_for_visualization(
+                transition, args.cameras)
+        output_path = visualize_oracle_objects(
+            oracle,
+            task,
+            replay_index,
+            output_dir,
+            scene_points=scene_points,
+            terminal=terminal,
+            episode_idx=episode_idx,
+            sample_frame=sample_frame,
+            camera_images=camera_images,
+            camera_masks=camera_masks,
+            group_by_id=group_by_id,
+            stable_object_ids=(0, 1),
+        )
+        metadata = {
+            'task': task,
+            'replay_index': replay_index,
+            'episode_idx': episode_idx,
+            'sample_frame': sample_frame,
+            'phase_source': str(_scalar(
+                transition['oracle_phase_source'], 'oracle_phase_source')),
+            'phase_id': str(_scalar(
+                transition['oracle_phase_id'], 'oracle_phase_id')),
+            'target_name': str(_scalar(
+                transition['oracle_target_name'], 'oracle_target_name')),
+            'target_kind': str(_scalar(
+                transition['oracle_target_kind'], 'oracle_target_kind')),
+            'target_geometry_source': str(_scalar(
+                transition['oracle_target_geometry_source'],
+                'oracle_target_geometry_source')),
+            'reference_name': str(_scalar(
+                transition['oracle_reference_name'],
+                'oracle_reference_name')),
+            'reference_kind': str(_scalar(
+                transition['oracle_reference_kind'],
+                'oracle_reference_kind')),
+            'reference_geometry_source': str(_scalar(
+                transition['oracle_reference_geometry_source'],
+                'oracle_reference_geometry_source')),
+        }
+        with output_path.with_suffix('.json').open(
+                'w', encoding='utf-8') as stream:
+            json.dump(metadata, stream, indent=2, sort_keys=True)
+        count += 1
+    return count
+
+
 def process_task(args, task, source_dir, destination_dir):
     files = _numeric_replay_files(source_dir)
     destination_dir.mkdir(parents=True, exist_ok=True)
@@ -651,6 +922,31 @@ def build_parser():
             "frame/episode caches; start with 2 on disk-backed datasets."),
     )
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        '--validate-output', action='store_true',
+        help=(
+            'After rewriting, validate every output replay against its source '
+            'and write semantic_role_validation.json per task.'),
+    )
+    visualization = parser.add_mutually_exclusive_group()
+    visualization.add_argument(
+        '--visualize-index', type=int,
+        help='Visualize this numeric replay index for every selected task.',
+    )
+    visualization.add_argument(
+        '--visualize-every', type=int, default=0, metavar='N',
+        help='Visualize every Nth sorted semantic replay; 0 disables.',
+    )
+    parser.add_argument(
+        '--visualize-output-dir', type=Path,
+        help=(
+            'PNG/JSON output root; defaults to '
+            '<output-dir>/semantic_role_visualizations.'),
+    )
+    parser.add_argument(
+        '--visualize-objects-only', action='store_true',
+        help='Hide the gray full-scene point cloud in semantic replay PNGs.',
+    )
     policy = parser.add_mutually_exclusive_group()
     policy.add_argument("--overwrite", action="store_true")
     policy.add_argument("--resume", action="store_true")
@@ -663,6 +959,19 @@ def main(argv: Optional[Sequence[str]] = None):
     args.raw_data_dir = args.raw_data_dir.resolve()
     args.manifest_dir = args.manifest_dir.resolve()
     args.output_dir = args.output_dir.resolve()
+    if args.visualize_output_dir is None:
+        args.visualize_output_dir = (
+            args.output_dir / 'semantic_role_visualizations')
+    else:
+        args.visualize_output_dir = args.visualize_output_dir.resolve()
+    if (
+        args.visualize_every < 0
+        or (
+            args.visualize_index is not None
+            and args.visualize_index < 0
+        )
+    ):
+        raise ValueError('Visualization index/interval must be non-negative')
     if (
         args.max_objects < 2 or args.num_points <= 0
         or args.cache_frames < 0 or args.cache_episodes < 1 or args.workers < 1
@@ -725,6 +1034,17 @@ def main(argv: Optional[Sequence[str]] = None):
                     f"[DONE] {task}: {count} semantic-GT replay files",
                     flush=True)
     print(f"Done: {total} semantic-GT replay files", flush=True)
+    if args.validate_output:
+        for task, source_dir, destination in jobs:
+            _validate_task_output(args, task, source_dir, destination)
+    visualized = 0
+    if args.visualize_index is not None or args.visualize_every > 0:
+        for task, _, destination in jobs:
+            visualized += _visualize_task_output(args, task, destination)
+        print(
+            f'Visualized: {visualized} semantic-GT replay files; '
+            f'output={args.visualize_output_dir}',
+            flush=True)
     return 0
 
 

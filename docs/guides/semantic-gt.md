@@ -348,7 +348,11 @@ python tools/rewrite_replay_with_semantic_roles.py \
     --num-points 512 \
     --cache-frames 128 \
     --cache-episodes 2 \
+    --workers 4 \
     --allow-mask-verified-handles \
+    --validate-output \
+    --visualize-every 500 \
+    --visualize-output-dir $REPO/LPY/semantic_role_visualizations \
     --resume
 ```
 
@@ -366,7 +370,24 @@ semantic name、kind、几何来源、原始 handle 集合、`oracle_phase_sourc
 - raw/replay frame 越界：立即停止，不截断到最后一帧，也不生成伪点云；
 - `--resume` 只按目标文件是否存在来跳过已经原子写完的 replay，不会检查 manifest 是否
   更新。上面的新输出目录可保留旧 buffer 并完整重写；若明确需要原地替换旧目录，应移除
-  `--resume` 并使用与其互斥的 `--overwrite`。
+  `--resume` 并使用与其互斥的 `--overwrite`。完全 resume 的任务可能在
+  `semantic_role_rewrite_stats.json` 中显示 `files=0`，它只表示本次没有新写文件；输出总数
+  和有效性应以 `semantic_role_validation.json` 为准。
+- `--workers N` 按 task 使用多进程，不会把同一 task 内的 replay 拆给多个进程；每个 worker
+  拥有独立的 frame/episode cache，因此内存和 raw-data I/O 会随 worker 数增加。磁盘数据集
+  建议从 2 或 4 开始。生成结束后的全量 validation 和 Matplotlib 可视化保持顺序执行，避免
+  多进程同时复读全部输出或渲染图片。
+- `--validate-output` 在生成或 resume 后逐个复读输出 replay，检查文件集合、baseline
+  字段不变、v2 audit、Oracle shape/dtype/有限值、role-valid 一致性，以及有效 site
+  至少包含两个不同 XYZ 点。每个任务写入
+  `semantic_role_validation.json`；任一检查失败时命令以错误退出。正式 strict 数据应
+  同时满足报告中的 `valid=true`、`raw_fallback_files=0`，且
+  `phase_sources` 只有 `demo_events`。
+- `--visualize-every N` 直接读取已写入 semantic replay 的 T/R 点，每隔 N 个排序后的
+  replay 输出一组 PNG 和同名 JSON；不会重新运行启发式对象提取。PNG 包含四视角 RGB、
+  mask box、场景点云和 T/R 的透视/三正交视图，JSON 记录 phase、semantic name、kind
+  与 geometry source。输出目录由 `--visualize-output-dir` 指定。单任务抽查可改用
+  `--visualize-index N`；两者互斥。添加 `--visualize-objects-only` 可隐藏灰色场景点云。
 - `--cache-frames` 与 `--cache-episodes` 都是有界 LRU；默认最多保留 128 个 Oracle
   帧和 2 个 episode 的 low-dim 数据，不会随已处理 episode 数持续增长。
 

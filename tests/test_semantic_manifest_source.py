@@ -41,6 +41,20 @@ def test_rewrite_parser_supports_task_workers():
     assert args.workers == 3
 
 
+def test_rewrite_parser_supports_output_validation_and_visualization():
+    args = rewrite.build_parser().parse_args([
+        '--replay-dir', 'replay', '--raw-data-dir', 'raw',
+        '--manifest-dir', 'manifests', '--output-dir', 'output',
+        '--validate-output', '--visualize-every', '25',
+        '--visualize-output-dir', 'visualizations',
+        '--visualize-objects-only',
+    ])
+    assert args.validate_output
+    assert args.visualize_every == 25
+    assert args.visualize_output_dir == Path('visualizations')
+    assert args.visualize_objects_only
+
+
 def test_rewrite_can_explicitly_fallback_invalid_manifest_to_raw(
         monkeypatch, tmp_path):
     source_dir = tmp_path / 'source'
@@ -336,3 +350,120 @@ def test_site_geometry_rewrite_uses_region_points_and_exact_descriptor_audit():
     assert audit['oracle_reference_geometry_source'].tolist() == ['none']
     empty = rewrite._empty_audit(4)
     assert empty['oracle_target_geometry_source'].tolist() == ['none']
+
+
+def _site_semantic_transition(max_objects=4, num_points=8):
+    role = site_role()
+    raw = rewrite._role_points(role, {}, {}, num_points)
+    oracle = rewrite.empty_oracle_objects(max_objects, num_points)
+    target_valid, _ = rewrite._fill_slot(
+        oracle, 0, rewrite.ORACLE_ROLE_TARGET, role, raw, num_points,
+        np.random.default_rng(0),
+    )
+    transition = {
+        'terminal': np.asarray(0),
+        'episode_idx': np.asarray(2),
+        'sample_frame': np.asarray(7),
+        'baseline': np.asarray([4.0], dtype=np.float32),
+    }
+    transition.update(oracle.as_replay_fields())
+    transition.update(rewrite._audit_fields(
+        rewrite.SEMANTIC_ROLE_SCHEMA,
+        {
+            'phase_source': 'demo_events',
+            'phase_id': 'phase0',
+            'target': role,
+            'reference': None,
+        },
+        target_valid,
+        False,
+        max_objects,
+    ))
+    return transition
+
+
+def test_validate_task_output_checks_every_replay_and_site_geometry(tmp_path):
+    source_dir = tmp_path / 'source'
+    destination_dir = tmp_path / 'destination'
+    source_dir.mkdir()
+    destination_dir.mkdir()
+    source = {
+        'terminal': np.asarray(0),
+        'episode_idx': np.asarray(2),
+        'sample_frame': np.asarray(7),
+        'baseline': np.asarray([4.0], dtype=np.float32),
+    }
+    with (source_dir / '0.replay').open('wb') as stream:
+        pickle.dump(source, stream)
+    transition = _site_semantic_transition()
+    with (destination_dir / '0.replay').open('wb') as stream:
+        pickle.dump(transition, stream)
+
+    report = rewrite._validate_task_output(
+        SimpleNamespace(max_objects=4, num_points=8),
+        'reach_and_drag',
+        source_dir,
+        destination_dir,
+    )
+
+    assert report['valid']
+    assert report['files'] == 1
+    assert report['site_roles'] == 1
+    assert report['fallback_box_roles'] == 1
+    assert report['raw_fallback_files'] == 0
+    assert report['phase_sources'] == {'demo_events': 1}
+    saved = json.loads((
+        destination_dir / 'semantic_role_validation.json').read_text())
+    assert saved == report
+
+    transition['oracle_object_points'][0] = transition[
+        'oracle_object_points'][0, 0]
+    with pytest.raises(ValueError, match='repeated center point'):
+        rewrite._validate_semantic_transition(transition, 4, 8)
+
+
+def test_semantic_visualization_reads_rewritten_oracle_fields(
+        monkeypatch, tmp_path):
+    destination_dir = tmp_path / 'semantic' / 'reach_and_drag'
+    destination_dir.mkdir(parents=True)
+    transition = _site_semantic_transition()
+    with (destination_dir / '3.replay').open('wb') as stream:
+        pickle.dump(transition, stream)
+    captured = {}
+
+    def fake_visualize(oracle, task, replay_index, output_dir, **kwargs):
+        captured['points'] = oracle.points.copy()
+        captured['task'] = task
+        captured['replay_index'] = replay_index
+        captured['group_by_id'] = kwargs['group_by_id']
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output = output_dir / 'reach_and_drag_replay_3.png'
+        output.write_bytes(b'png')
+        return output
+
+    monkeypatch.setattr(rewrite, 'resolve_episode_dir', lambda *args: tmp_path)
+    monkeypatch.setattr(rewrite, 'load_frame_rgb_images', lambda *args: {})
+    monkeypatch.setattr(rewrite, 'load_frame_masks', lambda *args: {})
+    monkeypatch.setattr(rewrite, 'visualize_oracle_objects', fake_visualize)
+    args = SimpleNamespace(
+        visualize_index=3,
+        visualize_every=0,
+        visualize_output_dir=tmp_path / 'visualizations',
+        visualize_objects_only=True,
+        max_objects=4,
+        num_points=8,
+        raw_data_dir=tmp_path / 'raw',
+        cameras=('front',),
+    )
+
+    assert rewrite._visualize_task_output(
+        args, 'reach_and_drag', destination_dir) == 1
+    np.testing.assert_array_equal(
+        captured['points'], transition['oracle_object_points'])
+    assert captured['task'] == 'reach_and_drag'
+    assert captured['replay_index'] == 3
+    metadata = json.loads((
+        tmp_path / 'visualizations' / 'reach_and_drag'
+        / 'reach_and_drag_replay_3.json').read_text())
+    assert metadata['phase_source'] == 'demo_events'
+    assert metadata['target_kind'] == 'site'
