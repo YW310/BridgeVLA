@@ -59,3 +59,20 @@ flowchart LR
 | `rlbench_o2_semantic_gt_relation_anchor.yaml` | [Relation anchor](../experiments/relation-anchor.md) | phase-dependent action anchor |
 | `rlbench_o2_predicted_objects.yaml` | [External prediction](../experiments/predicted-objects.md) | predicted T/R fields |
 | `rlbench_o2_internal_slots.yaml` | [Internal slots](../experiments/internal-object-slots.md) | slot predictor + role heatmap |
+
+## 推荐 Role-Memory 方案的最小代码落点
+
+以下是[当前推荐设计](../design/role-relation-prior.md)的计划改动，尚未实现：
+
+| 改动 | 现有落点 | 最小实现 |
+| --- | --- | --- |
+| present / visible 标签 | `rewrite_replay_with_semantic_roles.py::_audit_fields()`、`dataset.py` | 独立写入并采样 role presence、visibility；`valid` 继续表示几何可用 |
+| role tokens 与 confidence | `InternalObjectSlotPredictor.forward()` | 返回 T/R pooled tokens 和独立 present/visible logits |
+| 两角色短时 memory | `oracle_prior.py` + `RVTAgent.act()` | 新增共享 gated update；每个 control query 只更新一次 |
+| episode lifecycle | `RVTAgent.reset()` | 当前为空；在这里清空 T/R memory、age 与 uncertainty |
+| sequence supervision | `RVTAgent.update()`、RLBench dataset | 读取短窗口并计算 temporal/completion loss |
+| relation/completion | `MVT.forward()` / `MVTSingle.forward()` | 将 memory-conditioned relation token 传入两个 stage；输出 completion/unknown |
+| 完整动作联合训练 | `route_oracle_adapter_features()`、`MVTSingle.forward()` | 保持 translation-only 关闭，并逐步解冻 action decoder / projector / upper backbone |
+
+Memory 不应在 coarse、refine 两个 stage 各更新一次：同一 query 的两阶段共享输入 memory，
+由最终 stage 输出形成一次 observation update，再由 `RVTAgent.act()` 持久化到下一 query。

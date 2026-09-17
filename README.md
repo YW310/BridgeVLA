@@ -77,7 +77,8 @@ bash train.sh --exp_cfg_path configs/rlbench_config.yaml \
 | O2 网络内部 Target/Reference slots | [Internal object slots](docs/experiments/internal-object-slots.md) |
 | 各 benchmark 评估命令 | [评估](docs/guides/evaluation.md) |
 | 论文结果、发布记录 | [结果与历史](docs/experiments/results.md) |
-| Phase / relation、物体视角、候选 cost 方案 | [研究设计](docs/design/role-relation-prior.md) |
+| T/R role memory、relation/completion 与联合训练 | [研究设计](docs/design/role-relation-prior.md) |
+| 无 GT 的真实机器人部署路线 | [Real-world 设计](docs/design/real-world-deployment.md) |
 | 数据流与对应函数 | [代码索引](docs/reference/code-map.md) |
 | Oracle prior 实现交接 | [交接说明](docs/handoff/oracle-prior.md) |
 

@@ -1,37 +1,52 @@
 # BridgeVLA-ARE：详细设计与验收
 
-> 阅读入口：[精简设计](role-relation-prior.md)。精简设计定义当前建议 MVP；本文保留更完整的推导、接口、扩展路线与验收条件，其中 learned execution risk、主动再观测和长期 belief/recovery 不属于首版实现承诺。
+> 阅读入口：[精简设计](role-relation-prior.md)；无 GT 部署边界见[真实机器人设计](real-world-deployment.md)。精简设计定义当前建议 MVP；本文保留更完整的推导、接口、扩展路线与验收条件，其中 learned execution risk、主动再观测和长期 belief/recovery 不属于首版实现承诺。
 
 [文档索引](../README.md) · [项目首页](../../README.md)
 
 相关背景：[Oracle prior 交接](../handoff/oracle-prior.md)；现有实验：[O2 训练与评估](../experiments/o2-training.md)。
 
 
-> 更新时间：2026-09-07（根据数学、监督与执行接口 review 修订）
+> 更新时间：2026-09-17（主方案收敛为现有 internal slots + 两角色 memory + completion）
 > 状态：顶会候选研究设计，尚未实现
-> 当前代码边界：仓库默认 `rvt2.yaml` 使用 coarse/refine 两阶段，每阶段渲染 `top/front/right` 三个正交视角，即 `3 x 2`；另已实现 GT Target/Reference point prior、两通道 relation prior、zero-init feature adapter，以及同一次 forward 中的 `trans_base` / `trans` 输出。post-hoc translation fusion 已删除。本文提出的 phase-gated object candidates、per-object view bank、pair-specific heatmaps、pair reliability cost、关系编辑头与事件切换均是下一阶段工作。
+> 当前代码边界：仓库默认 `rvt2.yaml` 使用 coarse/refine 两阶段，每阶段渲染 `top/front/right` 三个正交视角，即 `3 x 2`；另已实现 GT Target/Reference point prior、内部无序 slots + T/R/NULL role mixing、relation adapter/anchor，以及 adapted feature 到完整动作头的路径。尚未实现 `present/visible` 独立监督、跨 query role memory 和 completion head。本文后续的显式 operator、per-object view bank、pair search 与 learned risk 均是可选扩展，不是当前推荐 MVP。
 
-## 0. 最终判断
+## 0. 当前推荐方案与稳定性定义
 
-你的理解方向是对的，但要再精确一层：
+当前推荐直接复用已有 `InternalObjectSlotPredictor`，只新增三项必要能力：
 
-> **relation 是世界状态；phase 不是另一套独立语义，而是当前正在执行哪一个 relation edit、完成到什么程度、何时应切换的执行状态。long-horizon manipulation 不是持续切换 relation，而是在较长区间内维持一个 active edit，正常推进由稀疏完成事件驱动，失败恢复和身份纠错另行记录。**
+1. 将角色 `present`、当前 `visible` 和预测 `confidence` 分开监督；
+2. 为 committed Target/Reference 各维护一个短时 gated memory；
+3. 用连续 relation token + completion 条件化共享完整动作 decoder，并分阶段联合解冻 policy。
 
-因此，不建议把 `预测 object`、`预测 relation`、`预测 phase` 做成三个并列贡献。主线应收敛成一个紧凑的结构化控制变量：
+默认不增加 per-object VLM、显式 T×R 动作枚举、APPROACH 等硬 phase classifier、learned risk
+head 或完整 scene graph。现有 adapter/residual 只用于 Stage-0 诊断和兼容初始化。
 
-> **Active Relation Edit（ARE）：当前要让谁与谁之间的哪一种关系发生什么变化，同时保持哪些已经成立的关系。**
+```text
+existing BridgeVLA features
+  -> shared internal slots
+  -> T/R/NULL soft role maps
+  -> two-role memory + latent relation/completion
+  -> shared translation/rotation/gripper/collision heads
+```
 
-object prediction 负责 ARE 中的动态任务角色绑定；phase 由 edit、进度与已完成证据定义。grounding confidence、动作执行风险及未来 completion hazard 分别表达，并通过有界 beliefs/事件记录支持持续执行。
+“更简洁”只有在减少真实歧义时才会更稳定：
 
-本文建议的论文暂名：
+| 稳定性 | 验收条件 |
+| --- | --- |
+| 语义 | NULL、遮挡和低置信分别统计，不互相替代 |
+| 时间 | visible→hidden→visible 中角色 ID 不无故交换 |
+| 动作 | 最终四类动作来自相同 role/relation-conditioned feature |
+| 优化 | soft routing warm-up 后再联合解冻，不被 hard top-k 截断梯度 |
+| 系统 | 不确定性超阈值时可验证地再观测或停止，不静默执行 |
 
-> **BridgeVLA-ARE: Active Relation Edits as the Control State for Long-Horizon Manipulation**
+模块更少本身不是证据。若两角色 memory 容量不足、相机标定错误或 role head 过度自信，系统
+仍可能不稳定；因此每个模块都必须对应独立 failure metric 和删除消融。
 
-一句话方法：
+第 1–6 节保留 ARE、候选 pair、object view 和 risk 的完整设计空间，供形式化与消融使用；
+默认实施只采用本节以及第 7、10、11 节明确列出的 role-memory 主线。
 
-> BridgeVLA-ARE 从普通视觉语言特征中预测一个稀疏、角色绑定的关系编辑，并让同一个编辑同时决定关注哪个物体、动作服务于什么局部目标以及何时切换；部署时不需要外部 detector、分割器或符号规划器。
-
-## 1. 核心建模
+## 1. 可选 ARE 形式化（不是首版 runtime 接口）
 
 ### 1.1 从关系状态到关系编辑
 
@@ -175,20 +190,21 @@ object score 只负责高召回提议。最终 ground score 利用联合语言�
 
 ## 4. 最小可实现架构
 
+下图描述最终共享架构。现有 relation adapter 是 warm-up 与消融接口，不是最终模型唯一的
+可训练容量；主实验会逐步联合更新结构模块、完整动作 decoder 和部分 backbone。
+
 ```text
 RGB-D + instruction + proprioception + previous edit/ledger
-  -> original coarse 3-view VLM
-       +-> original waypoint-centered refine 3-view VLM -> baseline full action
-       +-> edit proposal/update + phase-gated observed slots
-             + reserved tracked-object beliefs + NULL arity
-             -> bounded candidates + pre-encoding grounding cost
-             -> unique object RGB view banks + geometry side inputs
-             -> shared per-object encoder
-             -> each legal pair: support-aware local heatmap group
-             -> <=2 full pose proposals including gated residual + execution checks
-             -> commit one pair / collect information / reject
-             -> return selected checked proposal (baseline + gated residual)
+  -> shared multi-view backbone
+  -> shared object slots + reserved tracked beliefs + NULL
+  -> shared pair router (soft candidates in training, budgeted top-M in inference)
+  -> latent relation edit + compressed recurrent memory
+  -> shared pair-conditioned full-action decoder
+  -> <=2 complete pose/gripper proposals + execution checks
+  -> commit one pair / collect information / reject
 completion evidence + keep monitor -> update edit/ledger for next query
+
+saved original BridgeVLA action -> diagnostic bypass / matched baseline only
 ```
 
 ### 4.1 Phase-gated Object Candidate Head
@@ -197,7 +213,10 @@ completion evidence + keep monitor -> update edit/ledger for next query
 
 先做 instance/identity matching，合入 committed tracked objects，再按第 2.2 节的固定角色配额提议。高召回提议、联合 grounding 排序、后续 execution gate 是不同职责；全部不可靠时须允许重提议，而不是无条件 argmax。
 
-第一版 hard top-k/crop 使用离散选择，可通过 GT slot matching、候选排序与有效 local action supervision 训练；被裁掉候选的 action loss 无法直接反传到 selector。需报告 proposal recall 与 GT-to-predicted exposure gap，不能仅以 joint fine-tuning 宣称全选择过程可微。是否采用 soft selection/straight-through 是独立后续实验。
+warm-up 可使用 hard top-k/crop，通过 GT slot matching、候选排序与有效 local action
+supervision 训练；主训练在可承受预算内保留软 pair posterior 或多候选 set loss，推理再按预算
+选择 top-M。被真正裁掉候选的 action loss 仍无法反传，因此必须报告 proposal recall、
+`OTHER_G` 和 GT-to-predicted exposure gap；联合 fine-tuning 本身不等于整个选择过程可微。
 
 ### 4.2 Relation Edit Head
 
@@ -220,7 +239,11 @@ completion evidence + keep monitor -> update edit/ledger for next query
 
 候选身份关联、believed geometry、relation completion 分别更新，避免 cost 升高被解释成成功或暂时不可见被解释成角色不存在。短时 hysteresis 的收益通过 premature/delayed switch、wrong-binding persistence 与 recovery success 分开衡量。
 
-### 4.4 保留完整 baseline，并只融合受 gate 控制的增量
+### 4.4 Residual warm-up 与联合完整动作路径
+
+Residual/bypass 首先用于验证坐标、support 和 object conditioning，不是最终训练限制。warm-up
+阶段可保留下述严格增量形式；进入 joint policy tuning 后，pair-conditioned feature 直接进入
+共享完整动作 decoder，原 BridgeVLA checkpoint 只作为初始化与冻结评估对照。
 
 设 `Q_B` 是原始 BridgeVLA **coarse + waypoint-centered refine** 的输出，保留其 crop、投影、解码与原动作 head。object view bank 是额外分支；其 pair heatmap 输出需要定义为相对于同 frame 无 ARE 分支的增量：
 
@@ -238,7 +261,11 @@ Q_{final}(x)=Q_B(x)+\gamma_t D_g(x)\Delta Q_g^{world}(x),
 
 `trans_base` 只是在**当前 crop**上 adapter 前的输出，不自动等于原始两阶段模型的 counterfactual。需要独立保留原 waypoint-centered refine 的中间结果/动作，才能计算可靠的 rescue/harm。等价性在 policy proposal 输出处验证；最终 execution gate 对 baseline 与 ARE 按相同规则处理。
 
-第一版 pair 分支只改 translation，但必须明确 rotation/gripper 的读取契约：原 head 参数可复用，所采样的位置 feature 会随 waypoint 改变。最终用选定 waypoint 构造完整 `SE(3)+gripper` 动作，再评估 execution risk；不能用旧 waypoint 的 rotation 去验证新 translation。execution check 必须针对实际返回的 residual-corrected proposal，任何后续动作修改均需重检。若选定点超出 baseline refine crop，需要显式改用 coarse/选中 object frame 的 action features 并另计接口与计算，不能静默 clamp。最小版只允许 baseline refine support 内的 correction，较大重定位应触发新的 coarse query，作为明确限制记录。
+Diagnostic warm-up 可以只改 translation，但主模型必须从同一选定 pair 和最终 waypoint 的
+feature 共同生成 translation、rotation、gripper 与 collision。原 head 参数可复用并继续训练；
+不能用旧 waypoint 的 rotation 去验证新 translation。execution check 必须针对实际返回的完整
+proposal，任何后续动作修改均需重检。若选定点超出当前 refine support，应显式触发新的
+coarse query 或使用定义清楚的 object-frame decoder，不能静默 clamp。
 
 `M=2` 时各自构造并检查实际完整 proposal，再按第 4.7 节的身份/可执行规则提交其中一个 pair 的动作。禁止平均不同 pair 的坐标或 logits；例如两个单峰 logit 的平均可以把最高点移到两个物体之间。需要分布混合的后续实验，应先在统一 world support 上归一化概率，并保留离散 pair 标签到执行选择，不能通过期望坐标消除多峰。
 
@@ -346,7 +373,11 @@ scene front depth 约束的是物体表面，不一定等于 EE waypoint 深度�
 
 原 BridgeVLA fallback 只恢复基线行为，不保证安全。在真实部署/带执行约束的实验中，baseline action 也须通过同一 execution gate；若没有已验证的观测/恢复动作，则保持当前可保持状态或终止该次尝试，计为失败/拒绝，不声称已恢复。
 
-### 4.6 Phase-gated Object View Bank 与 pair-specific heatmaps
+### 4.6 可选 Object View Refine 与 pair-specific heatmaps
+
+共享 scene slots 是默认主表示。Object-centered views 是 top-M routing 后的可选局部 refine，
+用于检验局部尺度是否带来额外收益；关闭它时，pair head 直接使用共享 scene tokens、三维几何
+和 latent edit。下面的 full object bank 保留为计算上界与独立消融，不再是主方法必选组件。
 
 #### 4.6.1 每个物体有独立 frame，共享编码器参数
 
@@ -395,14 +426,18 @@ D_i(x)=\mathbf 1[x\in\Omega_i],\qquad
 
 #### 4.6.3 计算预算包含原始 refine 与真实 VLM forward
 
-设 `U` 为早期合法性检查后需要编码的唯一非空候选物体。**保留原完整 baseline** 的第一版预算为
+设 `U_M` 为 top-M proposal 中实际启用 local refine 的唯一非空物体。保留原完整 baseline 时，
+简化默认预算为
 
 \[
-N_{images}=6+3|U|,\qquad
-N_{VLM\ groups}=2+|U|.
+N_{images}=6+3|U_M|,\qquad
+N_{VLM\ groups}=2+|U_M|.
 \]
 
-`K_T=K_R=2`、最多四个唯一物体时，上限是 18 张图、6 组三视角 forward，而 baseline 为 6 张图、2 组。按 batch 并行可减少墙钟延迟，但不会消除 FLOPs/激活显存；不能预先把 3 倍组数称为低开销。若以 object bank **替换**原 refine，则是 `3+3|U|`，但不再享有完整 baseline 的严格回退；这应是独立变体。
+`U_M=0` 即完全复用 scene features；一个 committed T/R pair 时通常 `U_M<=2`。若为所有候选
+启用 full bank，则令 `U_M=U`，`K_T=K_R=2` 时仍可能达到 18 张图、6 组三视角 forward；
+它只作为高计算消融。按 batch 并行可减少墙钟延迟，但不会消除 FLOPs/激活显存。若以
+object bank **替换**原 refine，则是 `3+3|U_M|`，但不再享有完整 baseline 的严格回退。
 
 pair heatmap head 的成本还包含空间维：
 
@@ -412,7 +447,9 @@ C_{pair}=O(K_TK_R\,VHW\,r),
 
 其中 `r` 是低秩/调制通道宽度，`V<=6`；原始 3D cube recovery 还包含体素网格查询，需报告 grid size、显存和实际延迟，不能只计 pooled vector 的 `O(K_TK_Rd)`。预筛选 ground cost 放在 object VLM 编码之前；第一版对剩余小集合保留所有合法 pair 的轻量 heatmaps，再只对 `M<=2` 做较重的 pose/path feasibility 检查。
 
-后验的 `M=1/2` 主要分配执行验证预算，不追溯节省已经完成的 view 编码。要进一步裁剪 object bank，需另评估早期筛选导致的 pair recall 损失。报告等训练预算、等实测延迟和等图像组数三个对照，区分表示收益与更多计算的收益。
+local refine 必须在较便宜的 scene-slot routing 之后执行，才能真正节省 view 编码。若先编码
+所有 object views 再选择 M，它只能分配执行验证预算，不能声称动态计算收益。报告等训练
+预算、等实测延迟和等图像组数三个对照，区分表示收益与更多计算的收益。
 
 ### 4.7 Pair cost：身份排序与执行风险分别建模
 
@@ -536,15 +573,32 @@ visibility/memory 训练片段需覆盖 visible -> hidden -> visible，使用实
 
 ### 5.3 训练与闭环验证顺序
 
-1. 复现完整 B0/O2，验证关闭 residual 返回同一 checkpoint 的完整 baseline action。
-2. Oracle roles/edit 的 ARE-only 与 Oracle object-view 的 PairHM 分别建立上限；一个分支失败不自动否定另一个分支。
-3. 固定小候选集和已有 teacher edit，验证 local support、frame transforms、pair-specific heatmaps 与相同计算预算的对照。
-4. 学习 predicted slots/grounding，使用部署时的 role mapping、NULL 配额和 reserved beliefs；报告候选 recall。
-5. 为实际候选动作生成 execution 数据，学习 risk head；若缺数据，先以可核验检查器替代，并明确 coverage。
-6. 用短序列逐渐替换 teacher edit/centroid，训练 progress、completion、memory 与 recovery；训练时使用部署一致的状态更新规则。
-7. 最后联合 fine-tuning 并在 held-out episodes 校准；报告所有开销、拒绝动作数和 end-to-end success。
+1. **Baseline contract**：复现完整 B0/O2，验证关闭 residual 返回同一 checkpoint 的完整 baseline action。
+2. **Adapter diagnostic**：短暂使用 Oracle roles/edit 和 adapter-only，检查标签、投影、support 与梯度；该结果不是最终容量结论。
+3. **Structure warm-up**：训练 shared slots、pair router、latent edit、memory 与新 action-side 模块；固定小候选集验证 pair-specific heatmaps。
+4. **Predicted exposure**：逐渐用 predicted candidates/crops/edit 替换 teacher，采用软 pair posterior 或多候选 set loss，并报告 recall/`OTHER_G`。
+5. **Joint policy tuning**：依次解冻原 action decoder、multimodal projector 和上层 vision-language blocks，让完整 action loss 联合更新表示；不长期限制为 adapter-only。
+6. **Sequence/deployment training**：用短序列训练 completion、memory 与 recovery，再加入 sim/real 混合数据及部署一致的状态更新。
+7. **Execution/calibration**：用实际候选动作结果训练 risk head；若缺数据则使用有 coverage 报告的检查器，并在 held-out episodes 冻结阈值、校准与闭环评估。
+
+是否进一步解冻完整 vision/language backbone 由数据量和过拟合决定，但它是容量/数据 scaling
+实验的一条轴，而不是方法定义上的禁止项。所有阶段都需要保存同初始化、同训练预算的
+no-structure 对照，避免把额外可训练参数误报为结构收益。
 
 第一版固定 `K_T=K_R=2`、`M<=2`、固定正交方向；先确认这些有界机制有效，再考虑任意旋转、动态大候选集和更长 memory。
+
+### 5.4 Scaling-friendly 约束
+
+结构简化的目标是让容量增加作用于共享表示，而不是增加更多手工 phase 或 pair experts：
+
+- model scale：slot/edit/memory width、action decoder 与解冻 backbone 层数；
+- data scale：episode 数之外，单独统计 object instance、T/R binding 与 relation-edit 组合；
+- compute scale：候选数、object views、top-M proposal 和 memory 长度是可调预算；
+- horizon scale：报告 per-edit success 与成功率随 edit 数的衰减，而不只看最终二值成功。
+
+固定 top-k、固定 memory 和小 adapter 都可能造成提前饱和。因此它们只作为首轮受控配置，
+不能被写成方法的永久容量上限。共享 object encoder、pair router、latent edit 与 action decoder
+应在不同规模下保持参数复用，才有资格比较数据／模型 scaling，而不是比较模块数量。
 
 ## 6. 实验必须回答什么
 
@@ -635,6 +689,7 @@ ARE-only 与 PairHM 分别验证；最终比较完整组合与相同监督/计�
 
 ### 7.1 可直接复用
 
+- `InternalObjectSlotPredictor`：已有无序 slots、T/R role mixing、NULL Reference、role heatmap 与 XYZ compatibility 输出；
 - `finetune/bridgevla/models/oracle_prior.py`：已有 Target/Reference 选择、relation descriptor、两通道 prior 与 relation-gated adapter；
 - `finetune/bridgevla/mvt/mvt.py`：已有 stage-1/stage-2 prior 构建与 adapter 接入；
 - `finetune/bridgevla/mvt/mvt_single.py`：已有 adapter 前的 feature `x`，并可同时产出 `trans_base`；
@@ -646,29 +701,31 @@ ARE-only 与 PairHM 分别验证；最终比较完整组合与相同监督/计�
 
 按以下依赖顺序实现，并先用 Oracle teacher 和小规模回放验证：
 
-1. **Baseline path**：完整保留 coarse、原 waypoint refine、原动作头；把原 full action 与当前 crop 的 `trans_base` 区分命名。新增分支关闭时不改变其输入或重新解码。
-2. **State/proposal**：显式 event/keep ledger、任务角色到谓词参数的 mapping、observed + tracked candidate union、固定 NULL 配额和去重。
-3. **Grounding pre-cost**：在额外 VLM forward 前计算 `p_G/OTHER_G`；筛选合法、有足够身份支持的候选，允许重新提议。
-4. **Geometry interface**：默认 point renderer 暴露 raw depth、projected (u,v,z)、in-frame/depth-valid/provenance；区分虚拟遮挡与真正未观测几何。
-5. **Object bank**：每个唯一候选沿 batch 维展开三视角，记录可逆 frame、support 与真实时间戳；新增 side encoder 将 membership/depth/belief 接入 RGB VLM features。不能只追加被 RGB slice 丢弃的通道。
-6. **Pair head**：共享参数产生每个合法 pair 的独立 heatmap group；mask out-of-support supervision，在共同坐标上构造受 gate 控制的 residual proposal。
-7. **Action/risk**：生成最多两组完整 pose/gripper proposal；更新与最终 waypoint 一致的 feature sampling，验证最终动作及实际 controller path 后再选择一组。selection 后任何动作修改均需重新检查。
-8. **Execution/recovery**：binding ambiguity、geometry unknown、IK/path failure、keep violation 分开处理；若没有有效 REOBSERVE 控制器，显式拒绝，不隐式调用未经验证的抬升。
-9. **Profiling/calibration**：完整路径计入 PaliGemma、side encoder、3D recovery、risk checks、再观测和原 refine 成本；冻结策略后做独立 calibration。
+1. **Data contract**：在 rewriter/dataset 中独立提供 role `present`、`visible` 与 geometry `valid`；NULL 只由 `present=False` 监督。
+2. **Slot outputs**：扩展 `InternalObjectSlotPredictor` 返回 T/R role tokens、present/visible/confidence；保留现有 heatmap 与 NULL mixing。
+3. **Role memory**：新增共享参数的两角色 gated memory，并在 `act()`、短序列 replay 和 episode reset 中显式传递／清空状态。
+4. **Relation/completion**：由 T/R tokens、相对几何、proprioception 和 memory 生成连续 relation token、completion 与 unknown；不要求 operator class。
+5. **Full-action conditioning**：将同一 relation-conditioned feature 送入 translation 与 R/G/C；adapter/residual 仅用于 warm-up，随后联合解冻 action decoder 与选定 backbone。
+6. **Deployment gate/profile**：只实现 workspace/depth support/controller 等可核验 gate；记录延迟、显存、拒绝和短遮挡恢复，不先训练 risk head。
 
 新增字段至少包括：
 
-- 任务/状态：`task_target_id`、`task_reference_id/null`、`predicate_bindings`、`edit_goal`、`progress`、`completed_now`、`hazard_next`、`keep_ledger`；
-- 候选：`candidate_id`、`source=observed/tracked`、`membership`、`frame/inverse`、`support`、`belief_initialized/age/covariance`、`reserved_slot`；
-- 输出：`ground_posterior`、`other_ground_prob`、`pair_heatmaps`、`support_mask`、`candidate_full_actions`、`execution_ready_prob`、`check_known_mask`、`decision_reason`；
-- 诊断：proposal recall、身份关联错误、ground/exec calibration、错误接受率、out-of-support rate、zero-residual action equality、端到端延迟/显存和 recovery outcome。
+- replay label：`oracle_{target,reference}_{present,visible}`，以及现有 points/valid；
+- recurrent state：`role_memory_{target,reference}`、`memory_age`、`memory_covariance`；
+- model output：`role_prior`、`role_token`、`role_{present,visible,confidence}`、`reference_is_null`、`relation_token`、`completion_probability`、`failure_or_unknown`；
+- 诊断：role/NULL/visibility accuracy、identity switch、completion delay、完整动作 loss、端到端延迟和显存。
 
-第一版只维护 committed pair 的最多两个几何 beliefs，以及有界 invariant ledger；ledger 容量与超限行为需配置。不缓存所有候选的长期几何，也不为每个 pair 复制一套 VLM/action expert。
+第一版只维护 committed T/R 两个 belief；不增加 object-view VLM、pair-specific expert、完整
+ledger 或候选动作笛卡尔积。现有 role heatmap 提取 XYZ 仅作为兼容层，不再次渲染。
 
 ### 7.3 实现前后的验收反例
 
 | 构造场景 | 必须成立的结果 |
 | --- | --- |
+| Reference 语义不存在 / 存在但遮挡 | 前者为 NULL，后者保持 present 且 visible=False；两者 loss 和运行分支不同 |
+| 同一 query 经过 coarse/refine | role memory 只更新一次，不把两个 stage 当两个时间步 |
+| episode reset 后首个 query | T/R memory、age、uncertainty 全部清空，不泄漏上一 episode |
+| relation-conditioned waypoint 改变 | rotation/gripper/collision 从同一最终 feature 重新预测，不沿用旧位置输出 |
 | residual 初始化为零，或关闭 gamma | policy proposal 与同 checkpoint 原两阶段 action 一致；执行 gate 对两分支按同一规则处理 |
 | 正确物体被挡、错误 distractor 易抓 | ground identity 保留；execution 可拒绝，不能仅因易抓而改绑 |
 | committed target 全遮挡 | belief 候选仍在保留名额；不得被删除后用 temporal cost 假装修复 |
@@ -729,7 +786,10 @@ DISCONNECT:  pair=(block,NULL),   goal=detached(EE,block), keep=inside(block,dra
 
 handle 与 drawer 的 part/whole link 显式记录，不把它当普通 self-pair；如果感知系统不能区分部件，则需定义 task mapping 并单独报告该限制。drawer 在切换操作 block 后可能退出当前 pair，但 open(drawer) 的证据不能因清空上一 pair 的 memory 而消失。若 drawer 意外关闭，进入 recovery，不能因为上一 open edit 曾完成就继续插入。
 
-## 9. 论文叙事与风险控制
+## 9. 可选 ARE 论文叙事与风险控制
+
+本节只在显式 ARE/operator、pair-view 或 risk 扩展通过基础 role-memory 实验后适用，不是
+当前最小系统必须采用的论文表述。
 
 ### 9.1 推荐 claim
 
@@ -770,30 +830,30 @@ handle 与 drawer 的 part/whole link 显式记录，不把它当普通 self-pai
 ## 10. 实施优先级
 
 ```text
-P0  固定角色/谓词 mapping、NULL 配额、support、completion 与两种 risk 标签；
-    准备第 7.3 节的小型反例与 zero-residual 验收
-P1  分别验证 Oracle-ARE-only 和 Oracle PairHM；
-    完整保留 baseline，记录 6+3|U| 图像与 2+|U| VLM 组的真实开销
-P2  observed+tracked 候选、pre-encoding grounding cost、OTHER_G 与 NULL calibration
-P3  support-aware pair heatmaps，完整动作构造及 execution 检查；
-    测试正确但不可执行 / 错误但易执行 / 多个合法动作
-P4  已完成证据 d、future hazard、identity-preserving beliefs、
-    有界 keep ledger 与可用的 REOBSERVE/RECOVER 控制
-P5  predicted phase/candidates/crops 的部署分布训练与独立 calibration
-P6  matched-compute / compositional / occlusion / arity-shift /
-    candidate-count / risk-coverage / full closed-loop evaluation
-P7  依据实际瓶颈再探索确定性旋转、refine replacement、
-    dynamic compute 或更长 memory，逐项取消基线等价等已失效声明
+P0  修复 present / visible / valid 与 NULL 数据契约；增加反例测试
+P1  复现 internal slots heatmap；Oracle 只作 label，不进入 policy forward
+P2  输出 role tokens/confidence，并让相同 conditioned feature 预测完整动作
+P3  增加 T/R 两角色 gated memory；训练 visible -> hidden -> visible 短序列
+P4  增加 relation token + completion/unknown；验证事件切换而非时间切换
+P5  逐步解冻 action decoder、multimodal projector 和上层 backbone 做 joint tuning
+P6  predicted-only sim/real adaptation、独立 calibration 与真实闭环
+P7  仅在实测瓶颈出现后加入 local object views、pair search、learned risk 或更长 memory
 ```
 
-ARE 表示与 pair-view 机制分别验收；一个无收益，不自动否定另一个。cost 的价值也应分解：grounding 是否减少错误绑定，execution gate 是否降低错误接受，新增拒绝/观测开销是否仍带来整体成功率提升。先证明这些可测结论，再扩大架构与理论主张。
+每一级都必须单独改善对应 failure metric 和 closed-loop 结果；前一级无收益时停止扩展，不能用
+后续模块掩盖。尤其 memory 必须改善遮挡 identity，completion 必须改善过早/延迟切换，joint
+tuning 必须在匹配参数／训练预算下优于 adapter-only。
 
 ## 11. 修订后的方法边界
 
-当前方案保留用户提出的核心：只处理当前 phase 的少量 target/reference 候选，每个唯一物体拥有自己的三视角，每个合法有序 pair 拥有独立 heatmap group，reference 可为 NULL。
+当前主方案只处理 T/R/NULL role maps、两个短时 beliefs、连续 relation token、completion 和
+共享完整动作。它复用一次 BridgeVLA coarse/refine feature，不要求外部 detector、额外
+per-object VLM、显式 operator taxonomy、pair action enumeration 或 learned execution risk。
 
-实现上采用完整 BridgeVLA baseline + 受 gate 控制的 object/pair residual；额外输入显式携带几何、support 与证据来源。固定正交方向的 object views 提供局部尺度优势，不产生新的传感器观测。严格 baseline 回退需要计入原 refine 的计算，不能同时声称只有 `3+3|U|`。
+Adapter/residual 是诊断与初始化接口；正式模型联合训练 slots、relation/memory、完整动作头和
+选定 backbone 层。Reference NULL 与不可见严格分开，遮挡 memory 不伪造隐藏表面；所有动作
+分量来自相同 role/relation-conditioned feature。
 
-cost 分别表达身份可信度与给定动作的执行风险，已完成证据独立控制正常 phase 推进。全遮挡目标通过保留的 belief 候选维持身份；超出局部视野、三维几何不可观测、动作不可达分别处理。候选歧义可以保留多个 hypothesis，但最终执行一个绑定一致的完整动作。
-
-论文主张暂限定为可干预的 relation-edit conditioning、object-view 复用及可校准的执行选择。是否达到最小充分控制状态、是否比 matched independent heads 或直接虚拟视角选择更有效，都需由实验决定；目前仍是未实现的研究设计。
+该简化方案的主要主张应限制为：任务角色条件化是否改善动作、短时 role memory 是否改善
+遮挡身份稳定、completion 是否改善长程切换。ARE 符号化、object views、pair cost 和主动
+恢复只有在这些基础实验暴露明确瓶颈后才进入主方法。目前仍是未实现、待闭环验证的设计。

@@ -1,6 +1,6 @@
 # 网络内部 Target/Reference slots
 
-[文档索引](../README.md) · [Object-prior 模式](object-prior-modes.md) · [代码索引](../reference/code-map.md)
+[文档索引](../README.md) · [推荐 Role-Memory 设计](../design/role-relation-prior.md) · [代码索引](../reference/code-map.md)
 
 该实验在 BridgeVLA 内部从多视角 feature 预测无序 object slots，再按当前 relation state
 隐式绑定 Target/Reference。Oracle 点仅在训练时生成监督 heatmap，不作为 policy 输入。
@@ -26,6 +26,8 @@ flowchart LR
 - `MVT.forward()` 在调用 `MVTSingle` 前移除 Oracle prior、valid 和 geometry；adapter 只接收
   slot predictor 的结果。
 - 三个正交虚拟视角来自同一份可见点云，不能单独解决真实遮挡。
+- 该配置证明的是“policy 不接收 Oracle object”，不代表已完成真实 RGB-D、相机漂移、
+  短时 memory 和控制安全适配；部署路线见[真实机器人设计](../design/real-world-deployment.md)。
 
 ## 配置与函数
 
@@ -61,7 +63,9 @@ bash train.sh \
 ```
 
 该开关冻结原 BridgeVLA，并训练 `object_slot_predictor*` 与
-`oracle_prior_feature_adapter*`。完成首轮可辨识消融后，再考虑 joint fine-tuning。
+`oracle_prior_feature_adapter*`。它只用于首轮可辨识消融，不是最终训练方式。确认 slots、
+T/R binding 和梯度路径有效后，应去掉该开关，并分阶段解冻完整动作 decoder、multimodal
+projector 与上层 backbone；联合训练仍必须保证 Oracle 点只生成监督，不进入 policy adapter。
 
 <a id=dataset-fit></a>
 
