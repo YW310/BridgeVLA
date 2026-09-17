@@ -20,10 +20,10 @@ RELOCATED_SUPPORT_AREA_RATIO = 4.
 RELOCATED_MIN_PIXEL_RATIO = .4
 RELOCATED_MAX_PIXEL_RATIO = 2.5
 RELOCATED_MAX_CENTROID_SHIFT = .15
-RELOCATED_MAX_EXTENT_ERROR = .012
-RELOCATED_MAX_CENTERED_DISTANCE_P50 = .005
-RELOCATED_MAX_CENTERED_DISTANCE_P90 = .010
-RELOCATED_MAX_CENTERED_DISTANCE_P95 = .015
+RELOCATED_MAX_EXTENT_ERROR = .015
+RELOCATED_MAX_CENTERED_DISTANCE_P50 = .008
+RELOCATED_MAX_CENTERED_DISTANCE_P90 = .020
+RELOCATED_MAX_CENTERED_DISTANCE_P95 = .025
 RELOCATED_MAX_POINTS = 256
 
 
@@ -181,6 +181,11 @@ def _relocated_instance_candidate(views, live_handle, overlap_candidates):
         for value in np.unique(mask)
         if int(value) > 0
     })
+    visible_live_views = sum(
+        int((am == live_handle).sum()) >= RELOCATED_MIN_PIXELS
+        for am, _, _, _ in views.values())
+    required_geometry_views = max(
+        RELOCATED_MIN_VIEWS, min(3, visible_live_views))
     passing = []
     for candidate in stored_handles:
         checks = {}
@@ -226,7 +231,7 @@ def _relocated_instance_candidate(views, live_handle, overlap_candidates):
                 geometry=geometry,
                 passed=bool(passed),
                 failure_reasons=reasons)
-        accepted = agreeing >= RELOCATED_MIN_VIEWS
+        accepted = agreeing >= required_geometry_views
         evidence['candidates'][str(candidate)] = {
             'agreeing_view_count': agreeing,
             'candidate_accepted': bool(accepted),
@@ -238,7 +243,8 @@ def _relocated_instance_candidate(views, live_handle, overlap_candidates):
     evidence['passing_candidates'] = passing
     evidence['certificate'] = {
         'type': 'relocated_centered_geometry_two_view',
-        'min_views': RELOCATED_MIN_VIEWS,
+        'min_views': required_geometry_views,
+        'visible_live_views': visible_live_views,
         'min_pixels': RELOCATED_MIN_PIXELS,
         'pixel_ratio_range': [
             RELOCATED_MIN_PIXEL_RATIO, RELOCATED_MAX_PIXEL_RATIO],

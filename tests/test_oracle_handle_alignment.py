@@ -724,3 +724,24 @@ def test_mask_verified_rejects_ambiguous_relocated_instances():
     assert relocation['triggered']
     assert relocation['passing_candidates'] == [99, 100]
     assert relocation['reason'] == 'ambiguous_relocated_candidates'
+
+
+def test_relocation_requires_three_votes_when_visible_in_four_views():
+    live, stored = relocated_instance_views()
+    for camera in ('right_shoulder', 'wrist'):
+        live[camera] = deepcopy(live['front'])
+        stored[camera] = deepcopy(stored['front'])
+    for camera in ('front', 'left_shoulder'):
+        stored[camera]['mask'][8:12, 0:4] = 100
+
+    mapping, report = align_handles(
+        live, stored, {87: 'cylinder'}, mode='mask_verified')
+
+    assert mapping == {87: 99}
+    relocation = report['87']['relocated_instance']
+    assert relocation['certificate']['visible_live_views'] == 4
+    assert relocation['certificate']['min_views'] == 3
+    assert relocation['candidates']['99']['agreeing_view_count'] == 4
+    assert relocation['candidates']['99']['candidate_accepted']
+    assert relocation['candidates']['100']['agreeing_view_count'] == 2
+    assert not relocation['candidates']['100']['candidate_accepted']

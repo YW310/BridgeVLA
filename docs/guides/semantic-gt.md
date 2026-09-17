@@ -106,7 +106,8 @@ precision/recall 低于 0.5 仍是 hard conflict。
 
 若 live 小实例在至少两个视角都落到面积大于自身 4 倍的 stored 支撑面上，说明
 `reset_to_demo` 后可动物体可能发生了位移。此时才会启用全局小实例搜索：分别对点云去中心，
-要求至少两个视角同时通过像素规模、3D 尺寸和双向表面距离检查，并且只能有一个候选通过。
+要求像素规模、3D 尺寸和双向表面距离一致，并且只能有一个候选通过。live 实例在三个以上
+视角可见时要求至少三票，否则要求两票，避免两个视角中的偶然同形候选被接受。
 成功时记录 `source=registered_centered_geometry_relocation` 和
 `relocated_geometry_verified=true`；重复同形候选、普通低 overlap、split mask 或无候选仍严格拒绝。
 该局部证书不代表整幅场景几何对齐，因此 `geometry_verified` 仍保持 `false`。
