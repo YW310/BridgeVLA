@@ -6,6 +6,15 @@
 Target/Reference pair，并为每个角色写入固定大小点集、存在性、有效性和置信度；
 BridgeVLA 继续复用 relation adapter 与 relation anchor。
 
+```mermaid
+flowchart LR
+    O[当前 observation + instruction] --> P[外部 object predictor]
+    P --> C[候选 T/R + confidence]
+    C --> G[固定大小 XYZ + present/valid]
+    G --> A[BridgeVLA relation/anchor adapter]
+    A --> Y[完整动作]
+```
+
 配置：
 
     configs/rlbench_o2_predicted_objects.yaml
@@ -43,3 +52,15 @@ semantic-GT 相同语义的物体表面或定向区域点集；2 cm fallback box
 当前边界是“外部预测器 + BridgeVLA policy”，仓库尚未包含 detector/segmentor
 本身。闭环评估时，预测器 wrapper 必须在 `agent.act()` 前向 observation 注入相同
 字段；严格模式下缺失字段会立即报错，不会回退到 Oracle。
+
+## 对应函数
+
+| 阶段 | 关键函数 |
+| --- | --- |
+| replay / observation 字段读取 | `RVTAgent._select_oracle_prior_points()` |
+| confidence 与 present/valid 过滤 | 同上；不可用但语义存在的 Reference 会关闭整对 residual |
+| T/R XYZ → 多视角 prior | `MVT._build_oracle_instance_prior()`、`rasterize_instance_points()` |
+| relation/anchor 注入 | `OracleRelationGatedFeatureAdapter` / `OracleRelationAnchorFeatureAdapter` |
+
+统一对比见 [Object-prior 三种模式](object-prior-modes.md)，完整定位见
+[数据流与函数索引](../reference/code-map.md)。

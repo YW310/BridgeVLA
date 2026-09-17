@@ -6,6 +6,32 @@
 
 # 严格 Semantic-GT Target/Reference
 
+本流程把 RLBench 当前 phase 的语义角色写入 replay，供 Oracle adapter、relation anchor，
+以及 internal-slot 的角色 heatmap 监督使用。它不会生成完整场景 object slots，也不会补全
+被真实相机遮挡的物体表面。
+
+```mermaid
+flowchart LR
+    A[role YAML + stored demo] --> B[生成 phase/handle manifest]
+    B --> C[严格对齐与审计]
+    C --> D[重写 Oracle T/R 字段]
+    D --> E[校验 + 抽样可视化]
+    E --> F[O2 / internal-slot 训练]
+```
+
+| 阶段 | 输出 | 主要函数 |
+| --- | --- | --- |
+| Manifest | 每个 episode 的 phase、T/R 语义与 handle | `RLBenchGTOracleProvider.build_demo_event_manifest()` |
+| 对齐 | live → stored handle 映射与证据 | `align_handles()`、`align_semantic_handle_group()` |
+| Replay 重写 | 固定大小 T/R XYZ、valid 与审计字段 | `_build_oracle()`、`_fill_slot()`、`_audit_fields()` |
+| 校验 | `semantic_role_validation.json` 与抽样图 | `_validate_task_output()`、`_visualize_task_output()` |
+
+完整函数定位见[数据流与函数索引](../reference/code-map.md)。
+
+<details>
+<summary>严格校验、恢复、handle 对齐与几何契约（按需展开）</summary>
+
+
 `demo_events` 的生成统计写入 `manifest_results.csv`，字段为生成覆盖率（百分比）、
 已生成/请求 episode 数和逻辑 transition 数；TensorBoard 标签为 `manifest_coverage_<task>`。
 `eval.sh` 合并为 `*_merged_manifest_results.csv`。覆盖率 100% 只代表 manifest 生成完成，
@@ -149,6 +175,8 @@ python validate_semantic_roles.py \
 
 任一对象选择器无法解析、T/R 混入 robot handle 或层级不满足契约时立即报错；成功时
 输出 `variation_role_audit.json`、逐 variation 首帧 audit 图和 provider 统计。
+
+</details>
 
 ## 1. 用 simulator GT 生成 phase/handle manifest
 
@@ -355,6 +383,37 @@ python tools/rewrite_replay_with_semantic_roles.py \
     --visualize-output-dir $REPO/LPY/semantic_role_visualizations \
     --resume
 ```
+
+### 这份 buffer 是否适合当前 design
+
+结论是：**适合 Oracle relation/anchor 主线，也适合当前 phase 的 T/R heatmap 监督；但不能
+原样作为可靠的 NULL-Reference 监督或通用 object discovery 数据。**
+
+| 用途 | 适配性 | 原因与使用边界 |
+| --- | --- | --- |
+| `o2_gt_instance` / relation adapter | 直接适合 | slot 0/1 就是当前 phase 的 T/R，`512` 点与现有配置一致 |
+| `oracle_prior_relation_anchor` | 直接适合 | anchor 以当前 relation state 和 T/R 几何为条件，不需要显式 phase affordance 标签 |
+| Internal slots 的 T/R heatmap | 有条件适合 | 可作为角色 mask/heatmap teacher；训练时 Oracle 点不会进入 policy adapter |
+| NULL Reference / presence loss | 当前不完全适合 | `oracle_object_valid=False` 同时可能表示“语义上不存在”或“存在但四相机不可见” |
+| 全场景 object-slot pretraining | 不适合 | 数据只保存已选中的当前 T/R，不包含 distractor 和未选中的任务相关实体 |
+| 遮挡补全或 temporal memory | 不适合 | object 点来自当前四相机可见表面；虚拟正交视图只是同一可见点云的再投影 |
+
+`--max-objects 32` 与现有 replay shape 兼容，但 semantic rewriter 实际只使用角色 slot
+`0/1`；它不会因此产生 32 个场景实体。`--allow-mask-verified-handles` 表示接受严格 mask
+身份映射、同时保留“点云几何未通过身份认证”的审计状态；它不意味着物体几何完整，也
+不应描述为 geometry-verified upper bound。
+
+当前 replay audit 已保存 `oracle_reference_kind=none` 等语义信息，但训练 dataset 只采样
+`oracle_object_valid`，尚未把“角色是否存在”和“当前是否可见”拆成两个张量。因此：
+
+- 只做 Oracle adapter / anchor：可以直接使用这条命令生成的 buffer；
+- 做 internal-slot heatmap 消融：可以使用，但建议先设
+  `rvt.object_slot_null_loss_weight: 0.0`，不要声称已学习可靠 NULL；
+- 要训练 NULL/presence：应新增 `oracle_target_present` / `oracle_reference_present`，由
+  manifest 中角色是否存在生成；`oracle_object_valid` 继续只表示当前几何可用性。
+
+这一区分也适用于遮挡：`present=True, valid=False` 应关闭该样本的 object residual 或交给
+未来 memory 恢复，不能改写为 NULL Reference。
 
 工具保留 action、图像、点云、语言、`episode_idx/sample_frame` 和其他 baseline 字段；只
 替换六个 Oracle tensor，并增加不输入网络的审计字段：schema version、phase ID、T/R

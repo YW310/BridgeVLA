@@ -70,6 +70,7 @@ bash train.sh --exp_cfg_path configs/rlbench_config.yaml \
 | Raw 数据转 replay | [Replay 生成](docs/guides/replay.md) |
 | Oracle 实例字段、参数和排错 | [Oracle replay](docs/guides/oracle-replay.md) |
 | 严格 simulator-GT 角色标注 | [Semantic-GT](docs/guides/semantic-gt.md) |
+| Oracle / 外部预测 / 内部 slots 总览 | [Object-prior 模式](docs/experiments/object-prior-modes.md) |
 | O2 Adapter、消融、loss、可视化与测试 | [O2 实验](docs/experiments/o2-training.md) |
 | O2 隐式 relation-anchor 模块与新配置 | [Relation anchor](docs/experiments/relation-anchor.md) |
 | O2 预测 Target/Reference 点云输入 | [Predicted objects](docs/experiments/predicted-objects.md) |
@@ -77,9 +78,11 @@ bash train.sh --exp_cfg_path configs/rlbench_config.yaml \
 | 各 benchmark 评估命令 | [评估](docs/guides/evaluation.md) |
 | 论文结果、发布记录 | [结果与历史](docs/experiments/results.md) |
 | Phase / relation、物体视角、候选 cost 方案 | [研究设计](docs/design/role-relation-prior.md) |
+| 数据流与对应函数 | [代码索引](docs/reference/code-map.md) |
 | Oracle prior 实现交接 | [交接说明](docs/handoff/oracle-prior.md) |
 
-完整阅读路径见 [文档索引](docs/README.md)。O2 是使用 GT 实例的 Oracle 上界实验；研究设计文档中的扩展方案不等同于已实现功能。
+完整阅读路径见 [文档索引](docs/README.md)。O2 的 GT 配置是 Oracle 上界实验；external
+prediction 和 internal slots 才是无 Oracle 的部署路线。研究设计文档中的扩展方案不等同于已实现功能。
 
 <a id=experimental-results></a>
 

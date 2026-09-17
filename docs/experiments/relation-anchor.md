@@ -1,16 +1,19 @@
 # O2 implicit relation anchor
 
-[文档索引](../README.md) · [O2 训练](o2-training.md) · [研究设计](../design/role-relation-prior.md)
+[文档索引](../README.md) · [Object-prior 模式](object-prior-modes.md) · [代码索引](../reference/code-map.md)
 
 该实验直接增强现有 `OracleRelationGatedFeatureAdapter`，不再串联第二个
 adapter。它不使用 phase、contact 或手工 action-anchor 标签。
 
-    PaliGemma feature + T/R prior + T/R 3-D geometry
-                             │
-                    relation-conditioned hidden
-                             ├── 原 relation residual ── shared feature ── R/G/C
-                             └── masked pooling + spatial anchor
-                                                  └──── translation residual
+```mermaid
+flowchart LR
+    F[PaliGemma feature] --> H[relation-conditioned hidden]
+    P[T/R prior + 3D geometry] --> H
+    H --> S[原 relation residual / shared feature]
+    S --> R[rotation / gripper / collision]
+    H --> M[masked pooling + spatial anchor]
+    M --> T[translation residual]
+```
 
 Relation query 复用原 adapter 的 relation-conditioned hidden，并结合 T/R
 区域 masked pooling、中心/尺度、相对位移和当前夹爪的三维观测状态。归一化
@@ -46,3 +49,12 @@ translation cross-entropy。
 当前 `reference_valid=False` 仍无法区分“语义上没有 Reference”和“Reference
 存在但被遮挡”。因此 NULL 分支只适用于前一种情况；接入预测 object 时应把
 `reference_present` 与 `reference_visible` 分开，遮挡不能伪装成 NULL。
+
+## 对应函数
+
+| 功能 | 函数 |
+| --- | --- |
+| relation hidden 与 shared residual | `OracleRelationGatedFeatureAdapter` |
+| 隐式 spatial anchor | `OracleRelationAnchorFeatureAdapter.forward_with_anchor()` |
+| 当前夹爪 relation state | `MVT.forward()` 的 relation-state 构造 |
+| translation / RGC 路由 | `MVTSingle.forward()` |

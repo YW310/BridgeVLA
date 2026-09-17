@@ -1,4 +1,4 @@
-[文档索引](../README.md) · [项目首页](../../README.md)
+[文档索引](../README.md) · [Object-prior 模式](object-prior-modes.md) · [代码索引](../reference/code-map.md)
 
 > 命令从 `finetune/RLBench` 执行；请先替换示例路径。
 
@@ -15,16 +15,14 @@ adapted feature 同时供 translation、rotation、gripper、collision 使用。
 
 当前结构不包含 post-hoc translation fusion：
 
-```text
-frozen visual feature x + [P_T, P_R] + 3D relation
-                    ↓
-           relation-gated adapter
-                    ↓
-             adapted feature
-              ↙           ↘
- translation head       R/G/C heads
-        ↓                    ↑
-   decode waypoint ─── 推理时在同一位置采样 feature
+```mermaid
+flowchart LR
+    X[frozen visual feature] --> A[relation-gated adapter]
+    P[T/R prior + 3D relation] --> A
+    A --> T[translation head]
+    A --> R[rotation / gripper / collision]
+    T --> W[decoded waypoint]
+    W -.推理时同一位置采样 feature.-> R
 ```
 
 O2 只有一份 translation 输出 `trans`。推理时 translation 最终位置与
@@ -100,8 +98,11 @@ rvt:
 - `peract.add_rgc_loss`：R/G/C loss 是否加入总目标。
 - `rvt.oracle_valid_only_loss`：translation 优化是否只统计完整 T/R pair。
 
-无 Reference 的 phase 会令 relation pair 无效，adapter residual 归零并回退 frozen
-baseline feature；严格数据审计可设置 `rvt.oracle_prior_strict=True`。
+无 Reference 的 phase 是合法的 Target-only relation：Target 仍可产生 residual，Reference
+由 learned NULL 表示。若 Reference 语义上存在但当前几何不可用，则不能把它当作 NULL；
+外部预测路径会使整对 residual 无效。当前 Oracle tensor 路径只向网络传 `valid`，不能在
+运行时区分“不存在”和“不可见”；详见
+[Semantic-GT buffer 适配性](../guides/semantic-gt.md#这份-buffer-是否适合当前-design)。
 
 <a id=o2-loss-comparison></a>
 
@@ -151,6 +152,14 @@ baseline feature；严格数据审计可设置 `rvt.oracle_prior_strict=True`。
 5. `OracleRelationGatedFeatureAdapter` 修改 feature；`mvt_single.py::forward` 从该
    feature 同时预测 translation 与 R/G/C。外层只附加 prior 供诊断，不再改写 `trans`。
 6. `bridgevla_agent.py::update` 计算 adapter loss 和无梯度 base loss。
+
+| 目的 | 函数 |
+| --- | --- |
+| object 模式与输入选择 | `resolve_object_prior_mode()`、`RVTAgent._select_oracle_prior_points()` |
+| XYZ 栅格化 | `MVT._build_oracle_instance_prior()`、`rasterize_instance_points()` |
+| feature 注入 | `OracleRelationGatedFeatureAdapter.forward()` |
+| 完整动作输出 | `MVTSingle.forward()` |
+| loss 与训练日志 | `RVTAgent.update()` |
 
 <a id=o2-evaluation></a>
 

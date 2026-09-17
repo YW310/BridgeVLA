@@ -2,6 +2,25 @@
 
 [返回项目首页](../README.md)
 
+```mermaid
+flowchart LR
+    A[安装与 baseline] --> B[Replay / Semantic-GT 数据]
+    B --> C[Object-prior 实验模式]
+    C --> D[训练与 closed-loop 评估]
+    C -.设计扩展.-> E[Relation / phase / memory]
+    C -.代码定位.-> F[函数索引]
+```
+
+## 推荐阅读路径
+
+| 目标 | 从这里开始 | 下一步 |
+| --- | --- | --- |
+| 复现原始 BridgeVLA | [安装](guides/installation.md) | [训练](guides/training.md) → [评估](guides/evaluation.md) |
+| 生成严格 T/R 数据 | [Semantic-GT](guides/semantic-gt.md) | [O2 训练](experiments/o2-training.md) |
+| 比较 Oracle、外部预测和内部 slots | [Object-prior 模式](experiments/object-prior-modes.md) | 对应实验配置 |
+| 查看 phase-dependent anchor | [Relation anchor](experiments/relation-anchor.md) | [研究设计](design/role-relation-prior.md) |
+| 从概念定位代码 | [数据流与函数索引](reference/code-map.md) | 对应源码与测试 |
+
 ## 目录层次
 
 ```text
@@ -16,6 +35,7 @@ docs/
 │   └── evaluation.md
 ├── experiments/                      # 实验操作与结果
 │   ├── o2-training.md
+│   ├── object-prior-modes.md
 │   ├── relation-anchor.md
 │   ├── predicted-objects.md
 │   ├── internal-object-slots.md
@@ -23,6 +43,8 @@ docs/
 ├── design/                           # 研究方案（非实现承诺）
 │   ├── role-relation-prior.md        # 精简主线与实施顺序
 │   └── role-relation-details.md      # 公式、接口与验收细节
+├── reference/
+│   └── code-map.md                   # 数据流与函数索引
 └── handoff/                          # 实现背景与交接
     └── oracle-prior.md
 ```
@@ -35,7 +57,9 @@ docs/
 
 ## 2. 实验与结果
 
+- 三种 object 输入方式：[Object-prior 模式](experiments/object-prior-modes.md)。
 - Oracle 上界实验：[Semantic-GT 数据](guides/semantic-gt.md) → [O2 训练、消融与评估](experiments/o2-training.md)。
+- 无 Oracle 路线：[外部 predicted objects](experiments/predicted-objects.md) / [网络内部 slots](experiments/internal-object-slots.md)。
 - 论文结果与发布记录：[结果与历史](experiments/results.md)。
 
 O2 在训练和评估时使用 GT 实例，不能作为无 GT 的部署结果报告。启发式 Oracle 角色与严格 semantic-GT 标注须区分。
@@ -53,6 +77,11 @@ O2 在训练和评估时使用 GT 实例，不能作为无 GT 的部署结果报
 [Oracle prior 交接](handoff/oracle-prior.md)：实验动机、实现位置、历史状态和后续扩展。
 
 交接文档保留原有日期与历史语境。实际运行参数以当前脚本、配置和使用／实验指南为准。
+
+## 5. 代码定位
+
+[数据流与函数索引](reference/code-map.md) 汇总 semantic manifest、replay 重写、prior 构造、
+relation/anchor adapter 和 internal slot predictor 的对应函数。
 
 ## 命令约定
 
