@@ -211,7 +211,7 @@ MANIFEST_CONTINUE_ON_ERROR=1 \
 ORACLE_PROVIDER=rlbench_gt \
 ORACLE_ROLE_CONFIG="$REPO/finetune/RLBench/configs/rlbench_o2_semantic_roles.yaml" \
 ORACLE_NUM_POINTS=512 \
-ORACLE_HANDLE_ALIGNMENT=verified \
+ORACLE_HANDLE_ALIGNMENT=mask_verified \
 ORACLE_STRICT=1 \
 ORACLE_DEBUG=0 \
 SAVE_VIDEO=0 \
@@ -318,19 +318,37 @@ source_alignment_validated 表示相应检查通过；它不替代真实 simulat
 
 ## 2. 只重写 Oracle 字段，生成 semantic-GT buffer
 
-以下命令在仓库根目录执行；若刚运行完上一节，请先返回仓库根目录。
+以下命令在仓库根目录执行；若刚运行完上一节，请先返回仓库根目录。先检查 manifest
+是否完整。18 个任务、每个 100 个 episode 时，manifest 数应为 1800，failure 数应为 0：
 
 ```bash
+find $MODEL_FOLDER/eval \
+    -path '*/semantic_role_manifests/*/episode_*.json' \
+    -type f | wc -l
+
+find $MODEL_FOLDER/eval \
+    -path '*/manifest_failures/*/episode_*.json' \
+    -type f | wc -l
+```
+
+使用独立输出目录重写，避免已有旧 buffer 被 `--resume` 跳过：
+
+```bash
+export SEMANTIC_BUFFER=$REPO/LPY/BridgeVLA_RLBench_SEMANTIC_GT_MASK_VERIFIED_Buffer
+
+cd $REPO
+
 python tools/rewrite_replay_with_semantic_roles.py \
-    --replay-dir LPY/BridgeVLA_RLBench_TRAIN_Buffer \
-    --raw-data-dir LPY/BridgeVLA_RLBench_TRAIN_DATA/train \
-    --manifest-dir /path/to/model/eval \
-    --output-dir LPY/BridgeVLA_RLBench_SEMANTIC_GT_Buffer \
+    --replay-dir $REPO/LPY/BridgeVLA_RLBench_TRAIN_Buffer \
+    --raw-data-dir $RAW_DATA \
+    --manifest-dir $MODEL_FOLDER/eval \
+    --output-dir $SEMANTIC_BUFFER \
     --task all \
     --max-objects 32 \
     --num-points 512 \
     --cache-frames 128 \
     --cache-episodes 2 \
+    --allow-mask-verified-handles \
     --resume
 ```
 
@@ -346,18 +364,20 @@ semantic name、kind、几何来源、原始 handle 集合、`oracle_phase_sourc
 - 角色正确但当前四个相机均不可见：该角色 `valid=False` 并计入 `not_visible`；
 - 任务定义没有 R：计入 `no_reference`，不是异常，网络的 R residual 为零；
 - raw/replay frame 越界：立即停止，不截断到最后一帧，也不生成伪点云；
-- `--resume` 只跳过已经原子写完的 replay；`--overwrite` 与它互斥。
+- `--resume` 只按目标文件是否存在来跳过已经原子写完的 replay，不会检查 manifest 是否
+  更新。上面的新输出目录可保留旧 buffer 并完整重写；若明确需要原地替换旧目录，应移除
+  `--resume` 并使用与其互斥的 `--overwrite`。
 - `--cache-frames` 与 `--cache-episodes` 都是有界 LRU；默认最多保留 128 个 Oracle
   帧和 2 个 episode 的 low-dim 数据，不会随已处理 episode 数持续增长。
 
 ## 3. 正式 semantic-GT O2 训练
 
 ```bash
-cd finetune/RLBench
+cd $REPO/finetune/RLBench
 bash train.sh \
     --exp_cfg_path configs/rlbench_o2_semantic_gt.yaml \
-    --train_replay_storage_dir /path/to/BridgeVLA_RLBench_SEMANTIC_GT_Buffer \
-    --init_checkpoint /path/to/baseline/model_80.pth \
+    --train_replay_storage_dir $SEMANTIC_BUFFER \
+    --init_checkpoint $MODEL_FOLDER/$MODEL_NAME \
     --train_oracle_adapter_only
 ```
 
