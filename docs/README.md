@@ -67,11 +67,11 @@ O2 在训练和评估时使用 GT 实例，不能作为无 GT 的部署结果报
 
 ## 3. 研究设计
 
-[精简设计](design/role-relation-prior.md)：基于现有 internal slots 的 T/R role memory、连续 relation/completion 与完整动作联合训练。
+[精简设计](design/role-relation-prior.md)：基于 internal slots 的 object-conditioned latent phase 与完整动作联合训练。
 
 [真实机器人落地](design/real-world-deployment.md)：无 GT 部署接口、短时 object memory、sim-to-real 与安全评估。
 
-[详细设计与可选扩展](design/role-relation-details.md)：公式、监督、验收反例，以及 ARE、pair view、risk 等后续设计空间；按需查阅。
+[详细设计与可选扩展](design/role-relation-details.md)：最小状态、训练、代码落点、验收反例与按瓶颈启用的扩展。
 
 该文档描述下一阶段研究方案；请以其中的实现边界为准，不将方案视为已完成实现。
 
