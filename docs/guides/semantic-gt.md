@@ -400,6 +400,7 @@ python tools/rewrite_replay_with_semantic_roles.py \
     --workers 4 \
     --allow-mask-verified-handles \
     --validate-output \
+    --validate-every 100 \
     --visualize-every 500 \
     --visualize-output-dir $REPO/LPY/semantic_role_visualizations \
     --resume
@@ -455,14 +456,21 @@ semantic name、kind、几何来源、原始 handle 集合、`oracle_phase_sourc
   和有效性应以 `semantic_role_validation.json` 为准。
 - `--workers N` 按 task 使用多进程，不会把同一 task 内的 replay 拆给多个进程；每个 worker
   拥有独立的 frame/episode cache，因此内存和 raw-data I/O 会随 worker 数增加。磁盘数据集
-  建议从 2 或 4 开始。生成结束后的全量 validation 和 Matplotlib 可视化保持顺序执行，避免
+  建议从 2 或 4 开始。生成结束后的 validation 和 Matplotlib 可视化保持顺序执行，避免
   多进程同时复读全部输出或渲染图片。
-- `--validate-output` 在生成或 resume 后逐个复读输出 replay，检查文件集合、baseline
-  字段不变、v2 audit、Oracle shape/dtype/有限值、role-valid 一致性，以及有效 site
-  至少包含两个不同 XYZ 点。每个任务写入
-  `semantic_role_validation.json`；任一检查失败时命令以错误退出。正式 strict 数据应
-  同时满足报告中的 `valid=true`、`raw_fallback_files=0`，且
-  `phase_sources` 只有 `demo_events`。
+- `--validate-output` 在生成或 resume 后检查完整的输入/输出文件集合，并复读选中的
+  replay，检查 baseline 字段不变、v2 audit、Oracle shape/dtype/有限值、role-valid
+  一致性，以及有效 site 至少包含两个不同 XYZ 点。默认
+  `--validate-every 1` 为全量验证；例如 `--validate-every 100` 会确定性验证排序后
+  第 0、100、200……个 replay，并强制验证最后一个，适合快速抽查。每个任务写入
+  `semantic_role_validation.json`，其中 `validation_mode`、`validated_files`、
+  `validation_fraction` 和 `counts_scope` 会明确区分全量与抽样结果；任一已检查项
+  失败时命令以错误退出。
+- 抽样报告中的 `nonterminal_files`、`site_roles`、`raw_fallback_files` 和
+  `phase_sources` 只统计被抽到的 replay。正式 strict 数据验收应省略
+  `--validate-every`（或设为 1），并同时满足 `validation_complete=true`、
+  `valid=true`、`raw_fallback_files=0`，且 `phase_sources` 只有
+  `demo_events`。
 - `--visualize-every N` 直接读取已写入 semantic replay 的 T/R 点，每隔 N 个排序后的
   replay 输出一组 PNG 和同名 JSON；不会重新运行启发式对象提取。PNG 包含四视角 RGB、
   mask box、场景点云和 T/R 的透视/三正交视图，JSON 记录 phase、semantic name、kind

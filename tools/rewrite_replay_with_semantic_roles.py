@@ -616,6 +616,16 @@ def _validate_semantic_transition(transition, max_objects, num_points, source=No
     return oracle
 
 
+def _validation_files(files, every):
+    '''Select a deterministic validation sample and always include the tail.'''
+    if every <= 1:
+        return list(files)
+    selected = list(files[::every])
+    if files and (not selected or selected[-1] != files[-1]):
+        selected.append(files[-1])
+    return selected
+
+
 def _validate_task_output(args, task, source_dir, destination_dir):
     source_files = _numeric_replay_files(source_dir)
     output_files = _numeric_replay_files(destination_dir)
@@ -627,10 +637,20 @@ def _validate_task_output(args, task, source_dir, destination_dir):
         raise ValueError(
             f'{task} replay file set mismatch: missing={missing[:5]}, '
             f'extra={extra[:5]}')
+    validation_every = int(getattr(args, 'validate_every', 1))
+    validation_files = _validation_files(output_files, validation_every)
+    validation_complete = len(validation_files) == len(output_files)
     report = {
         'task': task,
         'schema_version': SEMANTIC_ROLE_SCHEMA,
         'files': len(output_files),
+        'validated_files': len(validation_files),
+        'validation_mode': 'full' if validation_complete else 'sampled',
+        'validation_every': validation_every,
+        'validation_fraction': (
+            len(validation_files) / len(output_files) if output_files else 1.0),
+        'validation_complete': validation_complete,
+        'counts_scope': 'all_files' if validation_complete else 'validated_sample',
         'nonterminal_files': 0,
         'target_valid': 0,
         'reference_valid': 0,
@@ -641,7 +661,7 @@ def _validate_task_output(args, task, source_dir, destination_dir):
         'valid': True,
     }
     source_by_name = {path.name: path for path in source_files}
-    for output_path in output_files:
+    for output_path in validation_files:
         with source_by_name[output_path.name].open('rb') as stream:
             source = pickle.load(stream)
         with output_path.open('rb') as stream:
@@ -675,11 +695,14 @@ def _validate_task_output(args, task, source_dir, destination_dir):
     with report_path.open('w', encoding='utf-8') as stream:
         json.dump(report, stream, indent=2, sort_keys=True)
     files_count = report['files']
+    validated_count = report['validated_files']
     nonterminal_count = report['nonterminal_files']
     site_count = report['site_roles']
     fallback_count = report['raw_fallback_files']
+    validation_label = 'VALIDATED' if validation_complete else 'VALIDATED-SAMPLE'
     print(
-        f'[VALIDATED] {task}: {files_count} replay files; '
+        f'[{validation_label}] {task}: checked={validated_count}/{files_count} '
+        f'replay files; '
         f'nonterminal={nonterminal_count}; site_roles={site_count}; '
         f'raw_fallback={fallback_count}; report={report_path}',
         flush=True)
@@ -928,6 +951,13 @@ def build_parser():
             'After rewriting, validate every output replay against its source '
             'and write semantic_role_validation.json per task.'),
     )
+    parser.add_argument(
+        '--validate-every', type=int, default=1, metavar='N',
+        help=(
+            'With --validate-output, deserialize and validate every Nth sorted '
+            'replay plus the final replay. The complete input/output file set is '
+            'always checked; 1 (default) validates every replay.'),
+    )
     visualization = parser.add_mutually_exclusive_group()
     visualization.add_argument(
         '--visualize-index', type=int,
@@ -972,6 +1002,10 @@ def main(argv: Optional[Sequence[str]] = None):
         )
     ):
         raise ValueError('Visualization index/interval must be non-negative')
+    if args.validate_every < 1:
+        raise ValueError('--validate-every must be positive')
+    if args.validate_every != 1 and not args.validate_output:
+        raise ValueError('--validate-every requires --validate-output')
     if (
         args.max_objects < 2 or args.num_points <= 0
         or args.cache_frames < 0 or args.cache_episodes < 1 or args.workers < 1

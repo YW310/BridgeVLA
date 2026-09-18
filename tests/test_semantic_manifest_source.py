@@ -45,11 +45,13 @@ def test_rewrite_parser_supports_output_validation_and_visualization():
     args = rewrite.build_parser().parse_args([
         '--replay-dir', 'replay', '--raw-data-dir', 'raw',
         '--manifest-dir', 'manifests', '--output-dir', 'output',
-        '--validate-output', '--visualize-every', '25',
+        '--validate-output', '--validate-every', '100',
+        '--visualize-every', '25',
         '--visualize-output-dir', 'visualizations',
         '--visualize-objects-only',
     ])
     assert args.validate_output
+    assert args.validate_every == 100
     assert args.visualize_every == 25
     assert args.visualize_output_dir == Path('visualizations')
     assert args.visualize_objects_only
@@ -408,6 +410,10 @@ def test_validate_task_output_checks_every_replay_and_site_geometry(tmp_path):
 
     assert report['valid']
     assert report['files'] == 1
+    assert report['validated_files'] == 1
+    assert report['validation_mode'] == 'full'
+    assert report['validation_complete']
+    assert report['counts_scope'] == 'all_files'
     assert report['site_roles'] == 1
     assert report['fallback_box_roles'] == 1
     assert report['raw_fallback_files'] == 0
@@ -420,6 +426,43 @@ def test_validate_task_output_checks_every_replay_and_site_geometry(tmp_path):
         'oracle_object_points'][0, 0]
     with pytest.raises(ValueError, match='repeated center point'):
         rewrite._validate_semantic_transition(transition, 4, 8)
+
+
+def test_validate_task_output_supports_deterministic_sampling(
+        monkeypatch, tmp_path):
+    source_dir = tmp_path / 'source'
+    destination_dir = tmp_path / 'destination'
+    source_dir.mkdir()
+    destination_dir.mkdir()
+    for replay_index in range(8):
+        payload = {'replay_index': replay_index}
+        with (source_dir / f'{replay_index}.replay').open('wb') as stream:
+            pickle.dump(payload, stream)
+        with (destination_dir / f'{replay_index}.replay').open('wb') as stream:
+            pickle.dump(payload, stream)
+
+    checked = []
+
+    def fake_validate(transition, max_objects, num_points, source=None):
+        assert transition == source
+        checked.append(transition['replay_index'])
+        return SimpleNamespace(
+            valid=np.zeros(max_objects, dtype=bool),
+            roles=np.zeros(max_objects, dtype=np.int64),
+        )
+
+    monkeypatch.setattr(rewrite, '_validate_semantic_transition', fake_validate)
+    report = rewrite._validate_task_output(
+        SimpleNamespace(max_objects=4, num_points=8, validate_every=3),
+        'reach_and_drag', source_dir, destination_dir)
+
+    assert checked == [0, 3, 6, 7]
+    assert report['files'] == 8
+    assert report['validated_files'] == 4
+    assert report['validation_mode'] == 'sampled'
+    assert not report['validation_complete']
+    assert report['counts_scope'] == 'validated_sample'
+    assert report['validation_fraction'] == pytest.approx(4 / 8)
 
 
 def test_semantic_visualization_reads_rewritten_oracle_fields(
