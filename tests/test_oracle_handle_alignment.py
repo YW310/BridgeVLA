@@ -579,6 +579,53 @@ def test_single_view_rejects_two_viable_partial_candidates():
             live, stored, {87: 'drawer_top'}, mode='mask_verified')
 
 
+def small_asymmetric_multiview_masks(*, partial_stored_pixels=30,
+                                     partial_geometry_offset=.007,
+                                     exact_stored_pixels=28):
+    live, stored = single_view_exact_mask(
+        pixel_count=25, stored_pixel_count=partial_stored_pixels,
+        geometry_offset=partial_geometry_offset)
+    live['left_shoulder']['mask'].flat[:28] = 87
+    stored['left_shoulder']['mask'].flat[:exact_stored_pixels] = 99
+    stored['left_shoulder']['cloud'][..., 2] += .025
+    return live, stored
+
+
+def test_small_asymmetric_two_view_mask_accepts_unique_candidate():
+    live, stored = small_asymmetric_multiview_masks()
+
+    mapping, report = align_handles(
+        live, stored, {87: 'star_visual'}, mode='mask_verified')
+
+    assert mapping == {87: 99}
+    evidence = report['87']
+    assert evidence['source'] == (
+        'registered_mask_overlap_small_asymmetric_multiview_mask')
+    assessment = evidence['candidate_assessments']['99']
+    assert assessment['certificates'][
+        'small_asymmetric_multiview_mask']
+    assert assessment['small_asymmetric_multiview_mask']['exact_views'] == [
+        'left_shoulder']
+    assert assessment['small_asymmetric_multiview_mask'][
+        'supporting_views'] == ['front', 'left_shoulder']
+
+
+@pytest.mark.parametrize(
+    'partial_stored_pixels,partial_geometry_offset,exact_stored_pixels',
+    [(32, .007, 28), (30, .011, 28), (30, .007, 29)])
+def test_small_asymmetric_two_view_mask_certificate_is_strict(
+        partial_stored_pixels, partial_geometry_offset,
+        exact_stored_pixels):
+    live, stored = small_asymmetric_multiview_masks(
+        partial_stored_pixels=partial_stored_pixels,
+        partial_geometry_offset=partial_geometry_offset,
+        exact_stored_pixels=exact_stored_pixels)
+
+    with pytest.raises(HandleAlignmentError):
+        align_handles(
+            live, stored, {87: 'star_visual'}, mode='mask_verified')
+
+
 def test_semantic_union_accepts_one_strong_and_one_three_pixel_exact_view():
     live, stored = single_view_boundary_noise()
     live['left_shoulder']['mask'][1, 1:4] = 87

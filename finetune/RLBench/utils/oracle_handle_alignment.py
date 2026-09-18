@@ -29,6 +29,8 @@ SHIFTED_MIN_MASK_COVERAGE = .60
 SHIFTED_MIN_VIEWS = 3
 RELOCATED_PLAUSIBLE_OVERLAP_COVERAGE = .20
 RELOCATED_PARTIAL_MASK_TIEBREAK_COVERAGE = .40
+SMALL_ASYMMETRIC_MASK_MIN_PRECISION = .80
+SMALL_ASYMMETRIC_MASK_MIN_RECALL = .99
 
 
 class HandleAlignmentError(ValueError):
@@ -827,6 +829,30 @@ def align_handles(live, stored, names, name_to_handle=None, *, mode='verified',
                     for check in checks.values()
                 )
             )
+            # Small thin silhouettes are sensitive to a few rasterized edge
+            # pixels. Certify this only for one raw candidate, with one exact
+            # registered view and a second view whose containment is backed by
+            # point-cloud agreement. This covers an asymmetric 25/30 outline
+            # without weakening the ordinary 90% two-view mask quorum.
+            exact_small_views = sorted(
+                camera for camera, check in checks.items()
+                if min(check['live_pixels'], check['stored_pixels']) >= 16
+                and check['precision'] == 1. and check['recall'] == 1.)
+            asymmetric_small_views = sorted(
+                camera for camera, check in checks.items()
+                if min(check['live_pixels'], check['stored_pixels']) >= 16
+                and (
+                    (check['precision'] == 1. and check['recall'] == 1.)
+                    or (
+                        check['precision']
+                        >= SMALL_ASYMMETRIC_MASK_MIN_PRECISION
+                        and check['recall']
+                        >= SMALL_ASYMMETRIC_MASK_MIN_RECALL
+                        and check['geometry_passed'])))
+            small_asymmetric_multiview_mask = (
+                mask_only and len(candidates) == 1 and not contradictory
+                and len(exact_small_views) >= 1
+                and len(asymmetric_small_views) >= 2)
             # In mask_verified mode the documented identity certificate is a
             # quorum of two independently registered, high-overlap views.  A
             # third camera can legitimately disagree because a thin/contact
@@ -840,12 +866,15 @@ def align_handles(live, stored, names, name_to_handle=None, *, mode='verified',
                       or single_view_small_exact_geometry
                       or single_view_small_exact_robust_geometry
                       or single_view_dominant_mask))
+            accepted_by_asymmetric_multiview = (
+                mask_only and small_asymmetric_multiview_mask)
             accepted_by_verified = (
                 not mask_only and not contradictory
                 and (agreeing >= 2 or declared is not None))
             candidate_assessments[str(candidate)] = dict(
                 candidate_accepted=bool(
                     accepted_by_mask_quorum or accepted_by_single_view
+                    or accepted_by_asymmetric_multiview
                     or accepted_by_verified),
                 raw_candidate_count=len(candidates),
                 checked_view_count=len(checks),
@@ -860,11 +889,23 @@ def align_handles(live, stored, names, name_to_handle=None, *, mode='verified',
                     single_view_small_exact_robust_geometry=bool(
                         single_view_small_exact_robust_geometry),
                     single_view_dominant_mask=bool(single_view_dominant_mask),
+                    small_asymmetric_multiview_mask=bool(
+                        small_asymmetric_multiview_mask),
                     verified=bool(accepted_by_verified)))
+            candidate_assessments[str(candidate)][
+                'small_asymmetric_multiview_mask'] = dict(
+                    min_pixels=16,
+                    min_precision=SMALL_ASYMMETRIC_MASK_MIN_PRECISION,
+                    min_recall=SMALL_ASYMMETRIC_MASK_MIN_RECALL,
+                    exact_views=exact_small_views,
+                    supporting_views=asymmetric_small_views)
             if (accepted_by_mask_quorum or accepted_by_single_view
+                    or accepted_by_asymmetric_multiview
                     or accepted_by_verified):
                 accepted.append(candidate)
                 accepted_sources[candidate] = (
+                    'small_asymmetric_multiview_mask'
+                    if accepted_by_asymmetric_multiview else
                     ('single_view_mask_interior_geometry'
                      if single_view_uses_interior
                      else 'single_view_mask_geometry')
@@ -949,4 +990,7 @@ def align_handles(live, stored, names, name_to_handle=None, *, mode='verified',
         elif accepted_sources[target] == 'shifted_centered_geometry':
             evidence[str(handle)]['source'] = (
                 'registered_centered_geometry_shifted_mask')
+        elif accepted_sources[target] == 'small_asymmetric_multiview_mask':
+            evidence[str(handle)]['source'] = (
+                'registered_mask_overlap_small_asymmetric_multiview_mask')
     return mapping, evidence

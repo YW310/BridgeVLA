@@ -91,8 +91,9 @@ precision/recall 低于 0.5 仍是 hard conflict。
 薄环等只在一个相机达到 16 像素的实体采用受限回退：候选必须全局唯一，并且只有一个
 可见检查、至少 32 像素、mask precision/recall 均不低于 0.98、点云 P95 距离不超过
 1 cm。报告以 `registered_mask_overlap_single_view_geometry` 标记；不满足任一条件仍拒绝。
-顶层 `geometry_policy=audit_only_except_single_view_corroboration` 表示全局点云几何仍未
-认证，但该受限回退确实使用当前实例的局部几何作为身份佐证。
+顶层 `geometry_policy=audit_only_except_explicit_identity_corroboration` 表示全局点云几何
+仍未认证；只有明确列出的受限身份回退会使用当前实例的局部几何作为佐证，包括单视角
+几何回退，以及唯一小物体候选的“一个精确视角 + 一个轮廓膨胀视角”证书。
 对于由多个 simulator handles 组成的同一语义实体，若某个部件在所有已配准视角均少于
 16 像素且没有候选映射，该部件以 `excluded_unobservable` 记入审计而不猜测 ID；只有
 同一实体至少还有一个其他部件通过多视角映射时才允许生成。若整个实体不可观测，仍会

@@ -1401,7 +1401,8 @@ class RLBenchGTOracleProvider:
                 small_exact_robust_geometry_max_world_distance_p50=.005,
                 small_exact_robust_geometry_max_world_distance_p90=.012,
                 small_exact_robust_geometry_max_world_distance_p95=.025)
-            report['geometry_policy'] = 'audit_only_except_single_view_corroboration'
+            report['geometry_policy'] = (
+                'audit_only_except_explicit_identity_corroboration')
         try:
             required = set()
             required_groups = []
