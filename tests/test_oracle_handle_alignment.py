@@ -742,7 +742,7 @@ def test_relocation_ignores_only_incidental_non_background_overlap():
     assert relocation['passing_candidates'] == [99]
 
 
-def test_meaningful_non_background_overlap_still_blocks_broad_trigger():
+def test_meaningful_non_background_overlap_still_uses_geometry_quorum():
     live, stored = views()
     for data in live.values():
         data['mask'].fill(0)
@@ -751,14 +751,37 @@ def test_meaningful_non_background_overlap_still_blocks_broad_trigger():
         data['mask'].fill(48)
         data['mask'][2:7, 1:6] = 99
 
+    mapping, report = align_handles(
+        live, stored, {87: 'cube'}, mode='mask_verified')
+
+    assert mapping == {87: 99}
+    relocation = report['87']['relocated_instance']
+    assert relocation['triggered']
+    assert relocation['broad_support_candidates'] == [48]
+    assert relocation['plausible_non_broad_candidates'] == [99]
+    assert relocation['incidental_overlap_candidates'] == []
+    assert relocation['passing_candidates'] == [99]
+
+
+def test_partial_overlap_does_not_bypass_centered_geometry_quorum():
+    live, stored = views()
+    for data in live.values():
+        data['mask'].fill(0)
+        data['mask'][1:6, 1:6] = 87
+    for data in stored.values():
+        data['mask'].fill(48)
+        data['mask'][2:7, 1:6] = 99
+        selected = data['mask'] == 99
+        data['cloud'][selected, 0] *= 3.
+
     with pytest.raises(HandleAlignmentError) as error:
         align_handles(live, stored, {87: 'cube'}, mode='mask_verified')
 
     relocation = error.value.evidence['87']['relocated_instance']
-    assert not relocation['triggered']
-    assert relocation['broad_support_candidates'] == [48]
+    assert relocation['triggered']
     assert relocation['plausible_non_broad_candidates'] == [99]
-    assert relocation['incidental_overlap_candidates'] == []
+    assert relocation['passing_candidates'] == []
+    assert relocation['reason'] == 'no_relocated_candidate_passed'
 
 
 def test_mask_verified_rejects_ambiguous_relocated_instances():

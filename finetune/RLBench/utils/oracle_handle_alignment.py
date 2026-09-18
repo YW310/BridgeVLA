@@ -128,8 +128,8 @@ def _relocated_instance_candidate(views, live_handle, overlap_candidates):
     or small pose shifts: one candidate must retain at least 60% bidirectional
     registered-mask overlap in three views. Both paths still require a
     unique candidate to pass the full centered-geometry quorum below. Tiny
-    boundary collisions below 20% bidirectional coverage do not suppress the
-    broad-support trigger; meaningful non-background overlap still does.
+    boundary collisions and partial overlap with a genuinely shifted object
+    are recorded separately, but neither bypasses or suppresses that quorum.
     '''
     visible_live_views = sum(
         int((am == live_handle).sum()) >= RELOCATED_MIN_PIXELS
@@ -200,8 +200,7 @@ def _relocated_instance_candidate(views, live_handle, overlap_candidates):
         elif material_views and candidate not in broad_candidates:
             incidental_overlap_candidates.append(candidate)
 
-    broad_trigger = bool(
-        broad_candidates and not plausible_non_broad_candidates)
+    broad_trigger = bool(broad_candidates)
     shifted_trigger = bool(not broad_trigger and shifted_candidates)
     trigger = broad_trigger or shifted_trigger
     evidence = {
