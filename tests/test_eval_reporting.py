@@ -135,6 +135,7 @@ def complete_manifest():
         'handle_alignment': {
             'status': 'mask_verified', 'live_to_stored': {'87': 99}},
         'source_frame0_masks': {'front': 'digest'},
+        'source_mask_origin': 'raw_png',
         'expected_sample_frames': [0, 5],
         'entries': [
             {'sample_frame': 0, 'completion_satisfied': False,
@@ -190,6 +191,7 @@ def test_resume_rejects_stale_task_resolver_version(tmp_path):
     (lambda value: value.update(source_alignment_validated=False), 'alignment'),
     (lambda value: value['entries'][-1].update(completion_satisfied=False), 'completion'),
     (lambda value: value.update(expected_sample_frames=[0, 4, 5]), 'coverage'),
+    (lambda value: value.pop('source_mask_origin'), 'raw mask source'),
     (lambda value: value['entries'][0]['target'].update(handles=[123]), 'handles'),
     (lambda value: value['entries'][-1]['reference'].pop(
         'site_geometry'), 'geometry'),

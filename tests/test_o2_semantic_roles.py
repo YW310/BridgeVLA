@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import yaml
+from PIL import Image
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -777,6 +778,74 @@ def test_verified_demo_manifest_uses_saved_handles_and_reset_restores_live(tmp_p
     value.reset(SimpleNamespace(_task=task), "close_jar", 0, 1)
     assert value._stored_handle_map is None
     assert value._build_assignment().target.handles == (87,)
+
+
+def test_demo_manifest_uses_raw_png_masks_when_loaded_demo_masks_differ(tmp_path):
+    lid = FakeObject('jar_lid0', 87)
+    jar0 = FakeObject('jar0', 88)
+    jar1 = FakeObject('jar1', 89)
+    task = FakeTask([lid, jar0, jar1])
+    task.lid, task.jars = lid, [jar0, jar1]
+
+    raw_root = tmp_path / 'raw' / 'train'
+    episode_dir = (
+        raw_root / 'close_jar' / 'all_variations' / 'episodes' / 'episode0')
+    raw_mask = np.full((8, 8), 99, dtype=np.int64)
+    raw_mask[:, 4:] = 93
+    encoded = np.stack((
+        raw_mask & 255,
+        (raw_mask >> 8) & 255,
+        (raw_mask >> 16) & 255,
+    ), axis=-1).astype(np.uint8)
+    for camera in ('front', 'left_shoulder'):
+        mask_dir = episode_dir / f'{camera}_mask'
+        mask_dir.mkdir(parents=True)
+        for frame in (0, 1):
+            Image.fromarray(encoded).save(mask_dir / f'{frame}.png')
+
+    value = RLBenchGTOracleProvider(
+        ROLE_CONFIG,
+        cameras=('front', 'left_shoulder'),
+        num_points=8,
+        handle_alignment='verified',
+        raw_data_root=raw_root,
+        alignment_output_dir=tmp_path / 'alignment',
+        manifest_output_dir=tmp_path / 'output',
+    )
+    value.reset(SimpleNamespace(_task=task), 'close_jar', 0, 0)
+    live_mask = np.full((8, 8), 87, dtype=np.int64)
+    live_mask[:, 4:] = 88
+    live = observation(live_mask)
+    stored = observation(np.full((8, 8), 7, dtype=np.int64))
+    for obs in (live, stored):
+        obs.left_shoulder_mask = obs.front_mask.copy()
+        obs.left_shoulder_point_cloud = obs.front_point_cloud.copy()
+        obs.misc = {
+            f'{camera}_camera_{kind}': np.eye(size)
+            for camera in value.cameras
+            for kind, size in (('intrinsics', 3), ('extrinsics', 4))
+        }
+
+    value.set_sample_frame(0)
+    value.enrich(live, {})
+    value.build_demo_event_manifest([stored, stored], [1])
+
+    expected = value._mask_fingerprints({
+        'front': raw_mask,
+        'left_shoulder': raw_mask,
+    })
+    manifest_path = (
+        tmp_path / 'output' / 'semantic_role_manifests'
+        / 'close_jar' / 'episode_0.json')
+    manifest = json.loads(manifest_path.read_text())
+    assert manifest['source_frame0_masks'] == expected
+    assert manifest['demo_frame0_masks'] != expected
+    assert manifest['raw_demo_frame0_masks_match'] is False
+    assert manifest['source_mask_origin'] == 'raw_png'
+    assert Path(manifest['raw_mask_source']) == episode_dir.resolve()
+    assert manifest['entries'][0]['target']['handles'] == [99]
+    assert manifest['entries'][0]['reference']['handles'] == [93]
+    assert manifest['entries'][0]['target_valid'] is True
 
 
 def test_verified_mapping_checks_future_phase_before_generating_any_entries(tmp_path):

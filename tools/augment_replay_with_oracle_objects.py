@@ -364,6 +364,12 @@ def _point_cloud_hwc(point_cloud: np.ndarray, name: str) -> np.ndarray:
 
 def _rlbench_mask_decoder() -> Callable[[np.ndarray], np.ndarray]:
     try:
+        from utils.rlbench_compat import rgb_handles_to_mask_safe
+
+        return rgb_handles_to_mask_safe
+    except ImportError:
+        pass
+    try:
         from rlbench.backend.utils import rgb_handles_to_mask
     except ImportError as exc:
         raise RuntimeError(

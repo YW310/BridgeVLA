@@ -19,6 +19,7 @@ from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 import numpy as np
 import yaml
 from PIL import Image, ImageDraw
+from .rlbench_compat import rgb_handles_to_mask_safe
 from .oracle_handle_alignment import (
     align_handles, align_semantic_handle_group, HandleAlignmentError)
 from .site_geometry import (
@@ -273,6 +274,7 @@ class RLBenchGTOracleProvider:
         handle_map_dir: Optional[Path] = None,
         alignment_output_dir: Optional[Path] = None,
         manifest_output_dir: Optional[Path] = None,
+        raw_data_root: Optional[Path] = None,
     ):
         if num_points <= 0:
             raise ValueError("num_points must be positive")
@@ -319,6 +321,10 @@ class RLBenchGTOracleProvider:
             None if alignment_output_dir is None else Path(alignment_output_dir))
         self.manifest_output_dir = (
             None if manifest_output_dir is None else Path(manifest_output_dir))
+        self.raw_data_root = (
+            None if raw_data_root is None else Path(raw_data_root).resolve())
+        self._raw_episode_dir_cache: Optional[Path] = None
+        self._raw_mask_cache: Dict[int, Dict[str, np.ndarray]] = {}
         self._live_initial_views = None
         self._stored_handle_map = None
         self._stored_entity_handle_map = {}
@@ -386,6 +392,8 @@ class RLBenchGTOracleProvider:
         self._expected_sample_frames = ()
         self._entries = []
         self._current_manifest_discarded = False
+        self._raw_episode_dir_cache = None
+        self._raw_mask_cache = {}
         try:
             self._index = SceneObjectIndex(task_environment)
             self._robot_handles = self._collect_robot_handles(task_environment)
@@ -404,6 +412,73 @@ class RLBenchGTOracleProvider:
     def set_expected_sample_frames(self, sample_frames: Sequence[int]) -> None:
         """Record the complete expert keypoint sequence for manifest validation."""
         self._expected_sample_frames = tuple(int(value) for value in sample_frames)
+
+    def _resolve_raw_episode_dir(self) -> Path:
+        if self.raw_data_root is None:
+            raise RuntimeError('raw_data_root is not configured')
+        if self._raw_episode_dir_cache is not None:
+            return self._raw_episode_dir_cache
+        suffix = Path(self._task_name) / 'all_variations' / 'episodes' / (
+            f'episode{self._episode_idx}')
+        candidates = (
+            self.raw_data_root / suffix,
+            self.raw_data_root / 'train' / suffix,
+            self.raw_data_root / 'all_variations' / 'episodes' / (
+                f'episode{self._episode_idx}'),
+            self.raw_data_root / f'episode{self._episode_idx}',
+        )
+        for candidate in candidates:
+            if candidate.is_dir():
+                self._raw_episode_dir_cache = candidate.resolve()
+                return self._raw_episode_dir_cache
+        raise FileNotFoundError(
+            f'Cannot locate raw episode for {self._task_name} '
+            f'episode={self._episode_idx} below {self.raw_data_root}; tried '
+            + ', '.join(str(path) for path in candidates))
+
+    def _load_raw_masks(self, frame: int) -> Dict[str, np.ndarray]:
+        frame = int(frame)
+        cached = self._raw_mask_cache.get(frame)
+        if cached is not None:
+            return cached
+        episode_dir = self._resolve_raw_episode_dir()
+        masks: Dict[str, np.ndarray] = {}
+        for camera in self.cameras:
+            path = episode_dir / f'{camera}_mask' / f'{frame}.png'
+            if not path.is_file():
+                raise FileNotFoundError(
+                    f'Missing raw {camera} mask for frame {frame}: {path}')
+            with Image.open(path) as image:
+                encoded = np.asarray(image)
+            if encoded.ndim == 2:
+                mask = encoded.astype(np.int64, copy=False)
+            elif encoded.ndim == 3 and encoded.shape[-1] in (3, 4):
+                mask = rgb_handles_to_mask_safe(encoded[..., :3])
+            else:
+                raise ValueError(
+                    f'Unsupported raw RLBench mask shape {encoded.shape}: {path}')
+            masks[camera] = np.asarray(mask, dtype=np.int64)
+        self._raw_mask_cache[frame] = masks
+        return masks
+
+    def _stored_masks(self, obs, frame: int) -> Dict[str, np.ndarray]:
+        if self.raw_data_root is not None:
+            return self._load_raw_masks(frame)
+        return {
+            camera: decode_handle_mask(getattr(obs, f'{camera}_mask'))
+            for camera in self.cameras
+            if getattr(obs, f'{camera}_mask', None) is not None
+        }
+
+    @staticmethod
+    def _mask_fingerprints(masks: Mapping[str, np.ndarray]) -> Dict[str, str]:
+        return {
+            camera: hashlib.sha256(
+                str(np.asarray(mask).shape).encode('ascii')
+                + np.asarray(mask, dtype='<i8').tobytes()
+            ).hexdigest()
+            for camera, mask in masks.items()
+        }
 
     def discard_current_manifest(self) -> None:
         '''Prevent a failed demo-event attempt from being serialized later.'''
@@ -991,10 +1066,12 @@ class RLBenchGTOracleProvider:
             # initial observation, then fall back to candidate observations.
             for anchor_frame in (0, *candidates):
                 anchor_obs = demo[anchor_frame]
+                frame_masks = self._stored_masks(anchor_obs, anchor_frame)
                 masks = {
                     camera: getattr(anchor_obs, f"{camera}_mask")
                     for camera in self.cameras
                     if getattr(anchor_obs, f"{camera}_mask", None) is not None}
+                masks = frame_masks
                 point_clouds = {
                     camera: getattr(anchor_obs, f"{camera}_point_cloud")
                     for camera in self.cameras
@@ -1010,6 +1087,7 @@ class RLBenchGTOracleProvider:
             (phase_count, len(candidates)), np.inf, dtype=np.float64)
         for candidate_index, frame in enumerate(candidates):
             obs = demo[frame]
+            frame_masks = self._stored_masks(obs, frame)
             gripper_pose = np.asarray(
                 getattr(obs, "gripper_pose", ()), dtype=np.float64
             ).reshape(-1)
@@ -1027,6 +1105,7 @@ class RLBenchGTOracleProvider:
             for camera in self.cameras:
                 mask_value = getattr(obs, f"{camera}_mask", None)
                 cloud_value = getattr(obs, f"{camera}_point_cloud", None)
+                mask_value = frame_masks.get(camera)
                 if mask_value is None or cloud_value is None:
                     continue
                 mask = decode_handle_mask(mask_value)
@@ -1269,12 +1348,16 @@ class RLBenchGTOracleProvider:
             self._live_initial_views = self._alignment_views(obs)
         return self._enrich(obs, obs_dict)
 
-    def _alignment_views(self, obs):
+    def _alignment_views(
+        self, obs, mask_overrides: Optional[Mapping[str, np.ndarray]] = None
+    ):
         views = {}
         misc = getattr(obs, "misc", None) or {}
         for camera in self.cameras:
             mask = getattr(obs, f"{camera}_mask", None)
             cloud = getattr(obs, f"{camera}_point_cloud", None)
+            if mask_overrides is not None:
+                mask = mask_overrides.get(camera)
             if mask is None or cloud is None:
                 continue
             cloud = np.asarray(cloud)
@@ -1287,7 +1370,10 @@ class RLBenchGTOracleProvider:
             }
         return views
 
-    def _prepare_stored_handles(self, obs, live_initial):
+    def _prepare_stored_handles(
+        self, obs, live_initial,
+        mask_overrides: Optional[Mapping[str, np.ndarray]] = None,
+    ):
         if self.handle_alignment == "identity":
             return live_initial
         report = {
@@ -1367,7 +1453,7 @@ class RLBenchGTOracleProvider:
                 declared = metadata.get("name_to_handle")
                 if not isinstance(declared, Mapping):
                     raise HandleAlignmentError("Acquisition mapping needs name_to_handle")
-            stored_views = self._alignment_views(obs)
+            stored_views = self._alignment_views(obs, mask_overrides)
             entity_mapping = {}
             unobservable = set()
             used_entity_union_fallback = False
@@ -1563,6 +1649,7 @@ class RLBenchGTOracleProvider:
         obs,
         obs_dict: Mapping[str, object],
         phase_event: Optional[Tuple[int, bool, bool]] = None,
+        mask_overrides: Optional[Mapping[str, np.ndarray]] = None,
     ) -> Dict[str, object]:
         result = dict(obs_dict)
         masks = {
@@ -1570,6 +1657,8 @@ class RLBenchGTOracleProvider:
             for camera in self.cameras
             if getattr(obs, f"{camera}_mask", None) is not None
         }
+        if mask_overrides is not None:
+            masks = dict(mask_overrides)
         point_clouds = {
             camera: getattr(obs, f"{camera}_point_cloud")
             for camera in self.cameras
@@ -1664,7 +1753,10 @@ class RLBenchGTOracleProvider:
         self._step_index += 1
         return result
 
-    def _validate_stored_initial(self, obs, live_initial):
+    def _validate_stored_initial(
+        self, obs, live_initial,
+        mask_overrides: Optional[Mapping[str, np.ndarray]] = None,
+    ):
         """Diagnose mask evidence separately from usable point-cloud evidence.
 
         This is a consistency guard, not proof of cross-session handle identity.
@@ -1679,6 +1771,8 @@ class RLBenchGTOracleProvider:
             for camera in self.cameras:
                 mask_value = getattr(obs, f"{camera}_mask", None)
                 cloud_value = getattr(obs, f"{camera}_point_cloud", None)
+                if mask_overrides is not None:
+                    mask_value = mask_overrides.get(camera)
                 detail = {
                     "mask_loaded": mask_value is not None,
                     "point_cloud_loaded": cloud_value is not None,
@@ -1774,8 +1868,17 @@ class RLBenchGTOracleProvider:
                 f"{self._task_name} demo_events requires a live reset frame before "
                 "stored-demo manifest generation"
             )
-        live_initial = self._prepare_stored_handles(demo[0], live_initial)
-        self._validate_stored_initial(demo[0], live_initial)
+        frame0_masks = self._stored_masks(demo[0], 0)
+        demo_frame0_masks = frame0_masks
+        if self.raw_data_root is not None:
+            demo_frame0_masks = {
+                camera: decode_handle_mask(getattr(demo[0], f'{camera}_mask'))
+                for camera in self.cameras
+                if getattr(demo[0], f'{camera}_mask', None) is not None
+            }
+        live_initial = self._prepare_stored_handles(
+            demo[0], live_initial, frame0_masks)
+        self._validate_stored_initial(demo[0], live_initial, frame0_masks)
         strategy_spec = self._demo_phase_strategy()
         strategy = str(strategy_spec["strategy"])
         contact_distances: List[float] = []
@@ -1865,6 +1968,7 @@ class RLBenchGTOracleProvider:
                     completion_satisfied,
                     phase_advanced,
                 ),
+                mask_overrides=self._stored_masks(demo[frame], frame),
             )
             previous_phase = phase_index
 
@@ -1890,6 +1994,17 @@ class RLBenchGTOracleProvider:
             "contact_distances": list(contact_distances),
             "phase_count": phase_count,
         }
+        source_fingerprints = self._mask_fingerprints(frame0_masks)
+        demo_fingerprints = self._mask_fingerprints(demo_frame0_masks)
+        self._demo_phase_metadata['source_frame0_masks'] = source_fingerprints
+        self._demo_phase_metadata['demo_frame0_masks'] = demo_fingerprints
+        self._demo_phase_metadata['raw_demo_frame0_masks_match'] = (
+            source_fingerprints == demo_fingerprints)
+        self._demo_phase_metadata['raw_mask_source'] = (
+            str(self._resolve_raw_episode_dir())
+            if self.raw_data_root is not None else None)
+        self._demo_phase_metadata['source_mask_origin'] = (
+            'raw_png' if self.raw_data_root is not None else 'loaded_demo')
         if self.manifest_output_dir is not None:
             self._flush_current_manifest()
             path = (self.manifest_output_dir / "semantic_role_manifests"

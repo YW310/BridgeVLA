@@ -272,6 +272,9 @@ def eval(
                 Path(log_dir) / "semantic_oracle"
                 if log_dir is not None and manifest_phase_source == "demo_events"
                 else None),
+            raw_data_root=(
+                Path(eval_datafolder)
+                if manifest_phase_source == 'demo_events' else None),
         )
         if manifest_phase_source == "demo_events":
             print(f"[Manifest] raw data: {eval_datafolder}; "

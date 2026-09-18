@@ -209,6 +209,8 @@ def resumable_manifest(path, task, episode_idx, alignment_mode,
         return None, 'handle alignment mode mismatch'
     if not manifest.get('source_frame0_masks'):
         return None, 'source mask fingerprints are missing'
+    if manifest.get('source_mask_origin') != 'raw_png':
+        return None, 'raw mask source is missing or stale'
     entries = manifest.get('entries')
     if not isinstance(entries, list) or not entries:
         return None, 'entries are missing'
