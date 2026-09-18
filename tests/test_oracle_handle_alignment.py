@@ -1000,6 +1000,59 @@ def test_scene_ranked_fallback_uses_strict_majority_of_visible_views():
     assert fallback['candidates']['99']['compatible_view_count'] == 2
 
 
+def scene_ranked_extent_views(*, registered_overlap=True):
+    live, stored = views()
+    for data in live.values():
+        data['mask'].fill(0)
+        data['mask'][1:6, 1:6] = 87
+    for data in stored.values():
+        data['mask'].fill(0)
+        if registered_overlap:
+            data['mask'][2:7, 1:6] = 99
+        else:
+            data['mask'][7:12, 7:12] = 99
+        selected = data['mask'] == 99
+        points = data['cloud'][selected].copy()
+        center = points[:, 0].mean()
+        points[:, 0] = center + 1.5 * (points[:, 0] - center)
+        data['cloud'][selected] = points
+    for camera in ('right_shoulder', 'wrist'):
+        live[camera] = deepcopy(live['front'])
+        stored[camera] = deepcopy(stored['front'])
+    return live, stored
+
+
+def test_scene_ranked_fallback_relaxes_extent_with_strong_mask_support():
+    live, stored = scene_ranked_extent_views()
+
+    mapping, report = align_handles(
+        live, stored, {87: 'cylinder'}, mode='mask_verified',
+        allow_scene_fallback=True)
+
+    assert mapping == {87: 99}
+    fallback = report['87']['scene_ranked_fallback']
+    front = fallback['candidates']['99']['views']['front']
+    assert front['containment'] == pytest.approx(.8)
+    assert front['max_extent_error'] == pytest.approx(.03)
+    assert front['geometry']['extent_error_max'] == pytest.approx(.02)
+    assert front['passed']
+
+
+def test_scene_ranked_fallback_keeps_strict_extent_without_mask_support():
+    live, stored = scene_ranked_extent_views(registered_overlap=False)
+
+    with pytest.raises(HandleAlignmentError) as error:
+        align_handles(
+            live, stored, {87: 'cylinder'}, mode='mask_verified',
+            allow_scene_fallback=True)
+
+    fallback = error.value.evidence['87']['scene_ranked_fallback']
+    front = fallback['candidates']['99']['views']['front']
+    assert front['containment'] == 0.
+    assert front['max_extent_error'] == pytest.approx(.015)
+    assert 'extent_error_max' in front['failure_reasons']
+
+
 def test_scene_ranked_fallback_rejects_unregistered_shape_ambiguity():
     live, stored = scene_ranked_no_trigger_views(ambiguous=True)
 

@@ -35,6 +35,8 @@ SCENE_RANK_MIN_UNIQUE_SCORE = .42
 SCENE_RANK_MIN_AMBIGUOUS_SCORE = .55
 SCENE_RANK_MIN_MARGIN = .12
 SCENE_RANK_MIN_MASK_COVERAGE = .20
+SCENE_RANK_STRONG_MASK_CONTAINMENT = .70
+SCENE_RANK_MASK_SUPPORTED_MAX_EXTENT_ERROR = .030
 
 
 class HandleAlignmentError(ValueError):
@@ -402,6 +404,10 @@ def _scene_ranked_candidate(views, live_handle, claimed_handles):
             'min_ambiguous_score': SCENE_RANK_MIN_AMBIGUOUS_SCORE,
             'min_margin': SCENE_RANK_MIN_MARGIN,
             'min_mask_coverage': SCENE_RANK_MIN_MASK_COVERAGE,
+            'strong_mask_containment':
+                SCENE_RANK_STRONG_MASK_CONTAINMENT,
+            'mask_supported_max_extent_error':
+                SCENE_RANK_MASK_SUPPORTED_MAX_EXTENT_ERROR,
         },
         'claimed_stored_handles': sorted(claimed_handles),
         'candidates': {},
@@ -424,6 +430,10 @@ def _scene_ranked_candidate(views, live_handle, claimed_handles):
             pixel_ratio = stored_pixels / max(live_pixels, 1)
             containment = overlap_pixels / max(
                 min(live_pixels, stored_pixels), 1)
+            max_extent_error = (
+                SCENE_RANK_MASK_SUPPORTED_MAX_EXTENT_ERROR
+                if containment >= SCENE_RANK_STRONG_MASK_CONTAINMENT
+                else RELOCATED_MAX_EXTENT_ERROR)
             live_valid = live_mask & np.isfinite(ac).all(axis=-1)
             stored_valid = stored_mask & np.isfinite(bc).all(axis=-1)
             geometry = _centered_shape_summary(
@@ -439,7 +449,7 @@ def _scene_ranked_candidate(views, live_handle, claimed_handles):
                 reasons.append('insufficient_finite_geometry')
             gates = (
                 ('centroid_shift', RELOCATED_MAX_CENTROID_SHIFT),
-                ('extent_error_max', RELOCATED_MAX_EXTENT_ERROR),
+                ('extent_error_max', max_extent_error),
                 ('centered_distance_p50',
                  RELOCATED_MAX_CENTERED_DISTANCE_P50),
                 ('centered_distance_p90',
@@ -472,6 +482,7 @@ def _scene_ranked_candidate(views, live_handle, claimed_handles):
                 'stored_pixels': stored_pixels,
                 'overlap_pixels': overlap_pixels,
                 'containment': containment,
+                'max_extent_error': max_extent_error,
                 'stored_to_live_pixel_ratio': pixel_ratio,
                 'geometry': geometry,
                 'score': view_score,

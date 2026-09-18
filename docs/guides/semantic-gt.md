@@ -319,6 +319,9 @@ stored handles 提取保存帧点云。不可渲染的物理部件、dummy/joint
 分差，否则继续拒绝。成功审计写入 `scene_ranked_fallback_verified=true` 和
 `source=registered_scene_ranked_fallback`。完整 manifest 在 `EVAL_RESUME=1` 下仍直接跳过，
 不会因加入该失败后回退而重写。
+为避免小物体在不同相机中的遮挡轮廓把真实实例误拒，只有单视角 mask containment ≥0.70
+时，该视角的 extent error 上限才从 1.5 cm 提高到 3 cm；质心偏移、中心化点云距离、面积
+比例、视角 quorum 和多候选 margin 均不放宽。没有注册 mask 支持的候选仍使用 1.5 cm。
 
 优先读取显式文件，其次读取 demo[0].misc.oracle_handle_metadata；都没有时才尝试上述
 已标定多视角的 mask 对应。这是有几何证据的编号配准，**仍需检查真实数据的 audit**，
