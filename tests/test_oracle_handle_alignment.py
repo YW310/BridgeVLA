@@ -797,6 +797,39 @@ def test_mask_verified_rejects_ambiguous_relocated_instances():
     assert relocation['reason'] == 'ambiguous_relocated_candidates'
 
 
+def test_partial_mask_quorum_disambiguates_relocated_same_shape_instances():
+    live, stored = views()
+    for data in live.values():
+        data['mask'].fill(0)
+        data['mask'][1:5, 1:5] = 87
+    for data in stored.values():
+        data['mask'].fill(48)
+        # Same-size candidate 99 keeps 50% registered overlap in each view.
+        data['mask'][3:7, 1:5] = 99
+        # Candidate 100 has the same centered geometry but no mask overlap.
+        data['mask'][8:12, 8:12] = 100
+    for camera in ('right_shoulder', 'wrist'):
+        live[camera] = deepcopy(live['front'])
+        stored[camera] = deepcopy(stored['front'])
+    live['left_shoulder']['mask'].fill(0)
+    stored['left_shoulder']['mask'].fill(48)
+
+    mapping, report = align_handles(
+        live, stored, {87: 'cylinder'}, mode='mask_verified')
+
+    assert mapping == {87: 99}
+    relocation = report['87']['relocated_instance']
+    assert relocation['passing_candidates'] == [99, 100]
+    assert relocation['partial_mask_tiebreak']['qualifying_candidates'] == [99]
+    assert relocation['partial_mask_tiebreak']['candidates']['99'][
+        'supporting_view_count'] == 3
+    assert relocation['partial_mask_tiebreak']['candidates']['100'][
+        'supporting_view_count'] == 0
+    assert relocation['selected_candidate'] == 99
+    assert relocation['certificate']['type'] == (
+        'relocated_centered_geometry_partial_mask_tiebreak')
+
+
 def test_relocation_requires_three_votes_when_visible_in_four_views():
     live, stored = relocated_instance_views()
     for camera in ('right_shoulder', 'wrist'):

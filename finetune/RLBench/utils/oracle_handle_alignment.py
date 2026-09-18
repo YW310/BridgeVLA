@@ -28,6 +28,7 @@ RELOCATED_MAX_POINTS = 256
 SHIFTED_MIN_MASK_COVERAGE = .60
 SHIFTED_MIN_VIEWS = 3
 RELOCATED_PLAUSIBLE_OVERLAP_COVERAGE = .20
+RELOCATED_PARTIAL_MASK_TIEBREAK_COVERAGE = .40
 
 
 class HandleAlignmentError(ValueError):
@@ -127,9 +128,10 @@ def _relocated_instance_candidate(views, live_handle, overlap_candidates):
     support geometry. A second, narrower trigger handles reset rasterization
     or small pose shifts: one candidate must retain at least 60% bidirectional
     registered-mask overlap in three views. Both paths still require a
-    unique candidate to pass the full centered-geometry quorum below. Tiny
-    boundary collisions and partial overlap with a genuinely shifted object
-    are recorded separately, but neither bypasses or suppresses that quorum.
+    unique candidate to pass the full centered-geometry quorum below. When
+    multiple centered shapes pass, one candidate may be certified only if it
+    also has unique partial registered-mask support in the same view quorum.
+    Tiny boundary collisions never bypass or suppress the geometry quorum.
     '''
     visible_live_views = sum(
         int((am == live_handle).sum()) >= RELOCATED_MIN_PIXELS
@@ -240,7 +242,10 @@ def _relocated_instance_candidate(views, live_handle, overlap_candidates):
             stored_mask = bm == candidate
             live_pixels = int(live_mask.sum())
             stored_pixels = int(stored_mask.sum())
+            overlap_pixels = int((live_mask & stored_mask).sum())
             pixel_ratio = stored_pixels / max(live_pixels, 1)
+            precision = overlap_pixels / max(stored_pixels, 1)
+            recall = overlap_pixels / max(live_pixels, 1)
             live_valid = live_mask & np.isfinite(ac).all(axis=-1)
             stored_valid = stored_mask & np.isfinite(bc).all(axis=-1)
             geometry = _centered_shape_summary(
@@ -272,7 +277,10 @@ def _relocated_instance_candidate(views, live_handle, overlap_candidates):
             checks[camera] = dict(
                 live_pixels=live_pixels,
                 stored_pixels=stored_pixels,
+                overlap_pixels=overlap_pixels,
                 stored_to_live_pixel_ratio=pixel_ratio,
+                precision=precision,
+                recall=recall,
                 geometry=geometry,
                 passed=bool(passed),
                 failure_reasons=reasons)
@@ -304,6 +312,48 @@ def _relocated_instance_candidate(views, live_handle, overlap_candidates):
         'max_centered_distance_p95':
             RELOCATED_MAX_CENTERED_DISTANCE_P95,
     }
+    if broad_trigger and len(passing) > 1:
+        tiebreak_candidates = {}
+        qualifying = []
+        for candidate in passing:
+            supporting_views = []
+            view_coverage = {}
+            for camera, check in evidence['candidates'][str(candidate)][
+                    'views'].items():
+                coverage = min(check['precision'], check['recall'])
+                supported = (
+                    check['passed']
+                    and coverage >= RELOCATED_PARTIAL_MASK_TIEBREAK_COVERAGE)
+                view_coverage[camera] = {
+                    'bidirectional_coverage': coverage,
+                    'geometry_passed': check['passed'],
+                    'supported': bool(supported),
+                }
+                if supported:
+                    supporting_views.append(camera)
+            accepted = len(supporting_views) >= required_geometry_views
+            tiebreak_candidates[str(candidate)] = {
+                'supporting_view_count': len(supporting_views),
+                'supporting_views': supporting_views,
+                'candidate_accepted': bool(accepted),
+                'views': view_coverage,
+            }
+            if accepted:
+                qualifying.append(candidate)
+        evidence['partial_mask_tiebreak'] = {
+            'attempted': True,
+            'min_bidirectional_coverage':
+                RELOCATED_PARTIAL_MASK_TIEBREAK_COVERAGE,
+            'min_views': required_geometry_views,
+            'candidates': tiebreak_candidates,
+            'qualifying_candidates': qualifying,
+        }
+        if len(qualifying) == 1:
+            selected = qualifying[0]
+            evidence['selected_candidate'] = selected
+            evidence['certificate']['type'] = (
+                'relocated_centered_geometry_partial_mask_tiebreak')
+            return selected, evidence
     if len(passing) != 1:
         evidence['reason'] = (
             'ambiguous_relocated_candidates' if passing
