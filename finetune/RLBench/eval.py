@@ -506,6 +506,17 @@ def eval(
                     if (manifest_continue_on_error
                             and manifest_phase_source == "demo_events"):
                         episode_error = e
+                        oracle_provider.discard_current_manifest()
+                        manifest_path = (
+                            oracle_provider.manifest_output_dir
+                            / 'semantic_role_manifests' / tasks[task_id]
+                            / f'episode_{ep}.json')
+                        if manifest_path.exists():
+                            quarantine_file(
+                                manifest_path,
+                                oracle_provider.manifest_output_dir
+                                / 'rejected_semantic_role_manifests'
+                                / tasks[task_id])
                         failure_path = (
                             oracle_provider.manifest_output_dir
                             / "manifest_failures" / tasks[task_id]

@@ -745,3 +745,50 @@ def test_relocation_requires_three_votes_when_visible_in_four_views():
     assert relocation['candidates']['99']['candidate_accepted']
     assert relocation['candidates']['100']['agreeing_view_count'] == 2
     assert not relocation['candidates']['100']['candidate_accepted']
+
+
+def shifted_instance_views(*, ambiguous=False):
+    live, stored = views()
+    for data in live.values():
+        data['mask'].fill(0)
+        data['mask'][2:8, 2:8] = 87
+    for data in stored.values():
+        data['mask'].fill(0)
+        data['mask'][3:9, 2:8] = 99
+        if ambiguous:
+            data['mask'][6:12, 6:12] = 100
+    for camera in ('right_shoulder', 'wrist'):
+        live[camera] = deepcopy(live['front'])
+        stored[camera] = deepcopy(stored['front'])
+    return live, stored
+
+
+def test_mask_verified_recovers_unique_slightly_shifted_instance():
+    live, stored = shifted_instance_views()
+
+    mapping, report = align_handles(
+        live, stored, {87: 'cube'}, mode='mask_verified')
+
+    assert mapping == {87: 99}
+    evidence = report['87']
+    assert evidence['source'] == 'registered_centered_geometry_shifted_mask'
+    relocation = evidence['relocated_instance']
+    assert relocation['trigger_type'] == 'nearby_shifted_mask'
+    assert relocation['shifted_mask_candidates'] == [99]
+    assert relocation['passing_candidates'] == [99]
+    assert relocation['certificate']['type'] == (
+        'nearby_shifted_centered_geometry')
+    assert report['_used_shifted_geometry'] is True
+
+
+def test_mask_verified_rejects_ambiguous_slightly_shifted_instances():
+    live, stored = shifted_instance_views(ambiguous=True)
+
+    with pytest.raises(HandleAlignmentError) as error:
+        align_handles(
+            live, stored, {87: 'cube'}, mode='mask_verified')
+
+    relocation = error.value.evidence['87']['relocated_instance']
+    assert relocation['trigger_type'] == 'nearby_shifted_mask'
+    assert relocation['passing_candidates'] == [99, 100]
+    assert relocation['reason'] == 'ambiguous_relocated_candidates'

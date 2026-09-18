@@ -340,6 +340,7 @@ class RLBenchGTOracleProvider:
         self._robot_handles = set()
         self._entries: List[Dict[str, object]] = []
         self._manifests: Dict[Tuple[str, int], Dict[str, object]] = {}
+        self._current_manifest_discarded = False
         self.stats = {
             "steps_total": 0,
             "target_valid": 0,
@@ -384,6 +385,7 @@ class RLBenchGTOracleProvider:
         self._sample_frame = None
         self._expected_sample_frames = ()
         self._entries = []
+        self._current_manifest_discarded = False
         try:
             self._index = SceneObjectIndex(task_environment)
             self._robot_handles = self._collect_robot_handles(task_environment)
@@ -402,6 +404,17 @@ class RLBenchGTOracleProvider:
     def set_expected_sample_frames(self, sample_frames: Sequence[int]) -> None:
         """Record the complete expert keypoint sequence for manifest validation."""
         self._expected_sample_frames = tuple(int(value) for value in sample_frames)
+
+    def discard_current_manifest(self) -> None:
+        '''Prevent a failed demo-event attempt from being serialized later.'''
+        if self._task_name and self._episode_idx >= 0:
+            self._manifests.pop((self._task_name, self._episode_idx), None)
+        self.stats['discarded_attempts'] += int(bool(self._entries))
+        self._entries = []
+        self._expected_sample_frames = ()
+        self._source_alignment_validated = False
+        self._demo_phase_metadata = {}
+        self._current_manifest_discarded = True
 
     @staticmethod
     def _collect_robot_handles(task_environment) -> set:
@@ -1490,6 +1503,8 @@ class RLBenchGTOracleProvider:
                 report['geometry_verified'] = False
                 report['relocated_geometry_verified'] = bool(
                     evidence.get('_used_relocated_geometry', False))
+                report['shifted_geometry_verified'] = bool(
+                    evidence.get('_used_shifted_geometry', False))
                 if used_entity_union_fallback:
                     print(
                         '[Manifest] mask_verified: individual child-handle '
@@ -1499,6 +1514,11 @@ class RLBenchGTOracleProvider:
                     print(
                         '[Manifest] mask_verified: a moved instance was certified '
                         'by unique centered geometry in at least two views.',
+                        flush=True)
+                elif report['shifted_geometry_verified']:
+                    print(
+                        '[Manifest] mask_verified: a slightly shifted instance was '
+                        'certified by unique centered geometry and registered masks.',
                         flush=True)
                 else:
                     print(
@@ -2033,7 +2053,8 @@ class RLBenchGTOracleProvider:
         canvas.save(output / "role_audit_step_000.png")
 
     def _flush_current_manifest(self):
-        if not self._task_name or self._episode_idx < 0:
+        if (not self._task_name or self._episode_idx < 0
+                or self._current_manifest_discarded):
             return
         self._manifests[(self._task_name, self._episode_idx)] = {
             "schema_version": self.schema_version,

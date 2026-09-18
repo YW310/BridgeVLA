@@ -25,6 +25,8 @@ RELOCATED_MAX_CENTERED_DISTANCE_P50 = .008
 RELOCATED_MAX_CENTERED_DISTANCE_P90 = .020
 RELOCATED_MAX_CENTERED_DISTANCE_P95 = .025
 RELOCATED_MAX_POINTS = 256
+SHIFTED_MIN_MASK_COVERAGE = .60
+SHIFTED_MIN_VIEWS = 3
 
 
 class HandleAlignmentError(ValueError):
@@ -117,19 +119,29 @@ def _centered_shape_summary(live_points, stored_points):
 
 
 def _relocated_instance_candidate(views, live_handle, overlap_candidates):
-    '''Find one moved saved instance using a centered-geometry quorum.
+    '''Find one moved or slightly shifted instance using centered geometry.
 
-    This is unavailable for ordinary low-overlap or split masks. It is enabled
-    only when the live silhouette lands on a saved instance at least four
-    times larger in two views: the signature of exposed support geometry.
+    The original path is enabled when the live silhouette lands on a saved
+    instance at least four times larger in two views: the signature of exposed
+    support geometry. A second, narrower trigger handles reset rasterization
+    or small pose shifts: one candidate must retain at least 60% bidirectional
+    registered-mask overlap in three views. Both paths still require a
+    unique candidate to pass the full centered-geometry quorum below.
     '''
+    visible_live_views = sum(
+        int((am == live_handle).sum()) >= RELOCATED_MIN_PIXELS
+        for am, _, _, _ in views.values())
+    required_geometry_views = max(
+        RELOCATED_MIN_VIEWS, min(3, visible_live_views))
     trigger_details = {}
     broad_candidates = []
     material_candidates = []
+    shifted_candidates = []
     for candidate in sorted(overlap_candidates):
         candidate_views = {}
         broad_views = 0
         material_views = 0
+        shifted_views = 0
         non_broad_material = False
         for camera, (am, bm, _, _) in views.items():
             live_mask = am == live_handle
@@ -143,36 +155,57 @@ def _relocated_instance_candidate(views, live_handle, overlap_candidates):
                 and stored_pixels >= RELOCATED_MIN_PIXELS
                 and overlap_pixels >= 2)
             broad = material and area_ratio >= RELOCATED_SUPPORT_AREA_RATIO
+            precision = overlap_pixels / max(stored_pixels, 1)
+            recall = overlap_pixels / max(live_pixels, 1)
+            shifted = (
+                material
+                and RELOCATED_MIN_PIXEL_RATIO <= area_ratio
+                <= RELOCATED_MAX_PIXEL_RATIO
+                and min(precision, recall) >= SHIFTED_MIN_MASK_COVERAGE)
             material_views += int(material)
             broad_views += int(broad)
+            shifted_views += int(shifted)
             non_broad_material |= material and not broad
             candidate_views[camera] = dict(
                 live_pixels=live_pixels,
                 stored_pixels=stored_pixels,
                 overlap_pixels=overlap_pixels,
                 stored_to_live_area_ratio=area_ratio,
+                precision=precision,
+                recall=recall,
                 material_overlap=bool(material),
-                broad_support=bool(broad))
+                broad_support=bool(broad),
+                shifted_mask_support=bool(shifted))
         trigger_details[str(candidate)] = candidate_views
         if material_views:
             material_candidates.append(candidate)
         if broad_views >= RELOCATED_MIN_VIEWS and not non_broad_material:
             broad_candidates.append(candidate)
+        if shifted_views >= SHIFTED_MIN_VIEWS:
+            shifted_candidates.append(candidate)
 
-    trigger = bool(
+    broad_trigger = bool(
         material_candidates
         and set(material_candidates).issubset(broad_candidates))
+    shifted_trigger = bool(not broad_trigger and shifted_candidates)
+    trigger = broad_trigger or shifted_trigger
     evidence = {
         'triggered': trigger,
+        'trigger_type': (
+            'broad_support_relocation' if broad_trigger else
+            'nearby_shifted_mask' if shifted_trigger else None),
         'required_support_area_ratio': RELOCATED_SUPPORT_AREA_RATIO,
         'required_support_views': RELOCATED_MIN_VIEWS,
+        'shifted_min_mask_coverage': SHIFTED_MIN_MASK_COVERAGE,
+        'shifted_required_views': SHIFTED_MIN_VIEWS,
         'overlap_candidates': trigger_details,
         'material_overlap_candidates': material_candidates,
         'broad_support_candidates': broad_candidates,
+        'shifted_mask_candidates': shifted_candidates,
         'candidates': {},
     }
     if not trigger:
-        evidence['reason'] = 'overlap_candidates_are_not_exclusively_broad_support'
+        evidence['reason'] = 'no_broad_support_or_multiview_shifted_mask_trigger'
         return None, evidence
 
     stored_handles = sorted({
@@ -181,11 +214,6 @@ def _relocated_instance_candidate(views, live_handle, overlap_candidates):
         for value in np.unique(mask)
         if int(value) > 0
     })
-    visible_live_views = sum(
-        int((am == live_handle).sum()) >= RELOCATED_MIN_PIXELS
-        for am, _, _, _ in views.values())
-    required_geometry_views = max(
-        RELOCATED_MIN_VIEWS, min(3, visible_live_views))
     passing = []
     for candidate in stored_handles:
         checks = {}
@@ -242,7 +270,9 @@ def _relocated_instance_candidate(views, live_handle, overlap_candidates):
 
     evidence['passing_candidates'] = passing
     evidence['certificate'] = {
-        'type': 'relocated_centered_geometry_two_view',
+        'type': (
+            'relocated_centered_geometry_two_view' if broad_trigger else
+            'nearby_shifted_centered_geometry'),
         'min_views': required_geometry_views,
         'visible_live_views': visible_live_views,
         'min_pixels': RELOCATED_MIN_PIXELS,
@@ -786,8 +816,13 @@ def align_handles(live, stored, names, name_to_handle=None, *, mode='verified',
                 views, handle, candidates)
             if relocated is not None:
                 accepted.append(relocated)
-                accepted_sources[relocated] = 'relocated_centered_geometry'
-                evidence['_used_relocated_geometry'] = True
+                if (relocated_evidence.get('certificate', {}).get('type')
+                        == 'nearby_shifted_centered_geometry'):
+                    accepted_sources[relocated] = 'shifted_centered_geometry'
+                    evidence['_used_shifted_geometry'] = True
+                else:
+                    accepted_sources[relocated] = 'relocated_centered_geometry'
+                    evidence['_used_relocated_geometry'] = True
         evidence[str(handle)] = dict(
             name=name, candidates=candidate_evidence,
             low_pixel_views=low_pixel_views,
@@ -844,4 +879,7 @@ def align_handles(live, stored, names, name_to_handle=None, *, mode='verified',
         if accepted_sources[target] == 'relocated_centered_geometry':
             evidence[str(handle)]['source'] = (
                 'registered_centered_geometry_relocation')
+        elif accepted_sources[target] == 'shifted_centered_geometry':
+            evidence[str(handle)]['source'] = (
+                'registered_centered_geometry_shifted_mask')
     return mapping, evidence

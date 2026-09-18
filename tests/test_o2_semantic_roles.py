@@ -366,6 +366,28 @@ def test_retry_discards_failed_manifest_attempt_before_restarting(tmp_path):
     assert len(manifest["entries"]) == 1
 
 
+def test_failed_demo_event_attempt_is_not_dumped_as_partial_manifest(tmp_path):
+    lid = FakeObject('jar_lid0', 11)
+    jar0 = FakeObject('jar0', 21)
+    jar1 = FakeObject('jar1', 22)
+    task = FakeTask([lid, jar0, jar1])
+    task.lid = lid
+    task.jars = [jar0, jar1]
+    value = provider('close_jar', task, tmp_path)
+    value.set_expected_sample_frames([10])
+    value.set_sample_frame(0)
+    value.enrich(observation([[11, 21]]), {})
+
+    value.discard_current_manifest()
+    output = tmp_path / 'failed_dump'
+    value.dump(output)
+
+    manifest = (
+        output / 'semantic_role_manifests' / 'close_jar' / 'episode_0.json')
+    assert not manifest.exists()
+    assert value.stats['discarded_attempts'] == 1
+
+
 def test_place_cups_advances_when_detector_condition_is_met_without_release():
     cups = [FakeObject(f"mug{i}", 10 + i) for i in range(3)]
     spokes = [
