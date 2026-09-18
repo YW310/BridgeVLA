@@ -27,6 +27,7 @@ RELOCATED_MAX_CENTERED_DISTANCE_P95 = .025
 RELOCATED_MAX_POINTS = 256
 SHIFTED_MIN_MASK_COVERAGE = .60
 SHIFTED_MIN_VIEWS = 3
+RELOCATED_PLAUSIBLE_OVERLAP_COVERAGE = .20
 
 
 class HandleAlignmentError(ValueError):
@@ -126,7 +127,9 @@ def _relocated_instance_candidate(views, live_handle, overlap_candidates):
     support geometry. A second, narrower trigger handles reset rasterization
     or small pose shifts: one candidate must retain at least 60% bidirectional
     registered-mask overlap in three views. Both paths still require a
-    unique candidate to pass the full centered-geometry quorum below.
+    unique candidate to pass the full centered-geometry quorum below. Tiny
+    boundary collisions below 20% bidirectional coverage do not suppress the
+    broad-support trigger; meaningful non-background overlap still does.
     '''
     visible_live_views = sum(
         int((am == live_handle).sum()) >= RELOCATED_MIN_PIXELS
@@ -137,11 +140,14 @@ def _relocated_instance_candidate(views, live_handle, overlap_candidates):
     broad_candidates = []
     material_candidates = []
     shifted_candidates = []
+    plausible_non_broad_candidates = []
+    incidental_overlap_candidates = []
     for candidate in sorted(overlap_candidates):
         candidate_views = {}
         broad_views = 0
         material_views = 0
         shifted_views = 0
+        plausible_non_broad_views = 0
         non_broad_material = False
         for camera, (am, bm, _, _) in views.items():
             live_mask = am == live_handle
@@ -162,9 +168,14 @@ def _relocated_instance_candidate(views, live_handle, overlap_candidates):
                 and RELOCATED_MIN_PIXEL_RATIO <= area_ratio
                 <= RELOCATED_MAX_PIXEL_RATIO
                 and min(precision, recall) >= SHIFTED_MIN_MASK_COVERAGE)
+            plausible_non_broad = (
+                material and not broad
+                and min(precision, recall)
+                >= RELOCATED_PLAUSIBLE_OVERLAP_COVERAGE)
             material_views += int(material)
             broad_views += int(broad)
             shifted_views += int(shifted)
+            plausible_non_broad_views += int(plausible_non_broad)
             non_broad_material |= material and not broad
             candidate_views[camera] = dict(
                 live_pixels=live_pixels,
@@ -175,7 +186,8 @@ def _relocated_instance_candidate(views, live_handle, overlap_candidates):
                 recall=recall,
                 material_overlap=bool(material),
                 broad_support=bool(broad),
-                shifted_mask_support=bool(shifted))
+                shifted_mask_support=bool(shifted),
+                plausible_non_broad_overlap=bool(plausible_non_broad))
         trigger_details[str(candidate)] = candidate_views
         if material_views:
             material_candidates.append(candidate)
@@ -183,10 +195,13 @@ def _relocated_instance_candidate(views, live_handle, overlap_candidates):
             broad_candidates.append(candidate)
         if shifted_views >= SHIFTED_MIN_VIEWS:
             shifted_candidates.append(candidate)
+        if plausible_non_broad_views:
+            plausible_non_broad_candidates.append(candidate)
+        elif material_views and candidate not in broad_candidates:
+            incidental_overlap_candidates.append(candidate)
 
     broad_trigger = bool(
-        material_candidates
-        and set(material_candidates).issubset(broad_candidates))
+        broad_candidates and not plausible_non_broad_candidates)
     shifted_trigger = bool(not broad_trigger and shifted_candidates)
     trigger = broad_trigger or shifted_trigger
     evidence = {
@@ -198,10 +213,13 @@ def _relocated_instance_candidate(views, live_handle, overlap_candidates):
         'required_support_views': RELOCATED_MIN_VIEWS,
         'shifted_min_mask_coverage': SHIFTED_MIN_MASK_COVERAGE,
         'shifted_required_views': SHIFTED_MIN_VIEWS,
+        'plausible_overlap_coverage': RELOCATED_PLAUSIBLE_OVERLAP_COVERAGE,
         'overlap_candidates': trigger_details,
         'material_overlap_candidates': material_candidates,
         'broad_support_candidates': broad_candidates,
         'shifted_mask_candidates': shifted_candidates,
+        'plausible_non_broad_candidates': plausible_non_broad_candidates,
+        'incidental_overlap_candidates': incidental_overlap_candidates,
         'candidates': {},
     }
     if not trigger:

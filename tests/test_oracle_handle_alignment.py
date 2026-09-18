@@ -696,6 +696,20 @@ def relocated_instance_views(*, ambiguous=False):
     return live, stored
 
 
+def relocated_instance_with_incidental_overlap_views():
+    live, stored = views()
+    for data in live.values():
+        data['mask'].fill(0)
+        data['mask'][1:5, 1:5] = 87
+    for data in stored.values():
+        data['mask'].fill(48)
+        # The relocated 4x4 object clips two pixels of its old silhouette.
+        # This is too weak to be registered-mask identity evidence, but must
+        # not prevent the strict centered-geometry scan triggered by handle 48.
+        data['mask'][4:8, 3:7] = 99
+    return live, stored
+
+
 def test_mask_verified_recovers_uniquely_shaped_relocated_instance():
     live, stored = relocated_instance_views()
 
@@ -711,6 +725,40 @@ def test_mask_verified_recovers_uniquely_shaped_relocated_instance():
     assert relocation['passing_candidates'] == [99]
     assert relocation['candidates']['99']['agreeing_view_count'] == 2
     assert report['_used_relocated_geometry'] is True
+
+
+def test_relocation_ignores_only_incidental_non_background_overlap():
+    live, stored = relocated_instance_with_incidental_overlap_views()
+
+    mapping, report = align_handles(
+        live, stored, {87: 'cylinder'}, mode='mask_verified')
+
+    assert mapping == {87: 99}
+    relocation = report['87']['relocated_instance']
+    assert relocation['trigger_type'] == 'broad_support_relocation'
+    assert relocation['broad_support_candidates'] == [48]
+    assert relocation['incidental_overlap_candidates'] == [99]
+    assert relocation['plausible_non_broad_candidates'] == []
+    assert relocation['passing_candidates'] == [99]
+
+
+def test_meaningful_non_background_overlap_still_blocks_broad_trigger():
+    live, stored = views()
+    for data in live.values():
+        data['mask'].fill(0)
+        data['mask'][1:6, 1:6] = 87
+    for data in stored.values():
+        data['mask'].fill(48)
+        data['mask'][2:7, 1:6] = 99
+
+    with pytest.raises(HandleAlignmentError) as error:
+        align_handles(live, stored, {87: 'cube'}, mode='mask_verified')
+
+    relocation = error.value.evidence['87']['relocated_instance']
+    assert not relocation['triggered']
+    assert relocation['broad_support_candidates'] == [48]
+    assert relocation['plausible_non_broad_candidates'] == [99]
+    assert relocation['incidental_overlap_candidates'] == []
 
 
 def test_mask_verified_rejects_ambiguous_relocated_instances():
