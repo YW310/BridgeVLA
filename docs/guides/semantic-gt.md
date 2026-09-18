@@ -314,7 +314,8 @@ stored handles 提取保存帧点云。不可渲染的物理部件、dummy/joint
 兼容模式不会替换上述证书。只有 `mask_verified` 的原有路径得到 `accepted=[]`、且没有
 原始采集映射时，才启用统一的 `scene_ranked_fallback_v1`：对所有未占用 saved handles
 使用同一组多视角 mask containment、面积比例、中心化点云、extent 和位移指标排序。
-单一几何候选仍需达到最低分；存在多个候选时还必须有多视角注册重合和明确的第一/第二名
+视角 quorum 使用严格多数（2→2、3→2、4→3）。单一几何候选仍需达到最低分；存在多个
+候选时还必须有达到 quorum 的多视角注册重合和明确的第一/第二名
 分差，否则继续拒绝。成功审计写入 `scene_ranked_fallback_verified=true` 和
 `source=registered_scene_ranked_fallback`。完整 manifest 在 `EVAL_RESUME=1` 下仍直接跳过，
 不会因加入该失败后回退而重写。

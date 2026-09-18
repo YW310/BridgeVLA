@@ -374,7 +374,7 @@ def _scene_ranked_candidate(views, live_handle, claimed_handles):
         int((am == live_handle).sum()) >= RELOCATED_MIN_PIXELS
         for am, _, _, _ in views.values())
     required_views = max(
-        RELOCATED_MIN_VIEWS, min(3, visible_live_views))
+        RELOCATED_MIN_VIEWS, visible_live_views // 2 + 1)
     stored_handles = sorted({
         int(value)
         for _, (_, mask, _, _) in views.items()
@@ -383,6 +383,7 @@ def _scene_ranked_candidate(views, live_handle, claimed_handles):
     })
     evidence = {
         'schema_version': 'scene_ranked_fallback_v1',
+        'quorum_policy': 'strict_majority',
         'required_views': required_views,
         'visible_live_views': visible_live_views,
         'thresholds': {

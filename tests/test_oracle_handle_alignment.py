@@ -983,6 +983,23 @@ def test_scene_ranked_fallback_recovers_unique_geometry_candidate():
     assert fallback['ranked_candidates'][0]['handle'] == 99
 
 
+def test_scene_ranked_fallback_uses_strict_majority_of_visible_views():
+    live, stored = scene_ranked_no_trigger_views()
+    live['wrist']['mask'].fill(0)
+    stored['right_shoulder']['mask'].fill(0)
+
+    mapping, report = align_handles(
+        live, stored, {87: 'cylinder'}, mode='mask_verified',
+        allow_scene_fallback=True)
+
+    assert mapping == {87: 99}
+    fallback = report['87']['scene_ranked_fallback']
+    assert fallback['visible_live_views'] == 3
+    assert fallback['required_views'] == 2
+    assert fallback['quorum_policy'] == 'strict_majority'
+    assert fallback['candidates']['99']['compatible_view_count'] == 2
+
+
 def test_scene_ranked_fallback_rejects_unregistered_shape_ambiguity():
     live, stored = scene_ranked_no_trigger_views(ambiguous=True)
 
