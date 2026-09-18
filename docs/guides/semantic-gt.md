@@ -311,6 +311,14 @@ stored handles 提取保存帧点云。不可渲染的物理部件、dummy/joint
 | 自动匹配证据 | 至少两个相机各有 16 个实例像素，mask 双向覆盖率均 ≥0.90，对应点的三维距离 P95 ≤1 cm，且 ≥95% 重合像素有有限点坐标 |
 | 冲突处理 | 已配准相机的 mask/几何证据有矛盾、对应关系不唯一、多对一、部件缺失均拒绝；自动匹配仍要求至少两个相机支持每个部件 |
 
+兼容模式不会替换上述证书。只有 `mask_verified` 的原有路径得到 `accepted=[]`、且没有
+原始采集映射时，才启用统一的 `scene_ranked_fallback_v1`：对所有未占用 saved handles
+使用同一组多视角 mask containment、面积比例、中心化点云、extent 和位移指标排序。
+单一几何候选仍需达到最低分；存在多个候选时还必须有多视角注册重合和明确的第一/第二名
+分差，否则继续拒绝。成功审计写入 `scene_ranked_fallback_verified=true` 和
+`source=registered_scene_ranked_fallback`。完整 manifest 在 `EVAL_RESUME=1` 下仍直接跳过，
+不会因加入该失败后回退而重写。
+
 优先读取显式文件，其次读取 demo[0].misc.oracle_handle_metadata；都没有时才尝试上述
 已标定多视角的 mask 对应。这是有几何证据的编号配准，**仍需检查真实数据的 audit**，
 并不等价于原始采集时记录的身份真值。manifest 用 source 区分 acquisition_metadata 与

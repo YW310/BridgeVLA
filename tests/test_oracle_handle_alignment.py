@@ -943,3 +943,68 @@ def test_mask_verified_rejects_ambiguous_slightly_shifted_instances():
     assert relocation['trigger_type'] == 'nearby_shifted_mask'
     assert relocation['passing_candidates'] == [99, 100]
     assert relocation['reason'] == 'ambiguous_relocated_candidates'
+
+
+def scene_ranked_no_trigger_views(*, ambiguous=False):
+    live, stored = relocated_instance_views()
+    for data in stored.values():
+        data['mask'].fill(0)
+        data['mask'][8:12, 8:12] = 99
+        if ambiguous:
+            data['mask'][8:12, 0:4] = 100
+    for camera in ('right_shoulder', 'wrist'):
+        live[camera] = deepcopy(live['front'])
+        stored[camera] = deepcopy(stored['front'])
+    return live, stored
+
+
+def test_scene_ranked_fallback_is_disabled_by_default():
+    live, stored = scene_ranked_no_trigger_views()
+
+    with pytest.raises(HandleAlignmentError):
+        align_handles(
+            live, stored, {87: 'cylinder'}, mode='mask_verified')
+
+
+def test_scene_ranked_fallback_recovers_unique_geometry_candidate():
+    live, stored = scene_ranked_no_trigger_views()
+
+    mapping, report = align_handles(
+        live, stored, {87: 'cylinder'}, mode='mask_verified',
+        allow_scene_fallback=True)
+
+    assert mapping == {87: 99}
+    assert report['_used_scene_ranked_fallback'] is True
+    evidence = report['87']
+    assert evidence['source'] == 'registered_scene_ranked_fallback'
+    fallback = evidence['scene_ranked_fallback']
+    assert fallback['schema_version'] == 'scene_ranked_fallback_v1'
+    assert fallback['selected_candidate'] == 99
+    assert fallback['ranked_candidates'][0]['handle'] == 99
+
+
+def test_scene_ranked_fallback_rejects_unregistered_shape_ambiguity():
+    live, stored = scene_ranked_no_trigger_views(ambiguous=True)
+
+    with pytest.raises(HandleAlignmentError) as error:
+        align_handles(
+            live, stored, {87: 'cylinder'}, mode='mask_verified',
+            allow_scene_fallback=True)
+
+    fallback = error.value.evidence['87']['scene_ranked_fallback']
+    assert len(fallback['ranked_candidates']) == 2
+    assert fallback['reason'] == 'ambiguous_ranked_candidates'
+
+
+def test_scene_ranked_fallback_does_not_change_primary_success_source():
+    live, stored = views()
+    expected_mapping, expected_report = align_handles(
+        live, stored, {87: 'lid'}, mode='mask_verified')
+
+    mapping, report = align_handles(
+        live, stored, {87: 'lid'}, mode='mask_verified',
+        allow_scene_fallback=True)
+
+    assert mapping == expected_mapping == {87: 99}
+    assert report['87']['source'] == expected_report['87']['source']
+    assert '_used_scene_ranked_fallback' not in report

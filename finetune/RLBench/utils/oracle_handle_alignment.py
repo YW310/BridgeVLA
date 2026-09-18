@@ -31,6 +31,10 @@ RELOCATED_PLAUSIBLE_OVERLAP_COVERAGE = .20
 RELOCATED_PARTIAL_MASK_TIEBREAK_COVERAGE = .40
 SMALL_ASYMMETRIC_MASK_MIN_PRECISION = .80
 SMALL_ASYMMETRIC_MASK_MIN_RECALL = .99
+SCENE_RANK_MIN_UNIQUE_SCORE = .42
+SCENE_RANK_MIN_AMBIGUOUS_SCORE = .55
+SCENE_RANK_MIN_MARGIN = .12
+SCENE_RANK_MIN_MASK_COVERAGE = .20
 
 
 class HandleAlignmentError(ValueError):
@@ -364,6 +368,156 @@ def _relocated_instance_candidate(views, live_handle, overlap_candidates):
     return passing[0], evidence
 
 
+def _scene_ranked_candidate(views, live_handle, claimed_handles):
+    '''Rank every unclaimed stored instance after normal certificates fail.'''
+    visible_live_views = sum(
+        int((am == live_handle).sum()) >= RELOCATED_MIN_PIXELS
+        for am, _, _, _ in views.values())
+    required_views = max(
+        RELOCATED_MIN_VIEWS, min(3, visible_live_views))
+    stored_handles = sorted({
+        int(value)
+        for _, (_, mask, _, _) in views.items()
+        for value in np.unique(mask)
+        if int(value) > 0 and int(value) not in claimed_handles
+    })
+    evidence = {
+        'schema_version': 'scene_ranked_fallback_v1',
+        'required_views': required_views,
+        'visible_live_views': visible_live_views,
+        'thresholds': {
+            'min_pixels': RELOCATED_MIN_PIXELS,
+            'pixel_ratio_range': [
+                RELOCATED_MIN_PIXEL_RATIO, RELOCATED_MAX_PIXEL_RATIO],
+            'max_centroid_shift': RELOCATED_MAX_CENTROID_SHIFT,
+            'max_extent_error': RELOCATED_MAX_EXTENT_ERROR,
+            'max_centered_distance_p50':
+                RELOCATED_MAX_CENTERED_DISTANCE_P50,
+            'max_centered_distance_p90':
+                RELOCATED_MAX_CENTERED_DISTANCE_P90,
+            'max_centered_distance_p95':
+                RELOCATED_MAX_CENTERED_DISTANCE_P95,
+            'min_unique_score': SCENE_RANK_MIN_UNIQUE_SCORE,
+            'min_ambiguous_score': SCENE_RANK_MIN_AMBIGUOUS_SCORE,
+            'min_margin': SCENE_RANK_MIN_MARGIN,
+            'min_mask_coverage': SCENE_RANK_MIN_MASK_COVERAGE,
+        },
+        'claimed_stored_handles': sorted(claimed_handles),
+        'candidates': {},
+    }
+    if visible_live_views < RELOCATED_MIN_VIEWS:
+        evidence['reason'] = 'insufficient_visible_live_views'
+        return None, evidence
+
+    viable = []
+    for candidate in stored_handles:
+        checks = {}
+        passing_scores = []
+        mask_support_views = []
+        for camera, (am, bm, ac, bc) in views.items():
+            live_mask = am == live_handle
+            stored_mask = bm == candidate
+            live_pixels = int(live_mask.sum())
+            stored_pixels = int(stored_mask.sum())
+            overlap_pixels = int((live_mask & stored_mask).sum())
+            pixel_ratio = stored_pixels / max(live_pixels, 1)
+            containment = overlap_pixels / max(
+                min(live_pixels, stored_pixels), 1)
+            live_valid = live_mask & np.isfinite(ac).all(axis=-1)
+            stored_valid = stored_mask & np.isfinite(bc).all(axis=-1)
+            geometry = _centered_shape_summary(
+                ac[live_valid], bc[stored_valid])
+            reasons = []
+            if min(live_pixels, stored_pixels) < RELOCATED_MIN_PIXELS:
+                reasons.append('insufficient_pixels')
+            if not (RELOCATED_MIN_PIXEL_RATIO <= pixel_ratio
+                    <= RELOCATED_MAX_PIXEL_RATIO):
+                reasons.append('pixel_ratio')
+            if int(live_valid.sum()) < .95 * live_pixels or int(
+                    stored_valid.sum()) < .95 * stored_pixels:
+                reasons.append('insufficient_finite_geometry')
+            gates = (
+                ('centroid_shift', RELOCATED_MAX_CENTROID_SHIFT),
+                ('extent_error_max', RELOCATED_MAX_EXTENT_ERROR),
+                ('centered_distance_p50',
+                 RELOCATED_MAX_CENTERED_DISTANCE_P50),
+                ('centered_distance_p90',
+                 RELOCATED_MAX_CENTERED_DISTANCE_P90),
+                ('centered_distance_p95',
+                 RELOCATED_MAX_CENTERED_DISTANCE_P95),
+            )
+            for key, maximum in gates:
+                if geometry.get(key) is None or geometry[key] > maximum:
+                    reasons.append(key)
+            passed = not reasons
+            view_score = None
+            if passed:
+                area_score = min(pixel_ratio, 1. / pixel_ratio)
+                geometry_score = float(np.mean([
+                    max(0., 1. - geometry[key] / maximum)
+                    for key, maximum in gates[1:]
+                ]))
+                position_score = max(
+                    0., 1. - geometry['centroid_shift']
+                    / RELOCATED_MAX_CENTROID_SHIFT)
+                view_score = (
+                    .40 * containment + .15 * area_score
+                    + .35 * geometry_score + .10 * position_score)
+                passing_scores.append(view_score)
+                if containment >= SCENE_RANK_MIN_MASK_COVERAGE:
+                    mask_support_views.append(camera)
+            checks[camera] = {
+                'live_pixels': live_pixels,
+                'stored_pixels': stored_pixels,
+                'overlap_pixels': overlap_pixels,
+                'containment': containment,
+                'stored_to_live_pixel_ratio': pixel_ratio,
+                'geometry': geometry,
+                'score': view_score,
+                'passed': bool(passed),
+                'failure_reasons': reasons,
+            }
+        accepted = len(passing_scores) >= required_views
+        score = (
+            float(np.mean(sorted(passing_scores, reverse=True)[:required_views]))
+            if accepted else None)
+        candidate_evidence = {
+            'compatible_view_count': len(passing_scores),
+            'mask_supporting_views': sorted(mask_support_views),
+            'score': score,
+            'candidate_accepted': bool(accepted),
+            'views': checks,
+        }
+        evidence['candidates'][str(candidate)] = candidate_evidence
+        if accepted:
+            viable.append((score, candidate, len(mask_support_views)))
+
+    viable.sort(key=lambda item: (-item[0], item[1]))
+    evidence['ranked_candidates'] = [
+        {'handle': candidate, 'score': score,
+         'mask_supporting_view_count': mask_views}
+        for score, candidate, mask_views in viable]
+    if not viable:
+        evidence['reason'] = 'no_geometry_compatible_candidate'
+        return None, evidence
+    best_score, best_candidate, best_mask_views = viable[0]
+    if len(viable) == 1:
+        if best_score < SCENE_RANK_MIN_UNIQUE_SCORE:
+            evidence['reason'] = 'unique_candidate_score_too_low'
+            return None, evidence
+    else:
+        margin = best_score - viable[1][0]
+        evidence['best_to_second_margin'] = margin
+        if (best_score < SCENE_RANK_MIN_AMBIGUOUS_SCORE
+                or margin < SCENE_RANK_MIN_MARGIN
+                or best_mask_views < required_views):
+            evidence['reason'] = 'ambiguous_ranked_candidates'
+            return None, evidence
+    evidence['selected_candidate'] = best_candidate
+    evidence['reason'] = 'unique_scene_ranked_candidate'
+    return best_candidate, evidence
+
+
 def align_semantic_handle_group(live, stored, handles, semantic_name):
     """Verify a multi-handle entity by its union mask.
 
@@ -579,7 +733,7 @@ def align_semantic_handle_group(live, stored, handles, semantic_name):
 
 
 def align_handles(live, stored, names, name_to_handle=None, *, mode='verified',
-                  allow_unobservable=False):
+                  allow_unobservable=False, allow_scene_fallback=False):
     """Return live->stored mapping and auditable evidence for required shapes.
 
     Cameras contain mask, cloud, intrinsics and extrinsics arrays. An explicit
@@ -943,6 +1097,15 @@ def align_handles(live, stored, names, name_to_handle=None, *, mode='verified',
                 source='excluded_unobservable',
                 live_pixels_by_camera=live_pixels)
             continue
+        if (not accepted and mask_only and declared is None
+                and allow_scene_fallback):
+            fallback, fallback_evidence = _scene_ranked_candidate(
+                views, handle, set(claimed))
+            evidence[str(handle)]['scene_ranked_fallback'] = fallback_evidence
+            if fallback is not None:
+                accepted.append(fallback)
+                accepted_sources[fallback] = 'scene_ranked_fallback'
+                evidence['_used_scene_ranked_fallback'] = True
         if len(accepted) != 1:
             raise HandleAlignmentError(
                 f"Cannot uniquely verify {name} (live handle={handle}); "
@@ -993,4 +1156,7 @@ def align_handles(live, stored, names, name_to_handle=None, *, mode='verified',
         elif accepted_sources[target] == 'small_asymmetric_multiview_mask':
             evidence[str(handle)]['source'] = (
                 'registered_mask_overlap_small_asymmetric_multiview_mask')
+        elif accepted_sources[target] == 'scene_ranked_fallback':
+            evidence[str(handle)]['source'] = (
+                'registered_scene_ranked_fallback')
     return mapping, evidence

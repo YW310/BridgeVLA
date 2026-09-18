@@ -1462,7 +1462,10 @@ class RLBenchGTOracleProvider:
                 mapping, evidence = align_handles(
                     self._live_initial_views or {}, stored_views, names, declared,
                     mode=self.handle_alignment,
-                    allow_unobservable=self.handle_alignment == 'mask_verified')
+                    allow_unobservable=self.handle_alignment == 'mask_verified',
+                    allow_scene_fallback=(
+                        self.handle_alignment == 'mask_verified'
+                        and declared is None))
                 unobservable = set(names).difference(mapping)
                 for semantic_name, handles in required_groups:
                     visual_handles = handles.difference(excluded)
@@ -1506,7 +1509,9 @@ class RLBenchGTOracleProvider:
                             local_mapping, local_evidence = align_handles(
                                 self._live_initial_views or {}, stored_views,
                                 {h: names[h] for h in visible_handles}, declared,
-                                mode=self.handle_alignment, allow_unobservable=True)
+                                mode=self.handle_alignment,
+                                allow_unobservable=True,
+                                allow_scene_fallback=declared is None)
                             if not local_mapping:
                                 raise HandleAlignmentError(
                                     'No observable individually verified handle',
@@ -1517,6 +1522,10 @@ class RLBenchGTOracleProvider:
                                 live_handles=sorted(visible_handles),
                                 stored_handles=list(mapped),
                                 individual_alignment_evidence=local_evidence)
+                            if local_evidence.get(
+                                    '_used_scene_ranked_fallback', False):
+                                group_evidence[
+                                    '_used_scene_ranked_fallback'] = True
                         except HandleAlignmentError as local_error:
                             local_mapping = {}
                             try:
@@ -1582,7 +1591,10 @@ class RLBenchGTOracleProvider:
                 },
                 alignment_scope=(
                     'mixed_entity_certificates'
-                    if used_entity_union_fallback else 'individual_handles'),
+                    if used_entity_union_fallback else
+                    'scene_ranked_fallback'
+                    if evidence.get('_used_scene_ranked_fallback', False)
+                    else 'individual_handles'),
                 excluded_nonvisual_handles=sorted(excluded.difference(unobservable)),
                 excluded_unobservable_handles=(
                     sorted(unobservable) if mapping else []))
@@ -1592,12 +1604,19 @@ class RLBenchGTOracleProvider:
                     evidence.get('_used_relocated_geometry', False))
                 report['shifted_geometry_verified'] = bool(
                     evidence.get('_used_shifted_geometry', False))
+                report['scene_ranked_fallback_verified'] = bool(
+                    evidence.get('_used_scene_ranked_fallback', False))
                 if used_entity_union_fallback:
                     print(
                         '[Manifest] mask_verified: individual child-handle '
                         'alignment failed; accepted strict semantic-entity '
                         'individual and/or multi-view mask certificates per entity.', flush=True)
-                if report['relocated_geometry_verified']:
+                if report['scene_ranked_fallback_verified']:
+                    print(
+                        '[Manifest] mask_verified: the normal certificates '
+                        'failed; identity was recovered by the strict '
+                        'scene-ranked fallback.', flush=True)
+                elif report['relocated_geometry_verified']:
                     print(
                         '[Manifest] mask_verified: a moved instance was certified '
                         'by unique centered geometry in at least two views.',
