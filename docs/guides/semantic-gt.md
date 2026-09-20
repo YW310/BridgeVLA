@@ -6,24 +6,61 @@
 
 # 严格 Semantic-GT Target/Reference
 
-## 测试期 Heatmap Target 归因
+## 测试期 Heatmap Action Anchor 归因
 
-标准 closed-loop 测试可选择输出 BridgeVLA translation heatmap 对应的
-Target 候选：
+标准 closed-loop 测试可选择输出 BridgeVLA translation heatmap 对应的动作锚点：
 
 ```bash
 ORACLE_PROVIDER=rlbench_gt \
-HEATMAP_TARGET_OBJECT=1 \
+HEATMAP_ACTION_ANCHOR=1 \
 bash eval.sh
 ```
 
-该开关只在 policy evaluation 中有效，不用于训练或 manifest 生成。provider 会按需
-提供 YAML 中所有 Target variation/sequence 的当前可见点云；agent 优先使用
-`trans_base` 解码的 waypoint，按到候选点云表面的最小距离给出候选、phase、距离、
-置信度和 `matches_oracle`；超过 0.20 m 输出 UNKNOWN，避免把远距离自由空间动作误报为
-高置信 Target。结果写入 `ActResult.replay_elements`，并以
-`[HeatmapTarget]` 每步打印。它不覆盖当前 Oracle Target、不修改 Reference，也不改变
-实际 action；这是模型行为归因，不是新的 GT。
+旧的 `HEATMAP_TARGET_OBJECT=1` 仍作为兼容别名。该开关只在 policy evaluation 中
+有效，不用于训练或 manifest 生成。provider 按需提供 YAML 中 Target
+variation/sequence 的当前可见点云；agent 分别解码：
+
+- `base`：Oracle adapter 之前的 BridgeVLA heatmap；
+- `final`：实际用于执行 translation 的最终 heatmap。
+
+若 checkpoint 没有保留 `trans_base`，`base_available=false`，此时 `base` 会回退为
+`final`，不能用于判断 adapter 前后的变化。
+
+两者都按 waypoint 到候选点云表面的最小距离输出 candidate、phase、距离和置信度，
+并报告到当前 Reference 的距离。超过 0.20 m 为 UNKNOWN。日志前缀是
+`[HeatmapActionAnchor]`。`phase=-1` 表示该物体只是配置中的非当前 episode 候选：它会
+显示为动作锚点诊断，但会从 `base_eligible` / `final_eligible` 的语义 Target 候选中排除。
+
+这些结果写入 `ActResult.replay_elements`，不覆盖当前 Oracle Target、不修改 Reference，
+也不改变实际 action。translation waypoint 可能指向 Target、Reference、接触点或自由空间；
+因此 action anchor 不是新的 Target/Reference GT，`final_matches_target=false` 也不自动表示
+Oracle 标注错误。
+
+### 让 simulator residual 跟随 BridgeVLA Target
+
+若 simulator object 只用于修正 BridgeVLA，而不应独立决定操作对象，使用：
+
+```bash
+ORACLE_PROVIDER=rlbench_gt \
+BRIDGEVLA_ALIGNED_OBJECTS=1 \
+bash eval.sh
+```
+
+该模式执行两次 action forward：第一次只读取 residual 前的 `trans_base`，从所有可见任务
+候选中选择最近 Target；第二次以该 Target 点云和 Reference 点云作为 residual 条件生成最终
+动作。Target 一旦选中，会跨接近、抓取和搬运保持锁定，直到观测到 gripper 从闭合重新打开，
+避免 waypoint 转向放置点时错误切换 Target。
+
+优先使用配置中与所选 Target 可验证配对的 Reference；无法解析配对关系时，Reference 回退为
+simulator 当前 Reference。`phase=-1` 仍表示该 Target 不属于当前 episode，而不再意味着一定
+缺少 Reference 配对。日志
+`[BridgeVLAAlignedObjects]` 中 `reference_source=1` 表示使用配对 Reference，`0` 表示回退。
+该路径改变 policy action，应与纯诊断模式分别评估；它是 BridgeVLA-aligned predicted
+conditioning，不再把所选 Target 称为 Oracle GT。
+
+`ORACLE_DEBUG` 图仍审计 simulator 的任务 GT，不能代表第二次前向实际使用的对象；对齐后的
+residual 以 `[BridgeVLAAlignedObjects] locked=...` 为准，打开 `VISUALIZE=1` 后生成的
+`o2_target_prior` / `o2_reference_prior` 才对应最终前向输入。
 
 本流程把 RLBench 当前 phase 的语义角色写入 replay，供 Oracle adapter、relation anchor，
 以及 internal-slot 的角色 heatmap 监督使用。它不会生成完整场景 object slots，也不会补全

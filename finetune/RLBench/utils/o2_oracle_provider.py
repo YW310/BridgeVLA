@@ -276,7 +276,8 @@ class RLBenchGTOracleProvider:
         alignment_output_dir: Optional[Path] = None,
         manifest_output_dir: Optional[Path] = None,
         raw_data_root: Optional[Path] = None,
-        emit_target_candidates: bool = False,
+        emit_action_anchor_candidates: bool = False,
+        emit_target_candidates: Optional[bool] = None,
     ):
         if num_points <= 0:
             raise ValueError("num_points must be positive")
@@ -328,7 +329,13 @@ class RLBenchGTOracleProvider:
             None if manifest_output_dir is None else Path(manifest_output_dir))
         self.raw_data_root = (
             None if raw_data_root is None else Path(raw_data_root).resolve())
-        self.emit_target_candidates = bool(emit_target_candidates)
+        if emit_target_candidates is not None:
+            if emit_action_anchor_candidates:
+                raise ValueError(
+                    "Use only emit_action_anchor_candidates; "
+                    "emit_target_candidates is a legacy alias")
+            emit_action_anchor_candidates = emit_target_candidates
+        self.emit_action_anchor_candidates = bool(emit_action_anchor_candidates)
         self._raw_episode_dir_cache: Optional[Path] = None
         self._raw_mask_cache: Dict[int, Dict[str, np.ndarray]] = {}
         self._live_initial_views = None
@@ -589,35 +596,57 @@ class RLBenchGTOracleProvider:
         return entities
 
     def _sample_target_candidates(self, masks, point_clouds, current_target):
-        """Sample each task-defined Target once for test-time attribution."""
+        """Sample each Target and its phase-paired Reference when available."""
         original_phase = self._phase_index
         current_key = self._role_entity_identity(current_target)
         candidates = []
         validity = []
         phase_indices = []
+        paired_reference_points = []
+        paired_reference_valid = []
         audits = []
         key_to_index = {}
         entities = []
         try:
             for phase_index in range(self._phase_count()):
                 self._phase_index = phase_index
-                entity = self._build_assignment().target
-                entities.append((entity, phase_index))
+                assignment = self._build_assignment()
+                entities.append(
+                    (assignment.target, phase_index, assignment.reference))
             if current_target.kind == "object":
-                entities.extend(
-                    (entity, -1)
-                    for entity in self._configured_target_candidates()
-                )
-            for entity, phase_index in entities:
+                for configured_index, entity in enumerate(
+                    self._configured_target_candidates()
+                ):
+                    paired_reference = None
+                    try:
+                        self._phase_index = configured_index
+                        configured_assignment = self._build_assignment()
+                        if self._role_entity_identity(
+                            configured_assignment.target
+                        ) == self._role_entity_identity(entity):
+                            paired_reference = configured_assignment.reference
+                    except (IndexError, KeyError, SemanticRoleMappingError):
+                        paired_reference = None
+                    entities.append((entity, -1, paired_reference))
+            for entity, phase_index, paired_reference in entities:
                 key = self._role_entity_identity(entity)
                 if key in key_to_index:
                     continue
                 points, valid = self._sample_entity_points(
                     entity, masks, point_clouds)
+                if paired_reference is None:
+                    reference_points = np.zeros(
+                        (self.num_points, 3), dtype=np.float32)
+                    reference_valid = False
+                else:
+                    reference_points, reference_valid = self._sample_entity_points(
+                        paired_reference, masks, point_clouds)
                 key_to_index[key] = len(candidates)
                 candidates.append(points)
                 validity.append(bool(valid))
                 phase_indices.append(phase_index)
+                paired_reference_points.append(reference_points)
+                paired_reference_valid.append(bool(reference_valid))
                 audits.append(entity.audit_dict())
         finally:
             self._phase_index = original_phase
@@ -630,6 +659,8 @@ class RLBenchGTOracleProvider:
             np.asarray(validity, dtype=np.bool_),
             np.asarray(phase_indices, dtype=np.int64),
             np.asarray(current_index, dtype=np.int64),
+            np.stack(paired_reference_points).astype(np.float32, copy=False),
+            np.asarray(paired_reference_valid, dtype=np.bool_),
             audits,
         )
 
@@ -1891,13 +1922,15 @@ class RLBenchGTOracleProvider:
             phase_advanced = False
 
         candidate_audits = []
-        if self.emit_target_candidates:
+        if self.emit_action_anchor_candidates:
             try:
                 (
                     candidate_points,
                     candidate_valid,
                     candidate_phase_indices,
                     current_candidate_index,
+                    candidate_reference_points,
+                    candidate_reference_valid,
                     candidate_audits,
                 ) = self._sample_target_candidates(
                     masks, point_clouds, assignment.target)
@@ -1909,17 +1942,24 @@ class RLBenchGTOracleProvider:
                 candidate_phase_indices = np.asarray(
                     [self._phase_index], dtype=np.int64)
                 current_candidate_index = np.asarray(0, dtype=np.int64)
+                candidate_reference_points = reference_points[None]
+                candidate_reference_valid = np.asarray(
+                    [reference_valid], dtype=np.bool_)
                 candidate_audits = [assignment.target.audit_dict()]
 
         result["oracle_target_object_points"] = target_points
         result["oracle_reference_object_points"] = reference_points
         result["oracle_target_object_valid"] = np.asarray(target_valid, dtype=np.bool_)
         result["oracle_reference_object_valid"] = np.asarray(reference_valid, dtype=np.bool_)
-        if self.emit_target_candidates:
+        if self.emit_action_anchor_candidates:
             result["oracle_target_candidate_points"] = candidate_points
             result["oracle_target_candidate_valid"] = candidate_valid
             result["oracle_target_candidate_phase_indices"] = candidate_phase_indices
             result["oracle_target_current_candidate_index"] = current_candidate_index
+            result["oracle_target_candidate_reference_points"] = (
+                candidate_reference_points)
+            result["oracle_target_candidate_reference_valid"] = (
+                candidate_reference_valid)
 
         self.stats["steps_total"] += 1
         self.stats["target_valid"] += int(target_valid)
@@ -1946,7 +1986,7 @@ class RLBenchGTOracleProvider:
             "reference_valid": bool(reference_valid),
             "phase_source": "demo_events" if phase_event is not None else "sim_replay",
         }
-        if self.emit_target_candidates:
+        if self.emit_action_anchor_candidates:
             entry["target_candidates"] = candidate_audits
             entry["target_current_candidate_index"] = int(
                 current_candidate_index)
@@ -1956,7 +1996,7 @@ class RLBenchGTOracleProvider:
                     for index, candidate in enumerate(candidate_audits)
                 )
                 print(
-                    f"[HeatmapTargetCandidates] {self._task_name}: {labels}",
+                    f"[HeatmapActionAnchorCandidates] {self._task_name}: {labels}",
                     flush=True,
                 )
         self._entries.append(entry)

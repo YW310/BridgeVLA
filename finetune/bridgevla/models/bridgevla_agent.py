@@ -45,6 +45,7 @@ from bridgevla.models.oracle_prior import (
 )
 from bridgevla.models.optimizer_utils import parameter_learning_rate
 from bridgevla.models.object_conditioning import (
+    active_semantic_target_mask,
     reference_null_loss,
     select_object_candidate_from_waypoint,
 )
@@ -536,8 +537,11 @@ class RVTAgent:
         )
         self._oracle_missing_warning_shown = False
         # Runtime-only evaluation diagnostic. It is never read by update().
-        self.heatmap_target_object = False
-        self._heatmap_target_step = 0
+        self.heatmap_action_anchor = False
+        self.bridgevla_aligned_objects = False
+        self._heatmap_action_anchor_step = 0
+        self._bridgevla_target_lock = -1
+        self._bridgevla_last_gripper_open = None
 
         print("Cameras:",self.cameras)
         self.move_pc_in_bound = move_pc_in_bound
@@ -1759,9 +1763,34 @@ class RVTAgent:
 
 
     @torch.no_grad()
-    def _heatmap_target_observation_elements(
-        self, output, observation, rev_trans, dyn_cam_info,
+    def _decode_action_waypoint(
+        self, output, rev_trans, dyn_cam_info, *, use_base,
     ):
+        attribution_output = dict(output)
+        if self.stage_two:
+            stage_output = dict(output['mvt2'])
+            if use_base:
+                stage_output['trans'] = stage_output.get(
+                    'trans_base', stage_output['trans'])
+            attribution_output['mvt2'] = stage_output
+            first_stage = False
+        else:
+            if use_base:
+                attribution_output['trans'] = output.get(
+                    'trans_base', output['trans'])
+            first_stage = True
+        waypoint_local = self._net_mod.get_wpt(
+            attribution_output, first_stage, dyn_cam_info, None)
+        return torch.cat([
+            reverse(value).unsqueeze(0)
+            for value, reverse in zip(waypoint_local, rev_trans)
+        ])
+
+    @torch.no_grad()
+    def _heatmap_action_anchor_replay_elements(
+        self, output, observation, rev_trans, dyn_cam_info, final_waypoint,
+    ):
+        """Attribute base and executed translation waypoints without redefining GT."""
         required = (
             'oracle_target_candidate_points',
             'oracle_target_candidate_valid',
@@ -1771,29 +1800,9 @@ class RVTAgent:
         missing = [key for key in required if key not in observation]
         if missing:
             raise KeyError(
-                'Heatmap Target attribution requires simulator candidates: '
+                'Heatmap action-anchor attribution requires simulator candidates: '
                 + ', '.join(missing)
             )
-
-        # Prefer unconditioned BridgeVLA logits retained by the O2 path. This
-        # avoids attributing a heatmap that already saw the Oracle T/R pair.
-        attribution_output = dict(output)
-        if self.stage_two:
-            stage_output = dict(output['mvt2'])
-            stage_output['trans'] = stage_output.get(
-                'trans_base', stage_output['trans'])
-            attribution_output['mvt2'] = stage_output
-            first_stage = False
-        else:
-            attribution_output['trans'] = output.get(
-                'trans_base', output['trans'])
-            first_stage = True
-        waypoint_local = self._net_mod.get_wpt(
-            attribution_output, first_stage, dyn_cam_info, None)
-        waypoint = torch.cat([
-            reverse(value).unsqueeze(0)
-            for value, reverse in zip(waypoint_local, rev_trans)
-        ])
 
         candidates = latest_replay_value(
             observation['oracle_target_candidate_points'], 4).float()
@@ -1803,35 +1812,176 @@ class RVTAgent:
             observation['oracle_target_candidate_phase_indices'], 2).long()
         current_indices = latest_replay_value(
             observation['oracle_target_current_candidate_index'], 1).long()
-        selected, distance, confidence = select_object_candidate_from_waypoint(
-            waypoint, candidates, valid)
+        eligible_targets = active_semantic_target_mask(valid, phase_indices)
+        oracle_current_index = int(current_indices[0].item())
+        current_index = oracle_current_index
+        if self.bridgevla_aligned_objects and self._bridgevla_target_lock >= 0:
+            current_index = self._bridgevla_target_lock
 
-        index = int(selected[0].item())
-        if index >= 0:
-            selected_points = candidates[0, index].detach().cpu().numpy()
-            selected_phase = int(phase_indices[0, index].item())
+        def attribute(prefix, waypoint):
+            selected, distance, confidence = (
+                select_object_candidate_from_waypoint(
+                    waypoint, candidates, valid))
+            eligible, eligible_distance, eligible_confidence = (
+                select_object_candidate_from_waypoint(
+                    waypoint, candidates, eligible_targets))
+            index = int(selected[0].item())
+            eligible_index = int(eligible[0].item())
+            phase = (
+                int(phase_indices[0, index].item()) if index >= 0 else -1)
+            values = {
+                f'{prefix}_candidate_index': np.asarray(index, dtype=np.int64),
+                f'{prefix}_candidate_phase_index': np.asarray(
+                    phase, dtype=np.int64),
+                f'{prefix}_matches_current_target': np.asarray(
+                    index >= 0 and index == current_index, dtype=np.bool_),
+                f'{prefix}_distance_m': np.asarray(
+                    float(distance[0].item()), dtype=np.float32),
+                f'{prefix}_confidence': np.asarray(
+                    float(confidence[0].item()), dtype=np.float32),
+                f'{prefix}_waypoint': waypoint[0].detach().cpu().numpy(),
+                f'{prefix}_eligible_target_candidate_index': np.asarray(
+                    eligible_index, dtype=np.int64),
+                f'{prefix}_eligible_target_distance_m': np.asarray(
+                    float(eligible_distance[0].item()), dtype=np.float32),
+                f'{prefix}_eligible_target_confidence': np.asarray(
+                    float(eligible_confidence[0].item()), dtype=np.float32),
+            }
+            if (
+                'oracle_reference_object_points' in observation
+                and 'oracle_reference_object_valid' in observation
+            ):
+                reference = latest_replay_value(
+                    observation['oracle_reference_object_points'], 3).float()
+                reference_valid = latest_replay_value(
+                    observation['oracle_reference_object_valid'], 1).bool()
+                near_reference, reference_distance, reference_confidence = (
+                    select_object_candidate_from_waypoint(
+                        waypoint, reference[:, None], reference_valid[:, None]))
+                values.update({
+                    f'{prefix}_near_current_reference': np.asarray(
+                        int(near_reference[0].item()) == 0, dtype=np.bool_),
+                    f'{prefix}_reference_distance_m': np.asarray(
+                        float(reference_distance[0].item()), dtype=np.float32),
+                    f'{prefix}_reference_confidence': np.asarray(
+                        float(reference_confidence[0].item()), dtype=np.float32),
+                })
+            return values, index
+
+        base_waypoint = self._decode_action_waypoint(
+            output, rev_trans, dyn_cam_info, use_base=True)
+        base_stage_output = output['mvt2'] if self.stage_two else output
+        elements = {
+            'heatmap_action_anchor_current_target_candidate_index': np.asarray(
+                current_index, dtype=np.int64),
+            'heatmap_action_anchor_oracle_target_candidate_index': np.asarray(
+                oracle_current_index, dtype=np.int64),
+            'heatmap_action_anchor_base_available': np.asarray(
+                'trans_base' in base_stage_output, dtype=np.bool_),
+            'heatmap_action_anchor_eligible_target_mask': (
+                eligible_targets[0].detach().cpu().numpy()),
+        }
+        base_values, _ = attribute(
+            'heatmap_action_anchor_base', base_waypoint)
+        final_values, final_index = attribute(
+            'heatmap_action_anchor_final', final_waypoint)
+        elements.update(base_values)
+        elements.update(final_values)
+        if final_index >= 0:
+            selected_points = candidates[0, final_index].detach().cpu().numpy()
         else:
             selected_points = np.zeros(
                 tuple(candidates.shape[2:]), dtype=np.float32)
-            selected_phase = -1
-        current_index = int(current_indices[0].item())
-        return {
-            'heatmap_target_object_points': selected_points,
-            'heatmap_target_object_valid': np.asarray(
-                index >= 0, dtype=np.bool_),
-            'heatmap_target_candidate_index': np.asarray(index, dtype=np.int64),
-            'heatmap_target_candidate_phase_index': np.asarray(
-                selected_phase, dtype=np.int64),
-            'heatmap_target_current_candidate_index': np.asarray(
-                current_index, dtype=np.int64),
-            'heatmap_target_matches_oracle': np.asarray(
-                index >= 0 and index == current_index, dtype=np.bool_),
-            'heatmap_target_distance_m': np.asarray(
+        elements['heatmap_action_anchor_object_points'] = selected_points
+        elements['heatmap_action_anchor_object_valid'] = np.asarray(
+            final_index >= 0, dtype=np.bool_)
+        return elements
+
+    @torch.no_grad()
+    def _bridgevla_aligned_relation(
+        self, output, observation, relation_state, oracle_points, oracle_valid,
+        candidate_points_local, candidate_reference_points_local,
+        rev_trans, dyn_cam_info,
+    ):
+        """Select residual T/R geometry from the base BridgeVLA action intent."""
+        if oracle_points is None or oracle_points.ndim != 4:
+            raise ValueError(
+                'BridgeVLA-aligned objects require relation points [B,2,P,3]')
+        if oracle_points.shape[0] != 1:
+            raise ValueError(
+                'BridgeVLA-aligned objects currently require evaluation batch size 1')
+        base_stage = output['mvt2'] if self.stage_two else output
+        if 'trans_base' not in base_stage:
+            raise ValueError(
+                'BridgeVLA-aligned objects require trans_base before residual adaptation')
+
+        candidates = latest_replay_value(
+            observation['oracle_target_candidate_points'], 4).float()
+        valid = latest_replay_value(
+            observation['oracle_target_candidate_valid'], 2).bool()
+        phases = latest_replay_value(
+            observation['oracle_target_candidate_phase_indices'], 2).long()
+        base_waypoint = self._decode_action_waypoint(
+            output, rev_trans, dyn_cam_info, use_base=True)
+        proposed, distance, confidence = select_object_candidate_from_waypoint(
+            base_waypoint, candidates, valid)
+        proposed_index = int(proposed[0].item())
+
+        gripper_open = bool(relation_state[0, 0].item() > 0.5)
+        released = (
+            self._bridgevla_last_gripper_open is False and gripper_open)
+        if released:
+            self._bridgevla_target_lock = -1
+        if self._bridgevla_target_lock < 0 and proposed_index >= 0:
+            self._bridgevla_target_lock = proposed_index
+        self._bridgevla_last_gripper_open = gripper_open
+
+        locked_index = self._bridgevla_target_lock
+        lock_usable = (
+            0 <= locked_index < valid.shape[1]
+            and bool(valid[0, locked_index].item())
+        )
+        aligned_points = oracle_points
+        aligned_valid = oracle_valid
+        reference_source = 0  # 0=current task Reference, 1=phase-paired Reference
+        if lock_usable:
+            aligned_points = oracle_points.clone()
+            aligned_valid = oracle_valid.clone()
+            aligned_points[0, 0] = candidate_points_local[0, locked_index]
+            aligned_valid[0, 0] = True
+
+            paired_reference_valid = latest_replay_value(
+                observation['oracle_target_candidate_reference_valid'], 2,
+            ).bool()
+            if bool(paired_reference_valid[0, locked_index].item()):
+                aligned_points[0, 1] = (
+                    candidate_reference_points_local[0, locked_index])
+                aligned_valid[0, 1] = True
+                reference_source = 1
+
+        phase_index = (
+            int(phases[0, locked_index].item()) if lock_usable else -1)
+        elements = {
+            'bridgevla_aligned_target_proposed_index': np.asarray(
+                proposed_index, dtype=np.int64),
+            'bridgevla_aligned_target_locked_index': np.asarray(
+                locked_index if lock_usable else -1, dtype=np.int64),
+            'bridgevla_aligned_target_phase_index': np.asarray(
+                phase_index, dtype=np.int64),
+            'bridgevla_aligned_target_distance_m': np.asarray(
                 float(distance[0].item()), dtype=np.float32),
-            'heatmap_target_confidence': np.asarray(
+            'bridgevla_aligned_target_confidence': np.asarray(
                 float(confidence[0].item()), dtype=np.float32),
-            'heatmap_target_waypoint': waypoint[0].detach().cpu().numpy(),
+            'bridgevla_aligned_target_used': np.asarray(
+                lock_usable, dtype=np.bool_),
+            'bridgevla_aligned_reference_source': np.asarray(
+                reference_source, dtype=np.int64),
+            'bridgevla_aligned_gripper_open': np.asarray(
+                gripper_open, dtype=np.bool_),
+            'bridgevla_aligned_released_lock': np.asarray(
+                released, dtype=np.bool_),
         }
+        return aligned_points, aligned_valid, elements
 
     @torch.no_grad()
     def act(
@@ -1855,6 +2005,30 @@ class RVTAgent:
         )
         pc_ori = pc[0].clone()
         img_feat_ori=img_feat[0].clone()
+        aligned_candidate_points_world = None
+        aligned_candidate_reference_world = None
+        aligned_candidate_points_local = None
+        aligned_candidate_reference_local = None
+        if self.bridgevla_aligned_objects:
+            required = (
+                'oracle_target_candidate_points',
+                'oracle_target_candidate_valid',
+                'oracle_target_candidate_phase_indices',
+                'oracle_target_candidate_reference_points',
+                'oracle_target_candidate_reference_valid',
+            )
+            missing = [key for key in required if key not in observation]
+            if missing:
+                raise KeyError(
+                    'BridgeVLA-aligned residual objects require simulator '
+                    'candidates: ' + ', '.join(missing))
+            aligned_candidate_points_world = latest_replay_value(
+                observation['oracle_target_candidate_points'], 4).float()
+            aligned_candidate_reference_world = latest_replay_value(
+                observation['oracle_target_candidate_reference_points'], 4,
+            ).float()
+            aligned_candidate_points_local = []
+            aligned_candidate_reference_local = []
         # TODO: Vectorize
         pc_new = []
         rev_trans = []
@@ -1883,9 +2057,39 @@ class RVTAgent:
                         else self.scene_bounds,
                     )[0].reshape(oracle_point_shape)
                 )
+            if aligned_candidate_points_local is not None:
+                candidate_shape = tuple(
+                    aligned_candidate_points_world.shape[1:])
+                aligned_candidate_points_local.append(
+                    mvt_utils.place_pc_in_cube(
+                        _pc,
+                        app_pc=aligned_candidate_points_world[
+                            batch_index].reshape(-1, 3).to(
+                                device=_pc.device, dtype=_pc.dtype),
+                        with_mean_or_bounds=self._place_with_mean,
+                        scene_bounds=None if self._place_with_mean
+                        else self.scene_bounds,
+                    )[0].reshape(candidate_shape)
+                )
+                aligned_candidate_reference_local.append(
+                    mvt_utils.place_pc_in_cube(
+                        _pc,
+                        app_pc=aligned_candidate_reference_world[
+                            batch_index].reshape(-1, 3).to(
+                                device=_pc.device, dtype=_pc.dtype),
+                        with_mean_or_bounds=self._place_with_mean,
+                        scene_bounds=None if self._place_with_mean
+                        else self.scene_bounds,
+                    )[0].reshape(candidate_shape)
+                )
         pc = pc_new
         if oracle_points_local is not None:
             oracle_points = torch.stack(oracle_points_local)
+        if aligned_candidate_points_local is not None:
+            aligned_candidate_points_local = torch.stack(
+                aligned_candidate_points_local)
+            aligned_candidate_reference_local = torch.stack(
+                aligned_candidate_reference_local)
 
         bs = len(pc)
         nc = self._net_mod.num_img
@@ -1900,6 +2104,27 @@ class RVTAgent:
             ),
             language_goal=language_goal,
         )
+        bridgevla_alignment_elements = {}
+        if self.bridgevla_aligned_objects:
+            aligned_points, aligned_valid, bridgevla_alignment_elements = (
+                self._bridgevla_aligned_relation(
+                    out, observation, relation_state, oracle_points, oracle_valid,
+                    aligned_candidate_points_local,
+                    aligned_candidate_reference_local,
+                    rev_trans, dyn_cam_info,
+                )
+            )
+            if bool(bridgevla_alignment_elements[
+                'bridgevla_aligned_target_used']):
+                out = self._network(
+                    pc=pc,
+                    img_feat=img_feat,
+                    img_aug=0,
+                    **self._oracle_network_kwargs(
+                        aligned_points, aligned_valid, relation_state,
+                    ),
+                    language_goal=language_goal,
+                )
         if visualize:
             q_trans, rot_q, grip_q, collision_q, y_q, _ = self.get_q(
                 out, dims=(bs, nc, h, w), only_pred=True, get_q_trans=True
@@ -1911,22 +2136,47 @@ class RVTAgent:
         pred_wpt, pred_rot_quat, pred_grip, pred_coll = self.get_pred(
             out, rot_q, grip_q, collision_q, y_q, rev_trans, dyn_cam_info
         )
-        heatmap_target_elements = {}
-        if self.heatmap_target_object:
-            heatmap_target_elements = self._heatmap_target_observation_elements(
-                out, observation, rev_trans, dyn_cam_info)
-            diagnostic_step = self._heatmap_target_step
-            self._heatmap_target_step += 1
-            heatmap_target_elements['heatmap_target_policy_step'] = np.asarray(
-                diagnostic_step, dtype=np.int64)
+        heatmap_action_anchor_elements = {}
+        if self.heatmap_action_anchor:
+            heatmap_action_anchor_elements = (
+                self._heatmap_action_anchor_replay_elements(
+                    out, observation, rev_trans, dyn_cam_info,
+                    final_waypoint=pred_wpt)
+            )
+            diagnostic_step = self._heatmap_action_anchor_step
+            self._heatmap_action_anchor_step += 1
+            heatmap_action_anchor_elements[
+                'heatmap_action_anchor_policy_step'] = np.asarray(
+                    diagnostic_step, dtype=np.int64)
             print(
-                '[HeatmapTarget] '
+                '[HeatmapActionAnchor] '
                 f'step={diagnostic_step} '
-                f'candidate={int(heatmap_target_elements["heatmap_target_candidate_index"])} '
-                f'phase={int(heatmap_target_elements["heatmap_target_candidate_phase_index"])} '
-                f'confidence={float(heatmap_target_elements["heatmap_target_confidence"]):.4f} '
-                f'distance_m={float(heatmap_target_elements["heatmap_target_distance_m"]):.4f} '
-                f'matches_oracle={bool(heatmap_target_elements["heatmap_target_matches_oracle"])}',
+                f'current_target={int(heatmap_action_anchor_elements["heatmap_action_anchor_current_target_candidate_index"])} '
+                f'oracle_target={int(heatmap_action_anchor_elements["heatmap_action_anchor_oracle_target_candidate_index"])} '
+                f'base={int(heatmap_action_anchor_elements["heatmap_action_anchor_base_candidate_index"])} '
+                f'base_available={bool(heatmap_action_anchor_elements["heatmap_action_anchor_base_available"])} '
+                f'base_phase={int(heatmap_action_anchor_elements["heatmap_action_anchor_base_candidate_phase_index"])} '
+                f'base_eligible={int(heatmap_action_anchor_elements["heatmap_action_anchor_base_eligible_target_candidate_index"])} '
+                f'base_reference_distance_m={float(heatmap_action_anchor_elements["heatmap_action_anchor_base_reference_distance_m"]):.4f} '
+                f'final={int(heatmap_action_anchor_elements["heatmap_action_anchor_final_candidate_index"])} '
+                f'final_phase={int(heatmap_action_anchor_elements["heatmap_action_anchor_final_candidate_phase_index"])} '
+                f'final_eligible={int(heatmap_action_anchor_elements["heatmap_action_anchor_final_eligible_target_candidate_index"])} '
+                f'final_matches_target={bool(heatmap_action_anchor_elements["heatmap_action_anchor_final_matches_current_target"])} '
+                f'final_near_reference={bool(heatmap_action_anchor_elements["heatmap_action_anchor_final_near_current_reference"])} '
+                f'final_reference_distance_m={float(heatmap_action_anchor_elements["heatmap_action_anchor_final_reference_distance_m"]):.4f} '
+                f'final_distance_m={float(heatmap_action_anchor_elements["heatmap_action_anchor_final_distance_m"]):.4f}',
+                flush=True,
+            )
+        if self.bridgevla_aligned_objects:
+            heatmap_action_anchor_elements.update(bridgevla_alignment_elements)
+            print(
+                '[BridgeVLAAlignedObjects] '
+                f'step={self._heatmap_action_anchor_step - 1} '
+                f'proposed={int(bridgevla_alignment_elements["bridgevla_aligned_target_proposed_index"])} '
+                f'locked={int(bridgevla_alignment_elements["bridgevla_aligned_target_locked_index"])} '
+                f'phase={int(bridgevla_alignment_elements["bridgevla_aligned_target_phase_index"])} '
+                f'used={bool(bridgevla_alignment_elements["bridgevla_aligned_target_used"])} '
+                f'reference_source={int(bridgevla_alignment_elements["bridgevla_aligned_reference_source"])}',
                 flush=True,
             )
         if visualize:
@@ -2015,7 +2265,7 @@ class RVTAgent:
         else:
             return ActResult(
                 continuous_action,
-                replay_elements=heatmap_target_elements,
+                replay_elements=heatmap_action_anchor_elements,
             )
 
 
@@ -2117,7 +2367,9 @@ class RVTAgent:
 
 
     def reset(self):
-        self._heatmap_target_step = 0
+        self._heatmap_action_anchor_step = 0
+        self._bridgevla_target_lock = -1
+        self._bridgevla_last_gripper_open = None
 
     def eval(self):
         self._network.eval()

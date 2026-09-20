@@ -210,11 +210,22 @@ def get_eval_parser():
         help="Write one Oracle audit image every N policy steps.",
     )
     parser.add_argument(
+        "--heatmap-action-anchor",
         "--heatmap-target-object",
+        dest="heatmap_action_anchor",
         action="store_true",
         help=(
-            "Evaluation-only: attribute the unconditioned BridgeVLA translation "
-            "heatmap to task-defined simulator Target candidates."
+            "Evaluation-only: attribute base and final BridgeVLA translation "
+            "waypoints to simulator object candidates. The old "
+            "--heatmap-target-object spelling is retained as an alias."
+        ),
+    )
+    parser.add_argument(
+        "--bridgevla-aligned-objects",
+        action="store_true",
+        help=(
+            "Evaluation-only: select and lock the residual Target from the "
+            "base BridgeVLA heatmap, then run a second conditioned forward."
         ),
     )
     parser.add_argument(

@@ -28,6 +28,15 @@
 
 仅切换 shared flag 的 GT 对照不改变角色机制。internal-slot 的新共享模式才启用 soft role conditioning。
 
+### Semantic roles 与 action anchor
+
+Target/Reference 描述任务关系，translation heatmap 解码的是当前动作锚点；锚点可位于
+Target、Reference、接触点或自由空间，不能反向定义 T/R GT。测试诊断同时报告 adapter 前的
+`base` 与实际执行的 `final` waypoint。配置中 `phase=-1` 的干扰候选只参与锚点归因，不能
+成为有效语义 Target。纯诊断不覆盖 policy 输入；可选的两次前向模式允许 simulator residual
+跟随 `trans_base` 选中的 Target，并用 gripper 周期锁定对象，但该对象属于预测条件而非 GT。具体字段和命令见
+[Semantic-GT 指南](../guides/semantic-gt.md#测试期-heatmap-action-anchor-归因)。
+
 ### Instruction 与当前状态
 
 `pool_instruction_context()` 从同一次 VLM hidden state 的非图像有效 token 池化，兼容左右 padding。

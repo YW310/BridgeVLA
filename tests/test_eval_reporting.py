@@ -262,16 +262,18 @@ def test_standard_eval_signature_changes_with_config_and_runtime_setting(tmp_pat
     exp_cfg.write_text('exp: 1\n', encoding='utf-8')
     mvt_cfg.write_text('mvt: 1\n', encoding='utf-8')
 
-    def signature(episode_length=50):
+    def signature(episode_length=50, bridgevla_aligned_objects=False):
         return build_eval_run_signature(
             checkpoint, exp_cfg, mvt_cfg, tmp_path / 'data',
             episode_length=episode_length, oracle_provider='none',
             oracle_role_config=None, oracle_num_points=512,
             oracle_strict=False, oracle_handle_alignment='verified',
-            use_input_place_with_mean=False)[1]
+            use_input_place_with_mean=False,
+            bridgevla_aligned_objects=bridgevla_aligned_objects)[1]
 
     original = signature()
     assert signature(episode_length=51) != original
+    assert signature(bridgevla_aligned_objects=True) != original
     exp_cfg.write_text('exp: 2\n', encoding='utf-8')
     assert signature() != original
 

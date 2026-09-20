@@ -142,7 +142,7 @@ class ObjectConditioningConfigTest(unittest.TestCase):
         self.assertIn(
             'role_audit_step_{self._step_index:03d}.png', provider_source)
 
-    def test_heatmap_target_attribution_is_eval_only_and_opt_in(self):
+    def test_heatmap_action_anchor_attribution_is_eval_only_and_opt_in(self):
         eval_source = (ROOT / 'finetune/RLBench/eval.py').read_text(
             encoding='utf-8')
         parser_source = (
@@ -156,13 +156,26 @@ class ObjectConditioningConfigTest(unittest.TestCase):
         ).read_text(encoding='utf-8')
         shell_source = (ROOT / 'finetune/RLBench/eval.sh').read_text(
             encoding='utf-8')
+        self.assertIn('"--heatmap-action-anchor"', parser_source)
         self.assertIn('"--heatmap-target-object"', parser_source)
-        self.assertIn('HEATMAP_TARGET_OBJECT="${HEATMAP_TARGET_OBJECT:-0}"',
+        self.assertIn('"--bridgevla-aligned-objects"', parser_source)
+        self.assertIn('dest="heatmap_action_anchor"', parser_source)
+        self.assertIn(
+            'HEATMAP_ACTION_ANCHOR="${HEATMAP_ACTION_ANCHOR:-${HEATMAP_TARGET_OBJECT:-0}}"',
+                       shell_source)
+        self.assertIn('BRIDGEVLA_ALIGNED_OBJECTS="${BRIDGEVLA_ALIGNED_OBJECTS:-0}"',
                       shell_source)
-        self.assertIn('emit_target_candidates=heatmap_target_object', eval_source)
+        self.assertIn(
+            'heatmap_action_anchor or bridgevla_aligned_objects', eval_source)
         self.assertIn('oracle_target_candidate_points', provider_source)
-        self.assertIn("stage_output.get(\n                'trans_base'", agent_source)
-        self.assertIn('Reference and policy actions are unchanged', eval_source)
+        self.assertIn("'trans_base' not in base_stage", agent_source)
+        self.assertIn("'trans_base', output['trans']", agent_source)
+        self.assertIn('phase=-1 objects are diagnostic-only', eval_source)
+        self.assertIn("use_base=True", agent_source)
+        self.assertIn("final_waypoint=pred_wpt", agent_source)
+        self.assertIn('active_semantic_target_mask(valid, phase_indices)',
+                      agent_source)
+        self.assertIn("f'{prefix}_reference_distance_m'", agent_source)
         rollout_source = (
             ROOT / 'finetune/bridgevla/libs/YARR/yarr/utils/rollout_generator.py'
         ).read_text(encoding='utf-8')
@@ -173,7 +186,13 @@ class ObjectConditioningConfigTest(unittest.TestCase):
         self.assertGreaterEqual(
             rollout_source.count(
                 'prepped_data["language_goal"] = [[[env._lang_goal]]]'), 2)
-        self.assertIn('replay_elements=heatmap_target_elements', agent_source)
+        self.assertIn('replay_elements=heatmap_action_anchor_elements', agent_source)
+        self.assertIn('self._bridgevla_target_lock', agent_source)
+        self.assertIn('bridgevla_aligned_target_used', agent_source)
+        self.assertGreaterEqual(agent_source.count('out = self._network('), 2)
+        self.assertIn(
+            'heatmap_action_anchor or bridgevla_aligned_objects', eval_source)
+        self.assertIn('oracle_target_candidate_reference_points', provider_source)
 
     def test_shared_global_pooling_is_recomputed_and_base_diagnostic_kept(self):
         source = (ROOT / 'finetune/bridgevla/mvt/mvt_single.py').read_text(encoding='utf-8')

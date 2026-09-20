@@ -18,6 +18,7 @@ from bridgevla.models.oracle_prior import (  # noqa: E402
     InternalObjectSlotPredictor, OracleRelationAnchorFeatureAdapter,
 )
 from bridgevla.models.object_conditioning import (  # noqa: E402
+    active_semantic_target_mask,
     select_object_candidate_from_waypoint,
 )
 
@@ -55,6 +56,26 @@ class ObjectConditioningForwardTest(unittest.TestCase):
         self.assertEqual(selected.item(), -1)
         self.assertTrue(torch.isinf(distance).all())
         torch.testing.assert_close(confidence, torch.zeros(1))
+
+    def test_inactive_configured_candidate_is_not_a_semantic_target(self):
+        valid = torch.tensor([[True, True, False]])
+        phases = torch.tensor([[0, -1, 1]])
+        eligible = active_semantic_target_mask(valid, phases)
+        torch.testing.assert_close(
+            eligible, torch.tensor([[True, False, False]]))
+
+        waypoint = torch.tensor([[0.9, 0.0, 0.0]])
+        candidates = torch.tensor([[
+            [[0.0, 0.0, 0.0], [0.1, 0.0, 0.0]],
+            [[0.9, 0.0, 0.0], [1.0, 0.0, 0.0]],
+            [[0.8, 0.0, 0.0], [0.9, 0.0, 0.0]],
+        ]])
+        anchor, _, _ = select_object_candidate_from_waypoint(
+            waypoint, candidates, valid)
+        target, _, _ = select_object_candidate_from_waypoint(
+            waypoint, candidates, eligible)
+        self.assertEqual(anchor.item(), 1)
+        self.assertEqual(target.item(), -1)
 
     def _small_policy(self):
         module = mvt_single.MVT.__new__(mvt_single.MVT)

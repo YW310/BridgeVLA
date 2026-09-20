@@ -93,6 +93,19 @@ def select_object_candidate_from_waypoint(
     return selected, selected_distance, confidence
 
 
+def active_semantic_target_mask(candidate_valid, candidate_phase_indices):
+    """Return candidates that belong to the current episode's phase sequence.
+
+    Providers may append configured alternatives with ``phase=-1`` so a
+    diagnostic can reveal that a heatmap is pointing at a distractor. Those
+    alternatives are never eligible semantic Target predictions.
+    """
+    if candidate_valid.shape != candidate_phase_indices.shape:
+        raise ValueError(
+            'candidate_valid and candidate_phase_indices must have the same shape')
+    return candidate_valid.bool() & candidate_phase_indices.ge(0)
+
+
 def reference_null_loss(probability, present=None, known=None):
     """Supervise the actual NULL posterior, never geometric invalidity."""
     if present is None or known is None:

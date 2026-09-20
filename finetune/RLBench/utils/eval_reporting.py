@@ -92,7 +92,8 @@ def build_eval_run_signature(
         model_path, exp_cfg_path, mvt_cfg_path, eval_datafolder, *,
         episode_length, oracle_provider, oracle_role_config,
         oracle_num_points, oracle_strict, oracle_handle_alignment,
-        use_input_place_with_mean, runtime_files=()):
+        use_input_place_with_mean, heatmap_action_anchor=False,
+        bridgevla_aligned_objects=False, runtime_files=()):
     """Build a stable identity for results that may be reused across restarts."""
     signature = {
         'schema_version': 'rlbench_eval_run_v1',
@@ -113,6 +114,8 @@ def build_eval_run_signature(
         'oracle_handle_alignment': (
             oracle_handle_alignment if oracle_provider == 'rlbench_gt' else None),
         'use_input_place_with_mean': bool(use_input_place_with_mean),
+        'heatmap_action_anchor': bool(heatmap_action_anchor),
+        'bridgevla_aligned_objects': bool(bridgevla_aligned_objects),
         'runtime_files': [
             _file_identity(path, hash_contents=True) for path in runtime_files
         ],

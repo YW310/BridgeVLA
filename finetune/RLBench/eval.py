@@ -256,7 +256,8 @@ def eval(
     oracle_strict=False,
     oracle_debug=False,
     oracle_debug_interval=1,
-    heatmap_target_object=False,
+    heatmap_action_anchor=False,
+    bridgevla_aligned_objects=False,
     oracle_handle_alignment="verified",
     oracle_handle_map_dir=None,
     eval_resume=False,
@@ -268,12 +269,18 @@ def eval(
         raise ValueError("ground_truth_retries must be non-negative")
     if oracle_debug_interval <= 0:
         raise ValueError("oracle_debug_interval must be positive")
-    if heatmap_target_object and oracle_provider_name != "rlbench_gt":
+    if heatmap_action_anchor and oracle_provider_name != "rlbench_gt":
         raise ValueError(
-            "heatmap_target_object requires --oracle-provider rlbench_gt")
-    if heatmap_target_object and replay_ground_truth:
+            "heatmap_action_anchor requires --oracle-provider rlbench_gt")
+    if heatmap_action_anchor and replay_ground_truth:
         raise ValueError(
-            "heatmap_target_object is only supported for policy evaluation")
+            "heatmap_action_anchor is only supported for policy evaluation")
+    if bridgevla_aligned_objects and oracle_provider_name != "rlbench_gt":
+        raise ValueError(
+            "bridgevla_aligned_objects requires --oracle-provider rlbench_gt")
+    if bridgevla_aligned_objects and replay_ground_truth:
+        raise ValueError(
+            "bridgevla_aligned_objects is only supported for policy evaluation")
     if not replay_ground_truth:
         ground_truth_retries = 0
     if manifest_phase_source == "demo_events":
@@ -315,7 +322,9 @@ def eval(
         if agent is None:
             raise ValueError("model evaluation requires an agent")
         agent.eval()
-        agent.heatmap_target_object = bool(heatmap_target_object)
+        agent.heatmap_action_anchor = bool(
+            heatmap_action_anchor or bridgevla_aligned_objects)
+        agent.bridgevla_aligned_objects = bool(bridgevla_aligned_objects)
 
     camera_resolution = [IMAGE_SIZE, IMAGE_SIZE]
     use_rlbench_gt = oracle_provider_name == "rlbench_gt"
@@ -350,7 +359,8 @@ def eval(
             raw_data_root=(
                 Path(eval_datafolder)
                 if generating_manifest else None),
-            emit_target_candidates=heatmap_target_object,
+            emit_action_anchor_candidates=(
+                heatmap_action_anchor or bridgevla_aligned_objects),
         )
         if generating_manifest:
             print(f"[Manifest] raw data: {eval_datafolder}; "
@@ -919,6 +929,8 @@ def _eval(args):
                 oracle_strict=args.oracle_strict,
                 oracle_handle_alignment=args.oracle_handle_alignment,
                 use_input_place_with_mean=args.use_input_place_with_mean,
+                heatmap_action_anchor=args.heatmap_action_anchor,
+                bridgevla_aligned_objects=args.bridgevla_aligned_objects,
                 runtime_files=(
                     Path(__file__),
                     Path(__file__).parent / "utils" / "custom_rlbench_env.py",
@@ -995,11 +1007,19 @@ def _eval(args):
                     f"semantic_contract={agent.semantic_contract_status}, "
                     "online_phase_source=live_success_conditions)"
                 )
-                if args.heatmap_target_object:
+                if args.heatmap_action_anchor:
                     print(
-                        "Evaluation diagnostic: BridgeVLA base heatmap -> "
-                        "simulator Target candidate attribution enabled; "
-                        "Reference and policy actions are unchanged."
+                        "Evaluation diagnostic: BridgeVLA base/final heatmaps -> "
+                        "simulator action-anchor attribution enabled; inactive "
+                        "phase=-1 objects are diagnostic-only, and semantic "
+                        "Target/Reference plus policy actions are unchanged."
+                    )
+                if args.bridgevla_aligned_objects:
+                    print(
+                        "Evaluation policy: simulator Target residual follows "
+                        "the base BridgeVLA heatmap with gripper-cycle locking; "
+                        "a phase-paired Reference is used when available. This "
+                        "is predicted conditioning, not Oracle Target GT."
                     )
         elif agent is not None and agent.oracle_prior_enabled:
             agent.oracle_prior_mode = "none"
@@ -1051,7 +1071,8 @@ def _eval(args):
             oracle_strict=args.oracle_strict,
             oracle_debug=args.oracle_debug,
             oracle_debug_interval=args.oracle_debug_interval,
-            heatmap_target_object=args.heatmap_target_object,
+            heatmap_action_anchor=args.heatmap_action_anchor,
+            bridgevla_aligned_objects=args.bridgevla_aligned_objects,
             oracle_handle_alignment=args.oracle_handle_alignment,
             oracle_handle_map_dir=args.oracle_handle_map_dir,
             eval_resume=args.eval_resume,
