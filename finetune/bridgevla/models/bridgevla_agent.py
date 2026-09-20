@@ -2099,6 +2099,10 @@ class RVTAgent:
             pc=pc,
             img_feat=img_feat,
             img_aug=0,  # no img augmentation while acting
+            oracle_compute_base=(
+                self.heatmap_action_anchor
+                or self.bridgevla_aligned_objects
+            ),
             **self._oracle_network_kwargs(
                 oracle_points, oracle_valid, relation_state,
             ),
@@ -2120,6 +2124,7 @@ class RVTAgent:
                     pc=pc,
                     img_feat=img_feat,
                     img_aug=0,
+                    oracle_compute_base=True,
                     **self._oracle_network_kwargs(
                         aligned_points, aligned_valid, relation_state,
                     ),

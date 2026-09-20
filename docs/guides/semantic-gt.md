@@ -51,6 +51,9 @@ bash eval.sh
 动作。Target 一旦选中，会跨接近、抓取和搬运保持锁定，直到观测到 gripper 从闭合重新打开，
 避免 waypoint 转向放置点时错误切换 Target。
 
+评估入口会强制设置 `oracle_compute_base=True`，因此不依赖训练配置中的
+`oracle_log_base_loss`；checkpoint 无需重新训练。
+
 优先使用配置中与所选 Target 可验证配对的 Reference；无法解析配对关系时，Reference 回退为
 simulator 当前 Reference。`phase=-1` 仍表示该 Target 不属于当前 episode，而不再意味着一定
 缺少 Reference 配对。日志

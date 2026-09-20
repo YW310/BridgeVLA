@@ -170,6 +170,9 @@ class ObjectConditioningConfigTest(unittest.TestCase):
         self.assertIn('oracle_target_candidate_points', provider_source)
         self.assertIn("'trans_base' not in base_stage", agent_source)
         self.assertIn("'trans_base', output['trans']", agent_source)
+        self.assertIn(
+            'oracle_compute_base=(\n                self.heatmap_action_anchor',
+            agent_source)
         self.assertIn('phase=-1 objects are diagnostic-only', eval_source)
         self.assertIn("use_base=True", agent_source)
         self.assertIn("final_waypoint=pred_wpt", agent_source)
