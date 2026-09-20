@@ -44,7 +44,7 @@ class InternalObjectSlotsConfigTest(unittest.TestCase):
         self.assertIn(
             'if self.internal_object_slots_enabled and allow_missing:', source,
         )
-        self.assertIn('oracle_relation_state', source)
+        self.assertIn("return {'current_state': current_state}", source)
 
 
 if __name__ == '__main__':

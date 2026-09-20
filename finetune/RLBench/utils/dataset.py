@@ -155,6 +155,10 @@ def create_replay(
                 ),
                 ReplayElement('oracle_object_ids', (oracle_max_objects,), np.int32),
                 ReplayElement('oracle_object_valid', (oracle_max_objects,), bool),
+                # Derived lazily from semantic audit fields; never policy inputs.
+                ReplayElement('oracle_target_present', (), bool),
+                ReplayElement('oracle_reference_present', (), bool),
+                ReplayElement('oracle_role_present_known', (2,), bool),
                 ReplayElement(
                     'oracle_object_roles', (oracle_max_objects,), np.int8
                 ),

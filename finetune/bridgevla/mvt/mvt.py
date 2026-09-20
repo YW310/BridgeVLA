@@ -82,6 +82,8 @@ class MVT(nn.Module):
         object_slot_num_heads=4,
         object_slot_point_samples=128,
         object_slot_confidence_threshold=0.25,
+        object_conditioning_shared_action_features=False,
+        object_conditioning_use_context=False,
     ):
         super().__init__()
         if oracle_prior_adapter_rank < 0:
@@ -114,6 +116,10 @@ class MVT(nn.Module):
             raise ValueError('object slots require the relation-gated adapter')
         if object_slots_enabled and oracle_prior_adapter_rank <= 0:
             raise ValueError('object slots require adapter rank > 0')
+        if object_conditioning_use_context and oracle_relation_anchor_rank <= 0:
+            raise ValueError('object instruction context requires a relation-anchor adapter')
+        if object_conditioning_shared_action_features and oracle_adapter_translation_only:
+            raise ValueError('shared action features conflict with translation-only routing')
 
         from point_renderer.rvt_renderer import RVTBoxRenderer as BoxRenderer
 
@@ -140,6 +146,8 @@ class MVT(nn.Module):
         del args['object_slot_num_heads']
         del args['object_slot_point_samples']
         del args['object_slot_confidence_threshold']
+        del args['object_conditioning_shared_action_features']
+        del args['object_conditioning_use_context']
 
         self.rot_ver = rot_ver
         self.num_rot = num_rot
@@ -157,6 +165,8 @@ class MVT(nn.Module):
         )
         self.oracle_relation_anchor_rank = int(oracle_relation_anchor_rank)
         self.object_slots_enabled = bool(object_slots_enabled)
+        self.object_conditioning_shared_action_features = bool(object_conditioning_shared_action_features)
+        self.object_conditioning_use_context = bool(object_conditioning_use_context)
         oracle_prior_channels = 2 if oracle_prior_relation else 1
         # for verifying the input
         self.feat_ver = feat_ver
@@ -184,6 +194,11 @@ class MVT(nn.Module):
         adapter_kwargs = {'prior_channels': oracle_prior_channels}
         if oracle_relation_anchor_rank > 0:
             adapter_kwargs['anchor_rank'] = oracle_relation_anchor_rank
+            adapter_kwargs['use_context'] = self.object_conditioning_use_context
+            adapter_kwargs['role_conditioning'] = (
+                self.object_slots_enabled and self.object_conditioning_shared_action_features
+            )
+            adapter_kwargs['role_token_dim'] = object_slot_dim
         self.oracle_prior_feature_adapter1 = (
             adapter_class(
                 self.mvt1.vlm_dim, oracle_prior_adapter_rank,
@@ -207,6 +222,8 @@ class MVT(nn.Module):
             'num_heads': object_slot_num_heads,
             'point_samples': object_slot_point_samples,
             'confidence_threshold': object_slot_confidence_threshold,
+            'use_context': self.object_conditioning_use_context,
+            'soft_conditioning': self.object_conditioning_shared_action_features,
         }
         self.object_slot_predictor1 = (
             InternalObjectSlotPredictor(**slot_kwargs)
@@ -476,6 +493,7 @@ class MVT(nn.Module):
         oracle_prior_sigma=2.0,
         oracle_relation_state=None,
         oracle_compute_base=False,
+        current_state=None,
         **kwargs,
     ):
         """
@@ -490,6 +508,10 @@ class MVT(nn.Module):
         :param rot_x_y: (bs, 2) rotation in x and y direction
         :param language_goal: str (bs,)language instruction
         """
+        if current_state is not None:
+            if oracle_relation_state is not None:
+                raise ValueError('pass current_state or legacy oracle_relation_state, not both')
+            oracle_relation_state = current_state
         self.verify_inp(
             pc=pc,
             img_feat=img_feat,
@@ -538,6 +560,8 @@ class MVT(nn.Module):
             oracle_relation_points=policy_points1,
             oracle_relation_state=oracle_relation_state,
             object_slot_predictor=self.object_slot_predictor1,
+            object_conditioning_shared_action_features=self.object_conditioning_shared_action_features,
+            object_conditioning_use_context=self.object_conditioning_use_context,
             object_slot_target_heatmap=(
                 oracle_prior1 if self.object_slots_enabled else None
             ),
@@ -675,6 +699,8 @@ class MVT(nn.Module):
                 ),
                 oracle_relation_state=oracle_relation_state,
                 object_slot_predictor=self.object_slot_predictor2,
+                object_conditioning_shared_action_features=self.object_conditioning_shared_action_features,
+                object_conditioning_use_context=self.object_conditioning_use_context,
                 object_slot_target_heatmap=(
                     oracle_prior2 if self.object_slots_enabled else None
                 ),

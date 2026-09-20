@@ -124,6 +124,8 @@ def load_agent(
         oracle_relation_gated_adapter=exp_cfg.oracle_relation_gated_adapter,
         oracle_adapter_translation_only=exp_cfg.oracle_adapter_translation_only,
         oracle_relation_anchor_rank=exp_cfg.oracle_relation_anchor_rank,
+        object_conditioning_shared_action_features=exp_cfg.object_conditioning.shared_action_features,
+        object_conditioning_use_context=exp_cfg.object_conditioning.use_context,
         object_slots_enabled=exp_cfg.object_slots.enabled,
         object_slot_num_slots=exp_cfg.object_slots.num_slots,
         object_slot_dim=exp_cfg.object_slots.slot_dim,

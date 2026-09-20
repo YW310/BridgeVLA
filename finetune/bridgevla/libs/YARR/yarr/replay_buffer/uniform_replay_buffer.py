@@ -40,9 +40,34 @@ from yarr.replay_buffer.replay_buffer import ReplayBuffer, ReplayElement
 from yarr.utils.observation_type import ObservationElement
 
 
+def _derive_role_presence(transition):
+    """Derive teacher labels from audit metadata without rewriting replay."""
+    kinds = []
+    for role in ('target', 'reference'):
+        value = transition.get('oracle_%s_kind' % role)
+        values = None if value is None else np.asarray(value).reshape(-1)
+        kinds.append(None if values is None or values.size != 1 else str(values[0]))
+    placeholder = kinds[0] == 'none'
+    known = np.asarray([
+        kind in ('object', 'site', 'none') and not placeholder for kind in kinds
+    ], dtype=np.bool_)
+    return {
+        'oracle_target_present': np.asarray(known[0] and kinds[0] != 'none', dtype=np.bool_),
+        'oracle_reference_present': np.asarray(known[1] and kinds[1] != 'none', dtype=np.bool_),
+        'oracle_role_present_known': known,
+    }
+
+
 def _copy_required_disk_fields(store, transition, index, task_index):
     """Copy declared replay fields while leaving audit-only metadata on disk."""
+    derived = None
     for key in store:
+        if key in ('oracle_target_present', 'oracle_reference_present',
+                   'oracle_role_present_known'):
+            if derived is None:
+                derived = _derive_role_presence(transition)
+            store[key][index] = derived[key]
+            continue
         if key not in transition:
             raise KeyError(
                 'Replay transition %s is missing required field %r.'

@@ -455,7 +455,8 @@ def train_with_accumulation(
     return global_step_offset + optimizer_steps
 
 def save_agent(
-    agent, path, epoch, optimizer_step=None, include_optimizer=False
+    agent, path, epoch, optimizer_step=None, include_optimizer=False,
+    semantic_contract=None,
 ):
     model = agent._network
 
@@ -468,6 +469,13 @@ def save_agent(
         "epoch": epoch,
         "model_state": model_state,
     }
+    conditioning_model = model.module if isinstance(model, DDP) else model
+    checkpoint['object_conditioning'] = {
+        'shared_action_features': bool(getattr(conditioning_model, 'object_conditioning_shared_action_features', False)),
+        'use_context': bool(getattr(conditioning_model, 'object_conditioning_use_context', False)),
+    }
+    if semantic_contract is not None:
+        checkpoint['semantic_contract'] = dict(semantic_contract)
     if optimizer_step is not None:
         checkpoint['optimizer_step'] = int(optimizer_step)
     if include_optimizer:
@@ -480,7 +488,7 @@ def save_agent(
     os.replace(tmp_path, path)
 
 
-def load_training_checkpoint(agent, path):
+def load_training_checkpoint(agent, path, semantic_contract=None):
     checkpoint = torch.load(path, map_location="cpu")
     model = agent._network
 
@@ -725,6 +733,9 @@ def experiment(cmd_args):
     if cmd_args.exp_cfg_opts != "":
         exp_cfg.merge_from_list(cmd_args.exp_cfg_opts.split(" "))
 
+    cmd_args.freeze_vision_tower = (
+        cmd_args.freeze_vision_tower or exp_cfg.freeze_vision_tower
+    )
     ddp = int(os.environ['WORLD_SIZE']) > 1
     print(f"Total devices: {dist.get_world_size()}")
     if ddp:
@@ -974,6 +985,8 @@ def experiment(cmd_args):
             exp_cfg.oracle_adapter_translation_only
         ),
         oracle_relation_anchor_rank=exp_cfg.oracle_relation_anchor_rank,
+        object_conditioning_shared_action_features=exp_cfg.object_conditioning.shared_action_features,
+        object_conditioning_use_context=exp_cfg.object_conditioning.use_context,
         object_slots_enabled=exp_cfg.object_slots.enabled,
         object_slot_num_slots=exp_cfg.object_slots.num_slots,
         object_slot_dim=exp_cfg.object_slots.slot_dim,

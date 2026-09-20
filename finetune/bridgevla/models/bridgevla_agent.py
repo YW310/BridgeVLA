@@ -44,6 +44,7 @@ from bridgevla.models.oracle_prior import (
     validate_oracle_prior_config,
 )
 from bridgevla.models.optimizer_utils import parameter_learning_rate
+from bridgevla.models.object_conditioning import reference_null_loss
 from yarr.agents.agent import ActResult
 from PIL import Image, ImageDraw
 import torch
@@ -825,21 +826,22 @@ class RVTAgent:
             strict=self.oracle_prior_strict,
         )
 
-    def _oracle_network_kwargs(self, points, valid, relation_state=None):
+    def _oracle_network_kwargs(self, points, valid, current_state=None):
         if points is None:
             if self.internal_object_slots_enabled:
-                return {'oracle_relation_state': relation_state}
+                return {'current_state': current_state}
             return {}
         kwargs = {
             'oracle_prior_points': points,
             'oracle_prior_valid': valid,
             'oracle_prior_sigma': self.oracle_prior_sigma,
         }
-        if relation_state is not None:
-            kwargs['oracle_relation_state'] = relation_state
+        if current_state is not None:
+            kwargs['current_state'] = current_state
         return kwargs
 
-    def _object_slot_auxiliary_losses(self, output, oracle_valid):
+    def _object_slot_auxiliary_losses(self, output, oracle_valid, role_present=None,
+                                     role_present_known=None):
         if not self.internal_object_slots_enabled:
             return {}
         if oracle_valid is None or oracle_valid.ndim != 2:
@@ -854,7 +856,7 @@ class RVTAgent:
                 'object_slot_target_prior',
                 'object_slot_masks',
                 'object_slot_objectness_logits',
-                'object_slot_reference_null_logit',
+                'object_slot_reference_null_probability',
             )
             missing = [key for key in required if key not in stage_output]
             if missing:
@@ -881,15 +883,20 @@ class RVTAgent:
             any_object_logit = torch.logsumexp(objectness, dim=1) - math.log(
                 objectness.shape[1]
             )
-            target_present = valid[:, 0].to(objectness.dtype)
-            target_presence_loss = F.binary_cross_entropy_with_logits(
-                any_object_logit, target_present,
+            # Positive visible support teaches objectness. Unavailable geometry
+            # is not a negative existence label (it may be an occluded object).
+            objectness_values = F.binary_cross_entropy_with_logits(
+                any_object_logit, torch.ones_like(any_object_logit), reduction='none',
             )
-            reference_null_loss = F.binary_cross_entropy_with_logits(
-                stage_output['object_slot_reference_null_logit'],
-                (~valid[:, 1]).to(objectness.dtype),
+            support = valid[:, 0].to(objectness_values.dtype)
+            target_objectness_loss = (
+                objectness_values * support
+            ).sum() / support.sum().clamp_min(1)
+            null_loss = reference_null_loss(
+                stage_output['object_slot_reference_null_probability'],
+                role_present, role_present_known,
             )
-            presence_loss = target_presence_loss + reference_null_loss
+            presence_loss = target_objectness_loss + null_loss
 
             masks = stage_output['object_slot_masks'].permute(0, 2, 1, 3, 4)
             masks = masks.flatten(2)
@@ -1429,6 +1436,11 @@ class RVTAgent:
             total_loss = action_total_loss
             object_slot_losses = self._object_slot_auxiliary_losses(
                 out, oracle_valid,
+                role_present=(torch.stack((
+                    replay_sample['oracle_target_present'].reshape(-1),
+                    replay_sample['oracle_reference_present'].reshape(-1),
+                ), dim=1) if 'oracle_role_present_known' in replay_sample else None),
+                role_present_known=replay_sample.get('oracle_role_present_known'),
             )
             if object_slot_losses:
                 total_loss = (

@@ -57,7 +57,8 @@ rvt:
   oracle_prior_mode: none
   object_prediction_confidence_threshold: 0.25
   object_slot_mask_loss_weight: 1.0
-  object_slot_null_loss_weight: 0.25
+  # Legacy heatmap diagnostic; joint config enables semantic NULL supervision.
+  object_slot_null_loss_weight: 0.0
   object_slot_diversity_loss_weight: 0.01
   oracle_prior_sigma: 2.0
   oracle_prior_active_role: auto

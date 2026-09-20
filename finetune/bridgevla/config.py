@@ -28,6 +28,7 @@ _C.flash_attention_2 = False
 _C.freeze_gemma_prefix_layers = 0
 # Freeze weights only; the projector always remains in the forward path.
 _C.freeze_multimodal_projector = False
+_C.freeze_vision_tower = False
 _C.seed = 0
 _C.checkpoint_every_epochs = 10
 # Optional rank-0 training sample visualization. Images are collected only on
@@ -56,6 +57,10 @@ _C.oracle_relation_gated_adapter = False
 _C.oracle_adapter_translation_only = False
 # Optional translation-only implicit anchor on top of the relation adapter.
 _C.oracle_relation_anchor_rank = 0
+# Opt-in full-action conditioning; defaults preserve existing checkpoints.
+_C.object_conditioning = CN()
+_C.object_conditioning.shared_action_features = False
+_C.object_conditioning.use_context = False
 # Internal object-slot predictor. In o2_internal_slots mode Oracle objects are
 # supervision labels only and are never passed into the policy adapter.
 _C.object_slots = CN()
@@ -95,7 +100,7 @@ _C.rvt.oracle_prior_mode = 'none'
 _C.rvt.object_prior_mode = 'none'
 _C.rvt.object_prediction_confidence_threshold = 0.25
 _C.rvt.object_slot_mask_loss_weight = 1.0
-_C.rvt.object_slot_null_loss_weight = 0.25
+_C.rvt.object_slot_null_loss_weight = 0.0
 _C.rvt.object_slot_diversity_loss_weight = 0.01
 _C.rvt.oracle_prior_sigma = 2.0
 # Used only by the legacy single-prior path.

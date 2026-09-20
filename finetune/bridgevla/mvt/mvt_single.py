@@ -26,6 +26,9 @@ from bridgevla.mvt.attn import (
 )
 from bridgevla.mvt.raft_utils import ConvexUpSample
 from bridgevla.models.oracle_prior import route_oracle_adapter_features
+from bridgevla.models.object_conditioning import (
+    action_feature_routes, pool_instruction_context,
+)
 from PIL import Image
 
 
@@ -530,6 +533,8 @@ class MVT(nn.Module):
         oracle_compute_base=False,
         object_slot_predictor=None,
         object_slot_target_heatmap=None,
+        object_conditioning_shared_action_features=False,
+        object_conditioning_use_context=False,
         **kwargs,
     ):
         """
@@ -572,6 +577,15 @@ class MVT(nn.Module):
             x = outputs.hidden_states[-1]
 
 
+        instruction_context = None
+        if object_conditioning_use_context:
+            excluded = list(self.processor.tokenizer.all_special_ids)
+            excluded.append(getattr(self.model.config, 'image_token_index', None))
+            instruction_context = pool_instruction_context(
+                x, model_inputs['attention_mask'], 256 * self.num_img,
+                model_inputs['input_ids'], excluded,
+            ).float()
+
         # get image tokens
         image_tokens= []
 
@@ -599,6 +613,7 @@ class MVT(nn.Module):
         _feat = torch.max(torch.max(x, dim=-1)[0], dim=-1)[0]
         _feat = _feat.view(bs, -1)
         feat.append(_feat)
+        base_global_feat = _feat
 
         x = (
             x.transpose(1, 2)
@@ -611,7 +626,8 @@ class MVT(nn.Module):
         object_slot_output = None
         if object_slot_predictor is not None:
             object_slot_output = object_slot_predictor(
-                x, rendered_xyz, oracle_relation_state,
+                x, rendered_xyz, current_state=oracle_relation_state,
+                context=instruction_context,
             )
             oracle_prior_heatmap = object_slot_output['prior']
             oracle_prior_valid = object_slot_output['valid']
@@ -641,7 +657,14 @@ class MVT(nn.Module):
                     oracle_prior_heatmap,
                     oracle_prior_valid,
                     oracle_relation_points,
-                    oracle_relation_state,
+                    current_state=oracle_relation_state,
+                    context=instruction_context,
+                    role_tokens=(object_slot_output['role_tokens']
+                                 if object_slot_output is not None else None),
+                    reference_null_probability=(object_slot_output['reference_null_probability']
+                                                if object_slot_output is not None else None),
+                    geometry=(object_slot_output['geometry']
+                              if object_slot_output is not None else None),
                 )
                 if not oracle_adapter_translation_only:
                     x = shared_features
@@ -656,6 +679,15 @@ class MVT(nn.Module):
                     oracle_adapter_translation_only,
                 )
         
+        translation_features, x, global_features = action_feature_routes(
+            base_action_features, translation_features, x,
+            object_conditioning_shared_action_features,
+        )
+        if object_conditioning_shared_action_features:
+            feat[0] = global_features.view(
+                bs, self.num_img, self.vlm_dim, *global_features.shape[-2:],
+            ).amax(dim=(-2, -1)).transpose(1, 2).reshape(bs, -1)
+
         trans = self.up0(translation_features)
         trans = trans.view(bs, self.num_img, h, w)
 
@@ -698,7 +730,7 @@ class MVT(nn.Module):
                         _wpt_img, base_action_features,
                     )[0].view(bs, -1)
                     base_action_input = torch.cat(
-                        (feat[0], base_local_feat), dim=-1,
+                        (base_global_feat, base_local_feat), dim=-1,
                     )
                     base_action_out = self._forward_base_action_heads(
                         base_action_input, rot_x_y, bs,
@@ -743,6 +775,7 @@ class MVT(nn.Module):
                 ),
                 'object_slot_confidence': object_slot_output['confidence'],
                 'object_slot_valid': object_slot_output['valid'],
+                'object_slot_role_tokens': object_slot_output['role_tokens'],
             })
             if object_slot_target_heatmap is not None:
                 out['object_slot_target_prior'] = object_slot_target_heatmap.detach()
