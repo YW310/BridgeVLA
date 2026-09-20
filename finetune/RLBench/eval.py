@@ -255,6 +255,7 @@ def eval(
     oracle_num_points=512,
     oracle_strict=False,
     oracle_debug=False,
+    oracle_debug_interval=1,
     oracle_handle_alignment="verified",
     oracle_handle_map_dir=None,
     eval_resume=False,
@@ -264,6 +265,8 @@ def eval(
 ):
     if ground_truth_retries < 0:
         raise ValueError("ground_truth_retries must be non-negative")
+    if oracle_debug_interval <= 0:
+        raise ValueError("oracle_debug_interval must be positive")
     if not replay_ground_truth:
         ground_truth_retries = 0
     if manifest_phase_source == "demo_events":
@@ -279,10 +282,10 @@ def eval(
         ground_truth_retries = 0
     if eval_resume and (not logging or log_dir is None):
         raise ValueError("eval_resume requires logging with an output directory")
-    if eval_resume and (save_video or visualize):
+    if eval_resume and (save_video or visualize or oracle_debug):
         raise ValueError(
-            "eval_resume requires --save-video and --visualize to be disabled; "
-            "skipped episodes cannot recreate their visual artifacts")
+            "eval_resume requires video, visualization, and Oracle debug to be "
+            "disabled; skipped episodes cannot recreate their visual artifacts")
     if (eval_resume and replay_ground_truth
             and manifest_phase_source != "demo_events"):
         raise ValueError(
@@ -324,6 +327,7 @@ def eval(
             cameras=CAMERAS,
             strict=oracle_strict,
             debug_root=debug_root,
+            debug_interval=oracle_debug_interval,
             handle_alignment=(
                 oracle_handle_alignment if generating_manifest
                 else "identity"),
@@ -1031,6 +1035,7 @@ def _eval(args):
             oracle_num_points=args.oracle_num_points,
             oracle_strict=args.oracle_strict,
             oracle_debug=args.oracle_debug,
+            oracle_debug_interval=args.oracle_debug_interval,
             oracle_handle_alignment=args.oracle_handle_alignment,
             oracle_handle_map_dir=args.oracle_handle_map_dir,
             eval_resume=args.eval_resume,

@@ -115,6 +115,32 @@ class ObjectConditioningConfigTest(unittest.TestCase):
                 self.assertIn(f'object_conditioning_{flag}=exp_cfg.object_conditioning.{flag}',
                               source_entry)
 
+    def test_oracle_debug_interval_and_rgb_overlay_are_wired(self):
+        eval_source = (ROOT / 'finetune/RLBench/eval.py').read_text(
+            encoding='utf-8')
+        parser_source = (
+            ROOT / 'finetune/bridgevla/utils/rvt_utils.py'
+        ).read_text(encoding='utf-8')
+        provider_source = (
+            ROOT / 'finetune/RLBench/utils/o2_oracle_provider.py'
+        ).read_text(encoding='utf-8')
+        shell_source = (ROOT / 'finetune/RLBench/eval.sh').read_text(
+            encoding='utf-8')
+        self.assertIn('"--oracle-debug-interval"', parser_source)
+        self.assertIn('oracle_debug_interval=args.oracle_debug_interval',
+                      eval_source)
+        self.assertIn('debug_interval=oracle_debug_interval', eval_source)
+        self.assertIn('ORACLE_DEBUG_INTERVAL="${ORACLE_DEBUG_INTERVAL:-1}"',
+                      shell_source)
+        self.assertIn('--oracle-debug-interval "${ORACLE_DEBUG_INTERVAL}"',
+                      shell_source)
+        self.assertIn('self._step_index % self.debug_interval == 0',
+                      provider_source)
+        self.assertIn('0.30 * overlay[selected]', provider_source)
+        self.assertIn('0.70 * np.asarray(color', provider_source)
+        self.assertIn(
+            'role_audit_step_{self._step_index:03d}.png', provider_source)
+
     def test_shared_global_pooling_is_recomputed_and_base_diagnostic_kept(self):
         source = (ROOT / 'finetune/bridgevla/mvt/mvt_single.py').read_text(encoding='utf-8')
         self.assertIn('feat[0] = global_features.view(', source)
@@ -138,7 +164,9 @@ class ObjectConditioningConfigTest(unittest.TestCase):
                          'finetune/bridgevla/models/oracle_prior.py',
                          'finetune/bridgevla/models/bridgevla_agent.py',
                          'finetune/bridgevla/mvt/mvt.py', 'finetune/bridgevla/mvt/mvt_single.py',
-                         'finetune/RLBench/train.py', 'finetune/RLBench/eval.py'):
+                         'finetune/RLBench/train.py', 'finetune/RLBench/eval.py',
+                         'finetune/RLBench/utils/o2_oracle_provider.py',
+                         'finetune/bridgevla/utils/rvt_utils.py'):
             ast.parse((ROOT / relative).read_text(encoding='utf-8'))
 
 

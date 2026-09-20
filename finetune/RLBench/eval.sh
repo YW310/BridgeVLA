@@ -45,6 +45,7 @@ DEVICE="${DEVICE:-0}"
 ORACLE_PROVIDER="${ORACLE_PROVIDER:-none}"
 ORACLE_STRICT="${ORACLE_STRICT:-0}"
 ORACLE_DEBUG="${ORACLE_DEBUG:-0}"
+ORACLE_DEBUG_INTERVAL="${ORACLE_DEBUG_INTERVAL:-1}"
 ORACLE_NUM_POINTS="${ORACLE_NUM_POINTS:-512}"
 ORACLE_HANDLE_ALIGNMENT="${ORACLE_HANDLE_ALIGNMENT:-verified}"
 ORACLE_HANDLE_MAP_DIR="${ORACLE_HANDLE_MAP_DIR:-}"
@@ -74,7 +75,10 @@ oracle_args=(
 )
 [[ -n "${ORACLE_HANDLE_MAP_DIR}" ]] && oracle_args+=(--oracle-handle-map-dir "${ORACLE_HANDLE_MAP_DIR}")
 [[ "${ORACLE_STRICT}" == "1" ]] && oracle_args+=(--oracle-strict)
-[[ "${ORACLE_DEBUG}" == "1" ]] && oracle_args+=(--oracle-debug)
+[[ "${ORACLE_DEBUG}" == "1" ]] && oracle_args+=(
+  --oracle-debug
+  --oracle-debug-interval "${ORACLE_DEBUG_INTERVAL}"
+)
 exp_cfg_args=()
 [[ -n "${EXP_CFG_PATH}" ]] && exp_cfg_args+=(--exp_cfg_path "${EXP_CFG_PATH}")
 ground_truth_args=()

@@ -201,7 +201,13 @@ def get_eval_parser():
     parser.add_argument(
         "--oracle-debug",
         action="store_true",
-        help="Write one semantic-role audit image per evaluated episode.",
+        help="Write semantic-role audit images during evaluation.",
+    )
+    parser.add_argument(
+        "--oracle-debug-interval",
+        type=int,
+        default=1,
+        help="Write one Oracle audit image every N policy steps.",
     )
     parser.add_argument(
         "--oracle-handle-alignment", choices=("identity", "verified", "mask_verified"),

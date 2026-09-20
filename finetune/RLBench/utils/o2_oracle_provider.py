@@ -270,6 +270,7 @@ class RLBenchGTOracleProvider:
         strict: bool = True,
         seed: int = 0,
         debug_root: Optional[Path] = None,
+        debug_interval: int = 1,
         handle_alignment: str = "identity",
         handle_map_dir: Optional[Path] = None,
         alignment_output_dir: Optional[Path] = None,
@@ -313,6 +314,9 @@ class RLBenchGTOracleProvider:
         self.strict = bool(strict)
         self.seed = int(seed)
         self.debug_root = None if debug_root is None else Path(debug_root)
+        self.debug_interval = int(debug_interval)
+        if self.debug_interval <= 0:
+            raise ValueError("debug_interval must be positive")
         if handle_alignment not in ("identity", "verified", "mask_verified"):
             raise ValueError("handle_alignment must be identity, verified or mask_verified")
         self.handle_alignment = handle_alignment
@@ -1834,7 +1838,10 @@ class RLBenchGTOracleProvider:
             "phase_source": "demo_events" if phase_event is not None else "sim_replay",
         }
         self._entries.append(entry)
-        if self.debug_root is not None and self._step_index == 0:
+        if (
+            self.debug_root is not None
+            and self._step_index % self.debug_interval == 0
+        ):
             self._write_role_audit(
                 obs,
                 assignment,
@@ -2127,6 +2134,19 @@ class RLBenchGTOracleProvider:
         return panel
 
     @staticmethod
+    def _role_overlay(image, mask, handles, color):
+        """Overlay one role while retaining the full original RGB context."""
+        overlay = np.asarray(image, dtype=np.float32).copy()
+        handles = np.asarray(handles, dtype=np.int64)
+        if handles.size:
+            selected = np.isin(mask, handles)
+            overlay[selected] = (
+                0.30 * overlay[selected]
+                + 0.70 * np.asarray(color, dtype=np.float32)
+            )
+        return np.clip(overlay, 0, 255).astype(np.uint8)
+
+    @staticmethod
     def _point_projection_panel(
         target_points,
         reference_points,
@@ -2186,17 +2206,13 @@ class RLBenchGTOracleProvider:
                 image = image * 255.0
             image = np.clip(image, 0, 255).astype(np.uint8)
             mask = decode_handle_mask(mask_value)
-            overlay = image.astype(np.float32)
-            if target_handles.size:
-                selected = np.isin(mask, target_handles)
-                overlay[selected] = 0.45 * overlay[selected] + 0.55 * np.array([255, 64, 64])
-            if reference_handles.size:
-                selected = np.isin(mask, reference_handles)
-                overlay[selected] = 0.45 * overlay[selected] + 0.55 * np.array([64, 128, 255])
+            overlay = self._role_overlay(
+                image, mask, target_handles, (255, 64, 64))
+            overlay = self._role_overlay(
+                overlay, mask, reference_handles, (64, 128, 255))
             panels.append(
                 self._labeled_panel(
-                    np.clip(overlay, 0, 255).astype(np.uint8),
-                    f"{camera}: T/R overlay",
+                    overlay, f"{camera}: T/R overlay (30% RGB + 70% role)",
                 )
             )
             if first_detail is None:
@@ -2210,16 +2226,20 @@ class RLBenchGTOracleProvider:
         palette[..., 1] = (mask * 67 % 251).astype(np.uint8)
         palette[..., 2] = (mask * 97 % 251).astype(np.uint8)
         palette[~nonzero] = 0
-        target_mask = np.zeros_like(palette)
-        target_mask[np.isin(mask, target_handles)] = (255, 64, 64)
-        reference_mask = np.zeros_like(palette)
-        reference_mask[np.isin(mask, reference_handles)] = (64, 128, 255)
+        target_overlay = self._role_overlay(
+            image, mask, target_handles, (255, 64, 64))
+        reference_overlay = self._role_overlay(
+            image, mask, reference_handles, (64, 128, 255))
         panels.extend(
             [
                 self._labeled_panel(image, f"{camera}: original"),
                 self._labeled_panel(palette, f"{camera}: instance handles"),
-                self._labeled_panel(target_mask, f"{camera}: Target mask"),
-                self._labeled_panel(reference_mask, f"{camera}: Reference mask"),
+                self._labeled_panel(
+                    target_overlay, f"{camera}: Target (30% RGB + 70% role)"),
+                self._labeled_panel(
+                    reference_overlay,
+                    f"{camera}: Reference (30% RGB + 70% role)",
+                ),
             ]
         )
         width = max(panel.width for panel in panels)
@@ -2261,7 +2281,7 @@ class RLBenchGTOracleProvider:
         )
         output = self.debug_root / self._task_name / f"episode_{self._episode_idx}"
         output.mkdir(parents=True, exist_ok=True)
-        canvas.save(output / "role_audit_step_000.png")
+        canvas.save(output / f"role_audit_step_{self._step_index:03d}.png")
 
     def _flush_current_manifest(self):
         if (not self._task_name or self._episode_idx < 0

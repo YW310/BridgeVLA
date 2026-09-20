@@ -184,6 +184,12 @@ TASKS=place_cups MODEL_FOLDER=/path/to/o2 MODEL_NAME=model_last.pth \
 EXP_CFG_PATH=configs/rlbench_o2_semantic_gt.yaml \
 ORACLE_PROVIDER=rlbench_gt ORACLE_STRICT=1 ORACLE_DEBUG=0 bash eval.sh
 
+# 逐 policy step 输出 Oracle T/R 审计图
+ORACLE_PROVIDER=rlbench_gt ORACLE_STRICT=1 \
+ORACLE_DEBUG=1 ORACLE_DEBUG_INTERVAL=1 \
+TASKS=place_cups MODEL_FOLDER=/path/to/o2 MODEL_NAME=model_last.pth \
+EXP_CFG_PATH=configs/rlbench_o2_semantic_gt.yaml bash eval.sh
+
 # 同一 O2 checkpoint 的 no-prior control
 ORACLE_PROVIDER=none TASKS=place_cups \
 MODEL_FOLDER=/path/to/o2 MODEL_NAME=model_last.pth bash eval_o2.sh
@@ -193,7 +199,9 @@ MODEL_FOLDER=/path/to/o2 MODEL_NAME=model_last.pth bash eval_o2.sh
 Oracle 上界，不应当作无 GT 的部署结果。
 建议传入训练目录保存的 `exp_cfg.yaml`；加载器还会将 checkpoint contract 与运行时
 `ORACLE_ROLE_CONFIG`、`ORACLE_NUM_POINTS` 核对。`ORACLE_DEBUG` 只控制审计输出，不应改变
-动作；正式比较固定为 0，单独开启时不要复用结果 journal。
+动作；`ORACLE_DEBUG_INTERVAL=1` 表示每个 policy step 一张图，不是 simulator 内部每个
+physics substep。Target/Reference 图使用 `30%` 原始 RGB 与 `70%` 角色颜色叠加。
+正式比较固定 `ORACLE_DEBUG=0`；debug 与 resume 不能同时使用。
 
 <a id=o2-training-visualization></a>
 

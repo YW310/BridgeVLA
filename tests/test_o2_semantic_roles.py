@@ -285,6 +285,30 @@ def test_close_jar_merges_lid_children_and_selects_variation_jar(tmp_path):
     assert manifest["entries"][0]["phase_id"] == "close_jar:0"
 
 
+def test_debug_interval_one_writes_each_step_and_role_overlay_keeps_rgb(tmp_path):
+    lid = FakeObject("jar_lid0", 11)
+    jar = FakeObject("jar0", 21)
+    task = FakeTask([lid, jar])
+    task.lid = lid
+    task.jars = [jar]
+    value = provider("close_jar", task, tmp_path)
+
+    obs = observation([[11, 0], [21, 0]])
+    value.enrich(obs, {})
+    value.enrich(obs, {})
+
+    output = tmp_path / "close_jar" / "episode_0"
+    assert (output / "role_audit_step_000.png").is_file()
+    assert (output / "role_audit_step_001.png").is_file()
+
+    image = np.asarray(
+        [[[100, 150, 200], [20, 30, 40]]], dtype=np.uint8)
+    mask = np.asarray([[11, 0]], dtype=np.int64)
+    overlay = value._role_overlay(image, mask, (11,), (255, 64, 64))
+    np.testing.assert_array_equal(overlay[0, 0], [208, 89, 104])
+    np.testing.assert_array_equal(overlay[0, 1], image[0, 1])
+
+
 @pytest.mark.parametrize("variation", range(4))
 def test_slide_block_reference_comes_from_registered_success_detector(
     variation, tmp_path

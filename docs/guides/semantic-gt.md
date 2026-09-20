@@ -386,8 +386,9 @@ source_alignment_validated 表示相应检查通过；它不替代真实 simulat
 
 - `.../eval/<task>/rlbench_gt/<model>/semantic_oracle/semantic_role_manifests/<task>/episode_N.json`；
 - `oracle_provider_stats.json`：区分 `mapping_errors`、`not_visible_*` 和 `no_reference`；
-- `semantic_role_audits/<task>/episode_N/role_audit_step_000.png`：首帧四视角 overlay、
-  原图、instance/T/R mask、三正交 T/R 点云以及 phase condition 状态。
+- `semantic_role_audits/<task>/episode_N/role_audit_step_NNN.png`：按
+  `ORACLE_DEBUG_INTERVAL` 输出 policy step；包含四视角 overlay、原图、instance handles、
+  以 `30% RGB + 70% role color` 叠加的 Target/Reference 图、三正交点云与 phase 状态。
 
 ## 2. 只重写 Oracle 字段，生成 semantic-GT buffer
 
