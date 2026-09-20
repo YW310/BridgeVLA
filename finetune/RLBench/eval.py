@@ -165,6 +165,7 @@ def load_agent(
     )
     checkpoint_validator = None
     semantic_training_phase_source = None
+    semantic_contract_status = {'value': 'not_enforced'}
     if enforce_oracle_contract and exp_cfg.oracle_semantic_audit:
         if not exp_cfg.oracle_semantic_contract.enforce:
             raise RuntimeError(
@@ -186,6 +187,7 @@ def load_agent(
             oracle_num_points,
         )
         semantic_training_phase_source = required_phase_source
+        semantic_contract_status['value'] = 'pending'
         saved_digest = str(
             exp_cfg.oracle_semantic_contract.role_config_sha256
         )
@@ -194,9 +196,21 @@ def load_agent(
                 'Saved exp_cfg semantic role digest disagrees with runtime YAML')
 
         def checkpoint_validator(checkpoint):
-            validate_semantic_contract(
+            verified = validate_semantic_contract(
                 checkpoint.get('semantic_contract'), runtime_contract,
                 source=model_path,
+                allow_missing=(required_phase_source == 'demo_events'),
+            )
+            if verified:
+                semantic_contract_status['value'] = 'verified'
+                return
+            semantic_contract_status['value'] = 'legacy_demo_checkpoint'
+            print(
+                '[WARNING] Legacy demo-trained checkpoint has no embedded '
+                'semantic_contract. Evaluation will use the current demo_events '
+                'config, role YAML, and point-count contract; checkpoint training '
+                'provenance cannot be independently verified.',
+                flush=True,
             )
 
     load_agent_state(
@@ -206,6 +220,7 @@ def load_agent(
         checkpoint_validator=checkpoint_validator,
     )
     agent.semantic_training_phase_source = semantic_training_phase_source
+    agent.semantic_contract_status = semantic_contract_status['value']
     agent.eval()
 
     print("Agent Information")
@@ -964,6 +979,7 @@ def _eval(args):
                     f"(strict={agent.oracle_prior_strict}, "
                     f"training_phase_source="
                     f"{agent.semantic_training_phase_source}, "
+                    f"semantic_contract={agent.semantic_contract_status}, "
                     "online_phase_source=live_success_conditions)"
                 )
         elif agent is not None and agent.oracle_prior_enabled:

@@ -39,6 +39,16 @@ class SemanticContractTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'no verified'):
             validate_semantic_contract(None, {'phase_source': 'sim_replay'})
 
+    def test_missing_legacy_contract_can_be_allowed_explicitly(self):
+        self.assertFalse(validate_semantic_contract(
+            None, {'phase_source': 'demo_events'}, allow_missing=True))
+        with self.assertRaisesRegex(RuntimeError, 'contract mismatch'):
+            validate_semantic_contract(
+                {'phase_source': 'sim_replay'},
+                {'phase_source': 'demo_events'},
+                allow_missing=True,
+            )
+
     def test_full_validation_report_matches_contract(self):
         expected = {
             'schema_version': 'rlbench_o2_semantic_roles_v2',

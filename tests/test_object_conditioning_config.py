@@ -53,6 +53,10 @@ class ObjectConditioningConfigTest(unittest.TestCase):
             eval_source)
         self.assertIn(
             'online_phase_source=live_success_conditions', eval_source)
+        self.assertIn(
+            "allow_missing=(required_phase_source == 'demo_events')",
+            eval_source)
+        self.assertIn('legacy_demo_checkpoint', eval_source)
         provider_source = (
             ROOT / 'finetune/RLBench/utils/o2_oracle_provider.py'
         ).read_text(encoding='utf-8')

@@ -526,4 +526,10 @@ YAML 会明确报错，不会静默测试。该校验约束训练数据来源，
 stored-demo phase tracker。旧 buffer 若没有
 `oracle_role_config_sha256`，请用新输出目录重新运行 rewriter；`--resume` 不会改写已存在文件。
 
+兼容既有 demo-trained checkpoint：若 checkpoint 只缺少后来新增的 `semantic_contract`
+字段，闭环不会再中止，而是打印 `legacy_demo_checkpoint` warning，并以当前
+`demo_events` 配置、role YAML 和点数运行。这个兼容只处理“字段缺失”；checkpoint 已带
+contract 但内容不匹配时仍拒绝。训练 replay 的全量 validation、handle alignment 与
+`source_alignment_validated` 检查也不会因此关闭。
+
 训练模式、消融和评估见 [O2 实验](../experiments/o2-training.md)。

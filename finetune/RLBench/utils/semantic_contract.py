@@ -44,8 +44,12 @@ def build_semantic_contract(role_config, phase_source, num_points):
     }
 
 
-def validate_semantic_contract(stored, expected, source='checkpoint'):
+def validate_semantic_contract(
+    stored, expected, source='checkpoint', allow_missing=False,
+):
     if not isinstance(stored, Mapping):
+        if allow_missing:
+            return False
         raise RuntimeError(
             f'{source} has no verified semantic_contract; regenerate the '
             'semantic replay audit and retrain.')
@@ -59,6 +63,7 @@ def validate_semantic_contract(stored, expected, source='checkpoint'):
             for key, value in differences.items())
         raise RuntimeError(
             f'Semantic train/eval contract mismatch in {source}: {details}')
+    return True
 
 
 def validate_semantic_validation_report(report, expected, source):
