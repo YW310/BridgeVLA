@@ -2,7 +2,7 @@
 
 [文档索引](../README.md) · [实现细节](role-relation-details.md) · [联合训练与验收](../experiments/object-conditioned-joint.md)
 
-> 更新：2026-09-18。代码提供 opt-in 单帧条件化；GT 闭环收益尚待验证。
+> 更新：2026-09-20。代码提供 opt-in 单帧条件化；GT 闭环收益尚待验证。
 
 ## 主线
 
@@ -31,7 +31,8 @@ GT 诊断直接提供 T/R prior；internal-slot 模式由网络预测，Oracle �
 - instruction 复用同一次 VLM 前向，排除 image prefix、padding 和特殊 token。
 - 内部 slots 返回 soft T/R tokens；新模式使用可微的可见点中心/spread，而非只依赖 hard top-k XYZ。
 - presence 在读取旧 replay 时从角色 `kind` 派生；NULL 监督使用真实 posterior，不使用 `~valid`。
-- 新联合配置解冻 action decoder、projector 和上层 Gemma，冻结 vision tower 与前 18 层。
+- GT 联合配置冻结 vision tower、projector 和 Gemma 前 6 层，训练 action decoder、O2 模块
+  与其余 Gemma；internal-slot 联合配置保留更保守的 Gemma 前 18 层冻结并训练 projector。
 - 旧配置的特征路由保持不变；旧 internal-slot 配置默认关闭 presence/NULL 辅助项，避免误用旧契约。
 
 `current_state` 当前只有 gripper open 与两维 finger state；不包含时间进度、未来动作或当前 EE pose。

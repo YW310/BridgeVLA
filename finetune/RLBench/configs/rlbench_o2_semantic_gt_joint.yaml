@@ -11,8 +11,8 @@ efficient_paligemma_forward: True
 gpu_paligemma_preprocessing: False
 flash_attention_2: False
 freeze_vision_tower: True
-freeze_gemma_prefix_layers: 18
-freeze_multimodal_projector: False
+freeze_gemma_prefix_layers: 6
+freeze_multimodal_projector: True
 sample_distribution_mode: task_uniform
 use_oracle_objects: True
 oracle_semantic_audit: True

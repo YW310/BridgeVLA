@@ -15,10 +15,19 @@ class ObjectConditioningConfigTest(unittest.TestCase):
             source = (ROOT / 'finetune/RLBench/configs' /
                       f'rlbench_o2_{experiment}_joint.yaml').read_text(encoding='utf-8')
             for setting in ('shared_action_features: True', 'use_context: True',
-                            'freeze_vision_tower: True', 'freeze_gemma_prefix_layers: 18',
-                            'freeze_multimodal_projector: False', 'gemma_lr: 1e-5',
+                            'freeze_vision_tower: True', 'gemma_lr: 1e-5',
                             'gemma_layer_lr_decay: 1.0'):
                 self.assertIn(setting, source)
+        semantic_gt = (
+            ROOT / 'finetune/RLBench/configs/rlbench_o2_semantic_gt_joint.yaml'
+        ).read_text(encoding='utf-8')
+        self.assertIn('freeze_gemma_prefix_layers: 6', semantic_gt)
+        self.assertIn('freeze_multimodal_projector: True', semantic_gt)
+        internal_slots = (
+            ROOT / 'finetune/RLBench/configs/rlbench_o2_internal_slots_joint.yaml'
+        ).read_text(encoding='utf-8')
+        self.assertIn('freeze_gemma_prefix_layers: 18', internal_slots)
+        self.assertIn('freeze_multimodal_projector: False', internal_slots)
         defaults = (ROOT / 'finetune/bridgevla/config.py').read_text(encoding='utf-8')
         self.assertIn('shared_action_features = False', defaults)
         self.assertIn('use_context = False', defaults)

@@ -78,7 +78,9 @@ bash train.sh \
 GT checkpoint 会同时校验 `demo_events`、点数、Reference 点集版本和 role YAML SHA-256；
 任一项不同都应重新生成/训练，而不是关闭校验继续比较。
 
-冻结 vision tower 与前 18 层 Gemma；projector、其余 Gemma、完整 action decoder 可训练。
+GT joint 冻结 vision tower、multimodal projector 与 Gemma 前 6 层，训练其余 Gemma、
+完整 action decoder 和 O2 模块。internal-slot joint 仍冻结 vision tower/Gemma 前 18 层，
+并训练 projector；两者不要共用 optimizer resume。
 LR 默认非 Gemma `4e-5`、Gemma `1e-5`。关闭 context 的旧 checkpoint 可以 init 到新模块，
 但不能 optimizer-resume 到新路由。两项关闭时，原 feature 路由不变。
 

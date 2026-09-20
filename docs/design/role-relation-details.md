@@ -2,7 +2,7 @@
 
 [精简设计](role-relation-prior.md) · [联合训练](../experiments/object-conditioned-joint.md) · [代码索引](../reference/code-map.md)
 
-> 更新：2026-09-18。单帧条件化已提供 opt-in 代码；数值、训练和闭环收益仍须在目标环境验收。
+> 更新：2026-09-20。单帧条件化已提供 opt-in 代码；数值、训练和闭环收益仍须在目标环境验收。
 
 ## 1. 最小实现
 
@@ -69,8 +69,9 @@ NULL loss 监督实际推理 posterior；不可用几何不成为 negative exist
 
 ## 3. 训练与验收
 
-两份新 joint config 都冻结 vision tower/Gemma 前 18 层，解冻 projector、上层 Gemma、action decoder
-与 object 模块；复用现有分组 LR：非 Gemma `4e-5`，Gemma `1e-5`。
+GT joint 冻结 vision tower、projector 和 Gemma 前 6 层；internal-slot joint 冻结 vision tower、
+Gemma 前 18 层但训练 projector。两者都训练其余 Gemma、action decoder 和各自 object 模块。
+复用现有分组 LR：非 Gemma `4e-5`，Gemma `1e-5`。
 
 从统一 baseline checkpoint 使用 `--init_checkpoint`。原参数名保留，新增输出 residual 零初始化；
 新增模块的参数可缺失。训练 checkpoint 记录两个 conditioning 开关；旧路由不能 optimizer-resume
