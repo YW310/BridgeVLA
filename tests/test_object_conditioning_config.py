@@ -170,6 +170,10 @@ class ObjectConditioningConfigTest(unittest.TestCase):
                          rollout_source)
         self.assertGreaterEqual(
             rollout_source.count('torch.tensor(np.array([v])'), 2)
+        self.assertGreaterEqual(
+            rollout_source.count(
+                'prepped_data["language_goal"] = [[[env._lang_goal]]]'), 2)
+        self.assertIn('replay_elements=heatmap_target_elements', agent_source)
 
     def test_shared_global_pooling_is_recomputed_and_base_diagnostic_kept(self):
         source = (ROOT / 'finetune/bridgevla/mvt/mvt_single.py').read_text(encoding='utf-8')

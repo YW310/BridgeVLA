@@ -2015,7 +2015,7 @@ class RVTAgent:
         else:
             return ActResult(
                 continuous_action,
-                observation_elements=heatmap_target_elements,
+                replay_elements=heatmap_target_elements,
             )
 
 

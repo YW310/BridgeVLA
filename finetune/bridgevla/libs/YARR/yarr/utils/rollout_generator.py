@@ -168,6 +168,7 @@ class RolloutGenerator(object):
                         k: torch.tensor(np.array([v]), device=self._env_device)
                         for k, v in obs_history.items()
                     }
+                    prepped_data["language_goal"] = [[[env._lang_goal]]]
                     act_result = agent.act(step_signal.value, prepped_data,
                                            deterministic=eval)
                     agent_obs_elems_tp1 = {k: np.array(v) for k, v in
@@ -326,6 +327,7 @@ class RolloutGenerator(object):
                         k: torch.tensor(np.array([v]), device=self._env_device)
                         for k, v in obs_history.items()
                     }
+                    prepped_data["language_goal"] = [[[env._lang_goal]]]
                     act_result = agent.act(step_signal.value, prepped_data,
                                            deterministic=eval,visualize_save_dir=visualize_save_dir,visualize=visualize)
                     agent_obs_elems_tp1 = {k: np.array(v) for k, v in
