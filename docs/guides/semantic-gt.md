@@ -51,6 +51,11 @@ bash eval.sh
 动作。Target 一旦选中，会跨接近、抓取和搬运保持锁定，直到观测到 gripper 从闭合重新打开，
 避免 waypoint 转向放置点时错误切换 Target。
 
+heatmap 只负责抓取前的意图候选。gripper 实际建立 grasp 后，provider 使用 simulator
+`get_grasped_objects()` 的 live handle 反查候选；若唯一匹配，它会覆盖 heatmap lock，后续
+residual 与最终可视化跟随真实抓取物体。`lock_source=1` 表示 heatmap，`2` 表示实际 grasp；
+`grasp_override=true` 表示本步纠正了不一致。
+
 评估入口会强制设置 `oracle_compute_base=True`，因此不依赖训练配置中的
 `oracle_log_base_loss`；checkpoint 无需重新训练。
 

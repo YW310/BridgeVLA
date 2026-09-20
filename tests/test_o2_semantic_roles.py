@@ -25,6 +25,22 @@ from utils.rlbench_compat import rgb_handles_to_mask_safe  # noqa: E402
 ROLE_CONFIG = ROOT / "finetune" / "RLBench" / "configs" / "rlbench_o2_semantic_roles.yaml"
 
 
+def test_grasped_handle_resolves_unique_target_candidate():
+    candidates = [
+        {"handles": [10, 11]},
+        {"handles": [20, 21]},
+        {"handles": [30]},
+    ]
+    assert RLBenchGTOracleProvider._grasped_candidate_index(
+        {21}, candidates) == (1, True)
+    assert RLBenchGTOracleProvider._grasped_candidate_index(
+        set(), candidates) == (-1, True)
+    assert RLBenchGTOracleProvider._grasped_candidate_index(
+        None, candidates) == (-1, False)
+    assert RLBenchGTOracleProvider._grasped_candidate_index(
+        {11, 21}, candidates) == (-1, False)
+
+
 class FakeObject:
     def __init__(
         self, name, handle, position=(0.0, 0.0, 0.0), children=(),

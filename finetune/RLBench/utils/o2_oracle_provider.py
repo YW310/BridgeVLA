@@ -534,6 +534,48 @@ class RLBenchGTOracleProvider:
                     pass
         return handles
 
+    def _grasped_object_handles(self) -> Optional[set]:
+        """Return live simulator handles held by the gripper, or None if unknown."""
+        robot = getattr(self._task_environment, "_robot", None)
+        if robot is None:
+            robot = getattr(
+                self._task, "robot", getattr(self._task, "_robot", None))
+        gripper = None if robot is None else getattr(robot, "gripper", None)
+        getter = None if gripper is None else getattr(
+            gripper, "get_grasped_objects", None)
+        if not callable(getter):
+            return None
+        try:
+            objects = getter()
+        except Exception:
+            return None
+        handles = set()
+        for obj in objects:
+            try:
+                handles.add(_object_handle(obj))
+            except Exception:
+                continue
+        return handles
+
+    @staticmethod
+    def _grasped_candidate_index(
+        grasped_handles: Optional[set], candidate_audits,
+    ) -> Tuple[int, bool]:
+        """Resolve an actual grasp to one unique semantic Target candidate."""
+        if grasped_handles is None:
+            return -1, False
+        overlaps = [
+            len(grasped_handles.intersection(candidate.get("handles", ())))
+            for candidate in candidate_audits
+        ]
+        if not overlaps or max(overlaps) <= 0:
+            return -1, True
+        best = max(overlaps)
+        winners = [index for index, score in enumerate(overlaps) if score == best]
+        if len(winners) != 1:
+            return -1, False
+        return winners[0], True
+
     def _task_spec(self) -> Mapping[str, object]:
         try:
             return self.task_specs[self._task_name]
@@ -1952,6 +1994,9 @@ class RLBenchGTOracleProvider:
         result["oracle_target_object_valid"] = np.asarray(target_valid, dtype=np.bool_)
         result["oracle_reference_object_valid"] = np.asarray(reference_valid, dtype=np.bool_)
         if self.emit_action_anchor_candidates:
+            grasped_candidate_index, grasped_candidate_known = (
+                self._grasped_candidate_index(
+                    self._grasped_object_handles(), candidate_audits))
             result["oracle_target_candidate_points"] = candidate_points
             result["oracle_target_candidate_valid"] = candidate_valid
             result["oracle_target_candidate_phase_indices"] = candidate_phase_indices
@@ -1960,6 +2005,10 @@ class RLBenchGTOracleProvider:
                 candidate_reference_points)
             result["oracle_target_candidate_reference_valid"] = (
                 candidate_reference_valid)
+            result["oracle_grasped_target_candidate_index"] = np.asarray(
+                grasped_candidate_index, dtype=np.int64)
+            result["oracle_grasped_target_candidate_known"] = np.asarray(
+                grasped_candidate_known, dtype=np.bool_)
 
         self.stats["steps_total"] += 1
         self.stats["target_valid"] += int(target_valid)
@@ -1990,6 +2039,10 @@ class RLBenchGTOracleProvider:
             entry["target_candidates"] = candidate_audits
             entry["target_current_candidate_index"] = int(
                 current_candidate_index)
+            entry["grasped_target_candidate_index"] = int(
+                grasped_candidate_index)
+            entry["grasped_target_candidate_known"] = bool(
+                grasped_candidate_known)
             if self._step_index == 0:
                 labels = ", ".join(
                     f'{index}:{candidate["semantic_name"]}'

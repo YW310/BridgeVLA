@@ -541,6 +541,7 @@ class RVTAgent:
         self.bridgevla_aligned_objects = False
         self._heatmap_action_anchor_step = 0
         self._bridgevla_target_lock = -1
+        self._bridgevla_target_lock_source = 0
         self._bridgevla_last_gripper_open = None
 
         print("Cameras:",self.cameras)
@@ -1927,13 +1928,32 @@ class RVTAgent:
             base_waypoint, candidates, valid)
         proposed_index = int(proposed[0].item())
 
+        grasped_index = -1
+        grasped_known = False
+        if (
+            'oracle_grasped_target_candidate_index' in observation
+            and 'oracle_grasped_target_candidate_known' in observation
+        ):
+            grasped_index = int(latest_replay_value(
+                observation['oracle_grasped_target_candidate_index'], 1,
+            )[0].item())
+            grasped_known = bool(latest_replay_value(
+                observation['oracle_grasped_target_candidate_known'], 1,
+            )[0].item())
+
         gripper_open = bool(relation_state[0, 0].item() > 0.5)
         released = (
             self._bridgevla_last_gripper_open is False and gripper_open)
         if released:
             self._bridgevla_target_lock = -1
-        if self._bridgevla_target_lock < 0 and proposed_index >= 0:
+            self._bridgevla_target_lock_source = 0
+        grasp_overrode_heatmap = grasped_known and grasped_index >= 0
+        if grasp_overrode_heatmap:
+            self._bridgevla_target_lock = grasped_index
+            self._bridgevla_target_lock_source = 2
+        elif self._bridgevla_target_lock < 0 and proposed_index >= 0:
             self._bridgevla_target_lock = proposed_index
+            self._bridgevla_target_lock_source = 1
         self._bridgevla_last_gripper_open = gripper_open
 
         locked_index = self._bridgevla_target_lock
@@ -1974,6 +1994,14 @@ class RVTAgent:
                 float(confidence[0].item()), dtype=np.float32),
             'bridgevla_aligned_target_used': np.asarray(
                 lock_usable, dtype=np.bool_),
+            'bridgevla_aligned_target_lock_source': np.asarray(
+                self._bridgevla_target_lock_source, dtype=np.int64),
+            'bridgevla_aligned_grasped_candidate_index': np.asarray(
+                grasped_index, dtype=np.int64),
+            'bridgevla_aligned_grasped_candidate_known': np.asarray(
+                grasped_known, dtype=np.bool_),
+            'bridgevla_aligned_grasp_overrode_heatmap': np.asarray(
+                grasp_overrode_heatmap, dtype=np.bool_),
             'bridgevla_aligned_reference_source': np.asarray(
                 reference_source, dtype=np.int64),
             'bridgevla_aligned_gripper_open': np.asarray(
@@ -2181,6 +2209,9 @@ class RVTAgent:
                 f'locked={int(bridgevla_alignment_elements["bridgevla_aligned_target_locked_index"])} '
                 f'phase={int(bridgevla_alignment_elements["bridgevla_aligned_target_phase_index"])} '
                 f'used={bool(bridgevla_alignment_elements["bridgevla_aligned_target_used"])} '
+                f'lock_source={int(bridgevla_alignment_elements["bridgevla_aligned_target_lock_source"])} '
+                f'grasped={int(bridgevla_alignment_elements["bridgevla_aligned_grasped_candidate_index"])} '
+                f'grasp_override={bool(bridgevla_alignment_elements["bridgevla_aligned_grasp_overrode_heatmap"])} '
                 f'reference_source={int(bridgevla_alignment_elements["bridgevla_aligned_reference_source"])}',
                 flush=True,
             )
@@ -2374,6 +2405,7 @@ class RVTAgent:
     def reset(self):
         self._heatmap_action_anchor_step = 0
         self._bridgevla_target_lock = -1
+        self._bridgevla_target_lock_source = 0
         self._bridgevla_last_gripper_open = None
 
     def eval(self):

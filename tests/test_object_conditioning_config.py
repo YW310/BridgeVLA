@@ -196,6 +196,9 @@ class ObjectConditioningConfigTest(unittest.TestCase):
         self.assertIn(
             'heatmap_action_anchor or bridgevla_aligned_objects', eval_source)
         self.assertIn('oracle_target_candidate_reference_points', provider_source)
+        self.assertIn('get_grasped_objects', provider_source)
+        self.assertIn('oracle_grasped_target_candidate_index', provider_source)
+        self.assertIn('bridgevla_aligned_grasp_overrode_heatmap', agent_source)
 
     def test_shared_global_pooling_is_recomputed_and_base_diagnostic_kept(self):
         source = (ROOT / 'finetune/bridgevla/mvt/mvt_single.py').read_text(encoding='utf-8')
