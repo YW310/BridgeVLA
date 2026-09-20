@@ -37,6 +37,8 @@ class _GroundTruthEnv:
     def __init__(self):
         self.retry_attempts = []
         self.step_calls = 0
+        self.oracle_provider = object()
+        self.sim_manifest_preparations = 0
 
     def reset_to_demo(self, seed, retry_attempt=0):
         self.retry_attempts.append(retry_attempt)
@@ -44,6 +46,9 @@ class _GroundTruthEnv:
 
     def get_ground_truth_action(self, seed):
         return [np.asarray([seed], dtype=np.float32)]
+
+    def prepare_sim_replay_manifest(self):
+        self.sim_manifest_preparations += 1
 
     def step(self, act_result):
         self.step_calls += 1
@@ -122,6 +127,7 @@ def test_ground_truth_retry_resets_same_demo_as_retry_attempt():
 
     assert len(rollout) == 1
     assert env.retry_attempts == [2]
+    assert env.sim_manifest_preparations == 1
 
 
 def test_demo_event_manifest_does_not_execute_simulator_actions():
@@ -139,3 +145,4 @@ def test_demo_event_manifest_does_not_execute_simulator_actions():
     assert rollout[0].terminal is True
     assert rollout[0].info["manifest_phase_source"] == "demo_events"
     assert env.step_calls == 0
+    assert env.sim_manifest_preparations == 0

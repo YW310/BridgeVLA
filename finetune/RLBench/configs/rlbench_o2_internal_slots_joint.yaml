@@ -1,30 +1,19 @@
-# Internal object-slot experiment. Oracle objects provide auxiliary heatmap
-# labels during training only; the policy adapter receives predicted slots.
-exp_id: rlbench_o2_internal_slots
+# Stage 2 opt-in: experimental; start only after the matched GT closed-loop gate.
+exp_id: rlbench_o2_internal_slots_joint
 tasks: all
 bs: 48
 num_workers: 4
 epochs: 50
 train_iter: 38400
 global_batch_size: 192
-
 gradient_checkpointing: False
 efficient_paligemma_forward: True
 gpu_paligemma_preprocessing: False
 flash_attention_2: False
+freeze_vision_tower: True
 freeze_gemma_prefix_layers: 18
-freeze_multimodal_projector: True
-
+freeze_multimodal_projector: False
 sample_distribution_mode: task_uniform
-
-train_visualization:
-  enabled: True
-  interval: 500
-  save_png: True
-  tensorboard: True
-  output_dir: train_visualizations
-
-# These fields are labels, not policy inputs, in o2_internal_slots mode.
 use_oracle_objects: True
 oracle_semantic_audit: True
 oracle_semantic_contract:
@@ -34,12 +23,13 @@ oracle_semantic_contract:
 oracle_max_objects: 32
 oracle_num_points: 512
 use_predicted_objects: False
-
 oracle_prior_adapter_rank: 16
 oracle_relation_gated_adapter: True
 oracle_adapter_translation_only: False
 oracle_relation_anchor_rank: 16
-
+object_conditioning:
+  shared_action_features: True
+  use_context: True
 object_slots:
   enabled: True
   num_slots: 6
@@ -47,13 +37,13 @@ object_slots:
   decoder_layers: 2
   num_heads: 4
   point_samples: 128
-
 peract:
   lr: 4e-5
+  gemma_lr: 1e-5
+  gemma_layer_lr_decay: 1.0
   add_rgc_loss: True
   transform_augmentation_xyz: [0.125, 0.125, 0.125]
   transform_augmentation_rpy: [0.0, 0.0, 45.0]
-
 rvt:
   place_with_mean: False
   img_aug: 0.0
@@ -61,8 +51,7 @@ rvt:
   oracle_prior_mode: none
   object_prediction_confidence_threshold: 0.25
   object_slot_mask_loss_weight: 1.0
-  # Legacy heatmap diagnostic; joint config enables semantic NULL supervision.
-  object_slot_null_loss_weight: 0.0
+  object_slot_null_loss_weight: 0.25
   object_slot_diversity_loss_weight: 0.01
   oracle_prior_sigma: 2.0
   oracle_prior_active_role: auto

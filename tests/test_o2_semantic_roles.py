@@ -780,6 +780,46 @@ def test_verified_demo_manifest_uses_saved_handles_and_reset_restores_live(tmp_p
     assert value._build_assignment().target.handles == (87,)
 
 
+def test_sim_replay_manifest_serializes_stored_handles_but_keeps_live_sampling(tmp_path):
+    lid, jar0, jar1 = (FakeObject("jar_lid0", 87),
+                       FakeObject("jar0", 88), FakeObject("jar1", 89))
+    task = FakeTask([lid, jar0, jar1])
+    task.lid, task.jars = lid, [jar0, jar1]
+    value = RLBenchGTOracleProvider(
+        ROLE_CONFIG, cameras=("front", "left_shoulder"), num_points=8,
+        handle_alignment="verified", alignment_output_dir=tmp_path)
+    value.reset(SimpleNamespace(_task=task), "close_jar", 0, 0)
+    live_mask = np.full((8, 8), 87)
+    live_mask[:, 4:] = 88
+    stored_mask = np.full((8, 8), 99)
+    stored_mask[:, 4:] = 93
+    live, stored = observation(live_mask), observation(stored_mask)
+    for obs in (live, stored):
+        obs.left_shoulder_mask = obs.front_mask.copy()
+        obs.left_shoulder_point_cloud = obs.front_point_cloud.copy()
+        obs.misc = {
+            f"{cam}_camera_{kind}": np.eye(size)
+            for cam in value.cameras
+            for kind, size in (("intrinsics", 3), ("extrinsics", 4))
+        }
+    value.set_sample_frame(0)
+    output = value.enrich(live, {})
+    value.set_expected_sample_frames([0])
+    value.prepare_sim_replay_manifest(stored)
+    value._flush_current_manifest()
+    manifest = value._manifests[("close_jar", 0)]
+
+    assert output["oracle_target_object_valid"]
+    assert value._entries[0]["target"]["handles"] == [87]
+    assert manifest["entries"][0]["target"]["handles"] == [99]
+    assert manifest["entries"][0]["reference"]["handles"] == [93]
+    assert manifest["phase_source"] == "sim_replay"
+    assert manifest["handle_namespace"] == "stored"
+    assert manifest["source_alignment_validated"] is True
+    assert value._stored_handle_map is None
+    assert value._build_assignment().target.handles == (87,)
+
+
 def test_demo_manifest_uses_raw_png_masks_when_loaded_demo_masks_differ(tmp_path):
     lid = FakeObject('jar_lid0', 87)
     jar0 = FakeObject('jar0', 88)

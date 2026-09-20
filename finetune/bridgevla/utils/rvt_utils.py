@@ -249,13 +249,18 @@ def strip_deprecated_oracle_fusion_state(model_state):
     return filtered, removed
 
 
-def load_agent(agent_path, agent=None, only_epoch=False, strict=False):
+def load_agent(
+    agent_path, agent=None, only_epoch=False, strict=False,
+    checkpoint_validator=None,
+):
     if isinstance(agent, PreprocessAgent2):
         assert not only_epoch
         agent._pose_agent.load_weights(agent_path)
         return 0
 
     checkpoint = torch.load(agent_path, map_location="cpu")
+    if checkpoint_validator is not None:
+        checkpoint_validator(checkpoint)
     epoch = checkpoint["epoch"]
 
     if not only_epoch:

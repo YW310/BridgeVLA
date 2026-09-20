@@ -113,6 +113,9 @@ def test_eval_wires_separate_manifest_csv_and_tensorboard_namespace():
     assert 'Manifest generation is model-free; skipping PaliGemma' in source
     assert 'demo_events manifest generation must run without a model agent' in source
     assert 'All requested episodes are complete' in source
+    assert 'include_manifests=replay_ground_truth' in source
+    assert 'if log_dir is not None and generating_manifest' in source
+    assert 'if oracle_provider is not None and replay_ground_truth:' in source
     assert 'if environment_launched:' in source
     rollout_source = (
         ROOT / 'finetune/bridgevla/libs/YARR/yarr/utils/rollout_generator.py'

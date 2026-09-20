@@ -298,6 +298,14 @@ def test_v2_manifest_rejects_site_without_geometry(tmp_path):
     folder.mkdir()
     (folder / 'episode_0.json').write_text(json.dumps({
         'schema_version': rewrite.SEMANTIC_ROLE_SCHEMA,
+        'phase_source': 'sim_replay',
+        'source_alignment_validated': True,
+        'handle_namespace': 'stored',
+        'source_frame0_masks': {'front': 'digest'},
+        'handle_alignment': {
+            'status': 'verified', 'live_to_stored': {},
+            'semantic_entity_to_stored': {},
+        },
         'expected_sample_frames': [0],
         'entries': [{
             'sample_frame': 0,
@@ -372,6 +380,7 @@ def _site_semantic_transition(max_objects=4, num_points=8):
     transition.update(rewrite._audit_fields(
         rewrite.SEMANTIC_ROLE_SCHEMA,
         {
+            'role_config_sha256': 'a' * 64,
             'phase_source': 'demo_events',
             'phase_id': 'phase0',
             'target': role,
@@ -418,6 +427,10 @@ def test_validate_task_output_checks_every_replay_and_site_geometry(tmp_path):
     assert report['fallback_box_roles'] == 1
     assert report['raw_fallback_files'] == 0
     assert report['phase_sources'] == {'demo_events': 1}
+    assert report['role_config_sha256'] == 'a' * 64
+    assert report['num_points'] == 8
+    assert report['max_objects'] == 4
+    assert report['manifest_handle_namespace'] == 'stored'
     saved = json.loads((
         destination_dir / 'semantic_role_validation.json').read_text())
     assert saved == report

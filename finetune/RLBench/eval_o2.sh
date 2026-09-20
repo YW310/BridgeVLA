@@ -11,7 +11,7 @@ export ORACLE_PROVIDER="${ORACLE_PROVIDER:-rlbench_gt}"
 case "${ORACLE_PROVIDER}" in
   rlbench_gt)
     export ORACLE_STRICT="${ORACLE_STRICT:-1}"
-    export ORACLE_DEBUG="${ORACLE_DEBUG:-1}"
+    export ORACLE_DEBUG="${ORACLE_DEBUG:-0}"
     ;;
   none)
     export ORACLE_STRICT="${ORACLE_STRICT:-0}"

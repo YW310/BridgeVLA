@@ -163,6 +163,14 @@ class CustomMultiTaskRLBenchEnv2(CustomMultiTaskRLBenchEnv):
             for frame in frames
         ]
 
+    def prepare_sim_replay_manifest(self):
+        if self._oracle_provider is None:
+            return
+        if self._oracle_demo is None:
+            raise RuntimeError(
+                'reset_to_demo() must run before sim_replay manifest alignment')
+        self._oracle_provider.prepare_sim_replay_manifest(self._oracle_demo[0])
+
     def build_manifest_from_demo_events(self):
         if self._oracle_provider is None:
             raise ValueError(

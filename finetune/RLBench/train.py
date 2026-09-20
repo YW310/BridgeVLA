@@ -62,26 +62,42 @@ from training_visualization import (
     record_training_visualization,
     visualization_due,
 )
+from utils.semantic_contract import (
+    build_semantic_contract,
+    validate_semantic_contract,
+    validate_semantic_validation_report,
+)
 
 
-def _validate_semantic_replay_schema(replay_root):
+def _validate_semantic_replay_schema(
+    replay_root, contract_cfg=None, num_points=None,
+):
     root = Path(replay_root)
-    candidates = []
-    direct = next(root.glob('*.replay'), None)
-    if direct is not None:
-        candidates.append(direct)
-    else:
-        for task_dir in root.iterdir():
-            if task_dir.is_dir():
-                candidate = next(task_dir.glob('*.replay'), None)
-                if candidate is not None:
-                    candidates.append(candidate)
-    if not candidates:
+    directories = [root] if next(root.glob('*.replay'), None) else [
+        path for path in root.iterdir()
+        if path.is_dir() and next(path.glob('*.replay'), None) is not None
+    ]
+    samples = []
+    for directory in directories:
+        fallback = None
+        for candidate in sorted(directory.glob('*.replay')):
+            with candidate.open('rb') as stream:
+                transition = pickle.load(stream)
+            fallback = fallback or (candidate, transition)
+            phase_values = np.asarray(
+                transition.get('oracle_phase_source', ())).reshape(-1)
+            if phase_values.size == 1 and str(phase_values[0]):
+                samples.append((candidate, transition))
+                break
+        else:
+            if fallback is not None:
+                samples.append(fallback)
+    if not samples:
         raise FileNotFoundError(
             f'No replay files found under semantic replay root: {root}'
         )
     required = {
-        'oracle_role_schema_version', 'oracle_phase_id',
+        'oracle_role_schema_version', 'oracle_phase_source', 'oracle_phase_id',
         'oracle_target_name', 'oracle_reference_name',
         'oracle_target_kind', 'oracle_reference_kind',
         'oracle_target_handles', 'oracle_reference_handles',
@@ -89,9 +105,37 @@ def _validate_semantic_replay_schema(replay_root):
         'oracle_target_geometry_source',
         'oracle_reference_geometry_source',
     }
-    for candidate in candidates:
-        with candidate.open('rb') as stream:
-            transition = pickle.load(stream)
+    enforce = bool(contract_cfg is not None and contract_cfg.enforce)
+    expected_contract = None
+    if enforce:
+        required.add('oracle_role_config_sha256')
+        if not contract_cfg.required_phase_source or not contract_cfg.role_config:
+            raise ValueError(
+                'Enforced semantic contract requires phase source and role config')
+        expected_contract = build_semantic_contract(
+            contract_cfg.role_config,
+            contract_cfg.required_phase_source,
+            num_points,
+        )
+        configured_digest = str(contract_cfg.role_config_sha256)
+        if configured_digest and (
+            configured_digest != expected_contract['role_config_sha256']
+        ):
+            raise ValueError(
+                'Configured semantic role digest no longer matches the role YAML')
+        for directory in directories:
+            report_path = directory / 'semantic_role_validation.json'
+            if not report_path.is_file():
+                raise ValueError(
+                    'Enforced semantic contract requires a full validation '
+                    f'report for every task: missing {report_path}. Run the '
+                    'semantic rewriter with --validate-output --validate-every 1.'
+                )
+            with report_path.open('r', encoding='utf-8') as stream:
+                report = yaml.safe_load(stream)
+            validate_semantic_validation_report(
+                report, expected_contract, source=str(report_path))
+    for candidate, transition in samples:
         missing = sorted(required.difference(transition))
         if missing:
             raise ValueError(
@@ -105,6 +149,17 @@ def _validate_semantic_replay_schema(replay_root):
             raise ValueError(
                 f'Unsupported semantic role schema {schema!r} in {candidate}'
             )
+        if enforce:
+            actual = dict(expected_contract)
+            actual['phase_source'] = str(np.asarray(
+                transition['oracle_phase_source']).reshape(-1)[0])
+            actual['role_config_sha256'] = str(np.asarray(
+                transition['oracle_role_config_sha256']).reshape(-1)[0])
+            points = np.asarray(transition['oracle_object_points'])
+            actual['num_points'] = int(points.shape[-2])
+            validate_semantic_contract(
+                actual, expected_contract, source=str(candidate))
+    return expected_contract
 
 
 def _validate_predicted_replay_schema(replay_root, num_points):
@@ -495,6 +550,24 @@ def load_training_checkpoint(agent, path, semantic_contract=None):
     if isinstance(model, DDP):
         model = model.module
 
+    expected_conditioning = {
+        'shared_action_features': bool(getattr(model, 'object_conditioning_shared_action_features', False)),
+        'use_context': bool(getattr(model, 'object_conditioning_use_context', False)),
+    }
+    stored_conditioning = checkpoint.get('object_conditioning', {
+        'shared_action_features': False, 'use_context': False,
+    })
+    if stored_conditioning != expected_conditioning:
+        raise RuntimeError(
+            'Object conditioning changed; initialize with --init_checkpoint '
+            'instead of restoring an incompatible optimizer with --resume_checkpoint.'
+        )
+    if semantic_contract is not None:
+        validate_semantic_contract(
+            checkpoint.get('semantic_contract'), semantic_contract,
+            source=path,
+        )
+
     model_state, removed_fusion_keys = strip_deprecated_oracle_fusion_state(
         checkpoint["model_state"]
     )
@@ -816,10 +889,32 @@ def experiment(cmd_args):
             'Object replay root does not exist: '
             f'{train_replay_storage_dir}'
         )
+    semantic_contract = None
     if exp_cfg.oracle_semantic_audit:
         if not exp_cfg.use_oracle_objects:
             raise ValueError('oracle_semantic_audit requires Oracle GT input')
-        _validate_semantic_replay_schema(train_replay_storage_dir)
+        if not exp_cfg.oracle_semantic_contract.enforce:
+            raise ValueError(
+                'oracle_semantic_audit requires '
+                'oracle_semantic_contract.enforce=True; legacy semantic '
+                'configs cannot guarantee matched train/eval inputs.'
+            )
+        semantic_contract = _validate_semantic_replay_schema(
+            train_replay_storage_dir,
+            exp_cfg.oracle_semantic_contract,
+            exp_cfg.oracle_num_points,
+        )
+        if semantic_contract is not None:
+            exp_cfg.oracle_semantic_contract.role_config_sha256 = (
+                semantic_contract['role_config_sha256']
+            )
+            print(
+                'Verified semantic train/eval contract: '
+                f"phase={semantic_contract['phase_source']}, "
+                f"points={semantic_contract['num_points']}, "
+                f"role_sha256={semantic_contract['role_config_sha256'][:12]}",
+                flush=True,
+            )
     if exp_cfg.use_predicted_objects:
         if cmd_args.refresh_replay:
             raise ValueError(
@@ -1107,6 +1202,7 @@ def experiment(cmd_args):
             epoch=-1,
             optimizer_step=0,
             include_optimizer=cmd_args.save_optimizer_state,
+            semantic_contract=semantic_contract,
         )
     dist.barrier()
     if cmd_args.resume_checkpoint:
@@ -1115,7 +1211,8 @@ def experiment(cmd_args):
                 f"Resume checkpoint does not exist: {cmd_args.resume_checkpoint}"
             )
         start_epoch, checkpoint_step = load_training_checkpoint(
-            agent, cmd_args.resume_checkpoint
+            agent, cmd_args.resume_checkpoint,
+            semantic_contract=semantic_contract,
         )
         start_optimizer_step = (
             checkpoint_step
@@ -1255,6 +1352,7 @@ def experiment(cmd_args):
                     global_optimizer_step if reduced_hardware_mode else None
                 ),
                 include_optimizer=cmd_args.save_optimizer_state,
+                semantic_contract=semantic_contract,
             )
             save_agent(
                 agent,
@@ -1264,6 +1362,7 @@ def experiment(cmd_args):
                     global_optimizer_step if reduced_hardware_mode else None
                 ),
                 include_optimizer=cmd_args.save_optimizer_state,
+                semantic_contract=semantic_contract,
             )
         i += 1
         dist.barrier()

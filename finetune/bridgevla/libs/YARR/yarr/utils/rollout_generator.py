@@ -83,6 +83,11 @@ class RolloutGenerator(object):
             if replay_ground_truth:
                 actions = env.get_ground_truth_action(eval_demo_seed)
                 self._validate_ground_truth_actions(actions, eval_demo_seed)
+                if (
+                    manifest_phase_source == 'sim_replay'
+                    and getattr(env, 'oracle_provider', None) is not None
+                ):
+                    env.prepare_sim_replay_manifest()
         else:
             obs = env.reset()
         if manifest_phase_source == "demo_events":

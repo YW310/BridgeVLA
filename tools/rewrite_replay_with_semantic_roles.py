@@ -61,6 +61,7 @@ from augment_replay_with_oracle_objects import (
 
 AUDIT_KEYS = (
     "oracle_role_schema_version",
+    "oracle_role_config_sha256",
     "oracle_phase_source",
     "oracle_phase_id",
     "oracle_target_name",
@@ -177,14 +178,26 @@ def _load_manifest(root: Path, task: str, episode_idx: int, allow_mask_verified=
             f"Unsupported semantic role schema {schema!r} in {path}; "
             f"expected {SEMANTIC_ROLE_SCHEMA!r}"
         )
-    phase_source = str(manifest.get("phase_source", "sim_replay"))
-    if (
-        phase_source == "demo_events"
-        and not bool(manifest.get("source_alignment_validated", False))
+    role_config_sha256 = str(manifest.get("role_config_sha256", ""))
+    if role_config_sha256 and (
+        len(role_config_sha256) != 64
+        or any(character not in "0123456789abcdef" for character in role_config_sha256)
     ):
         raise ValueError(
-            f"Demo-event manifest did not validate live/stored handle alignment: {path}"
+            f"Invalid role_config_sha256 in semantic manifest {path}: "
+            f"{role_config_sha256!r}"
         )
+    phase_source = str(manifest.get("phase_source", "sim_replay"))
+    if phase_source not in ('sim_replay', 'demo_events'):
+        raise ValueError(
+            f'Unsupported semantic phase source {phase_source!r}: {path}')
+    if not bool(manifest.get("source_alignment_validated", False)):
+        raise ValueError(
+            f"Semantic manifest did not validate live/stored handle alignment: {path}"
+        )
+    if manifest.get('handle_namespace') != 'stored':
+        raise ValueError(
+            f'Semantic manifest is not in the stored raw-mask handle namespace: {path}')
     entries = manifest.get("entries", ())
     if not entries:
         raise ValueError(f"Semantic manifest has no entries: {path}")
@@ -194,6 +207,10 @@ def _load_manifest(root: Path, task: str, episode_idx: int, allow_mask_verified=
             "eval.py --ground-truth --oracle-provider rlbench_gt."
         )
     entries = sorted(entries, key=lambda entry: int(entry["sample_frame"]))
+    entries = [
+        dict(entry, role_config_sha256=role_config_sha256)
+        for entry in entries
+    ]
     for entry in entries:
         for key in ("target", "reference"):
             role = entry.get(key)
@@ -465,6 +482,9 @@ def _audit_fields(schema, entry, target_valid, reference_valid, max_objects):
     text = lambda value: np.asarray([value], dtype=object)
     return {
         "oracle_role_schema_version": text(schema),
+        "oracle_role_config_sha256": text(
+            entry.get("role_config_sha256", "")
+        ),
         "oracle_phase_source": text(entry.get("phase_source", "sim_replay")),
         "oracle_phase_id": text(entry["phase_id"]),
         "oracle_target_name": text(target["semantic_name"]),
@@ -484,6 +504,7 @@ def _audit_fields(schema, entry, target_valid, reference_valid, max_objects):
 
 def _empty_audit(max_objects):
     entry = {
+        "role_config_sha256": "",
         "phase_source": "",
         "phase_id": "",
         "target": {"semantic_name": "", "kind": "none", "handles": []},
@@ -550,6 +571,22 @@ def _validate_semantic_transition(transition, max_objects, num_points, source=No
         raise ValueError(
             f'Unsupported semantic replay schema {schema!r}; '
             f'expected {SEMANTIC_ROLE_SCHEMA!r}')
+    phase_source = str(_scalar(
+        transition['oracle_phase_source'], 'oracle_phase_source'))
+    role_config_sha256 = str(_scalar(
+        transition['oracle_role_config_sha256'],
+        'oracle_role_config_sha256'))
+    if phase_source:
+        if (
+            len(role_config_sha256) != 64
+            or any(character not in '0123456789abcdef'
+                   for character in role_config_sha256)
+        ):
+            raise ValueError(
+                'Nonterminal semantic replay has no valid role-config SHA256')
+    elif role_config_sha256:
+        raise ValueError(
+            'Empty semantic placeholder unexpectedly has a role-config SHA256')
     oracle = _oracle_from_replay(transition, max_objects, num_points)
     target_present = bool(np.any(
         oracle.valid & (oracle.roles == ORACLE_ROLE_TARGET)))
@@ -643,6 +680,9 @@ def _validate_task_output(args, task, source_dir, destination_dir):
     report = {
         'task': task,
         'schema_version': SEMANTIC_ROLE_SCHEMA,
+        'max_objects': int(args.max_objects),
+        'num_points': int(args.num_points),
+        'manifest_handle_namespace': 'stored',
         'files': len(output_files),
         'validated_files': len(validation_files),
         'validation_mode': 'full' if validation_complete else 'sampled',
@@ -658,6 +698,7 @@ def _validate_task_output(args, task, source_dir, destination_dir):
         'fallback_box_roles': 0,
         'raw_fallback_files': 0,
         'phase_sources': {},
+        'role_config_sha256': None,
         'valid': True,
     }
     source_by_name = {path.name: path for path in source_files}
@@ -678,6 +719,15 @@ def _validate_task_output(args, task, source_dir, destination_dir):
             oracle.valid & (oracle.roles == ORACLE_ROLE_REFERENCE)))
         phase_source = str(_scalar(
             transition['oracle_phase_source'], 'oracle_phase_source'))
+        role_config_sha256 = str(_scalar(
+            transition['oracle_role_config_sha256'],
+            'oracle_role_config_sha256'))
+        if report['role_config_sha256'] is None:
+            report['role_config_sha256'] = role_config_sha256
+        elif report['role_config_sha256'] != role_config_sha256:
+            raise ValueError(
+                f'{task} mixes semantic role-config digests: '
+                f"{report['role_config_sha256']} and {role_config_sha256}")
         report['raw_fallback_files'] += int(not phase_source)
         report['phase_sources'][phase_source] = (
             report['phase_sources'].get(phase_source, 0) + 1)
@@ -691,6 +741,8 @@ def _validate_task_output(args, task, source_dir, destination_dir):
             report['site_roles'] += int(kind == 'site')
             report['fallback_box_roles'] += int(
                 geometry_source == 'fallback_box')
+    if report['role_config_sha256'] is None:
+        report['role_config_sha256'] = ''
     report_path = destination_dir / 'semantic_role_validation.json'
     with report_path.open('w', encoding='utf-8') as stream:
         json.dump(report, stream, indent=2, sort_keys=True)

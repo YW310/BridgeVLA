@@ -46,8 +46,15 @@ _C.use_oracle_objects = False
 _C.use_predicted_objects = False
 # Require semantic-role provenance during training startup. The audit fields
 # remain in replay files for inspection and are intentionally excluded from
-# sampled network batches.
+# sampled network batches. Derived numeric presence labels reach losses only.
 _C.oracle_semantic_audit = False
+# Opt-in fail-closed contract for semantic-GT training and online Oracle eval.
+# train.py fills the digest from the exact role YAML and saves it with the run.
+_C.oracle_semantic_contract = CN()
+_C.oracle_semantic_contract.enforce = False
+_C.oracle_semantic_contract.required_phase_source = ''
+_C.oracle_semantic_contract.role_config = ''
+_C.oracle_semantic_contract.role_config_sha256 = ''
 _C.oracle_max_objects = 32
 _C.oracle_num_points = 512
 _C.predicted_object_num_points = 512

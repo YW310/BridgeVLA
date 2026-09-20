@@ -73,6 +73,10 @@ from bridgevla.utils.rvt_utils import (
     RLBENCH_TASKS,
 )
 from bridgevla.utils.rvt_utils import load_agent as load_agent_state
+from utils.semantic_contract import (
+    build_semantic_contract,
+    validate_semantic_contract,
+)
 import os 
 
 def load_agent(
@@ -81,7 +85,10 @@ def load_agent(
     mvt_cfg_path=None,
     eval_log_dir="",
     device=0,
-    use_input_place_with_mean=False):
+    use_input_place_with_mean=False,
+    oracle_role_config=None,
+    oracle_num_points=512,
+    enforce_oracle_contract=False):
     device = f"cuda:{device}"
     assert model_path is not None
 
@@ -156,10 +163,45 @@ def load_agent(
         exp_cfg.rvt.object_prior_mode,
         exp_cfg.rvt.oracle_prior_mode,
     )
+    checkpoint_validator = None
+    if enforce_oracle_contract and exp_cfg.oracle_semantic_audit:
+        if not exp_cfg.oracle_semantic_contract.enforce:
+            raise RuntimeError(
+                'This semantic-GT experiment config predates the enforced '
+                'train/eval contract. Use the current semantic config and a '
+                'checkpoint trained with a verified sim_replay buffer.'
+            )
+        required_phase_source = str(
+            exp_cfg.oracle_semantic_contract.required_phase_source
+        )
+        if required_phase_source != 'sim_replay':
+            raise RuntimeError(
+                'Online policy evaluation uses live sim_replay phase predicates; '
+                'the enforced semantic contract must require sim_replay.'
+            )
+        runtime_contract = build_semantic_contract(
+            oracle_role_config,
+            required_phase_source,
+            oracle_num_points,
+        )
+        saved_digest = str(
+            exp_cfg.oracle_semantic_contract.role_config_sha256
+        )
+        if saved_digest and saved_digest != runtime_contract['role_config_sha256']:
+            raise RuntimeError(
+                'Saved exp_cfg semantic role digest disagrees with runtime YAML')
+
+        def checkpoint_validator(checkpoint):
+            validate_semantic_contract(
+                checkpoint.get('semantic_contract'), runtime_contract,
+                source=model_path,
+            )
+
     load_agent_state(
         model_path,
         agent,
         strict=(object_prior_mode != 'none'),
+        checkpoint_validator=checkpoint_validator,
     )
     agent.eval()
 
@@ -256,6 +298,7 @@ def eval(
     )
     oracle_provider = None
     if use_rlbench_gt:
+        generating_manifest = bool(replay_ground_truth)
         debug_root = Path(log_dir) / "semantic_role_audits" if oracle_debug else None
         oracle_provider = RLBenchGTOracleProvider(
             Path(oracle_role_config),
@@ -264,7 +307,7 @@ def eval(
             strict=oracle_strict,
             debug_root=debug_root,
             handle_alignment=(
-                oracle_handle_alignment if manifest_phase_source == "demo_events"
+                oracle_handle_alignment if generating_manifest
                 else "identity"),
             handle_map_dir=oracle_handle_map_dir,
             alignment_output_dir=(
@@ -272,13 +315,13 @@ def eval(
                 if log_dir is not None else None),
             manifest_output_dir=(
                 Path(log_dir) / "semantic_oracle"
-                if log_dir is not None and manifest_phase_source == "demo_events"
+                if log_dir is not None and generating_manifest
                 else None),
             raw_data_root=(
                 Path(eval_datafolder)
-                if manifest_phase_source == 'demo_events' else None),
+                if generating_manifest else None),
         )
-        if manifest_phase_source == "demo_events":
+        if generating_manifest:
             print(f"[Manifest] raw data: {eval_datafolder}; "
                   f"handle alignment: {oracle_handle_alignment}", flush=True)
             print(
@@ -550,12 +593,18 @@ def eval(
                         )
                         break
                     if oracle_provider is not None:
-                        oracle_provider.dump(Path(log_dir) / "semantic_oracle")
+                        oracle_provider.dump(
+                            Path(log_dir) / "semantic_oracle",
+                            include_manifests=replay_ground_truth,
+                        )
                     eval_env.shutdown()
                     raise
                 except Exception as e:
                     if oracle_provider is not None:
-                        oracle_provider.dump(Path(log_dir) / "semantic_oracle")
+                        oracle_provider.dump(
+                            Path(log_dir) / "semantic_oracle",
+                            include_manifests=replay_ground_truth,
+                        )
                     eval_env.shutdown()
                     raise e
 
@@ -599,6 +648,13 @@ def eval(
             task_rewards.append(reward)
             task_lengths.append(episode_steps)
             logical_transitions += episode_logical_transitions
+            if oracle_provider is not None and replay_ground_truth:
+                # Persist every completed expert-replay episode.  A later
+                # simulator/process failure must not discard earlier manifests.
+                oracle_provider.dump(
+                    Path(log_dir) / "semantic_oracle",
+                    include_manifests=True,
+                )
             if (manifest_continue_on_error
                     and manifest_phase_source == "demo_events"):
                 failure_path = (
@@ -760,7 +816,10 @@ def eval(
                     shutil.rmtree(video_image_folder)
 
     if oracle_provider is not None:
-        oracle_provider.dump(Path(log_dir) / "semantic_oracle")
+        oracle_provider.dump(
+            Path(log_dir) / "semantic_oracle",
+            include_manifests=replay_ground_truth,
+        )
     if environment_launched:
         eval_env.shutdown()
 
@@ -868,6 +927,12 @@ def _eval(args):
                 eval_log_dir=args.eval_log_dir,
                 device=args.device,
                 use_input_place_with_mean=args.use_input_place_with_mean,
+                oracle_role_config=args.oracle_role_config,
+                oracle_num_points=args.oracle_num_points,
+                enforce_oracle_contract=(
+                    args.oracle_provider == 'rlbench_gt'
+                    and not args.ground_truth
+                ),
             )
         if args.oracle_provider == "rlbench_gt":
             if (agent is not None and not agent.oracle_prior_enabled

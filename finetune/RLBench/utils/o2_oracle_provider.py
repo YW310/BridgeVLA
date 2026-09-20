@@ -329,6 +329,9 @@ class RLBenchGTOracleProvider:
         self._stored_handle_map = None
         self._stored_entity_handle_map = {}
         self._nonvisual_handles = set()
+        self._manifest_stored_handle_map = None
+        self._manifest_stored_entity_handle_map = {}
+        self._manifest_nonvisual_handles = set()
         self._handle_alignment_audit = {}
         self._task_environment = None
         self._task = None
@@ -385,6 +388,9 @@ class RLBenchGTOracleProvider:
         self._stored_handle_map = None
         self._stored_entity_handle_map = {}
         self._nonvisual_handles = set()
+        self._manifest_stored_handle_map = None
+        self._manifest_stored_entity_handle_map = {}
+        self._manifest_nonvisual_handles = set()
         self._handle_alignment_audit = {}
         self._phase_index = 0
         self._step_index = 0
@@ -1348,6 +1354,76 @@ class RLBenchGTOracleProvider:
             self._live_initial_views = self._alignment_views(obs)
         return self._enrich(obs, obs_dict)
 
+    def prepare_sim_replay_manifest(self, stored_initial_obs) -> None:
+        """Certify live handles and retain a stored-only manifest mapping.
+
+        Policy/expert observations continue to use live handles. Only serialized
+        manifest role handles are translated to the raw dataset namespace.
+        """
+        if self.handle_alignment == 'identity':
+            raise SemanticRoleMappingError(
+                'sim_replay manifest generation requires verified live-to-stored '
+                'handle alignment; identity mode is not a certificate')
+        if not self._entries or self._entries[-1].get('sample_frame') != 0:
+            raise SemanticRoleMappingError(
+                'sim_replay handle alignment requires the live reset entry at frame 0')
+        if self._entries[-1].get('phase_source') != 'sim_replay':
+            raise SemanticRoleMappingError(
+                'sim_replay handle alignment received a non-sim manifest entry')
+        frame0_masks = self._stored_masks(stored_initial_obs, 0)
+        previous = (
+            self._stored_handle_map,
+            self._stored_entity_handle_map,
+            self._nonvisual_handles,
+        )
+        try:
+            translated = self._prepare_stored_handles(
+                stored_initial_obs, self._entries[-1], frame0_masks)
+            self._validate_stored_initial(
+                stored_initial_obs, translated, frame0_masks)
+            self._manifest_stored_handle_map = dict(
+                self._stored_handle_map or {})
+            self._manifest_stored_entity_handle_map = dict(
+                self._stored_entity_handle_map)
+            self._manifest_nonvisual_handles = set(self._nonvisual_handles)
+            self._source_alignment_validated = True
+            self._demo_phase_metadata = {
+                'handle_namespace': 'stored',
+                'handle_alignment': self._handle_alignment_audit,
+                'source_frame0_masks': self._mask_fingerprints(frame0_masks),
+            }
+        finally:
+            # Later sim_replay observations and online point sampling must stay
+            # in the live simulator namespace.
+            (self._stored_handle_map,
+             self._stored_entity_handle_map,
+             self._nonvisual_handles) = previous
+
+    def _stored_manifest_entry(self, entry: Mapping[str, object]):
+        translated = deepcopy(entry)
+        mapping = self._manifest_stored_handle_map
+        if mapping is None:
+            return translated
+        for key in ('target', 'reference'):
+            role = translated.get(key)
+            if role is None or role.get('kind') != 'object':
+                continue
+            original_handles = frozenset(role.get('handles', ()))
+            entity_handles = self._manifest_stored_entity_handle_map.get(
+                original_handles)
+            if entity_handles is not None:
+                role['handles'] = list(entity_handles)
+                continue
+            visual_handles = set(original_handles).difference(
+                self._manifest_nonvisual_handles)
+            missing = visual_handles.difference(mapping)
+            if missing:
+                raise SemanticRoleMappingError(
+                    f'Cannot serialize unmapped {key} handles in sim_replay '
+                    f'manifest: {sorted(missing)}')
+            role['handles'] = sorted(mapping[handle] for handle in visual_handles)
+        return translated
+
     def _alignment_views(
         self, obs, mask_overrides: Optional[Mapping[str, np.ndarray]] = None
     ):
@@ -2191,6 +2267,7 @@ class RLBenchGTOracleProvider:
         if (not self._task_name or self._episode_idx < 0
                 or self._current_manifest_discarded):
             return
+        entries = [self._stored_manifest_entry(entry) for entry in self._entries]
         self._manifests[(self._task_name, self._episode_idx)] = {
             "schema_version": self.schema_version,
             "role_config_sha256": self.role_config_sha256,
@@ -2206,10 +2283,10 @@ class RLBenchGTOracleProvider:
             ),
             **self._demo_phase_metadata,
             "expected_sample_frames": list(self._expected_sample_frames),
-            "entries": list(self._entries),
+            "entries": entries,
         }
 
-    def dump(self, output_dir: Path):
+    def dump(self, output_dir: Path, include_manifests: bool = True):
         self._flush_current_manifest()
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -2224,11 +2301,16 @@ class RLBenchGTOracleProvider:
                 indent=2,
                 sort_keys=True,
             )
+        if not include_manifests:
+            return
         manifest_root = output_dir / "semantic_role_manifests"
         for (task, episode_idx), manifest in self._manifests.items():
             task_dir = manifest_root / task
             task_dir.mkdir(parents=True, exist_ok=True)
-            with (task_dir / f"episode_{episode_idx}.json").open(
-                "w", encoding="utf-8"
-            ) as stream:
-                json.dump(manifest, stream, indent=2, sort_keys=True)
+            path = task_dir / f"episode_{episode_idx}.json"
+            temporary = path.with_suffix(".json.tmp")
+            temporary.write_text(
+                json.dumps(manifest, indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
+            temporary.replace(path)
