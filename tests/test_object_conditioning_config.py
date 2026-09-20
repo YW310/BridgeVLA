@@ -136,7 +136,8 @@ class ObjectConditioningConfigTest(unittest.TestCase):
                       shell_source)
         self.assertIn('self._step_index % self.debug_interval == 0',
                       provider_source)
-        self.assertIn('0.30 * overlay[selected]', provider_source)
+        self.assertIn('overlay = 0.30 * image', provider_source)
+        self.assertIn('0.30 * image[selected]', provider_source)
         self.assertIn('0.70 * np.asarray(color', provider_source)
         self.assertIn(
             'role_audit_step_{self._step_index:03d}.png', provider_source)

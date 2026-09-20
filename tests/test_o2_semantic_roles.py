@@ -304,9 +304,10 @@ def test_debug_interval_one_writes_each_step_and_role_overlay_keeps_rgb(tmp_path
     image = np.asarray(
         [[[100, 150, 200], [20, 30, 40]]], dtype=np.uint8)
     mask = np.asarray([[11, 0]], dtype=np.int64)
-    overlay = value._role_overlay(image, mask, (11,), (255, 64, 64))
+    overlay = value._role_overlay(
+        image, mask, (((11,), (255, 64, 64)),))
     np.testing.assert_array_equal(overlay[0, 0], [208, 89, 104])
-    np.testing.assert_array_equal(overlay[0, 1], image[0, 1])
+    np.testing.assert_array_equal(overlay[0, 1], [6, 9, 12])
 
 
 @pytest.mark.parametrize("variation", range(4))

@@ -200,7 +200,8 @@ Oracle 上界，不应当作无 GT 的部署结果。
 建议传入训练目录保存的 `exp_cfg.yaml`；加载器还会将 checkpoint contract 与运行时
 `ORACLE_ROLE_CONFIG`、`ORACLE_NUM_POINTS` 核对。`ORACLE_DEBUG` 只控制审计输出，不应改变
 动作；`ORACLE_DEBUG_INTERVAL=1` 表示每个 policy step 一张图，不是 simulator 内部每个
-physics substep。Target/Reference 图使用 `30%` 原始 RGB 与 `70%` 角色颜色叠加。
+physics substep。Target/Reference 图使用 `30%` 完整原始 RGB 层与 `70%` 角色 mask
+层合成：背景为较暗的原图，角色区域叠加红/蓝色。
 正式比较固定 `ORACLE_DEBUG=0`；debug 与 resume 不能同时使用。
 
 <a id=o2-training-visualization></a>

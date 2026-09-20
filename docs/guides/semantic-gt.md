@@ -388,7 +388,8 @@ source_alignment_validated 表示相应检查通过；它不替代真实 simulat
 - `oracle_provider_stats.json`：区分 `mapping_errors`、`not_visible_*` 和 `no_reference`；
 - `semantic_role_audits/<task>/episode_N/role_audit_step_NNN.png`：按
   `ORACLE_DEBUG_INTERVAL` 输出 policy step；包含四视角 overlay、原图、instance handles、
-  以 `30% RGB + 70% role color` 叠加的 Target/Reference 图、三正交点云与 phase 状态。
+  以 `30% 完整 RGB 层 + 70% role-mask 层` 合成的 Target/Reference 图、三正交点云与
+  phase 状态。非角色区域保留较暗的 30% RGB，角色区域叠加红/蓝色以突出边界。
 
 ## 2. 只重写 Oracle 字段，生成 semantic-GT buffer
 

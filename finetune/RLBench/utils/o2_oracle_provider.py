@@ -2134,14 +2134,17 @@ class RLBenchGTOracleProvider:
         return panel
 
     @staticmethod
-    def _role_overlay(image, mask, handles, color):
-        """Overlay one role while retaining the full original RGB context."""
-        overlay = np.asarray(image, dtype=np.float32).copy()
-        handles = np.asarray(handles, dtype=np.int64)
-        if handles.size:
+    def _role_overlay(image, mask, role_layers):
+        """Compose 30% of the full RGB layer with 70% role-mask layers."""
+        image = np.asarray(image, dtype=np.float32)
+        overlay = 0.30 * image
+        for handles, color in role_layers:
+            handles = np.asarray(handles, dtype=np.int64)
+            if not handles.size:
+                continue
             selected = np.isin(mask, handles)
             overlay[selected] = (
-                0.30 * overlay[selected]
+                0.30 * image[selected]
                 + 0.70 * np.asarray(color, dtype=np.float32)
             )
         return np.clip(overlay, 0, 255).astype(np.uint8)
@@ -2207,12 +2210,16 @@ class RLBenchGTOracleProvider:
             image = np.clip(image, 0, 255).astype(np.uint8)
             mask = decode_handle_mask(mask_value)
             overlay = self._role_overlay(
-                image, mask, target_handles, (255, 64, 64))
-            overlay = self._role_overlay(
-                overlay, mask, reference_handles, (64, 128, 255))
+                image,
+                mask,
+                (
+                    (target_handles, (255, 64, 64)),
+                    (reference_handles, (64, 128, 255)),
+                ),
+            )
             panels.append(
                 self._labeled_panel(
-                    overlay, f"{camera}: T/R overlay (30% RGB + 70% role)",
+                    overlay, f"{camera}: 30% RGB + 70% T/R layers",
                 )
             )
             if first_detail is None:
@@ -2227,18 +2234,18 @@ class RLBenchGTOracleProvider:
         palette[..., 2] = (mask * 97 % 251).astype(np.uint8)
         palette[~nonzero] = 0
         target_overlay = self._role_overlay(
-            image, mask, target_handles, (255, 64, 64))
+            image, mask, ((target_handles, (255, 64, 64)),))
         reference_overlay = self._role_overlay(
-            image, mask, reference_handles, (64, 128, 255))
+            image, mask, ((reference_handles, (64, 128, 255)),))
         panels.extend(
             [
                 self._labeled_panel(image, f"{camera}: original"),
                 self._labeled_panel(palette, f"{camera}: instance handles"),
                 self._labeled_panel(
-                    target_overlay, f"{camera}: Target (30% RGB + 70% role)"),
+                    target_overlay, f"{camera}: 30% RGB + 70% Target layer"),
                 self._labeled_panel(
                     reference_overlay,
-                    f"{camera}: Reference (30% RGB + 70% role)",
+                    f"{camera}: 30% RGB + 70% Reference layer",
                 ),
             ]
         )
