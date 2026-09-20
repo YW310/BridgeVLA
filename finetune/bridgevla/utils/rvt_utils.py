@@ -210,6 +210,14 @@ def get_eval_parser():
         help="Write one Oracle audit image every N policy steps.",
     )
     parser.add_argument(
+        "--heatmap-target-object",
+        action="store_true",
+        help=(
+            "Evaluation-only: attribute the unconditioned BridgeVLA translation "
+            "heatmap to task-defined simulator Target candidates."
+        ),
+    )
+    parser.add_argument(
         "--oracle-handle-alignment", choices=("identity", "verified", "mask_verified"),
         default="verified",
         help="Stored-demo handle alignment; used only by demo_events.")

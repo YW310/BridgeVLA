@@ -256,6 +256,7 @@ def eval(
     oracle_strict=False,
     oracle_debug=False,
     oracle_debug_interval=1,
+    heatmap_target_object=False,
     oracle_handle_alignment="verified",
     oracle_handle_map_dir=None,
     eval_resume=False,
@@ -267,6 +268,12 @@ def eval(
         raise ValueError("ground_truth_retries must be non-negative")
     if oracle_debug_interval <= 0:
         raise ValueError("oracle_debug_interval must be positive")
+    if heatmap_target_object and oracle_provider_name != "rlbench_gt":
+        raise ValueError(
+            "heatmap_target_object requires --oracle-provider rlbench_gt")
+    if heatmap_target_object and replay_ground_truth:
+        raise ValueError(
+            "heatmap_target_object is only supported for policy evaluation")
     if not replay_ground_truth:
         ground_truth_retries = 0
     if manifest_phase_source == "demo_events":
@@ -308,6 +315,7 @@ def eval(
         if agent is None:
             raise ValueError("model evaluation requires an agent")
         agent.eval()
+        agent.heatmap_target_object = bool(heatmap_target_object)
 
     camera_resolution = [IMAGE_SIZE, IMAGE_SIZE]
     use_rlbench_gt = oracle_provider_name == "rlbench_gt"
@@ -342,6 +350,7 @@ def eval(
             raw_data_root=(
                 Path(eval_datafolder)
                 if generating_manifest else None),
+            emit_target_candidates=heatmap_target_object,
         )
         if generating_manifest:
             print(f"[Manifest] raw data: {eval_datafolder}; "
@@ -986,6 +995,12 @@ def _eval(args):
                     f"semantic_contract={agent.semantic_contract_status}, "
                     "online_phase_source=live_success_conditions)"
                 )
+                if args.heatmap_target_object:
+                    print(
+                        "Evaluation diagnostic: BridgeVLA base heatmap -> "
+                        "simulator Target candidate attribution enabled; "
+                        "Reference and policy actions are unchanged."
+                    )
         elif agent is not None and agent.oracle_prior_enabled:
             agent.oracle_prior_mode = "none"
             print(
@@ -1036,6 +1051,7 @@ def _eval(args):
             oracle_strict=args.oracle_strict,
             oracle_debug=args.oracle_debug,
             oracle_debug_interval=args.oracle_debug_interval,
+            heatmap_target_object=args.heatmap_target_object,
             oracle_handle_alignment=args.oracle_handle_alignment,
             oracle_handle_map_dir=args.oracle_handle_map_dir,
             eval_resume=args.eval_resume,

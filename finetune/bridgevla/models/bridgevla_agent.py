@@ -44,7 +44,10 @@ from bridgevla.models.oracle_prior import (
     validate_oracle_prior_config,
 )
 from bridgevla.models.optimizer_utils import parameter_learning_rate
-from bridgevla.models.object_conditioning import reference_null_loss
+from bridgevla.models.object_conditioning import (
+    reference_null_loss,
+    select_object_candidate_from_waypoint,
+)
 from yarr.agents.agent import ActResult
 from PIL import Image, ImageDraw
 import torch
@@ -532,6 +535,8 @@ class RVTAgent:
             object_slot_diversity_loss_weight
         )
         self._oracle_missing_warning_shown = False
+        # Runtime-only evaluation diagnostic. It is never read by update().
+        self.heatmap_target_object = False
 
         print("Cameras:",self.cameras)
         self.move_pc_in_bound = move_pc_in_bound
@@ -1753,6 +1758,81 @@ class RVTAgent:
 
 
     @torch.no_grad()
+    def _heatmap_target_observation_elements(
+        self, output, observation, rev_trans, dyn_cam_info,
+    ):
+        required = (
+            'oracle_target_candidate_points',
+            'oracle_target_candidate_valid',
+            'oracle_target_candidate_phase_indices',
+            'oracle_target_current_candidate_index',
+        )
+        missing = [key for key in required if key not in observation]
+        if missing:
+            raise KeyError(
+                'Heatmap Target attribution requires simulator candidates: '
+                + ', '.join(missing)
+            )
+
+        # Prefer unconditioned BridgeVLA logits retained by the O2 path. This
+        # avoids attributing a heatmap that already saw the Oracle T/R pair.
+        attribution_output = dict(output)
+        if self.stage_two:
+            stage_output = dict(output['mvt2'])
+            stage_output['trans'] = stage_output.get(
+                'trans_base', stage_output['trans'])
+            attribution_output['mvt2'] = stage_output
+            first_stage = False
+        else:
+            attribution_output['trans'] = output.get(
+                'trans_base', output['trans'])
+            first_stage = True
+        waypoint_local = self._net_mod.get_wpt(
+            attribution_output, first_stage, dyn_cam_info, None)
+        waypoint = torch.cat([
+            reverse(value).unsqueeze(0)
+            for value, reverse in zip(waypoint_local, rev_trans)
+        ])
+
+        candidates = latest_replay_value(
+            observation['oracle_target_candidate_points'], 4).float()
+        valid = latest_replay_value(
+            observation['oracle_target_candidate_valid'], 2).bool()
+        phase_indices = latest_replay_value(
+            observation['oracle_target_candidate_phase_indices'], 2).long()
+        current_indices = latest_replay_value(
+            observation['oracle_target_current_candidate_index'], 1).long()
+        selected, distance, confidence = select_object_candidate_from_waypoint(
+            waypoint, candidates, valid)
+
+        index = int(selected[0].item())
+        if index >= 0:
+            selected_points = candidates[0, index].detach().cpu().numpy()
+            selected_phase = int(phase_indices[0, index].item())
+        else:
+            selected_points = np.zeros(
+                tuple(candidates.shape[2:]), dtype=np.float32)
+            selected_phase = -1
+        current_index = int(current_indices[0].item())
+        return {
+            'heatmap_target_object_points': selected_points,
+            'heatmap_target_object_valid': np.asarray(
+                index >= 0, dtype=np.bool_),
+            'heatmap_target_candidate_index': np.asarray(index, dtype=np.int64),
+            'heatmap_target_candidate_phase_index': np.asarray(
+                selected_phase, dtype=np.int64),
+            'heatmap_target_current_candidate_index': np.asarray(
+                current_index, dtype=np.int64),
+            'heatmap_target_matches_oracle': np.asarray(
+                index >= 0 and index == current_index, dtype=np.bool_),
+            'heatmap_target_distance_m': np.asarray(
+                float(distance[0].item()), dtype=np.float32),
+            'heatmap_target_confidence': np.asarray(
+                float(confidence[0].item()), dtype=np.float32),
+            'heatmap_target_waypoint': waypoint[0].detach().cpu().numpy(),
+        }
+
+    @torch.no_grad()
     def act(
         self, step: int, observation: dict, deterministic=False,
         visualize=False, visualize_save_dir="", return_gembench_action=False,
@@ -1830,6 +1910,20 @@ class RVTAgent:
         pred_wpt, pred_rot_quat, pred_grip, pred_coll = self.get_pred(
             out, rot_q, grip_q, collision_q, y_q, rev_trans, dyn_cam_info
         )
+        heatmap_target_elements = {}
+        if self.heatmap_target_object:
+            heatmap_target_elements = self._heatmap_target_observation_elements(
+                out, observation, rev_trans, dyn_cam_info)
+            print(
+                '[HeatmapTarget] '
+                f'step={step} '
+                f'candidate={int(heatmap_target_elements["heatmap_target_candidate_index"])} '
+                f'phase={int(heatmap_target_elements["heatmap_target_candidate_phase_index"])} '
+                f'confidence={float(heatmap_target_elements["heatmap_target_confidence"]):.4f} '
+                f'distance_m={float(heatmap_target_elements["heatmap_target_distance_m"]):.4f} '
+                f'matches_oracle={bool(heatmap_target_elements["heatmap_target_matches_oracle"])}',
+                flush=True,
+            )
         if visualize:
             print("Visualizing")
             save_dir=visualize_save_dir
@@ -1914,7 +2008,10 @@ class RVTAgent:
                 )
             return continuous_action
         else:
-            return ActResult(continuous_action)
+            return ActResult(
+                continuous_action,
+                observation_elements=heatmap_target_elements,
+            )
 
 
 

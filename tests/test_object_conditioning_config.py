@@ -142,6 +142,28 @@ class ObjectConditioningConfigTest(unittest.TestCase):
         self.assertIn(
             'role_audit_step_{self._step_index:03d}.png', provider_source)
 
+    def test_heatmap_target_attribution_is_eval_only_and_opt_in(self):
+        eval_source = (ROOT / 'finetune/RLBench/eval.py').read_text(
+            encoding='utf-8')
+        parser_source = (
+            ROOT / 'finetune/bridgevla/utils/rvt_utils.py').read_text(
+            encoding='utf-8')
+        provider_source = (
+            ROOT / 'finetune/RLBench/utils/o2_oracle_provider.py'
+        ).read_text(encoding='utf-8')
+        agent_source = (
+            ROOT / 'finetune/bridgevla/models/bridgevla_agent.py'
+        ).read_text(encoding='utf-8')
+        shell_source = (ROOT / 'finetune/RLBench/eval.sh').read_text(
+            encoding='utf-8')
+        self.assertIn('"--heatmap-target-object"', parser_source)
+        self.assertIn('HEATMAP_TARGET_OBJECT="${HEATMAP_TARGET_OBJECT:-0}"',
+                      shell_source)
+        self.assertIn('emit_target_candidates=heatmap_target_object', eval_source)
+        self.assertIn('oracle_target_candidate_points', provider_source)
+        self.assertIn("stage_output.get(\n                'trans_base'", agent_source)
+        self.assertIn('Reference and policy actions are unchanged', eval_source)
+
     def test_shared_global_pooling_is_recomputed_and_base_diagnostic_kept(self):
         source = (ROOT / 'finetune/bridgevla/mvt/mvt_single.py').read_text(encoding='utf-8')
         self.assertIn('feat[0] = global_features.view(', source)

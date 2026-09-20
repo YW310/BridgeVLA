@@ -17,9 +17,35 @@ from bridgevla.mvt import mvt_single  # noqa: E402
 from bridgevla.models.oracle_prior import (  # noqa: E402
     InternalObjectSlotPredictor, OracleRelationAnchorFeatureAdapter,
 )
+from bridgevla.models.object_conditioning import (  # noqa: E402
+    select_object_candidate_from_waypoint,
+)
 
 
 class ObjectConditioningForwardTest(unittest.TestCase):
+    def test_waypoint_attributes_to_nearest_valid_object(self):
+        waypoint = torch.tensor([[0.9, 0.0, 0.0]])
+        candidates = torch.tensor([[
+            [[0.0, 0.0, 0.0], [0.1, 0.0, 0.0]],
+            [[1.0, 0.0, 0.0], [1.1, 0.0, 0.0]],
+            [[0.91, 0.0, 0.0], [0.92, 0.0, 0.0]],
+        ]])
+        valid = torch.tensor([[True, True, False]])
+        selected, distance, confidence = select_object_candidate_from_waypoint(
+            waypoint, candidates, valid)
+        self.assertEqual(selected.item(), 1)
+        torch.testing.assert_close(distance, torch.tensor([0.1]))
+        self.assertGreater(confidence.item(), 0.5)
+
+    def test_waypoint_attribution_returns_unknown_without_valid_candidate(self):
+        selected, distance, confidence = select_object_candidate_from_waypoint(
+            torch.zeros(1, 3), torch.zeros(1, 2, 4, 3),
+            torch.zeros(1, 2, dtype=torch.bool),
+        )
+        self.assertEqual(selected.item(), -1)
+        self.assertTrue(torch.isinf(distance).all())
+        torch.testing.assert_close(confidence, torch.zeros(1))
+
     def _small_policy(self):
         module = mvt_single.MVT.__new__(mvt_single.MVT)
         nn.Module.__init__(module)

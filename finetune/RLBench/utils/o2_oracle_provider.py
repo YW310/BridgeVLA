@@ -276,6 +276,7 @@ class RLBenchGTOracleProvider:
         alignment_output_dir: Optional[Path] = None,
         manifest_output_dir: Optional[Path] = None,
         raw_data_root: Optional[Path] = None,
+        emit_target_candidates: bool = False,
     ):
         if num_points <= 0:
             raise ValueError("num_points must be positive")
@@ -327,6 +328,7 @@ class RLBenchGTOracleProvider:
             None if manifest_output_dir is None else Path(manifest_output_dir))
         self.raw_data_root = (
             None if raw_data_root is None else Path(raw_data_root).resolve())
+        self.emit_target_candidates = bool(emit_target_candidates)
         self._raw_episode_dir_cache: Optional[Path] = None
         self._raw_mask_cache: Dict[int, Dict[str, np.ndarray]] = {}
         self._live_initial_views = None
@@ -549,6 +551,87 @@ class RLBenchGTOracleProvider:
         if self._task_name == "stack_cups":
             return 2
         return 1
+
+    @staticmethod
+    def _role_entity_identity(entity: RoleEntity) -> Tuple[object, ...]:
+        """Return a stable in-episode key without comparing numpy arrays."""
+        if entity.kind == "object":
+            return (entity.kind, tuple(entity.handles))
+        position = () if entity.site_position is None else tuple(
+            np.round(np.asarray(entity.site_position, dtype=np.float64), 6)
+        )
+        return (entity.kind, position)
+
+    def _configured_target_candidates(self) -> List[RoleEntity]:
+        """Resolve all task-configured object alternatives, merging aliases."""
+        target_spec = self._task_spec()["target"]
+        if target_spec.get("kind") != "object":
+            return []
+        groups = []
+        if "sequence" in target_spec:
+            groups.extend([[value] for value in target_spec["sequence"]])
+        for key in ("names_by_variation", "names_by_variation_mod_2"):
+            for value in target_spec.get(key, ()):
+                groups.append(value if isinstance(value, list) else [value])
+        if not groups and target_spec.get("names"):
+            groups.append(target_spec["names"])
+
+        entities = []
+        for names in groups:
+            names = [str(value) for value in names]
+            objects = self._optional_objects(names)
+            if not objects:
+                continue
+            entities.append(self._entity_object(
+                "+".join(_canonical_name(_object_name(obj)) for obj in objects),
+                objects,
+            ))
+        return entities
+
+    def _sample_target_candidates(self, masks, point_clouds, current_target):
+        """Sample each task-defined Target once for test-time attribution."""
+        original_phase = self._phase_index
+        current_key = self._role_entity_identity(current_target)
+        candidates = []
+        validity = []
+        phase_indices = []
+        audits = []
+        key_to_index = {}
+        entities = []
+        try:
+            for phase_index in range(self._phase_count()):
+                self._phase_index = phase_index
+                entity = self._build_assignment().target
+                entities.append((entity, phase_index))
+            if current_target.kind == "object":
+                entities.extend(
+                    (entity, -1)
+                    for entity in self._configured_target_candidates()
+                )
+            for entity, phase_index in entities:
+                key = self._role_entity_identity(entity)
+                if key in key_to_index:
+                    continue
+                points, valid = self._sample_entity_points(
+                    entity, masks, point_clouds)
+                key_to_index[key] = len(candidates)
+                candidates.append(points)
+                validity.append(bool(valid))
+                phase_indices.append(phase_index)
+                audits.append(entity.audit_dict())
+        finally:
+            self._phase_index = original_phase
+        if not candidates:
+            raise SemanticRoleMappingError(
+                f"No Target candidates for {self._task_name}")
+        current_index = key_to_index.get(current_key, -1)
+        return (
+            np.stack(candidates).astype(np.float32, copy=False),
+            np.asarray(validity, dtype=np.bool_),
+            np.asarray(phase_indices, dtype=np.int64),
+            np.asarray(current_index, dtype=np.int64),
+            audits,
+        )
 
     def _objects(self, selectors: Sequence[str], label: str) -> List[object]:
         assert self._index is not None
@@ -1807,10 +1890,36 @@ class RLBenchGTOracleProvider:
             completion_satisfied = False
             phase_advanced = False
 
+        candidate_audits = []
+        if self.emit_target_candidates:
+            try:
+                (
+                    candidate_points,
+                    candidate_valid,
+                    candidate_phase_indices,
+                    current_candidate_index,
+                    candidate_audits,
+                ) = self._sample_target_candidates(
+                    masks, point_clouds, assignment.target)
+            except Exception:
+                if self.strict:
+                    raise
+                candidate_points = target_points[None]
+                candidate_valid = np.asarray([target_valid], dtype=np.bool_)
+                candidate_phase_indices = np.asarray(
+                    [self._phase_index], dtype=np.int64)
+                current_candidate_index = np.asarray(0, dtype=np.int64)
+                candidate_audits = [assignment.target.audit_dict()]
+
         result["oracle_target_object_points"] = target_points
         result["oracle_reference_object_points"] = reference_points
         result["oracle_target_object_valid"] = np.asarray(target_valid, dtype=np.bool_)
         result["oracle_reference_object_valid"] = np.asarray(reference_valid, dtype=np.bool_)
+        if self.emit_target_candidates:
+            result["oracle_target_candidate_points"] = candidate_points
+            result["oracle_target_candidate_valid"] = candidate_valid
+            result["oracle_target_candidate_phase_indices"] = candidate_phase_indices
+            result["oracle_target_current_candidate_index"] = current_candidate_index
 
         self.stats["steps_total"] += 1
         self.stats["target_valid"] += int(target_valid)
@@ -1837,6 +1946,19 @@ class RLBenchGTOracleProvider:
             "reference_valid": bool(reference_valid),
             "phase_source": "demo_events" if phase_event is not None else "sim_replay",
         }
+        if self.emit_target_candidates:
+            entry["target_candidates"] = candidate_audits
+            entry["target_current_candidate_index"] = int(
+                current_candidate_index)
+            if self._step_index == 0:
+                labels = ", ".join(
+                    f'{index}:{candidate["semantic_name"]}'
+                    for index, candidate in enumerate(candidate_audits)
+                )
+                print(
+                    f"[HeatmapTargetCandidates] {self._task_name}: {labels}",
+                    flush=True,
+                )
         self._entries.append(entry)
         if (
             self.debug_root is not None

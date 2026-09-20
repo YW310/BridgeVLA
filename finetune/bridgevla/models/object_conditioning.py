@@ -29,6 +29,63 @@ def action_feature_routes(base, translation, legacy_action, shared=False):
     return translation, legacy_action, base
 
 
+def select_object_candidate_from_waypoint(
+    waypoint, candidate_points, candidate_valid, temperature=0.05,
+):
+    """Attribute a decoded translation waypoint to a visible object candidate.
+
+    This helper is evaluation-only. ``candidate_points`` are simulator object
+    point clouds in the same world frame as ``waypoint``. The returned
+    confidence is a softmax over each candidate's nearest-surface distance; it
+    is a diagnostic score, not a calibrated object posterior.
+    """
+    if waypoint.ndim != 2 or waypoint.shape[-1] != 3:
+        raise ValueError('waypoint must have shape [B,3]')
+    if candidate_points.ndim != 4 or candidate_points.shape[-1] != 3:
+        raise ValueError('candidate_points must have shape [B,K,P,3]')
+    if candidate_valid.shape != candidate_points.shape[:2]:
+        raise ValueError('candidate_valid must have shape [B,K]')
+    if waypoint.shape[0] != candidate_points.shape[0]:
+        raise ValueError('waypoint and candidate batch dimensions must match')
+    if temperature <= 0:
+        raise ValueError('temperature must be positive')
+
+    finite_points = torch.isfinite(candidate_points).all(dim=-1)
+    distances = torch.linalg.vector_norm(
+        candidate_points - waypoint[:, None, None], dim=-1,
+    )
+    distances = distances.masked_fill(~finite_points, torch.inf)
+    distances = distances.amin(dim=-1)
+    available = candidate_valid.bool() & finite_points.any(dim=-1)
+    distances = distances.masked_fill(~available, torch.inf)
+    any_available = available.any(dim=-1)
+
+    selected = distances.argmin(dim=-1)
+    selected = torch.where(
+        any_available, selected, torch.full_like(selected, -1),
+    )
+    safe_logits = torch.where(
+        available,
+        -distances / float(temperature),
+        torch.full_like(distances, -torch.finfo(distances.dtype).max),
+    )
+    probabilities = torch.softmax(safe_logits, dim=-1)
+    probabilities = torch.where(
+        any_available[:, None], probabilities, torch.zeros_like(probabilities),
+    )
+    gather_index = selected.clamp_min(0).unsqueeze(-1)
+    selected_distance = distances.gather(1, gather_index).squeeze(1)
+    confidence = probabilities.gather(1, gather_index).squeeze(1)
+    selected_distance = torch.where(
+        any_available, selected_distance,
+        torch.full_like(selected_distance, torch.inf),
+    )
+    confidence = torch.where(
+        any_available, confidence, torch.zeros_like(confidence),
+    )
+    return selected, selected_distance, confidence
+
+
 def reference_null_loss(probability, present=None, known=None):
     """Supervise the actual NULL posterior, never geometric invalidity."""
     if present is None or known is None:

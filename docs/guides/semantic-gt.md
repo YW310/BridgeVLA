@@ -6,6 +6,24 @@
 
 # 严格 Semantic-GT Target/Reference
 
+## 测试期 Heatmap Target 归因
+
+标准 closed-loop 测试可选择输出 BridgeVLA translation heatmap 对应的
+Target 候选：
+
+```bash
+ORACLE_PROVIDER=rlbench_gt \
+HEATMAP_TARGET_OBJECT=1 \
+bash eval.sh
+```
+
+该开关只在 policy evaluation 中有效，不用于训练或 manifest 生成。provider 会按需
+提供 YAML 中所有 Target variation/sequence 的当前可见点云；agent 优先使用
+`trans_base` 解码的 waypoint，按到候选点云表面的最小距离给出候选、phase、距离、
+置信度和 `matches_oracle`。结果写入 `ActResult.observation_elements`，并以
+`[HeatmapTarget]` 每步打印。它不覆盖当前 Oracle Target、不修改 Reference，也不改变
+实际 action；这是模型行为归因，不是新的 GT。
+
 本流程把 RLBench 当前 phase 的语义角色写入 replay，供 Oracle adapter、relation anchor，
 以及 internal-slot 的角色 heatmap 监督使用。它不会生成完整场景 object slots，也不会补全
 被真实相机遮挡的物体表面。
