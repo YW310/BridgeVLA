@@ -19,6 +19,7 @@ flowchart LR
 | 生成严格 T/R 数据 | [Semantic-GT](guides/semantic-gt.md) | [O2 训练](experiments/o2-training.md) |
 | 比较 Oracle、外部预测和内部 slots | [Object-prior 模式](experiments/object-prior-modes.md) | 对应实验配置 |
 | 查看 phase-dependent anchor | [Relation anchor](experiments/relation-anchor.md) | [研究设计](design/role-relation-prior.md) |
+| 先 GT、后预测的联合训练 | [联合实验](experiments/object-conditioned-joint.md) | 同预算对照 → 三-seed 配对闭环准入 |
 | 从概念定位代码 | [数据流与函数索引](reference/code-map.md) | 对应源码与测试 |
 
 ## 目录层次
@@ -39,6 +40,7 @@ docs/
 │   ├── relation-anchor.md
 │   ├── predicted-objects.md
 │   ├── internal-object-slots.md
+│   ├── object-conditioned-joint.md
 │   └── results.md
 ├── design/                           # 研究方案（非实现承诺）
 │   ├── role-relation-prior.md        # 精简主线与实施顺序
@@ -67,13 +69,13 @@ O2 在训练和评估时使用 GT 实例，不能作为无 GT 的部署结果报
 
 ## 3. 研究设计
 
-[精简设计](design/role-relation-prior.md)：基于 internal slots 的 object-conditioned latent phase 与完整动作联合训练。
+[精简设计](design/role-relation-prior.md)：复用现有 adapter/anchor 的单帧 object-conditioned 完整动作策略。
 
 [真实机器人落地](design/real-world-deployment.md)：无 GT 部署接口、短时 object memory、sim-to-real 与安全评估。
 
 [详细设计与可选扩展](design/role-relation-details.md)：最小状态、训练、代码落点、验收反例与按瓶颈启用的扩展。
 
-该文档描述下一阶段研究方案；请以其中的实现边界为准，不将方案视为已完成实现。
+单帧条件化已有 opt-in 代码；收益尚待闭环验证。memory、visibility 和恢复能力仍为后续实验，见[联合实验](experiments/object-conditioned-joint.md)。
 
 ## 4. 实现交接
 

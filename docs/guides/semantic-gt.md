@@ -10,18 +10,23 @@
 以及 internal-slot 的角色 heatmap 监督使用。它不会生成完整场景 object slots，也不会补全
 被真实相机遮挡的物体表面。
 
+正式的训练—闭环一致性实验固定使用 `phase_source=sim_replay`：训练 manifest 与在线
+Oracle provider 都由同一组 live success-condition predicates 决定当前角色。可恢复的
+`demo_events` 路径只用于数据诊断或 manifest 修复；它依据 stored demo 事件边界，不能作为
+`rlbench_o2_semantic_gt*.yaml` 的一致性训练输入。
+
 ```mermaid
 flowchart LR
     A[role YAML + stored demo] --> B[生成 phase/handle manifest]
     B --> C[严格对齐与审计]
     C --> D[重写 Oracle T/R 字段]
-    D --> E[校验 + 抽样可视化]
+    D --> E[全量校验 + 抽样可视化]
     E --> F[O2 / internal-slot 训练]
 ```
 
 | 阶段 | 输出 | 主要函数 |
 | --- | --- | --- |
-| Manifest | 每个 episode 的 phase、T/R 语义与 handle | `RLBenchGTOracleProvider.build_demo_event_manifest()` |
+| Manifest | 每个 episode 的 phase、T/R 语义与 handle | `RLBenchGTOracleProvider.observe()`；诊断路径为 `build_demo_event_manifest()` |
 | 对齐 | live → stored handle 映射与证据 | `align_handles()`、`align_semantic_handle_group()` |
 | Replay 重写 | 固定大小 T/R XYZ、valid 与审计字段 | `_build_oracle()`、`_fill_slot()`、`_audit_fields()` |
 | 校验 | `semantic_role_validation.json` 与抽样图 | `_validate_task_output()`、`_visualize_task_output()` |
@@ -53,7 +58,7 @@ flowchart LR
   `semantic_role_manifests` 路径；不兼容旧文件先无损移动到
   `rejected_semantic_role_manifests/<task>/`，避免失败重试时旧文件继续混在有效目录。
 - `sim_replay` expert-action manifest 不能安全地从普通评估结果恢复；需要可恢复生成时使用
-  `demo_events`。
+  `demo_events`，但其产物只可用于诊断，不可混入正式 matched train/eval buffer。
 - resume 不支持同时保存视频或逐帧可视化，因为跳过的 episode 无法补回这些视觉产物。
   直接调用 `eval.py` 时 resume 仅支持单任务；启用 resume 后，`eval.sh` 会把
   `TASKS="all"` 展开成 18 个独立任务进程，避免跳过整个任务后 simulator task 状态错位。
@@ -78,16 +83,17 @@ manifest，也不会伪造 handle 映射；错误记录原子写入
 
 `ORACLE_HANDLE_ALIGNMENT=verified` 仍为默认：同时检查多视角 mask 和 1 cm 点云距离。
 若已配准视角的完整实例 mask 完全相同，但点云距离检查失败，可显式改为
-`ORACLE_HANDLE_ALIGNMENT=mask_verified`（仅用于 `MANIFEST_PHASE_SOURCE=demo_events`）。
+`ORACLE_HANDLE_ALIGNMENT=mask_verified`。该对齐用于两种 manifest 生成路径；在线 policy
+推理始终使用当前 simulator 的 live handles，不执行 stored-handle 映射。
 其余命令参数不变，无需关闭 `ORACLE_STRICT=1`。
 
-新模式仍要求至少两个视角、每个支持视角至少 16 像素、完整实例 mask 的
-precision/recall 均不低于 0.9，并且映射唯一。第三视角的小范围轮廓栅格化差异只记入
-审计；单侧可见或 precision/recall 低于 0.5 的实质性冲突仍会否决。隐藏实体不能靠
-这个模式猜测。
+主路径要求至少两个支持视角、每个至少 16 像素、完整实例 mask 的
+precision/recall 均不低于 0.9，并且映射唯一。`mask_verified` 中两票高 overlap 已形成
+quorum 后，第三视角冲突只记入审计，不否决两票；不足两票时，冲突仍限制受限回退。
+`verified` 模式的实质性冲突仍会否决。隐藏实体不能靠这个模式猜测。
 `min_pixels=16` 只决定某视角能否提供正向投票，不单独制造 hard conflict。例如
 15/16 像素且 15 像素重合属于弱支持，不会否决另外两个完全一致的视角；0/16 或
-precision/recall 低于 0.5 仍是 hard conflict。
+precision/recall 低于 0.5 仍记为 hard conflict，但不能否决已经形成的 mask-only 两票 quorum。
 薄环等只在一个相机达到 16 像素的实体采用受限回退：候选必须全局唯一，并且只有一个
 可见检查、至少 32 像素、mask precision/recall 均不低于 0.98、点云 P95 距离不超过
 1 cm。报告以 `registered_mask_overlap_single_view_geometry` 标记；不满足任一条件仍拒绝。
@@ -105,13 +111,20 @@ precision/recall 低于 0.5 仍是 hard conflict。
 报告和 manifest 使用独立的 `status=mask_verified`、`geometry_verified=false`；
 逐候选视角包含 `geometry_passed` / `geometry_warnings`。
 
-若 live 小实例在至少两个视角都落到面积大于自身 4 倍的 stored 支撑面上，说明
-`reset_to_demo` 后可动物体可能发生了位移。此时才会启用全局小实例搜索：分别对点云去中心，
-要求像素规模、3D 尺寸和双向表面距离一致，并且只能有一个候选通过。live 实例在三个以上
-视角可见时要求至少三票，否则要求两票，避免两个视角中的偶然同形候选被接受。
-成功时记录 `source=registered_centered_geometry_relocation` 和
-`relocated_geometry_verified=true`；重复同形候选、普通低 overlap、split mask 或无候选仍严格拒绝。
-该局部证书不代表整幅场景几何对齐，因此 `geometry_verified` 仍保持 `false`。
+普通证书失败后按下表检查 relocation/shifted，再检查 scene-ranked fallback。
+以逐候选 `source`、`certificate` 和 `failure_reasons` 为准，不能只看顶层 status。
+
+| 路径 | 必要证据与 quorum |
+| --- | --- |
+| 主 mask quorum | 两个独立配准视角高 overlap，候选唯一；第三票冲突不能否决 |
+| 单视角等受限证书 | 仅接受代码明确规定的 exact/interior/small-instance 证书；局部几何是否认证依证书类型，不一般降低阈值 |
+| relocation / shifted | 大支撑面覆盖的双视角 trigger，或三视角至少 60% 双向 mask overlap；去中心几何证据至少 `max(2,min(3,visible_views))` 票 |
+| scene-ranked | 普通证书失败后，像素/几何/containment 与 score margin 均须通过；严格多数 `max(2,visible_views//2+1)`，即 3 可见视角需 2 票、4 需 3 票 |
+
+relocation 记录 `registered_centered_geometry_relocation`，shifted 记录
+`registered_centered_geometry_shifted_mask`，scene-ranked 记录 `registered_scene_ranked_fallback`。
+几何同形候选也必须有证书要求的唯一 mask/排名证据，不能仅按形状猜 ID。局部证书不代表整幅
+场景几何对齐；`geometry_verified` 仍为 `false`，也不修正原始点云。
 
 后续 `tools/rewrite_replay_with_semantic_roles.py` 默认拒绝这种 manifest。
 检查几何审计并决定接受后，须显式添加 `--allow-mask-verified-handles`，
@@ -205,10 +218,11 @@ EPISODE_LENGTH=50 \
 REPLAY_GROUND_TRUTH=1 \
 GT_REPLAY_RETRIES=3 \
 MANIFEST_PHASE_SOURCE=sim_replay \
+ORACLE_HANDLE_ALIGNMENT=mask_verified \
 SAVE_VIDEO=0 \
 ORACLE_PROVIDER=rlbench_gt \
 ORACLE_STRICT=1 \
-ORACLE_DEBUG=1 \
+ORACLE_DEBUG=0 \
 bash eval.sh
 ```
 
@@ -221,8 +235,10 @@ manifest 生成只回放 expert action，不调用 policy，因此可以使用�
 entries，manifest 的 `generation_attempt` 从 1 开始记录最终采用的是第几次尝试。若全部重试仍失败，
 保留最后一次失败 manifest，离线重写器会因最终 `completion_satisfied=False` 拒绝使用。
 
-18 个任务均支持不重新执行动作的 stored-demo phase 模式。推荐先设置本机路径，再使用
-完整参数生成 v2 manifest：
+### 可选诊断：可恢复的 `demo_events`
+
+18 个任务均支持不重新执行动作的 stored-demo phase 模式。该产物不用于正式训练，且不能
+覆盖刚生成的 `sim_replay` manifest；下面显式使用独立的 diagnostic checkpoint 根目录：
 
 ```bash
 export REPO=/home/yiwei/project/BridgeVLA
@@ -233,7 +249,7 @@ export MODEL_NAME=model_80.pth
 cd "$REPO/finetune/RLBench"
 
 TASKS="all" \
-MODEL_FOLDER="$MODEL_FOLDER" \
+MODEL_FOLDER="$REPO/checkpoints/RLBench_demo_events_diagnostics" \
 MODEL_NAME="$MODEL_NAME" \
 EXP_CFG_PATH="$REPO/finetune/RLBench/configs/rlbench_config.yaml" \
 EVAL_DATAFOLDER="$RAW_DATA" \
@@ -277,7 +293,11 @@ Target”；Target 顺序仍唯一来自任务源码和 YAML。原因是当前 l
 不会静默退回启发式角色。
 
 manifest 和每个 entry 都记录 `phase_source=demo_events`。默认
-`MANIFEST_PHASE_SOURCE=sim_replay` 保持原有在线 success-condition 行为。
+`MANIFEST_PHASE_SOURCE=sim_replay` 保持原有在线 success-condition 行为。两种生成模式都会
+把 manifest 中的 object handles 严格转换到 raw dataset 的 stored mask namespace；区别只在
+phase 边界来源。运行中的 policy/专家观测仍使用 live handles 和 live 点云。
+因此上面的 `demo_events` 命令是可恢复的诊断/修复入口；正式训练数据应使用本节前面的
+`MANIFEST_PHASE_SOURCE=sim_replay` 命令生成。
 生成前仍会执行一次 simulator reset，并将 live 首帧与 stored demo 第 0 帧的 T/R handle
 可见性进行交叉检查；只有 manifest 中 `source_alignment_validated=true` 时，离线重写器
 才接受该 demo-events 标注。
@@ -304,7 +324,7 @@ stored handles 提取保存帧点云。不可渲染的物理部件、dummy/joint
 
 | 参数或检查 | 行为 |
 | --- | --- |
-| ORACLE_HANDLE_ALIGNMENT=verified | 默认；仅用于 demo_events，在线 policy 仍使用 live handles |
+| ORACLE_HANDLE_ALIGNMENT=verified | 默认；用于 manifest 的 live→stored 证书，在线 policy 仍使用 live handles |
 | ORACLE_HANDLE_ALIGNMENT=identity | 旧编号假设，仅用于已有同编号数据的兼容检查；不能解决编号错配 |
 | ORACLE_HANDLE_MAP_DIR | 可选原始采集映射根目录，文件为 task/episode_N.json；显式指定后缺文件或内容不完整会报错 |
 | 相机一致性 | 逐视角检查内外参（绝对容差 1e-4）和 mask/点云分辨率；无法配准的视角退出匹配并记录原因，其余视角继续验证 |
@@ -400,7 +420,7 @@ python tools/rewrite_replay_with_semantic_roles.py \
     --workers 4 \
     --allow-mask-verified-handles \
     --validate-output \
-    --validate-every 100 \
+    --validate-every 1 \
     --visualize-every 500 \
     --visualize-output-dir $REPO/LPY/semantic_role_visualizations \
     --resume
@@ -409,14 +429,14 @@ python tools/rewrite_replay_with_semantic_roles.py \
 ### 这份 buffer 是否适合当前 design
 
 结论是：**适合 Oracle relation/anchor 主线，也适合当前 phase 的 T/R heatmap 监督；但不能
-原样作为可靠的 NULL-Reference 监督或通用 object discovery 数据。**
+把 `~valid` 用作 NULL 标签，也不能作为通用 object discovery 数据。**
 
 | 用途 | 适配性 | 原因与使用边界 |
 | --- | --- | --- |
 | `o2_gt_instance` / relation adapter | 直接适合 | slot 0/1 就是当前 phase 的 T/R，`512` 点与现有配置一致 |
 | `oracle_prior_relation_anchor` | 直接适合 | anchor 以当前 relation state 和 T/R 几何为条件，不需要显式 phase affordance 标签 |
 | Internal slots 的 T/R heatmap | 有条件适合 | 可作为角色 mask/heatmap teacher；训练时 Oracle 点不会进入 policy adapter |
-| NULL Reference / presence loss | 当前不完全适合 | `oracle_object_valid=False` 同时可能表示“语义上不存在”或“存在但四相机不可见” |
+| NULL Reference / presence loss | 审计字段完整时适合 | 新 loader 从角色 `kind` 派生 presence/known，几何 invalid 不再用作 NULL 标签 |
 | 全场景 object-slot pretraining | 不适合 | 数据只保存已选中的当前 T/R，不包含 distractor 和未选中的任务相关实体 |
 | 遮挡补全或 temporal memory | 不适合 | object 点来自当前四相机可见表面；虚拟正交视图只是同一可见点云的再投影 |
 
@@ -425,17 +445,17 @@ python tools/rewrite_replay_with_semantic_roles.py \
 身份映射、同时保留“点云几何未通过身份认证”的审计状态；它不意味着物体几何完整，也
 不应描述为 geometry-verified upper bound。
 
-当前 replay audit 已保存 `oracle_reference_kind=none` 等语义信息，但训练 dataset 只采样
-`oracle_object_valid`，尚未把“角色是否存在”和“当前是否可见”拆成两个张量。因此：
+当前 replay audit 已保存 `oracle_reference_kind=none` 等语义信息，新 loader 在读取时派生
+`oracle_target_present` / `oracle_reference_present` 和 `oracle_role_present_known`，无需重写点云。因此：
 
 - 只做 Oracle adapter / anchor：可以直接使用这条命令生成的 buffer；
 - 做 internal-slot heatmap 消融：可以使用，但建议先设
   `rvt.object_slot_null_loss_weight: 0.0`，不要声称已学习可靠 NULL；
-- 要训练 NULL/presence：应新增 `oracle_target_present` / `oracle_reference_present`，由
-  manifest 中角色是否存在生成；`oracle_object_valid` 继续只表示当前几何可用性。
+- 要训练 NULL/presence：使用 [joint 配置](../experiments/object-conditioned-joint.md)，presence 来自已有 kind；
+  缺少审计或终止占位只屏蔽该监督，`oracle_object_valid` 继续表示几何可用。
 
-这一区分也适用于遮挡：`present=True, valid=False` 应关闭该样本的 object residual 或交给
-未来 memory 恢复，不能改写为 NULL Reference。
+这一区分也适用于遮挡：`present=True, valid=False` 只屏蔽相关几何条件，不改写为 NULL。
+新预测模式不因 Reference 不可用而关闭有效 Target；独立 visibility 与 memory 本轮不提供。
 
 工具保留 action、图像、点云、语言、`episode_idx/sample_frame` 和其他 baseline 字段；只
 替换六个 Oracle tensor，并增加不输入网络的审计字段：schema version、phase ID、T/R
@@ -470,7 +490,7 @@ semantic name、kind、几何来源、原始 handle 集合、`oracle_phase_sourc
   `phase_sources` 只统计被抽到的 replay。正式 strict 数据验收应省略
   `--validate-every`（或设为 1），并同时满足 `validation_complete=true`、
   `valid=true`、`raw_fallback_files=0`，且 `phase_sources` 只有
-  `demo_events`。
+  `sim_replay`；`role_config_sha256` 还必须与训练使用的 role YAML 一致。
 - `--visualize-every N` 直接读取已写入 semantic replay 的 T/R 点，每隔 N 个排序后的
   replay 输出一组 PNG 和同名 JSON；不会重新运行启发式对象提取。PNG 包含四视角 RGB、
   mask box、场景点云和 T/R 的透视/三正交视图，JSON 记录 phase、semantic name、kind
@@ -493,5 +513,12 @@ bash train.sh \
 `rlbench_o2_semantic_gt.yaml` 设置 `oracle_semantic_audit=True`；旧启发式 buffer 必须继续
 使用 `rlbench_o2_gt_instance.yaml`（audit schema 默认关闭）。两类 buffer/checkpoint 不应
 混在同一实验目录。semantic mapping 是 privileged GT，结果只能解释为 Oracle 上界。
+
+该配置同时启用 fail-closed semantic contract。训练启动会要求每个 task 存在全量
+`semantic_role_validation.json`，并核对 schema、`sim_replay`、512 点以及 role YAML SHA-256；
+报告还必须声明 manifest 已转换为 stored handle namespace。checkpoint 保存同一 contract；
+闭环加载时使用运行时 YAML 和点数再次核对。旧 checkpoint、
+`demo_events` buffer 或不同 YAML 会明确报错，不会静默测试。旧 buffer 若没有
+`oracle_role_config_sha256`，请用新输出目录重新运行 rewriter；`--resume` 不会改写已存在文件。
 
 训练模式、消融和评估见 [O2 实验](../experiments/o2-training.md)。

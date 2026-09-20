@@ -13,6 +13,12 @@ O2 选择当前状态下唯一的 Target 与 Reference，将两者的固定大�
 [Semantic-GT: 交互实体几何表示](../guides/semantic-gt.md#semantic-gt-entity-geometry)。
 adapted feature 同时供 translation、rotation、gripper、collision 使用。
 
+正式 GT 对照只接受全量验证的 `sim_replay` semantic buffer。训练与在线测试都使用
+live success-condition predicates；Reference 在两侧始终是固定形状 `[N,3]` 点集：object
+为当前可见表面点，site 为 OBB/fallback box 的确定性采样点，NULL 才是零点集加 invalid。
+生成训练 manifest 时，phase 在 live simulator 中判定，但 object handles 经多视角证书
+转换到 stored raw-mask namespace；普通闭环不会写同名 manifest，因此不会覆盖训练数据。
+
 当前结构不包含 post-hoc translation fusion：
 
 ```mermaid
@@ -133,6 +139,8 @@ rvt:
 
 - baseline → O2：使用 `--init_checkpoint`，adapter 零初始化，epoch/optimizer 从头开始。
 - adapter-only O2 → 继续训练：使用 `--resume_checkpoint`。
+- semantic checkpoint 保存 schema、phase source、点数、Reference 几何版本和 role YAML
+  SHA-256；resume 与 GT closed-loop 都必须完全匹配。旧 checkpoint 没有 contract 时拒绝加载。
 - 旧 Adapter+Fusion checkpoint → 当前结构：使用 `--init_checkpoint`；加载器忽略
   已废弃的 fusion tensors 并保留 adapter 权重。
 - 旧 Adapter+Fusion checkpoint 不能直接 `--resume_checkpoint`，因为
@@ -173,7 +181,7 @@ EXP_CFG_PATH=configs/rlbench_config.yaml ORACLE_PROVIDER=none bash eval.sh
 # O2 + semantic GT
 TASKS=place_cups MODEL_FOLDER=/path/to/o2 MODEL_NAME=model_last.pth \
 EXP_CFG_PATH=configs/rlbench_o2_semantic_gt.yaml \
-ORACLE_PROVIDER=rlbench_gt ORACLE_STRICT=1 ORACLE_DEBUG=1 bash eval.sh
+ORACLE_PROVIDER=rlbench_gt ORACLE_STRICT=1 ORACLE_DEBUG=0 bash eval.sh
 
 # 同一 O2 checkpoint 的 no-prior control
 ORACLE_PROVIDER=none TASKS=place_cups \
@@ -182,6 +190,9 @@ MODEL_FOLDER=/path/to/o2 MODEL_NAME=model_last.pth bash eval_o2.sh
 
 `ORACLE_PROVIDER=none` 会显式关闭 prior。O2 训练和 GT-provider 评估属于 privileged
 Oracle 上界，不应当作无 GT 的部署结果。
+建议传入训练目录保存的 `exp_cfg.yaml`；加载器还会将 checkpoint contract 与运行时
+`ORACLE_ROLE_CONFIG`、`ORACLE_NUM_POINTS` 核对。`ORACLE_DEBUG` 只控制审计输出，不应改变
+动作；正式比较固定为 0，单独开启时不要复用结果 journal。
 
 <a id=o2-training-visualization></a>
 

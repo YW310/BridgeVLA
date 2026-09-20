@@ -2,6 +2,8 @@
 
 [文档索引](../README.md) · [Object-prior 模式](object-prior-modes.md) · [代码索引](../reference/code-map.md)
 
+> 本页描述旧 anchor 路由，默认行为保持不变。共享完整动作与 instruction 的新 opt-in 配置见[联合实验](object-conditioned-joint.md)。
+
 该实验直接增强现有 `OracleRelationGatedFeatureAdapter`，不再串联第二个
 adapter。它不使用 phase、contact 或手工 action-anchor 标签。
 
@@ -56,5 +58,5 @@ translation cross-entropy。
 | --- | --- |
 | relation hidden 与 shared residual | `OracleRelationGatedFeatureAdapter` |
 | 隐式 spatial anchor | `OracleRelationAnchorFeatureAdapter.forward_with_anchor()` |
-| 当前夹爪 relation state | `MVT.forward()` 的 relation-state 构造 |
+| 当前夹爪 state | `RVTAgent.update()` / `act()` 从 `low_dim_state[:, :3]` 读取，传入 `MVT.forward()` |
 | translation / RGC 路由 | `MVTSingle.forward()` |

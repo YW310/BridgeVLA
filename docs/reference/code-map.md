@@ -1,80 +1,67 @@
 # 数据流与函数索引
 
-[文档索引](../README.md) · [Object-prior 模式](../experiments/object-prior-modes.md)
-
-本页用于从文档中的概念快速定位到实现；行为细节仍以对应指南和实验页为准。
+[文档索引](../README.md) · [Object-prior 模式](../experiments/object-prior-modes.md) · [联合实验](../experiments/object-conditioned-joint.md)
 
 ## Semantic-GT 数据流
 
 ```mermaid
 flowchart LR
-    A[role YAML + stored demo] --> B[RLBenchGTOracleProvider]
-    B --> C[phase/handle manifest]
-    C --> D[rewrite_replay_with_semantic_roles.py]
-    D --> E[semantic-GT replay]
-    E --> F[dataset.py]
-    F --> G[O2 / internal-slot training]
+    A[role YAML + stored demo] --> B[Oracle provider]
+    B --> M[严格 phase/handle manifest]
+    M --> R[重写 T/R XYZ + audit]
+    R --> D[create_replay / get_dataset]
+    D --> P[读取时派生 presence/known]
+    P -.仅辅助监督.-> S[internal slots]
 ```
 
-| 阶段 | 文件 | 关键函数 |
-| --- | --- | --- |
-| 语义角色与 phase | `finetune/RLBench/utils/o2_oracle_provider.py` | `RLBenchGTOracleProvider._build_assignment()`、`build_demo_event_manifest()` |
-| handle 对齐 | `finetune/RLBench/utils/oracle_handle_alignment.py` | `align_handles()`、`align_semantic_handle_group()` |
-| object/site 几何 | Oracle provider 与 site geometry 工具 | `_sample_entity_points()`、`site_geometry_from_object()`、`sample_site_geometry()` |
-| replay 重写 | `tools/rewrite_replay_with_semantic_roles.py` | `_load_manifest()`、`_build_oracle()`、`_fill_slot()`、`_audit_fields()`、`process_task()` |
-| 输出校验 | 同上 | `_validate_semantic_transition()`、`_validate_task_output()`、`_visualize_task_output()` |
-| batch 读取 | `finetune/RLBench/utils/dataset.py` | Oracle / predicted object 字段采样逻辑 |
+| 阶段 | 文件或函数 |
+| --- | --- |
+| 角色/manifest | `finetune/RLBench/utils/o2_oracle_provider.py`：`_build_assignment()`、`build_demo_event_manifest()` |
+| handle 证书 | `oracle_handle_alignment.py`：`align_handles()`、`align_semantic_handle_group()` |
+| object/site 几何 | `_sample_entity_points()`、`site_geometry_from_object()`、`sample_site_geometry()` |
+| replay 重写/审计 | `tools/rewrite_replay_with_semantic_roles.py`：`_load_manifest()`、`_build_oracle()`、`_fill_slot()`、`_audit_fields()` |
+| 校验/可视化 | `_validate_semantic_transition()`、`_validate_task_output()`、`_visualize_task_output()` |
+| schema/loader | `finetune/RLBench/utils/dataset.py::create_replay()`、`utils/get_dataset.py::get_dataset()` |
+| 旧数据 presence | `uniform_replay_buffer.py::_derive_role_presence()`、`_copy_required_disk_fields()`；不改写文件 |
+| train/eval 契约 | `finetune/RLBench/utils/semantic_contract.py`、`train.py::_validate_semantic_replay_schema()`、`eval.py::load_agent()` |
 
 ## Policy 数据流
 
-```mermaid
-flowchart LR
-    B[Replay batch / observation] --> A[RVTAgent]
-    A --> M[MVT.forward]
-    M --> R[Rasterized T/R prior]
-    M --> S[MVTSingle feature]
-    R --> D[Relation/anchor adapter]
-    S --> D
-    D --> H[Action heads]
-    H --> L[Action + auxiliary losses]
+```text
+RVTAgent.update/act
+ → MVT.forward：Oracle 或预测模式输入隔离
+ → MVTSingle.forward：同次 VLM feature / instruction context
+ → slots（预测模式）→ relation/anchor adapter
+ → action_feature_routes → translation / R/G/C
 ```
 
-| 功能 | 关键函数或模块 |
+| 功能 | 函数或模块 |
 | --- | --- |
 | 模式解析 | `resolve_object_prior_mode()` |
-| Oracle/external 输入选择 | `RVTAgent._select_oracle_prior_points()`、`_oracle_network_kwargs()` |
-| Internal-slot auxiliary loss | `RVTAgent._object_slot_auxiliary_losses()` |
-| 训练与推理 | `RVTAgent.update()`、`RVTAgent.act()`、`RVTAgent.get_pred()` |
-| prior 构造 | `MVT._build_oracle_instance_prior()`、`rasterize_instance_points()` |
-| relation feature adapter | `OracleRelationGatedFeatureAdapter` |
-| phase-dependent anchor | `OracleRelationAnchorFeatureAdapter.forward_with_anchor()` |
-| 网络内部 slots | `InternalObjectSlotPredictor.forward()`、`_extract_points()` |
-| action 输出 | `MVTSingle.forward()` |
+| Oracle/external 选择 | `RVTAgent._select_oracle_prior_points()`、`_oracle_network_kwargs()` |
+| prior 投影 | `MVT._build_oracle_instance_prior()`、`rasterize_instance_points()` |
+| 同次前向 text pooling | `object_conditioning.py::pool_instruction_context()` |
+| 内部 maps/tokens/NULL | `InternalObjectSlotPredictor.forward()` |
+| 可微可见几何 | `object_conditioning.py::soft_role_geometry()`；`_extract_points()` 仅兼容/可视化 |
+| 原 relation / anchor query | `OracleRelationGatedFeatureAdapter`、`OracleRelationAnchorFeatureAdapter.forward_with_anchor()` |
+| 完整动作特征 | `action_feature_routes()`、`MVTSingle.forward()`，共享模式重新池化 global |
+| teacher-only 辅助监督 | `RVTAgent._object_slot_auxiliary_losses()`、`reference_null_loss()` |
+| 初始化/resume | `train.py::load_initial_model_checkpoint()`、`load_training_checkpoint()` |
+| 配对闭环 CI | `tools/compare_paired_success.py::compare()` |
 
-## 配置到代码
+## 配置与实现状态
 
-| 配置 | 说明文档 | 主要入口 |
-| --- | --- | --- |
-| `rlbench_o2_semantic_gt.yaml` | [O2 训练](../experiments/o2-training.md) | Oracle T/R adapter |
-| `rlbench_o2_semantic_gt_relation_anchor.yaml` | [Relation anchor](../experiments/relation-anchor.md) | phase-dependent action anchor |
-| `rlbench_o2_predicted_objects.yaml` | [External prediction](../experiments/predicted-objects.md) | predicted T/R fields |
-| `rlbench_o2_internal_slots.yaml` | [Internal slots](../experiments/internal-object-slots.md) | slot predictor + role heatmap |
+| 配置/能力 | 入口或状态 |
+| --- | --- |
+| `rlbench_o2_semantic_gt.yaml` | 旧 Oracle relation adapter |
+| `rlbench_o2_semantic_gt_relation_anchor.yaml` | 旧 translation-anchor 路由 |
+| `rlbench_o2_predicted_objects.yaml` | 外部预测 T/R |
+| `rlbench_o2_internal_slots.yaml` | 旧单帧 heatmap 诊断，NULL weight 默认 0 |
+| `rlbench_o2_semantic_gt_joint.yaml` | opt-in shared action + instruction，先验证 GT |
+| `rlbench_o2_internal_slots_joint.yaml` | opt-in soft roles/geometry + joint training，GT gate 后实验 |
+| present/known、soft tokens、instruction query | 已提供代码，数值/闭环待目标环境验收 |
+| visibility、当前 EE pose、跨 query memory | 未实现；`RVTAgent.reset()` 不维护 role memory |
+| 显式 phase/graph、object-local views、risk head | 不进入本轮；按瓶颈选扩展 |
 
-## 推荐 Object-conditioned Latent Phase 的代码落点
-
-以下是[当前推荐设计](../design/role-relation-prior.md)的计划改动，尚未实现：
-
-| 改动 | 现有落点 | 最小实现 |
-| --- | --- | --- |
-| present / visible 标签 | `rewrite_replay_with_semantic_roles.py::_audit_fields()`、`dataset.py` | 独立写入并采样 role presence、visibility；`valid` 继续表示几何可用 |
-| role tokens 与 confidence | `InternalObjectSlotPredictor.forward()` | 返回 T/R pooled tokens 和独立 present/visible logits |
-| 两角色短时 memory | `oracle_prior.py` + `RVTAgent.act()` | 新增共享 gated update；每个 control query 只更新一次 |
-| episode lifecycle | `RVTAgent.reset()` | 清空 T/R memory、age 与 uncertainty |
-| short-sequence supervision | `RVTAgent.update()`、RLBench dataset | 读取短窗口，计算 role identity/action temporal consistency |
-| latent relation-phase | `MVT.forward()` / `MVTSingle.forward()` | 由 current scene、T/R tokens、instruction、proprio 和 short history 生成 `z_phase`；不加 phase/operator class loss |
-| 完整动作联合训练 | `route_oracle_adapter_features()`、`MVTSingle.forward()` | 保持 translation-only 关闭，并逐步解冻 action decoder / projector / upper backbone |
-
-Memory 不应在 coarse、refine 两个 stage 各更新一次：同一 query 的两阶段共享输入 memory，
-由最终 stage 输出形成一次 observation update，再由 `RVTAgent.act()` 持久化到下一 query。
-当前 `relation_state[3]` 只作为兼容输入；推荐新增 learned `z_phase` 路径。slot 生成只读 previous
-memory，避免依赖尚未生成的 current token。
+`current_state[B,3]` 是当前夹爪状态，不是 phase GT；旧 relation-state 名称兼容。
+所有部署路线均不允许 simulator handle、GT phase 或未来动作作为策略 condition。

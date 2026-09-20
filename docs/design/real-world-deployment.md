@@ -2,13 +2,15 @@
 
 [精简设计](role-relation-prior.md) · [详细设计](role-relation-details.md) · [Object-prior 模式](../experiments/object-prior-modes.md)
 
+> 部署规划，尚未在真实机器人验收。当前代码只有单帧条件化；memory、visibility 和再观测控制器为后续扩展。
+
 ## 1. 部署流程
 
 ```mermaid
 flowchart LR
     S[RGB-D + calibration + proprio] --> F[BridgeVLA scene feature]
     F --> O[task-relevant object slots]
-    M[short T/R memory] --> O
+    M[short T/R memory: 后续] -.-> O
     O --> R[T/R/NULL role binding]
     I[instruction] --> Z[latent relation-phase]
     R --> Z
@@ -43,8 +45,8 @@ current objects + instruction + proprioception + short history
 → current action
 ```
 
-phase 不是固定时间步，也不是只能前进的计数器。stack collapse 后，只要 object geometry 可见，
-下一 query 就应重新产生抓取或重建动作，无需显式 rollback。
+phase 不是固定时间步，也不是只能前进的计数器。stack collapse 后根据新 geometry 重新选择动作
+是待验证假设；需要失败/恢复训练数据与闭环测试，不能仅凭结构保证自动重建。
 
 若当前证据不足：
 
@@ -59,12 +61,14 @@ phase 不是固定时间步，也不是只能前进的计数器。stack collapse
 relation-phase-conditioned feature 必须同时预测 translation、rotation、gripper 和 collision action
 label。执行前使用确定性 gate：
 
-1. waypoint 位于标定工作空间和有效 depth support；
+1. object geometry 有可信观测支持，waypoint 位于标定工作空间，执行位姿与路径可达且碰撞受控；
 2. T/R identity 在动作生成后没有突变；
 3. IK、joint limit、碰撞和 gripper 命令满足控制器限制；
 4. uncertainty 超阈值时再观测或停止。
 
 原 BridgeVLA action 可以作为 matched baseline，但不能被称为天然安全 fallback。
+pregrasp、lift、retreat 的 waypoint 可以位于自由空间，不要求动作点本身落在深度表面。
+以上控制 gate 是部署要求，不是当前网络的已验证安全能力。
 
 ## 5. 数据与训练
 

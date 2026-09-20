@@ -1,177 +1,69 @@
-# BridgeVLA：Object-conditioned Latent Phase
+# Object-conditioned Action Policy
 
-[文档索引](../README.md) · [详细设计](role-relation-details.md) · [真实机器人设计](real-world-deployment.md) · [Internal Slots](../experiments/internal-object-slots.md)
+[文档索引](../README.md) · [实现细节](role-relation-details.md) · [联合训练与验收](../experiments/object-conditioned-joint.md)
 
-> 更新：2026-09-17。本文定义当前推荐 MVP；显式 phase、relation graph、pair search 和 object-local views 均为可选扩展。
+> 更新：2026-09-18。代码提供 opt-in 单帧条件化；GT 闭环收益尚待验证。
 
-## 结论
+## 主线
 
-当前方案应保持简单：从 BridgeVLA 共享特征预测 task-relevant objects，以 Target/Reference 角色、
-instruction、proprioception 和极短历史为条件，隐式推断 relation-phase token，再预测完整动作。
+保留 BridgeVLA coarse/refine 与 top/front/right 三视角，增强原有 relation/anchor adapter：
 
 ```mermaid
 flowchart LR
-    I[RGB-D + instruction + proprioception] --> B[BridgeVLA coarse/refine]
-    B --> S[shared object slots]
-    M[short role memory] --> S
-    S --> R[T/R/NULL role binding]
-    R --> Z[latent relation-phase token]
+    I[当前 RGB-D + instruction + gripper state] --> F[共享 VLM 前向]
+    F --> S[T/R soft maps 与 tokens]
+    F --> L[同次前向 text pooling]
+    S --> Z[现有 anchor query: 操作上下文 z]
+    L --> Z
     I --> Z
-    Z --> A[full-action decoder]
-    B --> A
+    Z --> A[同一最终 action feature]
     A --> Y[translation + rotation + gripper + collision]
-    Y --> M
+    G[Semantic-GT teacher] -.预测模式仅辅助监督.-> S
 ```
 
-不建立显式 phase state machine，也不把 phase 当作只能向前递增的标签。每个 control query 都根据
-当前 object state 重新推断 `z_phase`。例如 stack blocks 中途坍塌后，object geometry 改变，策略
-应自然回到抓取或重建动作，而不是调用单独的 rollback 模块。
+GT 诊断直接提供 T/R prior；internal-slot 模式由网络预测，Oracle 点和 presence 不进入动作分支。
+每步重新计算 `z`，不预测显式 phase index，也不要求 `z` 对应可解释的阶段。
 
-## 1. 最小状态
+## 已实现
 
-每个角色只维护一个短时 belief：
+- 两个默认关闭的开关：`object_conditioning.shared_action_features`、`use_context`。
+- 共享模式从同一最终特征生成 translation、R/G/C 的 global 和 local feature；推理在最终 waypoint 处采样。
+- instruction 复用同一次 VLM 前向，排除 image prefix、padding 和特殊 token。
+- 内部 slots 返回 soft T/R tokens；新模式使用可微的可见点中心/spread，而非只依赖 hard top-k XYZ。
+- presence 在读取旧 replay 时从角色 `kind` 派生；NULL 监督使用真实 posterior，不使用 `~valid`。
+- 新联合配置解冻 action decoder、projector 和上层 Gemma，冻结 vision tower 与前 18 层。
+- 旧配置的特征路由保持不变；旧 internal-slot 配置默认关闭 presence/NULL 辅助项，避免误用旧契约。
 
-```text
-RoleBelief = {
-  token,
-  center_mean,
-  center_covariance,
-  present_probability,
-  visible_probability,
-  confidence,
-  age
-}
-```
+`current_state` 当前只有 gripper open 与两维 finger state；不包含时间进度、未来动作或当前 EE pose。
+`ignore_collisions` 是动作标签，不是安全概率。
 
-- Target 必须存在；Reference 可以为 NULL。
-- `present=True, visible=False` 表示遮挡，不等于 NULL。
-- memory 只保持 T/R identity 和不确定性，不补全不可见表面，也不存长期 scene graph。
-- episode reset 时清空 memory；同一 query 的 coarse/refine 只更新一次。
+## 数据契约
 
-训练数据必须分开提供：
+| 字段 | 定义 | 当前来源 |
+| --- | --- | --- |
+| `oracle_target_present` / `oracle_reference_present` | 当前语义角色是否定义 | replay 审计中的 `kind`，只读派生 |
+| `oracle_role_present_known[2]` | presence 标签是否可靠 | 缺少审计或终止占位时为 false |
+| `oracle_object_valid` | 当前几何监督可用 | 现有点云字段，语义不变 |
+| visibility | 真正的可见性 | 本轮不提供独立标签或 head |
 
-```text
-oracle_{target,reference}_present
-oracle_{target,reference}_visible
-oracle_object_valid
-```
+`present=True, valid=False` 可能是遮挡或 grounding/几何失败，不是 NULL。
+现有有效 replay、点云和 manifest 无需重新生成；缺少 presence 标签只屏蔽相关监督。
 
-`valid` 表示几何监督是否可用，不能同时承担 presence 和 visibility。
+## 实验顺序
 
-## 2. 单步前向
+1. 同预算比较旧 GT anchor、共享完整动作特征、共享特征 + instruction，以及原 BridgeVLA 继续训练。
+2. 固定评估 episodes，使用至少 3 个训练 seeds，检查 paired closed-loop success 差的 95% CI。
+3. CI 下界为正才启动 internal-slot 联合实验；loss 下降不能替代闭环验证。
+4. 记录 waypoint、预测 waypoint 下的 R/G/C、失败类型、延迟及显存。
 
-### 2.1 Object slots 与角色
+训练仍保留 BridgeVLA 的 GT waypoint/crop teacher forcing，训练—推理差距需要单独诊断。
+命令、对应函数和配对工具见[联合训练与验收](../experiments/object-conditioned-joint.md)。
 
-复用 `InternalObjectSlotPredictor` 产生少量无序 slots，再用 instruction 和 scene feature 得到：
+## 后续扩展，不进入当前主结构
 
-```text
-target/reference role maps
-target/reference tokens
-present / visible / confidence
-reference_is_null
-```
+- memory：只有短遮挡或单帧歧义确认为瓶颈后，加入两角色短时状态。
+- 恢复：需要失败状态与恢复数据；stack collapse 后自动恢复只是待验证假设。
+- object-layered refine：只减少已有点云在虚拟投影中的遮挡，不补全真实 RGB-D 缺失表面。
+- pair search、显式 relation/phase、执行风险 head：按证据增加，不作为默认方案。
 
-训练和默认推理都使用 soft role posterior，不用 hard top-2 决定动作。低置信时再观测或停止；
-top-k pair 只作为独立消融。
-
-### 2.2 隐式 relation-phase
-
-```text
-z_phase = PhaseEncoder(
-  scene_feature,
-  instruction,
-  target_token,
-  reference_or_null_token,
-  relative_geometry,
-  proprioception,
-  short_history
-)
-```
-
-这里的 `short_history` 可以只包含上一动作、gripper state 和 T/R memory。它用于处理短遮挡和
-单帧歧义，不负责保存符号化任务进度。
-
-不要求 APPROACH、CONNECT、TRANSFER 等 phase 标签，也不要求 `inside/on/attached` 分类头。
-`z_phase` 由完整动作 loss 和短序列一致性共同学习。为确认它没有退化成时间步编码，必须随机化
-执行速度与停顿，并做 T/R swap、Reference→NULL、history reset 等干预测试。
-
-### 2.3 完整动作
-
-T/R role maps 调制共享多视角 feature，`z_phase` 条件化同一个 action decoder。translation、
-rotation、gripper 和 collision 必须来自同一最终 feature，不能只改 translation 后继续使用旧位置
-产生的 R/G/C。
-
-当前 `ignore_collisions` 仍是动作标签，不是安全概率；workspace、IK 和碰撞限制由独立控制器检查。
-
-## 3. Phase 如何切换
-
-不保存 phase index。每一步重新计算 `z_phase`：
-
-```text
-current objects + instruction + proprioception + short history
-→ current latent phase
-→ current full action
-```
-
-因此：
-
-- 正常执行时，object relation 的变化使策略逐步进入下一动作模式；
-- stack collapse 时，可见几何回到较早状态，策略自然重新抓取或重建；
-- object 被遮挡时，短时 memory 保持 identity，同时提高 uncertainty；
-- 证据不足时输出低 confidence，并再观测或停止，不猜测 phase。
-
-只有实验发现“相同可见 object state 需要不同动作”的 observation aliasing，才考虑增加更长 history
-或小型 progress state。显式 ledger/rollback 不进入当前 MVP。
-
-## 4. 训练
-
-```text
-Stage 0  Oracle role + adapter/residual diagnostic
-Stage 1  predicted slots + T/R/NULL + present/visible
-Stage 2  latent relation-phase + full-action joint training
-Stage 3  short-sequence role memory
-Stage 4  predicted-only sim/real adaptation
-```
-
-主损失保持紧凑：
-
-\[
-L = L_{action}
-  + \lambda_{role}L_{role}
-  + \lambda_{pv}L_{present/visible}
-  + \lambda_{temp}L_{temporal}.
-\]
-
-Oracle object 只作 teacher/label，不能进入部署 forward。adapter 是 Stage-0 诊断和初始化接口，
-最终应联合解冻 action decoder、multimodal projector 和必要的 backbone 层。
-
-## 5. 计算与扩展
-
-默认仍使用 BridgeVLA coarse/refine 的 `top/front/right` 三视角，即 `3 × 2`，不为每个 object
-重复运行 VLM。新增成本主要来自少量 slots、两个 role tokens 和一个小型 phase encoder。
-
-仅在对应瓶颈被实验证实时增加扩展：
-
-| 瓶颈 | 可选扩展 |
-| --- | --- |
-| 投影碰撞或小物体分辨率不足 | optional T/R role-layered refine |
-| 同类物体绑定歧义 | bounded multi-hypothesis pair search |
-| 单帧状态历史混淆 | longer recurrent state / explicit progress |
-| 真实执行安全不足 | calibrated execution-risk model |
-
-`role-layered refine` 只作为待验证扩展：coarse stage 先产生 soft T/R point membership，refine
-stage 再将 committed Target 与 Reference 独立投影，减少它们与 distractors 的 z-buffer 竞争。
-它复用共享 scene/VLM feature，不为每个 object 重新运行 VLM。该方法只能恢复原点云中已经存在、
-但在虚拟投影中被覆盖的点；无法补全真实相机没有观测到的表面。
-
-## 6. 实施与验收
-
-1. 修复 `present/visible/valid` 数据契约。
-2. 验证 predicted slots 在无 Oracle policy 输入下学习 T/R heatmap。
-3. 让同一 conditioned feature 预测完整动作并联合训练。
-4. 加入短时 role memory，测试 visible→hidden→visible identity consistency。
-5. 在 stack collapse、停顿和不同速度下检查 latent phase 是否随当前 object state 正确改变。
-6. 最后做 predicted-only 与真实 RGB-D 闭环。
-
-首版报告 closed-loop success、T/R/NULL accuracy、visibility、identity switch、动作分量失败、延迟和
-显存。辅助 loss 下降但闭环不提升，不足以证明模块有效。
+细节见[可选扩展](role-relation-details.md#4-后续扩展)；真实机器人接口与安全控制仍见[部署设计](real-world-deployment.md)。

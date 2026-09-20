@@ -2,6 +2,8 @@
 
 [文档索引](../README.md) · [代码与函数索引](../reference/code-map.md)
 
+新 [GT/slots joint 配置](object-conditioned-joint.md) 提供完整动作特征共享、instruction 条件和可靠 NULL 监督；先运行 GT 闭环准入。
+
 当前实现共享同一条 relation-aware action 路径，区别只在于 Target/Reference 几何从哪里来。
 
 ```mermaid
@@ -29,8 +31,8 @@ closed-loop 评估。模式之间不要只比较 auxiliary loss；至少同时�
 rotation/gripper/collision 和 closed-loop success。
 
 这是当前代码的统一接口，不是后续模型的训练限制。面向 scaling 与真实部署的设计会把
-adapter-only 作为 diagnostic warm-up，随后联合训练 shared slots、role memory/relation state、完整动作
-decoder 与选定 backbone 层；Oracle 只保留为 teacher 和上界。
+adapter-only 作为 diagnostic warm-up，随后联合训练 slots、完整动作 decoder 与选定 backbone 层；
+memory 为后续独立实验，Oracle 在预测模式只保留为 teacher 和上界。
 
 ## 共享代码路径
 

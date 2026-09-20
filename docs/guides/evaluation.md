@@ -4,6 +4,10 @@
 
 <a id=evaluation></a>
 
+> 新评估固定 episodes：所有有效策略失败计入分母，环境/数据异常单独记录；禁止重复测试直到收集足够成功。
+> 下文 COLOSSEUM 的 successful trials 是历史说明，原始筛选口径不能仅凭文字确认，不据此重解释历史结果。
+> GT 准入采用[三-seed 配对 CI](../experiments/object-conditioned-joint.md#3-闭环准入)。
+
 # Evaluation
 
 1. **RLBench Evaluation:** To evaluate on RLBench, you can just run the following code:
