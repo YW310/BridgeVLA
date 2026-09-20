@@ -18,7 +18,7 @@ use_oracle_objects: True
 oracle_semantic_audit: True
 oracle_semantic_contract:
   enforce: True
-  required_phase_source: sim_replay
+  required_phase_source: demo_events
   role_config: configs/rlbench_o2_semantic_roles.yaml
 oracle_max_objects: 32
 oracle_num_points: 512

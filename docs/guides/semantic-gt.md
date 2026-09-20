@@ -10,10 +10,10 @@
 以及 internal-slot 的角色 heatmap 监督使用。它不会生成完整场景 object slots，也不会补全
 被真实相机遮挡的物体表面。
 
-正式的训练—闭环一致性实验固定使用 `phase_source=sim_replay`：训练 manifest 与在线
-Oracle provider 都由同一组 live success-condition predicates 决定当前角色。可恢复的
-`demo_events` 路径只用于数据诊断或 manifest 修复；它依据 stored demo 事件边界，不能作为
-`rlbench_o2_semantic_gt*.yaml` 的一致性训练输入。
+正式训练使用全量验证的 `phase_source=demo_events` buffer，不需要重新执行 simulator
+expert action。闭环测试使用 live success-condition predicates 选择当前 T/R；两侧共享同一
+role YAML、角色语义、`[N,3]` 点集、点数及 NULL/presence 契约。这里追求动作输入尽量一致，
+不要求 phase 边界来源完全一致。
 
 ```mermaid
 flowchart LR
@@ -26,7 +26,7 @@ flowchart LR
 
 | 阶段 | 输出 | 主要函数 |
 | --- | --- | --- |
-| Manifest | 每个 episode 的 phase、T/R 语义与 handle | `RLBenchGTOracleProvider.observe()`；诊断路径为 `build_demo_event_manifest()` |
+| Manifest | 每个 episode 的 phase、T/R 语义与 handle | `build_demo_event_manifest()`；可选 sim 对照为 `RLBenchGTOracleProvider.observe()` |
 | 对齐 | live → stored handle 映射与证据 | `align_handles()`、`align_semantic_handle_group()` |
 | Replay 重写 | 固定大小 T/R XYZ、valid 与审计字段 | `_build_oracle()`、`_fill_slot()`、`_audit_fields()` |
 | 校验 | `semantic_role_validation.json` 与抽样图 | `_validate_task_output()`、`_visualize_task_output()` |
@@ -57,8 +57,8 @@ flowchart LR
   YAML 摘要不一致的 episode 会重新生成。启动时会打印本次实际读取的完整
   `semantic_role_manifests` 路径；不兼容旧文件先无损移动到
   `rejected_semantic_role_manifests/<task>/`，避免失败重试时旧文件继续混在有效目录。
-- `sim_replay` expert-action manifest 不能安全地从普通评估结果恢复；需要可恢复生成时使用
-  `demo_events`，但其产物只可用于诊断，不可混入正式 matched train/eval buffer。
+- 正式 `demo_events` 生成可安全恢复。`sim_replay` expert-action manifest 仅作独立的 phase
+  对照，不能安全地从普通评估结果恢复，也不是训练前置条件。
 - resume 不支持同时保存视频或逐帧可视化，因为跳过的 episode 无法补回这些视觉产物。
   直接调用 `eval.py` 时 resume 仅支持单任务；启用 resume 后，`eval.sh` 会把
   `TASKS="all"` 展开成 18 个独立任务进程，避免跳过整个任务后 simulator task 状态错位。
@@ -200,16 +200,18 @@ python validate_semantic_roles.py \
 
 </details>
 
-## 1. 用 simulator GT 生成 phase/handle manifest
+## 1. 生成 phase/handle manifest
 
-在 RLBench 环境中回放保存的 expert keypoints。每个 episode 只调用一次
+### 可选诊断：`sim_replay` phase 对照
+
+这条路径在 RLBench 环境中回放保存的 expert keypoints。每个 episode 只调用一次
 `reset_to_demo`，provider 直接查询 task 对象属性、层级、variation、success condition 和
-四视角 GT mask：
+四视角 GT mask。它用于量化多阶段任务的 phase 时序差异，不是正式训练前置步骤：
 
 ```bash
 cd finetune/RLBench
 TASKS="all" \
-MODEL_FOLDER=/home/yiwei/project/BridgeVLA/checkpoints/RLBench  \
+MODEL_FOLDER=/home/yiwei/project/BridgeVLA/checkpoints/RLBench_sim_replay_phase_audit \
 MODEL_NAME=model_80.pth \
 EXP_CFG_PATH=/home/yiwei/project/BridgeVLA/finetune/RLBench/configs/rlbench_config.yaml \
 EVAL_DATAFOLDER=/home/yiwei/project/BridgeVLA/LPY/BridgeVLA_RLBench_TRAIN_DATA/train \
@@ -235,10 +237,10 @@ manifest 生成只回放 expert action，不调用 policy，因此可以使用�
 entries，manifest 的 `generation_attempt` 从 1 开始记录最终采用的是第几次尝试。若全部重试仍失败，
 保留最后一次失败 manifest，离线重写器会因最终 `completion_satisfied=False` 拒绝使用。
 
-### 可选诊断：可恢复的 `demo_events`
+### 正式训练：可恢复的 `demo_events`
 
-18 个任务均支持不重新执行动作的 stored-demo phase 模式。该产物不用于正式训练，且不能
-覆盖刚生成的 `sim_replay` manifest；下面显式使用独立的 diagnostic checkpoint 根目录：
+18 个任务均支持不重新执行动作的 stored-demo phase 模式。这是正式 semantic-GT buffer
+的 manifest 来源；命令可恢复，且不需要先生成 `sim_replay` manifest：
 
 ```bash
 export REPO=/home/yiwei/project/BridgeVLA
@@ -249,7 +251,7 @@ export MODEL_NAME=model_80.pth
 cd "$REPO/finetune/RLBench"
 
 TASKS="all" \
-MODEL_FOLDER="$REPO/checkpoints/RLBench_demo_events_diagnostics" \
+MODEL_FOLDER="$MODEL_FOLDER" \
 MODEL_NAME="$MODEL_NAME" \
 EXP_CFG_PATH="$REPO/finetune/RLBench/configs/rlbench_config.yaml" \
 EVAL_DATAFOLDER="$RAW_DATA" \
@@ -292,12 +294,14 @@ Target”；Target 顺序仍唯一来自任务源码和 YAML。原因是当前 l
 `contact_distances`，便于审计；任何次数、顺序、可见性或距离校验失败都会终止该 episode，
 不会静默退回启发式角色。
 
-manifest 和每个 entry 都记录 `phase_source=demo_events`。默认
-`MANIFEST_PHASE_SOURCE=sim_replay` 保持原有在线 success-condition 行为。两种生成模式都会
-把 manifest 中的 object handles 严格转换到 raw dataset 的 stored mask namespace；区别只在
-phase 边界来源。运行中的 policy/专家观测仍使用 live handles 和 live 点云。
-因此上面的 `demo_events` 命令是可恢复的诊断/修复入口；正式训练数据应使用本节前面的
-`MANIFEST_PHASE_SOURCE=sim_replay` 命令生成。
+manifest 和每个 entry 都记录 `phase_source=demo_events`，并把 object handles 严格转换到
+raw dataset 的 stored mask namespace。在线闭环仍以 live success conditions、live handles
+和当前可见点云构造完全相同格式的 T/R 输入。14 个 `single_success` 任务没有中间 phase
+切换；`place_cups`、`stack_blocks`、`stack_cups`、`push_buttons` 仍可能存在少量 phase
+切换时序差异，应按 phase 单独统计失败，而不是为此改用 sim replay 重建训练集。
+
+`MANIFEST_PHASE_SOURCE=sim_replay` 只保留为可选上界/phase 审计。若生成，必须使用独立
+`MODEL_FOLDER`，不能覆盖正式 `demo_events` manifest。
 生成前仍会执行一次 simulator reset，并将 live 首帧与 stored demo 第 0 帧的 T/R handle
 可见性进行交叉检查；只有 manifest 中 `source_alignment_validated=true` 时，离线重写器
 才接受该 demo-events 标注。
@@ -490,7 +494,7 @@ semantic name、kind、几何来源、原始 handle 集合、`oracle_phase_sourc
   `phase_sources` 只统计被抽到的 replay。正式 strict 数据验收应省略
   `--validate-every`（或设为 1），并同时满足 `validation_complete=true`、
   `valid=true`、`raw_fallback_files=0`，且 `phase_sources` 只有
-  `sim_replay`；`role_config_sha256` 还必须与训练使用的 role YAML 一致。
+  `demo_events`；`role_config_sha256` 还必须与训练使用的 role YAML 一致。
 - `--visualize-every N` 直接读取已写入 semantic replay 的 T/R 点，每隔 N 个排序后的
   replay 输出一组 PNG 和同名 JSON；不会重新运行启发式对象提取。PNG 包含四视角 RGB、
   mask box、场景点云和 T/R 的透视/三正交视图，JSON 记录 phase、semantic name、kind
@@ -515,10 +519,11 @@ bash train.sh \
 混在同一实验目录。semantic mapping 是 privileged GT，结果只能解释为 Oracle 上界。
 
 该配置同时启用 fail-closed semantic contract。训练启动会要求每个 task 存在全量
-`semantic_role_validation.json`，并核对 schema、`sim_replay`、512 点以及 role YAML SHA-256；
+`semantic_role_validation.json`，并核对 schema、`demo_events`、512 点以及 role YAML SHA-256；
 报告还必须声明 manifest 已转换为 stored handle namespace。checkpoint 保存同一 contract；
-闭环加载时使用运行时 YAML 和点数再次核对。旧 checkpoint、
-`demo_events` buffer 或不同 YAML 会明确报错，不会静默测试。旧 buffer 若没有
+闭环加载时使用运行时 YAML 和点数再次核对。旧 checkpoint、`sim_replay` buffer 或不同
+YAML 会明确报错，不会静默测试。该校验约束训练数据来源，不要求在线 provider 伪装成
+stored-demo phase tracker。旧 buffer 若没有
 `oracle_role_config_sha256`，请用新输出目录重新运行 rewriter；`--resume` 不会改写已存在文件。
 
 训练模式、消融和评估见 [O2 实验](../experiments/o2-training.md)。

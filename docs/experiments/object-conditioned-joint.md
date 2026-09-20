@@ -3,7 +3,7 @@
 [文档索引](../README.md) · [主设计](../design/role-relation-prior.md) · [代码索引](../reference/code-map.md)
 
 > 两份配置是 opt-in 实验入口，不代表闭环收益已验证。输入必须是新 rewriter 生成并全量
-> 验证的 `sim_replay` semantic buffer；旧数据缺少 role YAML 摘要或来自 `demo_events` 时需重建。
+> 验证的 `demo_events` semantic buffer；旧数据缺少 role YAML 摘要时需离线重写。
 
 ## 1. 数据与函数
 
@@ -75,7 +75,7 @@ bash train.sh \
 将训练目录的 `exp_cfg.yaml` 传给 `eval.sh` 的 `EXP_CFG_PATH`，并核对文件中的
 两个 conditioning 开关。GT 组用 `ORACLE_PROVIDER=rlbench_gt`；D 和预测组用 `none`。
 不要对 D 保留 `ORACLE_PROVIDER=rlbench_gt`，否则 checkpoint 消融与评估输入不一致。
-GT checkpoint 会同时校验 `sim_replay`、点数、Reference 点集版本和 role YAML SHA-256；
+GT checkpoint 会同时校验 `demo_events`、点数、Reference 点集版本和 role YAML SHA-256；
 任一项不同都应重新生成/训练，而不是关闭校验继续比较。
 
 冻结 vision tower 与前 18 层 Gemma；projector、其余 Gemma、完整 action decoder 可训练。

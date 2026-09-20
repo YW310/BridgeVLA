@@ -48,7 +48,7 @@ def validate_semantic_contract(stored, expected, source='checkpoint'):
     if not isinstance(stored, Mapping):
         raise RuntimeError(
             f'{source} has no verified semantic_contract; regenerate the '
-            'sim_replay buffer and retrain.')
+            'semantic replay audit and retrain.')
     differences = {
         key: (stored.get(key), expected.get(key))
         for key in expected if stored.get(key) != expected.get(key)

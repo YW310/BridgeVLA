@@ -13,11 +13,12 @@ O2 选择当前状态下唯一的 Target 与 Reference，将两者的固定大�
 [Semantic-GT: 交互实体几何表示](../guides/semantic-gt.md#semantic-gt-entity-geometry)。
 adapted feature 同时供 translation、rotation、gripper、collision 使用。
 
-正式 GT 对照只接受全量验证的 `sim_replay` semantic buffer。训练与在线测试都使用
-live success-condition predicates；Reference 在两侧始终是固定形状 `[N,3]` 点集：object
-为当前可见表面点，site 为 OBB/fallback box 的确定性采样点，NULL 才是零点集加 invalid。
-生成训练 manifest 时，phase 在 live simulator 中判定，但 object handles 经多视角证书
-转换到 stored raw-mask namespace；普通闭环不会写同名 manifest，因此不会覆盖训练数据。
+正式 GT 对照接受全量验证的 `demo_events` semantic buffer，不重放 simulator expert
+actions。在线测试由 live success conditions 选择当前角色；两侧的 role YAML、T/R 语义、
+点数和输入格式一致。Reference 始终是 `[N,3]` 点集：object 为当前可见表面点，site 为
+OBB/fallback box 的确定性采样点，NULL 才是零点集加 invalid。训练 handle 经多视角证书
+转换到 stored mask namespace，测试使用 live handles。14 个单 phase 任务没有中间 phase
+差异；4 个多 phase 任务需额外报告切换时序造成的失败。
 
 当前结构不包含 post-hoc translation fusion：
 

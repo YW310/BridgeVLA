@@ -164,26 +164,28 @@ def load_agent(
         exp_cfg.rvt.oracle_prior_mode,
     )
     checkpoint_validator = None
+    semantic_training_phase_source = None
     if enforce_oracle_contract and exp_cfg.oracle_semantic_audit:
         if not exp_cfg.oracle_semantic_contract.enforce:
             raise RuntimeError(
                 'This semantic-GT experiment config predates the enforced '
                 'train/eval contract. Use the current semantic config and a '
-                'checkpoint trained with a verified sim_replay buffer.'
+                'checkpoint trained with a fully validated semantic buffer.'
             )
         required_phase_source = str(
             exp_cfg.oracle_semantic_contract.required_phase_source
         )
-        if required_phase_source != 'sim_replay':
+        if required_phase_source not in ('sim_replay', 'demo_events'):
             raise RuntimeError(
-                'Online policy evaluation uses live sim_replay phase predicates; '
-                'the enforced semantic contract must require sim_replay.'
+                'Unsupported semantic training phase source in experiment config: '
+                f'{required_phase_source!r}.'
             )
         runtime_contract = build_semantic_contract(
             oracle_role_config,
             required_phase_source,
             oracle_num_points,
         )
+        semantic_training_phase_source = required_phase_source
         saved_digest = str(
             exp_cfg.oracle_semantic_contract.role_config_sha256
         )
@@ -203,6 +205,7 @@ def load_agent(
         strict=(object_prior_mode != 'none'),
         checkpoint_validator=checkpoint_validator,
     )
+    agent.semantic_training_phase_source = semantic_training_phase_source
     agent.eval()
 
     print("Agent Information")
@@ -958,7 +961,10 @@ def _eval(args):
                 agent.oracle_prior_strict = bool(args.oracle_strict)
                 print(
                     "Evaluation branch: O2 semantic-GT Target/Reference adapter "
-                    f"(strict={agent.oracle_prior_strict})"
+                    f"(strict={agent.oracle_prior_strict}, "
+                    f"training_phase_source="
+                    f"{agent.semantic_training_phase_source}, "
+                    "online_phase_source=live_success_conditions)"
                 )
         elif agent is not None and agent.oracle_prior_enabled:
             agent.oracle_prior_mode = "none"

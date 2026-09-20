@@ -23,7 +23,7 @@ class ObjectConditioningConfigTest(unittest.TestCase):
         self.assertIn('shared_action_features = False', defaults)
         self.assertIn('use_context = False', defaults)
 
-    def test_semantic_configs_require_online_phase_contract(self):
+    def test_semantic_configs_require_demo_training_contract(self):
         names = (
             'rlbench_o2_semantic_gt.yaml',
             'rlbench_o2_semantic_gt_relation_anchor.yaml',
@@ -35,7 +35,7 @@ class ObjectConditioningConfigTest(unittest.TestCase):
             source = (ROOT / 'finetune/RLBench/configs' / name).read_text(
                 encoding='utf-8')
             self.assertIn('oracle_semantic_contract:', source)
-            self.assertIn('required_phase_source: sim_replay', source)
+            self.assertIn('required_phase_source: demo_events', source)
             self.assertIn(
                 'role_config: configs/rlbench_o2_semantic_roles.yaml', source)
 
@@ -48,7 +48,17 @@ class ObjectConditioningConfigTest(unittest.TestCase):
         self.assertIn('checkpoint_validator=checkpoint_validator', eval_source)
         self.assertIn("checkpoint.get('semantic_contract')", eval_source)
         self.assertIn('checkpoint_validator(checkpoint)', checkpoint_source)
-        self.assertIn("required_phase_source != 'sim_replay'", eval_source)
+        self.assertIn(
+            "required_phase_source not in ('sim_replay', 'demo_events')",
+            eval_source)
+        self.assertIn(
+            'online_phase_source=live_success_conditions', eval_source)
+        provider_source = (
+            ROOT / 'finetune/RLBench/utils/o2_oracle_provider.py'
+        ).read_text(encoding='utf-8')
+        self.assertIn(
+            '"demo_events" if phase_event is not None else "sim_replay"',
+            provider_source)
         self.assertIn(
             'enforce_oracle_contract and exp_cfg.oracle_semantic_audit',
             eval_source)

@@ -42,7 +42,7 @@ class SemanticContractTest(unittest.TestCase):
     def test_full_validation_report_matches_contract(self):
         expected = {
             'schema_version': 'rlbench_o2_semantic_roles_v2',
-            'phase_source': 'sim_replay',
+            'phase_source': 'demo_events',
             'role_config_sha256': 'a' * 64,
             'num_points': 512,
             'manifest_handle_namespace': 'stored',
@@ -51,7 +51,7 @@ class SemanticContractTest(unittest.TestCase):
             'valid': True,
             'validation_complete': True,
             'raw_fallback_files': 0,
-            'phase_sources': {'sim_replay': 10},
+            'phase_sources': {'demo_events': 10},
             'schema_version': expected['schema_version'],
             'role_config_sha256': expected['role_config_sha256'],
             'num_points': 512,
@@ -61,7 +61,7 @@ class SemanticContractTest(unittest.TestCase):
         for key, value in (
             ('validation_complete', False),
             ('raw_fallback_files', 1),
-            ('phase_sources', {'demo_events': 10}),
+            ('phase_sources', {'sim_replay': 10}),
             ('role_config_sha256', 'b' * 64),
             ('num_points', 256),
             ('manifest_handle_namespace', 'live'),
