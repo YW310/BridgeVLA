@@ -20,7 +20,8 @@ bash eval.sh
 该开关只在 policy evaluation 中有效，不用于训练或 manifest 生成。provider 会按需
 提供 YAML 中所有 Target variation/sequence 的当前可见点云；agent 优先使用
 `trans_base` 解码的 waypoint，按到候选点云表面的最小距离给出候选、phase、距离、
-置信度和 `matches_oracle`。结果写入 `ActResult.observation_elements`，并以
+置信度和 `matches_oracle`；超过 0.20 m 输出 UNKNOWN，避免把远距离自由空间动作误报为
+高置信 Target。结果写入 `ActResult.observation_elements`，并以
 `[HeatmapTarget]` 每步打印。它不覆盖当前 Oracle Target、不修改 Reference，也不改变
 实际 action；这是模型行为归因，不是新的 GT。
 

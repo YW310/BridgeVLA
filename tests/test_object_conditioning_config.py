@@ -163,6 +163,13 @@ class ObjectConditioningConfigTest(unittest.TestCase):
         self.assertIn('oracle_target_candidate_points', provider_source)
         self.assertIn("stage_output.get(\n                'trans_base'", agent_source)
         self.assertIn('Reference and policy actions are unchanged', eval_source)
+        rollout_source = (
+            ROOT / 'finetune/bridgevla/libs/YARR/yarr/utils/rollout_generator.py'
+        ).read_text(encoding='utf-8')
+        self.assertNotIn('torch.tensor([v], device=self._env_device)',
+                         rollout_source)
+        self.assertGreaterEqual(
+            rollout_source.count('torch.tensor(np.array([v])'), 2)
 
     def test_shared_global_pooling_is_recomputed_and_base_diagnostic_kept(self):
         source = (ROOT / 'finetune/bridgevla/mvt/mvt_single.py').read_text(encoding='utf-8')
@@ -189,7 +196,8 @@ class ObjectConditioningConfigTest(unittest.TestCase):
                          'finetune/bridgevla/mvt/mvt.py', 'finetune/bridgevla/mvt/mvt_single.py',
                          'finetune/RLBench/train.py', 'finetune/RLBench/eval.py',
                          'finetune/RLBench/utils/o2_oracle_provider.py',
-                         'finetune/bridgevla/utils/rvt_utils.py'):
+                         'finetune/bridgevla/utils/rvt_utils.py',
+                         'finetune/bridgevla/libs/YARR/yarr/utils/rollout_generator.py'):
             ast.parse((ROOT / relative).read_text(encoding='utf-8'))
 
 

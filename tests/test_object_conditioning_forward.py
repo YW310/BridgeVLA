@@ -35,7 +35,17 @@ class ObjectConditioningForwardTest(unittest.TestCase):
             waypoint, candidates, valid)
         self.assertEqual(selected.item(), 1)
         torch.testing.assert_close(distance, torch.tensor([0.1]))
-        self.assertGreater(confidence.item(), 0.5)
+        self.assertGreater(confidence.item(), 0.45)
+
+    def test_waypoint_attribution_rejects_far_free_space(self):
+        selected, distance, confidence = select_object_candidate_from_waypoint(
+            torch.tensor([[0.5, 0.0, 0.0]]),
+            torch.zeros(1, 1, 4, 3),
+            torch.ones(1, 1, dtype=torch.bool),
+        )
+        self.assertEqual(selected.item(), -1)
+        torch.testing.assert_close(distance, torch.tensor([0.5]))
+        torch.testing.assert_close(confidence, torch.zeros(1))
 
     def test_waypoint_attribution_returns_unknown_without_valid_candidate(self):
         selected, distance, confidence = select_object_candidate_from_waypoint(

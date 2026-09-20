@@ -31,6 +31,7 @@ def action_feature_routes(base, translation, legacy_action, shared=False):
 
 def select_object_candidate_from_waypoint(
     waypoint, candidate_points, candidate_valid, temperature=0.05,
+    max_distance=0.20,
 ):
     """Attribute a decoded translation waypoint to a visible object candidate.
 
@@ -49,6 +50,8 @@ def select_object_candidate_from_waypoint(
         raise ValueError('waypoint and candidate batch dimensions must match')
     if temperature <= 0:
         raise ValueError('temperature must be positive')
+    if max_distance <= 0:
+        raise ValueError('max_distance must be positive')
 
     finite_points = torch.isfinite(candidate_points).all(dim=-1)
     distances = torch.linalg.vector_norm(
@@ -60,10 +63,7 @@ def select_object_candidate_from_waypoint(
     distances = distances.masked_fill(~available, torch.inf)
     any_available = available.any(dim=-1)
 
-    selected = distances.argmin(dim=-1)
-    selected = torch.where(
-        any_available, selected, torch.full_like(selected, -1),
-    )
+    nearest = distances.argmin(dim=-1)
     safe_logits = torch.where(
         available,
         -distances / float(temperature),
@@ -73,15 +73,22 @@ def select_object_candidate_from_waypoint(
     probabilities = torch.where(
         any_available[:, None], probabilities, torch.zeros_like(probabilities),
     )
-    gather_index = selected.clamp_min(0).unsqueeze(-1)
+    gather_index = nearest.unsqueeze(-1)
     selected_distance = distances.gather(1, gather_index).squeeze(1)
     confidence = probabilities.gather(1, gather_index).squeeze(1)
     selected_distance = torch.where(
         any_available, selected_distance,
         torch.full_like(selected_distance, torch.inf),
     )
+    accepted = any_available & (selected_distance <= float(max_distance))
+    confidence = confidence * (
+        1.0 - selected_distance / float(max_distance)
+    ).clamp(0.0, 1.0)
     confidence = torch.where(
-        any_available, confidence, torch.zeros_like(confidence),
+        accepted, confidence, torch.zeros_like(confidence),
+    )
+    selected = torch.where(
+        accepted, nearest, torch.full_like(nearest, -1),
     )
     return selected, selected_distance, confidence
 

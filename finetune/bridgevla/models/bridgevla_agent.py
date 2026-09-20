@@ -537,6 +537,7 @@ class RVTAgent:
         self._oracle_missing_warning_shown = False
         # Runtime-only evaluation diagnostic. It is never read by update().
         self.heatmap_target_object = False
+        self._heatmap_target_step = 0
 
         print("Cameras:",self.cameras)
         self.move_pc_in_bound = move_pc_in_bound
@@ -1914,9 +1915,13 @@ class RVTAgent:
         if self.heatmap_target_object:
             heatmap_target_elements = self._heatmap_target_observation_elements(
                 out, observation, rev_trans, dyn_cam_info)
+            diagnostic_step = self._heatmap_target_step
+            self._heatmap_target_step += 1
+            heatmap_target_elements['heatmap_target_policy_step'] = np.asarray(
+                diagnostic_step, dtype=np.int64)
             print(
                 '[HeatmapTarget] '
-                f'step={step} '
+                f'step={diagnostic_step} '
                 f'candidate={int(heatmap_target_elements["heatmap_target_candidate_index"])} '
                 f'phase={int(heatmap_target_elements["heatmap_target_candidate_phase_index"])} '
                 f'confidence={float(heatmap_target_elements["heatmap_target_confidence"]):.4f} '
@@ -2112,7 +2117,7 @@ class RVTAgent:
 
 
     def reset(self):
-        pass
+        self._heatmap_target_step = 0
 
     def eval(self):
         self._network.eval()
