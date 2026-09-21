@@ -154,6 +154,9 @@ class ObjectConditioningConfigTest(unittest.TestCase):
         agent_source = (
             ROOT / 'finetune/bridgevla/models/bridgevla_agent.py'
         ).read_text(encoding='utf-8')
+        environment_source = (
+            ROOT / 'finetune/RLBench/utils/custom_rlbench_env.py'
+        ).read_text(encoding='utf-8')
         shell_source = (ROOT / 'finetune/RLBench/eval.sh').read_text(
             encoding='utf-8')
         self.assertIn('"--heatmap-action-anchor"', parser_source)
@@ -204,6 +207,16 @@ class ObjectConditioningConfigTest(unittest.TestCase):
         self.assertIn('aligned_valid = torch.zeros_like(oracle_valid)', agent_source)
         self.assertIn(
             'if self.bridgevla_aligned_objects else oracle_valid', agent_source)
+        self.assertIn('policy_target_prior', agent_source)
+        self.assertIn('and aligned_target_used', agent_source)
+        self.assertIn('oracle_task_target_object_points', provider_source)
+        self.assertIn('oracle_effective_target_candidate_index', provider_source)
+        self.assertIn('follow_policy_target', provider_source)
+        self.assertIn(
+            'follow_policy_target=bridgevla_aligned_objects', eval_source)
+        self.assertIn('set_policy_target_candidate', environment_source)
+        self.assertIn(
+            'bridgevla_aligned_target_locked_index', environment_source)
 
     def test_shared_global_pooling_is_recomputed_and_base_diagnostic_kept(self):
         source = (ROOT / 'finetune/bridgevla/mvt/mvt_single.py').read_text(encoding='utf-8')

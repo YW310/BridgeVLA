@@ -187,6 +187,13 @@ class CustomMultiTaskRLBenchEnv2(CustomMultiTaskRLBenchEnv):
 
     def step(self, act_result):
         if self._oracle_provider is not None:
+            replay_elements = getattr(act_result, 'replay_elements', {})
+            aligned_target = replay_elements.get(
+                'bridgevla_aligned_target_locked_index')
+            if aligned_target is not None:
+                values = np.asarray(aligned_target).reshape(-1)
+                self._oracle_provider.set_policy_target_candidate(
+                    int(values[-1]) if values.size else -1)
             sample_frame = None
             if (
                 self._oracle_ground_truth_frames is not None

@@ -361,6 +361,7 @@ def eval(
                 if generating_manifest else None),
             emit_action_anchor_candidates=(
                 heatmap_action_anchor or bridgevla_aligned_objects),
+            follow_policy_target=bridgevla_aligned_objects,
         )
         if generating_manifest:
             print(f"[Manifest] raw data: {eval_datafolder}; "

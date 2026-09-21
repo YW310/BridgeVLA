@@ -2286,6 +2286,11 @@ class RVTAgent:
                     language_goal=language_goal,
                 )
         if visualize:
+            aligned_target_used = (
+                not self.bridgevla_aligned_objects
+                or bool(bridgevla_alignment_elements[
+                    'bridgevla_aligned_target_used'])
+            )
             q_trans, rot_q, grip_q, collision_q, y_q, _ = self.get_q(
                 out, dims=(bs, nc, h, w), only_pred=True, get_q_trans=True
             )
@@ -2374,14 +2379,34 @@ class RVTAgent:
                     stage_out['trans'][0]
                 )
                 visualize_images(stage_img, final, save_dir=stage_dir)
-                if 'oracle_instance_prior' in stage_out:
-                    if 'oracle_target_prior' in stage_out:
+                if (
+                    'oracle_instance_prior' in stage_out
+                    and aligned_target_used
+                ):
+                    if 'oracle_target_prior' in stage_out and aligned_target_used:
                         save_heatmap_views(
                             stage_out['oracle_target_prior'][0],
                             stage_dir,
                             'o2_target_prior',
                             stage_img,
                         )
+                        if self.bridgevla_aligned_objects:
+                            save_heatmap_views(
+                                stage_out['oracle_target_prior'][0],
+                                stage_dir,
+                                'policy_target_prior',
+                                stage_img,
+                            )
+                    elif self.bridgevla_aligned_objects:
+                        with open(
+                            os.path.join(
+                                stage_dir, 'policy_target_unavailable.txt'),
+                            'w',
+                            encoding='utf-8',
+                        ) as stream:
+                            stream.write(
+                                'No trusted Target lock; object residual is '
+                                'disabled for this step.\n')
                     if 'oracle_reference_prior' in stage_out:
                         save_heatmap_views(
                             stage_out['oracle_reference_prior'][0],

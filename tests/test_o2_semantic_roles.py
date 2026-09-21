@@ -39,6 +39,8 @@ def test_grasped_handle_resolves_unique_target_candidate():
         None, candidates) == (-1, False)
     assert RLBenchGTOracleProvider._grasped_candidate_index(
         {11, 21}, candidates) == (-1, False)
+    assert RLBenchGTOracleProvider._grasped_candidate_index(
+        {105}, candidates, ((101,), (105,), (109,))) == (1, True)
 
 
 class FakeObject:
@@ -88,6 +90,25 @@ class UnhashableFakeObject(FakeObject):
             isinstance(other, UnhashableFakeObject)
             and self.handle == other.handle
         )
+
+
+def test_grasped_object_handles_include_descendants():
+    child = FakeObject('mug_visual', 21)
+    root = FakeObject('mug_root', 20, children=(child,))
+    gripper = SimpleNamespace(get_grasped_objects=lambda: [root])
+    provider = object.__new__(RLBenchGTOracleProvider)
+    provider._task_environment = SimpleNamespace(
+        _robot=SimpleNamespace(gripper=gripper))
+    provider._task = None
+    assert provider._grasped_object_handles() == {20, 21}
+
+
+def test_live_entity_handles_reverse_stored_alignment():
+    provider = object.__new__(RLBenchGTOracleProvider)
+    provider._stored_handle_map = {105: 161}
+    provider._stored_entity_handle_map = {}
+    entity = SimpleNamespace(kind='object', handles=(161,))
+    assert provider._live_entity_handles(entity) == {105}
 
 
 class FakeCondition:
@@ -477,6 +498,56 @@ def test_place_cups_reference_does_not_absorb_descendant_spokes():
     assert phase1.target.handles == (11,)
     assert phase1.reference.semantic_name == "holder_spoke1"
     assert phase1.reference.handles == (21,)
+
+
+def test_policy_target_becomes_effective_gt_without_overwriting_task_gt():
+    cups = [FakeObject(f"mug{i}", 10 + i) for i in range(3)]
+    spokes = [
+        FakeObject(f"place_cups_holder_spoke{i}", 20 + i)
+        for i in range(3)]
+    task = FakeTask(cups + spokes)
+    task._cups = cups
+    task._spokes = spokes
+    task._index = 2
+    task._on_peg_conditions = [
+        FakeCondition(), FakeCondition(), FakeCondition()]
+    value = RLBenchGTOracleProvider(
+        ROLE_CONFIG,
+        cameras=("front",),
+        num_points=8,
+        strict=True,
+        emit_action_anchor_candidates=True,
+        follow_policy_target=True,
+    )
+    value.reset(SimpleNamespace(_task=task), "place_cups", 0, 0)
+    obs = observation([[10, 11, 12], [20, 21, 22]], gripper_open=1.0)
+
+    bootstrap = value.enrich(obs, {})
+    assert bootstrap["oracle_task_target_object_valid"]
+    assert not bootstrap["oracle_target_object_valid"]
+    assert bootstrap["oracle_reference_object_valid"]
+    assert bootstrap["oracle_effective_target_candidate_index"] == -1
+
+    value.set_policy_target_candidate(2)
+    aligned = value.enrich(obs, {})
+    assert aligned["oracle_target_object_valid"]
+    assert aligned["oracle_reference_object_valid"]
+    assert aligned["oracle_effective_target_candidate_index"] == 2
+    assert not np.array_equal(
+        aligned["oracle_target_object_points"],
+        aligned["oracle_task_target_object_points"],
+    )
+    assert value._entries[-1]["target"]["semantic_name"] == "mug0"
+    assert value._entries[-1]["effective_target"]["semantic_name"] == "mug2"
+
+
+def test_follow_policy_target_requires_candidate_emission():
+    with pytest.raises(ValueError, match="emit_action_anchor_candidates"):
+        RLBenchGTOracleProvider(
+            ROLE_CONFIG,
+            cameras=("front",),
+            follow_policy_target=True,
+        )
 
 
 def test_place_cups_demo_events_build_phase_manifest_without_sim_replay(tmp_path):

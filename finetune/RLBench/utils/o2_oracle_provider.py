@@ -277,6 +277,7 @@ class RLBenchGTOracleProvider:
         manifest_output_dir: Optional[Path] = None,
         raw_data_root: Optional[Path] = None,
         emit_action_anchor_candidates: bool = False,
+        follow_policy_target: bool = False,
         emit_target_candidates: Optional[bool] = None,
     ):
         if num_points <= 0:
@@ -336,6 +337,10 @@ class RLBenchGTOracleProvider:
                     "emit_target_candidates is a legacy alias")
             emit_action_anchor_candidates = emit_target_candidates
         self.emit_action_anchor_candidates = bool(emit_action_anchor_candidates)
+        self.follow_policy_target = bool(follow_policy_target)
+        if self.follow_policy_target and not self.emit_action_anchor_candidates:
+            raise ValueError(
+                "follow_policy_target requires emit_action_anchor_candidates")
         self._raw_episode_dir_cache: Optional[Path] = None
         self._raw_mask_cache: Dict[int, Dict[str, np.ndarray]] = {}
         self._live_initial_views = None
@@ -363,6 +368,7 @@ class RLBenchGTOracleProvider:
         self._entries: List[Dict[str, object]] = []
         self._manifests: Dict[Tuple[str, int], Dict[str, object]] = {}
         self._current_manifest_discarded = False
+        self._policy_target_candidate_index = None
         self.stats = {
             "steps_total": 0,
             "target_valid": 0,
@@ -411,6 +417,7 @@ class RLBenchGTOracleProvider:
         self._expected_sample_frames = ()
         self._entries = []
         self._current_manifest_discarded = False
+        self._policy_target_candidate_index = None
         self._raw_episode_dir_cache = None
         self._raw_mask_cache = {}
         try:
@@ -427,6 +434,11 @@ class RLBenchGTOracleProvider:
     def set_sample_frame(self, sample_frame: Optional[int]) -> None:
         """Attach a stored-demo frame index to the next emitted audit entry."""
         self._sample_frame = None if sample_frame is None else int(sample_frame)
+
+    def set_policy_target_candidate(self, candidate_index: Optional[int]) -> None:
+        """Set the effective GT Target selected by the previous policy action."""
+        self._policy_target_candidate_index = (
+            None if candidate_index is None else int(candidate_index))
 
     def set_expected_sample_frames(self, sample_frames: Sequence[int]) -> None:
         """Record the complete expert keypoint sequence for manifest validation."""
@@ -549,21 +561,23 @@ class RLBenchGTOracleProvider:
             objects = getter()
         except Exception:
             return None
-        handles = set()
-        for obj in objects:
-            try:
-                handles.add(_object_handle(obj))
-            except Exception:
-                continue
-        return handles
+        return set(SceneObjectIndex.handles_with_descendants(objects))
 
     @staticmethod
     def _grasped_candidate_index(
         grasped_handles: Optional[set], candidate_audits,
+        candidate_identity_handles=None,
     ) -> Tuple[int, bool]:
         """Resolve an actual grasp to one unique semantic Target candidate."""
         if grasped_handles is None:
             return -1, False
+        if candidate_identity_handles is not None:
+            if len(candidate_identity_handles) != len(candidate_audits):
+                raise ValueError(
+                    'candidate identity handles must match candidate audit count')
+            candidate_audits = [
+                {'handles': handles} for handles in candidate_identity_handles
+            ]
         overlaps = [
             len(grasped_handles.intersection(candidate.get("handles", ())))
             for candidate in candidate_audits
@@ -575,6 +589,23 @@ class RLBenchGTOracleProvider:
         if len(winners) != 1:
             return -1, False
         return winners[0], True
+
+    def _live_entity_handles(self, entity: RoleEntity) -> set:
+        if entity.kind != 'object':
+            return set()
+        handles = set(entity.handles)
+        if self._stored_handle_map is None:
+            return handles
+        for live_handles, stored_handles in self._stored_entity_handle_map.items():
+            if set(stored_handles) == handles:
+                return set(live_handles)
+        reverse = {}
+        for live_handle, stored_handle in self._stored_handle_map.items():
+            reverse.setdefault(int(stored_handle), set()).add(int(live_handle))
+        live = set()
+        for handle in handles:
+            live.update(reverse.get(int(handle), ()))
+        return live
 
     def _task_spec(self) -> Mapping[str, object]:
         try:
@@ -647,6 +678,8 @@ class RLBenchGTOracleProvider:
         paired_reference_points = []
         paired_reference_valid = []
         audits = []
+        identity_handles = []
+        reference_audits = []
         key_to_index = {}
         entities = []
         try:
@@ -690,6 +723,11 @@ class RLBenchGTOracleProvider:
                 paired_reference_points.append(reference_points)
                 paired_reference_valid.append(bool(reference_valid))
                 audits.append(entity.audit_dict())
+                identity_handles.append(tuple(sorted(
+                    self._live_entity_handles(entity))))
+                reference_audits.append(
+                    None if paired_reference is None
+                    else paired_reference.audit_dict())
         finally:
             self._phase_index = original_phase
         if not candidates:
@@ -704,6 +742,8 @@ class RLBenchGTOracleProvider:
             np.stack(paired_reference_points).astype(np.float32, copy=False),
             np.asarray(paired_reference_valid, dtype=np.bool_),
             audits,
+            identity_handles,
+            reference_audits,
         )
 
     def _objects(self, selectors: Sequence[str], label: str) -> List[object]:
@@ -1963,7 +2003,24 @@ class RLBenchGTOracleProvider:
             completion_satisfied = False
             phase_advanced = False
 
+        task_target_points = target_points
+        task_reference_points = reference_points
+        task_target_valid = target_valid
+        task_reference_valid = reference_valid
+        effective_target_points = target_points
+        effective_reference_points = reference_points
+        effective_target_valid = target_valid
+        effective_reference_valid = reference_valid
+        effective_target_audit = assignment.target.audit_dict()
+        effective_reference_audit = (
+            None if assignment.reference is None
+            else assignment.reference.audit_dict())
+        effective_target_candidate_index = -1
+
         candidate_audits = []
+        candidate_identity_handles = []
+        grasped_candidate_index = -1
+        grasped_candidate_known = False
         if self.emit_action_anchor_candidates:
             try:
                 (
@@ -1974,6 +2031,8 @@ class RLBenchGTOracleProvider:
                     candidate_reference_points,
                     candidate_reference_valid,
                     candidate_audits,
+                    candidate_identity_handles,
+                    candidate_reference_audits,
                 ) = self._sample_target_candidates(
                     masks, point_clouds, assignment.target)
             except Exception:
@@ -1988,15 +2047,51 @@ class RLBenchGTOracleProvider:
                 candidate_reference_valid = np.asarray(
                     [reference_valid], dtype=np.bool_)
                 candidate_audits = [assignment.target.audit_dict()]
+                candidate_identity_handles = [
+                    tuple(sorted(self._live_entity_handles(assignment.target)))]
+                candidate_reference_audits = [
+                    None if assignment.reference is None
+                    else assignment.reference.audit_dict()]
 
-        result["oracle_target_object_points"] = target_points
-        result["oracle_reference_object_points"] = reference_points
-        result["oracle_target_object_valid"] = np.asarray(target_valid, dtype=np.bool_)
-        result["oracle_reference_object_valid"] = np.asarray(reference_valid, dtype=np.bool_)
+        result["oracle_task_target_object_points"] = task_target_points
+        result["oracle_task_reference_object_points"] = task_reference_points
+        result["oracle_task_target_object_valid"] = np.asarray(
+            task_target_valid, dtype=np.bool_)
+        result["oracle_task_reference_object_valid"] = np.asarray(
+            task_reference_valid, dtype=np.bool_)
         if self.emit_action_anchor_candidates:
             grasped_candidate_index, grasped_candidate_known = (
                 self._grasped_candidate_index(
-                    self._grasped_object_handles(), candidate_audits))
+                    self._grasped_object_handles(),
+                    candidate_audits,
+                    candidate_identity_handles,
+                ))
+            policy_index = self._policy_target_candidate_index
+            if self.follow_policy_target and policy_index is None:
+                # There is no policy-selected Target before the first action.
+                # Do not expose the task-phase Target through the runtime GT
+                # fields; the agent performs its neutral/base first pass and
+                # injects the selected candidate for the same action itself.
+                policy_index = -1
+            if policy_index is not None:
+                effective_target_candidate_index = int(policy_index)
+                if (
+                    0 <= policy_index < len(candidate_audits)
+                    and bool(candidate_valid[policy_index])
+                ):
+                    effective_target_points = candidate_points[policy_index]
+                    effective_target_valid = True
+                    effective_target_audit = candidate_audits[policy_index]
+                    if bool(candidate_reference_valid[policy_index]):
+                        effective_reference_points = (
+                            candidate_reference_points[policy_index])
+                        effective_reference_valid = True
+                        effective_reference_audit = (
+                            candidate_reference_audits[policy_index])
+                else:
+                    effective_target_points = np.zeros_like(task_target_points)
+                    effective_target_valid = False
+                    effective_target_audit = None
             result["oracle_target_candidate_points"] = candidate_points
             result["oracle_target_candidate_valid"] = candidate_valid
             result["oracle_target_candidate_phase_indices"] = candidate_phase_indices
@@ -2009,6 +2104,15 @@ class RLBenchGTOracleProvider:
                 grasped_candidate_index, dtype=np.int64)
             result["oracle_grasped_target_candidate_known"] = np.asarray(
                 grasped_candidate_known, dtype=np.bool_)
+            result["oracle_effective_target_candidate_index"] = np.asarray(
+                effective_target_candidate_index, dtype=np.int64)
+
+        result["oracle_target_object_points"] = effective_target_points
+        result["oracle_reference_object_points"] = effective_reference_points
+        result["oracle_target_object_valid"] = np.asarray(
+            effective_target_valid, dtype=np.bool_)
+        result["oracle_reference_object_valid"] = np.asarray(
+            effective_reference_valid, dtype=np.bool_)
 
         self.stats["steps_total"] += 1
         self.stats["target_valid"] += int(target_valid)
@@ -2043,6 +2147,9 @@ class RLBenchGTOracleProvider:
                 grasped_candidate_index)
             entry["grasped_target_candidate_known"] = bool(
                 grasped_candidate_known)
+            entry["effective_target_candidate_index"] = int(
+                effective_target_candidate_index)
+            entry["effective_target"] = effective_target_audit
             if self._step_index == 0:
                 labels = ", ".join(
                     f'{index}:{candidate["semantic_name"]}'
@@ -2061,12 +2168,17 @@ class RLBenchGTOracleProvider:
                 obs,
                 assignment,
                 masks,
-                target_points,
-                reference_points,
-                target_valid,
-                reference_valid,
+                effective_target_points,
+                effective_reference_points,
+                effective_target_valid,
+                effective_reference_valid,
                 completion_satisfied,
                 phase_advanced,
+                candidate_audits,
+                grasped_candidate_index,
+                grasped_candidate_known,
+                effective_target_audit,
+                effective_reference_audit,
             )
         self._step_index += 1
         return result
@@ -2406,13 +2518,38 @@ class RLBenchGTOracleProvider:
         reference_valid,
         completion_satisfied,
         phase_advanced,
+        candidate_audits=(),
+        grasped_candidate_index=-1,
+        grasped_candidate_known=False,
+        effective_target_audit=None,
+        effective_reference_audit=None,
     ):
         panels = []
-        target_handles = np.asarray(assignment.target.handles, dtype=np.int64)
-        reference_handles = np.asarray(
-            () if assignment.reference is None else assignment.reference.handles,
+        task_target_name = assignment.target.semantic_name
+        effective_target_name = (
+            'none' if effective_target_audit is None
+            else str(effective_target_audit.get('semantic_name', 'unknown')))
+        target_handles = np.asarray(
+            () if effective_target_audit is None
+            else effective_target_audit.get('handles', ()),
             dtype=np.int64,
         )
+        reference_handles = np.asarray(
+            () if effective_reference_audit is None
+            else effective_reference_audit.get('handles', ()),
+            dtype=np.int64,
+        )
+        grasped_handles = np.asarray((), dtype=np.int64)
+        grasped_name = 'none'
+        if (
+            grasped_candidate_known
+            and 0 <= grasped_candidate_index < len(candidate_audits)
+        ):
+            grasped_candidate = candidate_audits[grasped_candidate_index]
+            grasped_handles = np.asarray(
+                grasped_candidate.get('handles', ()), dtype=np.int64)
+            grasped_name = str(
+                grasped_candidate.get('semantic_name', grasped_candidate_index))
         first_detail = None
         for camera in self.cameras:
             rgb = getattr(obs, f"{camera}_rgb", None)
@@ -2430,11 +2567,13 @@ class RLBenchGTOracleProvider:
                 (
                     (target_handles, (255, 64, 64)),
                     (reference_handles, (64, 128, 255)),
+                    (grasped_handles, (64, 220, 96)),
                 ),
             )
             panels.append(
                 self._labeled_panel(
-                    overlay, f"{camera}: 30% RGB + 70% T/R layers",
+                    overlay,
+                    f'{camera}: GT T/R + green actual-grasp layer',
                 )
             )
             if first_detail is None:
@@ -2452,18 +2591,25 @@ class RLBenchGTOracleProvider:
             image, mask, ((target_handles, (255, 64, 64)),))
         reference_overlay = self._role_overlay(
             image, mask, ((reference_handles, (64, 128, 255)),))
+        grasped_overlay = self._role_overlay(
+            image, mask, ((grasped_handles, (64, 220, 96)),))
         panels.extend(
             [
                 self._labeled_panel(image, f"{camera}: original"),
                 self._labeled_panel(palette, f"{camera}: instance handles"),
                 self._labeled_panel(
-                    target_overlay, f"{camera}: 30% RGB + 70% Target layer"),
+                    target_overlay,
+                    f'{camera}: 30% RGB + 70% GT Target layer'),
                 self._labeled_panel(
                     reference_overlay,
                     f"{camera}: 30% RGB + 70% Reference layer",
                 ),
             ]
         )
+        panels.append(self._labeled_panel(
+            grasped_overlay,
+            f'{camera}: actual grasp Target={grasped_name}',
+        ))
         width = max(panel.width for panel in panels)
         height = max(panel.height for panel in panels)
         panels.extend(
@@ -2493,11 +2639,15 @@ class RLBenchGTOracleProvider:
                 ((index % columns) * width, (index // columns) * height + 34),
             )
         draw = ImageDraw.Draw(canvas)
-        reference_name = "none" if assignment.reference is None else assignment.reference.semantic_name
+        reference_name = (
+            'none' if effective_reference_audit is None
+            else str(effective_reference_audit.get('semantic_name', 'unknown')))
         draw.text(
             (4, 4),
-            f"{assignment.phase_id}  T={assignment.target.semantic_name}  "
-            f"R={reference_name}  condition={int(completion_satisfied)}  "
+            f'{assignment.phase_id}  GT_T={effective_target_name}  '
+            f'task_T={task_target_name}  '
+            f'R={reference_name}  actual_grasp={grasped_name}  '
+            f'condition={int(completion_satisfied)}  '
             f"advanced={int(phase_advanced)}",
             fill=(255, 255, 255),
         )

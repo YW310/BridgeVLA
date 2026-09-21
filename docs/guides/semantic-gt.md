@@ -73,9 +73,25 @@ Reference 回退为 simulator 当前 Reference。`phase=-1` 仍表示该 Target 
 该路径改变 policy action，应与纯诊断模式分别评估；它是 BridgeVLA-aligned predicted
 conditioning，不再把所选 Target 称为 Oracle GT。
 
-`ORACLE_DEBUG` 图仍审计 simulator 的任务 GT，不能代表第二次前向实际使用的对象；对齐后的
-residual 以 `[BridgeVLAAlignedObjects] locked=...` 为准，打开 `VISUALIZE=1` 后生成的
-`o2_target_prior` / `o2_reference_prior` 才对应最终前向输入。
+`BRIDGEVLA_ALIGNED_OBJECTS=1` 时，运行时 `oracle_target_object_points` 跟随
+BridgeVLA lock，作为 residual 的 effective GT；配对 Reference 可见时同步切换，否则回退到
+当前 task Reference。原始任务阶段标注另存为 `oracle_task_target_*` /
+`oracle_task_reference_*`，不参与 residual。provider 在 `agent.act()` 后、执行动作前接收
+锁定候选，因此下一观测与刚执行动作使用同一 effective GT。首次产生 lock 前，运行时
+Target 为 invalid；首个动作由 agent 内部的 base-forward -> 候选归属 -> conditioned-forward
+完成同一步对齐，不使用 task Target 填充。
+
+`ORACLE_DEBUG` 图中的红色 `GT_T` 是 effective GT，蓝色是配对 Reference，标题中的
+`task_T` 保留原始任务 GT；绿色 `actual grasp Target` 显示 simulator 确认的夹取物体。
+对齐后的 residual 以 `[BridgeVLAAlignedObjects] locked=...` 为准；打开
+`VISUALIZE=1` 后，只有 `used=true` 才生成
+`policy_target_prior_overlay_*.png`，它对应最终前向实际使用的 Target。无可信锁时只生成
+`o2_unavailable.txt`，不会再把被屏蔽的 Oracle prior 画成 policy Target。
+
+夹爪闭合动作在当前 `act()` 返回后才由 simulator 执行，因此实际 grasp 最早在下一步观测
+中确认；从该步起应看到 `grasped=locked`、`lock_source=2`，绿色 actual-grasp layer 与
+`policy_target_prior` 一致。grasp 匹配使用 live handle namespace，并展开被抓对象的整棵
+descendant tree，避免 root/visual-shape handle 或 stored-mask 映射不同导致 `grasped=-1`。
 
 本流程把 RLBench 当前 phase 的语义角色写入 replay，供 Oracle adapter、relation anchor，
 以及 internal-slot 的角色 heatmap 监督使用。它不会生成完整场景 object slots，也不会补全
