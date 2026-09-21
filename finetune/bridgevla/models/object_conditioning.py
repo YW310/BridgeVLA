@@ -106,6 +106,45 @@ def active_semantic_target_mask(candidate_valid, candidate_phase_indices):
     return candidate_valid.bool() & candidate_phase_indices.ge(0)
 
 
+def pending_target_candidate_mask(
+    candidate_valid, candidate_phase_indices, current_candidate_indices,
+    gripper_open,
+):
+    """Suppress completed ordered Targets after release.
+
+    Phase -1 candidates remain available as BridgeVLA-attributed alternatives.
+    A completed ordered candidate is retained while the gripper is closed so an
+    object that is still physically held cannot switch early.
+    """
+    if candidate_valid.shape != candidate_phase_indices.shape:
+        raise ValueError(
+            'candidate_valid and candidate_phase_indices must have the same shape')
+    batch_size, candidate_count = candidate_valid.shape
+    if current_candidate_indices.shape != (batch_size,):
+        raise ValueError('current_candidate_indices must have shape [B]')
+    if gripper_open.shape != (batch_size,):
+        raise ValueError('gripper_open must have shape [B]')
+
+    current_candidate_indices = current_candidate_indices.long()
+    current_known = (
+        current_candidate_indices.ge(0)
+        & current_candidate_indices.lt(candidate_count)
+    )
+    safe_indices = current_candidate_indices.clamp(
+        min=0, max=max(candidate_count - 1, 0))
+    current_phase = candidate_phase_indices.gather(
+        1, safe_indices[:, None]).squeeze(1)
+    current_phase = torch.where(
+        current_known, current_phase, torch.full_like(current_phase, -1))
+    completed = (
+        candidate_phase_indices.ge(0)
+        & candidate_phase_indices.lt(current_phase[:, None])
+    )
+    suppress_completed = (
+        gripper_open.bool()[:, None] & current_phase.ge(0)[:, None])
+    return candidate_valid.bool() & ~(completed & suppress_completed)
+
+
 def reference_null_loss(probability, present=None, known=None):
     """Supervise the actual NULL posterior, never geometric invalidity."""
     if present is None or known is None:

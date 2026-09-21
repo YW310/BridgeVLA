@@ -2104,8 +2104,35 @@ class RLBenchGTOracleProvider:
                     candidate_identity_handles,
                 ))
             policy_index = self._policy_target_candidate_index
+            gripper_open = bool(
+                float(getattr(obs, 'gripper_open', 0.0)) > 0.5)
+            completed_policy_target_released = False
+            if (
+                self.follow_policy_target
+                and gripper_open
+                and policy_index is not None
+                and 0 <= policy_index < len(candidate_phase_indices)
+            ):
+                policy_phase = int(candidate_phase_indices[policy_index])
+                completed_policy_target_released = (
+                    policy_phase >= 0 and policy_phase < self._phase_index)
+                if completed_policy_target_released:
+                    previous_policy_index = policy_index
+                    policy_index = -1
+                    self._policy_target_candidate_index = None
+                    effective_target_source = 'completed_target_released'
+                    self._log_diagnostic(
+                        '[EffectiveTarget] released completed policy Target: '
+                        f'policy={previous_policy_index}, '
+                        f'policy_phase={policy_phase}, '
+                        f'current_phase={self._phase_index}',
+                    )
             if self.follow_policy_target:
-                if grasped_candidate_known and grasped_candidate_index >= 0:
+                if (
+                    not gripper_open
+                    and grasped_candidate_known
+                    and grasped_candidate_index >= 0
+                ):
                     # This observation is produced after env.step(). Once the
                     # simulator confirms a grasp, the physical result is more
                     # authoritative than the pre-action heatmap intention.
@@ -2119,6 +2146,8 @@ class RLBenchGTOracleProvider:
                             f"policy lock: policy={previous_policy_index}, "
                             f"actual_grasp={policy_index}",
                         )
+                elif completed_policy_target_released:
+                    pass
                 elif policy_index is None:
                     # There is no policy-selected Target before the first
                     # action. Do not leak the task-phase Target.

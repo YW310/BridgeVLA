@@ -46,6 +46,7 @@ from bridgevla.models.oracle_prior import (
 from bridgevla.models.optimizer_utils import parameter_learning_rate
 from bridgevla.models.object_conditioning import (
     active_semantic_target_mask,
+    pending_target_candidate_mask,
     reference_null_loss,
     select_object_candidate_from_waypoint,
 )
@@ -1828,7 +1829,12 @@ class RVTAgent:
             observation['oracle_target_candidate_phase_indices'], 2).long()
         current_indices = latest_replay_value(
             observation['oracle_target_current_candidate_index'], 1).long()
-        eligible_targets = active_semantic_target_mask(valid, phase_indices)
+        gripper_open = latest_replay_value(
+            observation['low_dim_state'], 2).float()[:, 0] > 0.5
+        pending_targets = pending_target_candidate_mask(
+            valid, phase_indices, current_indices, gripper_open)
+        eligible_targets = active_semantic_target_mask(
+            pending_targets, phase_indices)
         oracle_current_index = int(current_indices[0].item())
         current_index = oracle_current_index
         if self.bridgevla_aligned_objects and self._bridgevla_target_lock >= 0:
@@ -1936,10 +1942,18 @@ class RVTAgent:
             observation['oracle_target_candidate_valid'], 2).bool()
         phases = latest_replay_value(
             observation['oracle_target_candidate_phase_indices'], 2).long()
+        current_indices = latest_replay_value(
+            observation['oracle_target_current_candidate_index'], 1).long()
+        gripper_open_tensor = relation_state[:, 0] > 0.5
+        pending_valid = pending_target_candidate_mask(
+            valid, phases, current_indices, gripper_open_tensor)
         base_waypoint = self._decode_action_waypoint(
             output, rev_trans, dyn_cam_info, use_base=True)
-        proposed, distance, confidence = select_object_candidate_from_waypoint(
+        raw_proposed, _, _ = select_object_candidate_from_waypoint(
             base_waypoint, candidates, valid)
+        proposed, distance, confidence = select_object_candidate_from_waypoint(
+            base_waypoint, candidates, pending_valid)
+        raw_proposed_index = int(raw_proposed[0].item())
         proposed_index = int(proposed[0].item())
 
         grasped_index = -1
@@ -1955,10 +1969,24 @@ class RVTAgent:
                 observation['oracle_grasped_target_candidate_known'], 1,
             )[0].item())
 
-        gripper_open = bool(relation_state[0, 0].item() > 0.5)
+        gripper_open = bool(gripper_open_tensor[0].item())
         released = (
             self._bridgevla_last_gripper_open is False and gripper_open)
         if released:
+            self._bridgevla_target_lock = -1
+            self._bridgevla_target_lock_source = 0
+            self._bridgevla_switch_candidate = -1
+            self._bridgevla_switch_steps = 0
+            self._bridgevla_closed_no_grasp_steps = 0
+            self._bridgevla_failed_candidate = -1
+
+        completed_lock_released = (
+            gripper_open
+            and 0 <= self._bridgevla_target_lock < valid.shape[1]
+            and bool(valid[0, self._bridgevla_target_lock].item())
+            and not bool(pending_valid[0, self._bridgevla_target_lock].item())
+        )
+        if completed_lock_released:
             self._bridgevla_target_lock = -1
             self._bridgevla_target_lock_source = 0
             self._bridgevla_switch_candidate = -1
@@ -1974,12 +2002,13 @@ class RVTAgent:
 
         recovery_reason = 0  # 1=heatmap switch, 2=failed/lost grasp, 3=actual grasp
         grasp_overrode_heatmap = (
-            grasped_known
+            not gripper_open
+            and grasped_known
             and grasped_index >= 0
             and self._bridgevla_target_lock != grasped_index
         )
         failed_lock_index = -1
-        if grasped_known and grasped_index >= 0:
+        if not gripper_open and grasped_known and grasped_index >= 0:
             self._bridgevla_target_lock = grasped_index
             self._bridgevla_target_lock_source = 2
             self._bridgevla_switch_candidate = -1
@@ -2020,7 +2049,7 @@ class RVTAgent:
         if can_reconsider_heatmap_lock:
             current_valid = (
                 0 <= self._bridgevla_target_lock < valid.shape[1]
-                and bool(valid[0, self._bridgevla_target_lock].item())
+                and bool(pending_valid[0, self._bridgevla_target_lock].item())
             )
             materially_better = (
                 not current_valid
@@ -2067,7 +2096,7 @@ class RVTAgent:
         locked_index = self._bridgevla_target_lock
         lock_usable = (
             0 <= locked_index < valid.shape[1]
-            and bool(valid[0, locked_index].item())
+            and bool(pending_valid[0, locked_index].item())
         )
         locked_distance = torch.full_like(distance, torch.inf)
         if lock_usable:
@@ -2093,7 +2122,14 @@ class RVTAgent:
 
         phase_index = (
             int(phases[0, locked_index].item()) if lock_usable else -1)
+        completed_candidate_blocked = (
+            raw_proposed_index >= 0
+            and bool(valid[0, raw_proposed_index].item())
+            and not bool(pending_valid[0, raw_proposed_index].item())
+        )
         elements = {
+            'bridgevla_aligned_target_raw_proposed_index': np.asarray(
+                raw_proposed_index, dtype=np.int64),
             'bridgevla_aligned_target_proposed_index': np.asarray(
                 proposed_index, dtype=np.int64),
             'bridgevla_aligned_target_locked_index': np.asarray(
@@ -2134,6 +2170,10 @@ class RVTAgent:
                 gripper_open, dtype=np.bool_),
             'bridgevla_aligned_released_lock': np.asarray(
                 released, dtype=np.bool_),
+            'bridgevla_aligned_completed_lock_released': np.asarray(
+                completed_lock_released, dtype=np.bool_),
+            'bridgevla_aligned_completed_candidate_blocked': np.asarray(
+                completed_candidate_blocked, dtype=np.bool_),
         }
         return aligned_points, aligned_valid, elements
 
@@ -2166,6 +2206,7 @@ class RVTAgent:
                 'oracle_target_candidate_points',
                 'oracle_target_candidate_valid',
                 'oracle_target_candidate_phase_indices',
+                'oracle_target_current_candidate_index',
             )
             missing = [key for key in required if key not in observation]
             if missing:
@@ -2317,9 +2358,14 @@ class RVTAgent:
                 'bridgevla_aligned_failed_candidate_index'])
             failed_blocked = bool(bridgevla_alignment_elements[
                 'bridgevla_aligned_failed_candidate_blocked'])
+            raw_proposed = int(bridgevla_alignment_elements[
+                'bridgevla_aligned_target_raw_proposed_index'])
+            completed_blocked = bool(bridgevla_alignment_elements[
+                'bridgevla_aligned_completed_candidate_blocked'])
             self._log_evaluation_diagnostic(
                 '[BridgeVLAAlignedObjects] '
                 f'step={self._heatmap_action_anchor_step - 1} '
+                f'raw_proposed={raw_proposed} '
                 f'proposed={int(bridgevla_alignment_elements["bridgevla_aligned_target_proposed_index"])} '
                 f'locked={int(bridgevla_alignment_elements["bridgevla_aligned_target_locked_index"])} '
                 f'phase={int(bridgevla_alignment_elements["bridgevla_aligned_target_phase_index"])} '
@@ -2333,7 +2379,8 @@ class RVTAgent:
                 f'closed_no_grasp={int(bridgevla_alignment_elements["bridgevla_aligned_closed_no_grasp_steps"])} '
                 f'reference_source={int(bridgevla_alignment_elements["bridgevla_aligned_reference_source"])} '
                 f'failed_candidate={failed_candidate} '
-                f'failed_blocked={failed_blocked}'
+                f'failed_blocked={failed_blocked} '
+                f'completed_blocked={completed_blocked}'
             )
         if visualize:
             self._log_evaluation_diagnostic(
