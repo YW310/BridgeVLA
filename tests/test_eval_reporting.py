@@ -123,6 +123,10 @@ def test_eval_wires_separate_manifest_csv_and_tensorboard_namespace():
     assert "Path(log_dir) / 'evaluation_diagnostics.log'" in source
     assert "'evaluation_summary.json'" in source
     assert 'requested=eval_episodes' in source
+    assert 'task_episode_indices.append(ep)' in source
+    assert 'f"episode_{episode_idx}_{outcome}_{lang_goal}.mp4"' in source
+    assert 'task_rewards[video_cnt] > 99' not in source
+    assert 'Expected one video per completed episode' in source
     assert '"w", newline=' in source
     assert 'successful episodes' in EVAL_FIELDS
     assert 'completed episodes' in EVAL_FIELDS

@@ -127,6 +127,11 @@ sparse terminal reward 约定，以 `reward > 0.99` 判定 episode 成功，不�
 中途异常不会被悄悄当作失败或缩小分母。分子、分母和 `total_transitions` 均显式写入
 CSV/JSON，便于核对。
 
+开启 `SAVE_VIDEO=1` 时，视频使用相同的 RLBench episode seed 命名为
+`episode_N_success_<language_goal>.mp4` 或 `episode_N_fail_<language_goal>.mp4`。
+这里的 `N` 与 `episode_results/<task>/episode_N.json`、`START_EPISODE` 完全一致；
+success/fail 同样使用 `reward > 0.99`，不再使用独立的成功/失败视频计数。
+
 本流程把 RLBench 当前 phase 的语义角色写入 replay，供 Oracle adapter、relation anchor，
 以及 internal-slot 的角色 heatmap 监督使用。它不会生成完整场景 object slots，也不会补全
 被真实相机遮挡的物体表面。

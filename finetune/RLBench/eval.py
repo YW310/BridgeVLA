@@ -496,6 +496,7 @@ def eval(
     for task_id in range(num_tasks):
         task_rewards = []
         task_lengths = []
+        task_episode_indices = []
         logical_transitions = 0
         language_goals=[]
         retry_attempts_used = 0
@@ -553,6 +554,7 @@ def eval(
                     attempts_used = resume_info['attempts_used']
                     task_rewards.append(reward)
                     task_lengths.append(episode_steps)
+                    task_episode_indices.append(ep)
                     logical_transitions += episode_steps
                     retry_attempts_used += attempts_used - 1
                     if rlbench_episode_success(reward) and attempts_used > 1:
@@ -717,6 +719,7 @@ def eval(
             )
             task_rewards.append(reward)
             task_lengths.append(episode_steps)
+            task_episode_indices.append(ep)
             logical_transitions += episode_logical_transitions
             if oracle_provider is not None and replay_ground_truth:
                 # Persist every completed expert-replay episode.  A later
@@ -808,8 +811,7 @@ def eval(
                         'schema_version': 'rlbench_eval_summary_v1',
                         **result,
                         'start_episode': start_episode,
-                        'episode_indices': list(range(
-                            start_episode, start_episode + eval_episodes)),
+                        'episode_indices': list(task_episode_indices),
                         'episode_rewards': [float(value) for value in task_rewards],
                         'episode_lengths': list(task_lengths),
                         'run_signature_sha256': eval_resume_signature_sha256,
@@ -831,7 +833,7 @@ def eval(
 
         scores.append(task_score)
 
-        if save_video:
+        if save_video and manifest_phase_source != "demo_events":
             video_image_folder = f"./tmp/{model_name}/{task_name}"
             palette_image_folder = f"./tmp/{model_name}/palette_folder"
             palette_image_path=os.path.join(palette_image_folder,"palette.png")
@@ -842,27 +844,28 @@ def eval(
             else:
                 record_folder = os.path.join(visualize_root_dir,task_name,"videos")
             os.makedirs(record_folder, exist_ok=True)
-            video_success_cnt = 0
-            video_fail_cnt = 0
             video_cnt = 0
             for summary in summaries:
                 if isinstance(summary, VideoSummary):
+                    if video_cnt >= len(task_episode_indices):
+                        raise RuntimeError(
+                            f'Video summary count exceeds completed episodes for '
+                            f'{task_name}: video_index={video_cnt}, '
+                            f'episodes={task_episode_indices}')
                     lang_goal = language_goals.pop(0)
                     lang_goal=lang_goal.replace(" ", "_")
                     video = deepcopy(summary.value)
                     video = np.transpose(video, (0, 2, 3, 1))
                     video = video[:, :, :, ::-1]
-                    if task_rewards[video_cnt] > 99:
-                        video_path = os.path.join(
-                            record_folder,
-                            f"{lang_goal}_success_{video_success_cnt}.mp4",
-                        )
-                        video_success_cnt += 1
-                    else:
-                        video_path = os.path.join(
-                            record_folder, f"{lang_goal}_fail_{video_fail_cnt}.mp4"
-                        )
-                        video_fail_cnt += 1
+                    episode_idx = task_episode_indices[video_cnt]
+                    outcome = (
+                        'success'
+                        if rlbench_episode_success(task_rewards[video_cnt])
+                        else 'fail')
+                    video_path = os.path.join(
+                        record_folder,
+                        f"episode_{episode_idx}_{outcome}_{lang_goal}.mp4",
+                    )
                     video_cnt += 1
                     os.makedirs(video_image_folder, exist_ok=True)
                     os.makedirs(palette_image_folder, exist_ok=True)
@@ -885,6 +888,10 @@ def eval(
                     print(f'video saved - {task_name}')
                     os.remove(palette_image_path)
                     shutil.rmtree(video_image_folder)
+            if video_cnt != len(task_episode_indices):
+                raise RuntimeError(
+                    f'Expected one video per completed episode for {task_name}; '
+                    f'videos={video_cnt}, episodes={task_episode_indices}')
 
     if oracle_provider is not None:
         oracle_provider.dump(
