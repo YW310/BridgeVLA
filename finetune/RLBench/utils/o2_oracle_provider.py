@@ -2082,12 +2082,6 @@ class RLBenchGTOracleProvider:
                     effective_target_points = candidate_points[policy_index]
                     effective_target_valid = True
                     effective_target_audit = candidate_audits[policy_index]
-                    if bool(candidate_reference_valid[policy_index]):
-                        effective_reference_points = (
-                            candidate_reference_points[policy_index])
-                        effective_reference_valid = True
-                        effective_reference_audit = (
-                            candidate_reference_audits[policy_index])
                 else:
                     effective_target_points = np.zeros_like(task_target_points)
                     effective_target_valid = False

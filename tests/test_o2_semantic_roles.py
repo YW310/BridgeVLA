@@ -533,6 +533,10 @@ def test_policy_target_becomes_effective_gt_without_overwriting_task_gt():
     assert aligned["oracle_target_object_valid"]
     assert aligned["oracle_reference_object_valid"]
     assert aligned["oracle_effective_target_candidate_index"] == 2
+    np.testing.assert_array_equal(
+        aligned["oracle_reference_object_points"],
+        aligned["oracle_task_reference_object_points"],
+    )
     assert not np.array_equal(
         aligned["oracle_target_object_points"],
         aligned["oracle_task_target_object_points"],

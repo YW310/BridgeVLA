@@ -1019,7 +1019,8 @@ def _eval(args):
                     print(
                         "Evaluation policy: simulator Target residual follows "
                         "the base BridgeVLA heatmap with gripper-cycle locking; "
-                        "a phase-paired Reference is used when available. This "
+                        "Reference remains the current simulator relation/phase "
+                        "Reference. This "
                         "is predicted conditioning, not Oracle Target GT."
                     )
         elif agent is not None and agent.oracle_prior_enabled:

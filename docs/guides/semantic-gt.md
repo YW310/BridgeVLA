@@ -65,17 +65,16 @@ grasp 覆盖；`failed_blocked=true` 表示当前 heatmap 又指向本周期已�
 评估入口会强制设置 `oracle_compute_base=True`，因此不依赖训练配置中的
 `oracle_log_base_loss`；checkpoint 无需重新训练。
 
-存在可信 Target 锁时，优先使用配置中与其可验证配对的 Reference；无法解析配对关系时，
-Reference 回退为 simulator 当前 Reference。`phase=-1` 仍表示该 Target 不属于当前 episode，
-而不再意味着一定缺少 Reference 配对。日志 `[BridgeVLAAlignedObjects]` 中
-`reference_source=1` 表示使用配对 Reference，`0` 表示使用当前 Reference；若
-`used=false`，T/R residual 整体关闭，此时该字段不表示发生了 Oracle 回退。
+存在可信 Target 锁时，只替换 Target；Reference 始终保留 simulator 当前
+relation/phase 的 Reference。Target candidate 的序号不定义 Reference，避免把“操作哪个物体”
+错误解释成“目标位置也按相同序号切换”。`phase=-1` 只表示该 Target 不属于当前 task phase。
+若 `used=false`，T/R residual 整体关闭，不发生 task Target 回退。
 该路径改变 policy action，应与纯诊断模式分别评估；它是 BridgeVLA-aligned predicted
 conditioning，不再把所选 Target 称为 Oracle GT。
 
 `BRIDGEVLA_ALIGNED_OBJECTS=1` 时，运行时 `oracle_target_object_points` 跟随
-BridgeVLA lock，作为 residual 的 effective GT；配对 Reference 可见时同步切换，否则回退到
-当前 task Reference。原始任务阶段标注另存为 `oracle_task_target_*` /
+BridgeVLA lock，作为 residual 的 effective GT；Reference 保持当前 task Reference。
+原始任务阶段标注另存为 `oracle_task_target_*` /
 `oracle_task_reference_*`，不参与 residual。provider 在 `agent.act()` 后、执行动作前接收
 锁定候选，因此下一观测与刚执行动作使用同一 effective GT。首次产生 lock 前，运行时
 Target 为 invalid；首个动作由 agent 内部的 base-forward -> 候选归属 -> conditioned-forward

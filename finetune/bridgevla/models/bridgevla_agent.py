@@ -1905,8 +1905,7 @@ class RVTAgent:
     @torch.no_grad()
     def _bridgevla_aligned_relation(
         self, output, observation, relation_state, oracle_points, oracle_valid,
-        candidate_points_local, candidate_reference_points_local,
-        rev_trans, dyn_cam_info,
+        candidate_points_local, rev_trans, dyn_cam_info,
     ):
         """Select residual T/R geometry from the base BridgeVLA action intent."""
         if oracle_points is None or oracle_points.ndim != 4:
@@ -2071,22 +2070,14 @@ class RVTAgent:
         # BridgeVLA. Never fall back to the task Oracle T/R after losing a lock.
         aligned_points = oracle_points.clone()
         aligned_valid = torch.zeros_like(oracle_valid)
-        reference_source = 0  # 0=current task Reference, 1=phase-paired Reference
+        reference_source = 0  # Current simulator relation/phase Reference only.
         if lock_usable:
             aligned_points[0, 0] = candidate_points_local[0, locked_index]
             aligned_valid[0, 0] = True
-
-            paired_reference_valid = latest_replay_value(
-                observation['oracle_target_candidate_reference_valid'], 2,
-            ).bool()
-            if bool(paired_reference_valid[0, locked_index].item()):
-                aligned_points[0, 1] = (
-                    candidate_reference_points_local[0, locked_index])
-                aligned_valid[0, 1] = True
-                reference_source = 1
-            elif bool(oracle_valid[0, 1].item()):
-                # Preserve a stable task Reference only while a Target lock is
-                # active. With no Target lock both roles remain disabled.
+            if bool(oracle_valid[0, 1].item()):
+                # Target identity is selected from BridgeVLA intent, while the
+                # Reference describes the current simulator relation/goal. Do
+                # not infer a new Reference from the Target candidate index.
                 aligned_valid[0, 1] = True
 
         phase_index = (
@@ -2158,16 +2149,12 @@ class RVTAgent:
         pc_ori = pc[0].clone()
         img_feat_ori=img_feat[0].clone()
         aligned_candidate_points_world = None
-        aligned_candidate_reference_world = None
         aligned_candidate_points_local = None
-        aligned_candidate_reference_local = None
         if self.bridgevla_aligned_objects:
             required = (
                 'oracle_target_candidate_points',
                 'oracle_target_candidate_valid',
                 'oracle_target_candidate_phase_indices',
-                'oracle_target_candidate_reference_points',
-                'oracle_target_candidate_reference_valid',
             )
             missing = [key for key in required if key not in observation]
             if missing:
@@ -2176,11 +2163,7 @@ class RVTAgent:
                     'candidates: ' + ', '.join(missing))
             aligned_candidate_points_world = latest_replay_value(
                 observation['oracle_target_candidate_points'], 4).float()
-            aligned_candidate_reference_world = latest_replay_value(
-                observation['oracle_target_candidate_reference_points'], 4,
-            ).float()
             aligned_candidate_points_local = []
-            aligned_candidate_reference_local = []
         # TODO: Vectorize
         pc_new = []
         rev_trans = []
@@ -2223,25 +2206,12 @@ class RVTAgent:
                         else self.scene_bounds,
                     )[0].reshape(candidate_shape)
                 )
-                aligned_candidate_reference_local.append(
-                    mvt_utils.place_pc_in_cube(
-                        _pc,
-                        app_pc=aligned_candidate_reference_world[
-                            batch_index].reshape(-1, 3).to(
-                                device=_pc.device, dtype=_pc.dtype),
-                        with_mean_or_bounds=self._place_with_mean,
-                        scene_bounds=None if self._place_with_mean
-                        else self.scene_bounds,
-                    )[0].reshape(candidate_shape)
-                )
         pc = pc_new
         if oracle_points_local is not None:
             oracle_points = torch.stack(oracle_points_local)
         if aligned_candidate_points_local is not None:
             aligned_candidate_points_local = torch.stack(
                 aligned_candidate_points_local)
-            aligned_candidate_reference_local = torch.stack(
-                aligned_candidate_reference_local)
 
         bs = len(pc)
         nc = self._net_mod.num_img
@@ -2269,7 +2239,6 @@ class RVTAgent:
                 self._bridgevla_aligned_relation(
                     out, observation, relation_state, oracle_points, oracle_valid,
                     aligned_candidate_points_local,
-                    aligned_candidate_reference_local,
                     rev_trans, dyn_cam_info,
                 )
             )
