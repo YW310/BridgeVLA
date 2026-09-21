@@ -3,8 +3,8 @@ import unittest
 import torch
 
 from finetune.bridgevla.models.object_conditioning import (
-    action_feature_routes, pool_instruction_context, reference_null_loss,
-    soft_role_geometry,
+    action_feature_routes, hungarian_role_slot_losses,
+    pool_instruction_context, reference_null_loss, soft_role_geometry,
 )
 from finetune.bridgevla.models.oracle_prior import (
     InternalObjectSlotPredictor, OracleRelationAnchorFeatureAdapter,
@@ -12,6 +12,51 @@ from finetune.bridgevla.models.oracle_prior import (
 
 
 class ObjectConditioningTest(unittest.TestCase):
+    def test_hungarian_slots_match_swapped_target_and_reference(self):
+        mask_logits = torch.tensor([[[
+            [[-5., -5.], [-5., 5.]],
+            [[5., -5.], [-5., -5.]],
+        ]]], requires_grad=True)
+        target_masks = torch.tensor([[[
+            [[1., 0.], [0., 0.]],
+            [[0., 0.], [0., 1.]],
+        ]]])
+        role_logits = torch.zeros(1, 2, 2, requires_grad=True)
+        objectness_logits = torch.ones(1, 2, requires_grad=True)
+        losses = hungarian_role_slot_losses(
+            mask_logits, role_logits, objectness_logits, target_masks,
+            torch.tensor([[True, True]]),
+        )
+        torch.testing.assert_close(
+            losses['assignments'], torch.tensor([[1, 0]]))
+        total = losses['mask'] + losses['objectness']
+        total.backward()
+        for value in (mask_logits, role_logits, objectness_logits):
+            self.assertIsNotNone(value.grad)
+            self.assertGreater(value.grad.abs().sum().item(), 0)
+
+    def test_hungarian_slots_skip_geometrically_invalid_reference(self):
+        mask_logits = torch.tensor([[[
+            [[-5., -5.], [-5., 5.]],
+            [[5., -5.], [-5., -5.]],
+        ]]], requires_grad=True)
+        target_masks = torch.tensor([[[
+            [[1., 0.], [0., 0.]],
+            [[0., 0.], [0., 1.]],
+        ]]])
+        losses = hungarian_role_slot_losses(
+            mask_logits,
+            torch.zeros(1, 2, 2, requires_grad=True),
+            torch.ones(1, 2, requires_grad=True),
+            target_masks,
+            torch.tensor([[True, False]]),
+        )
+        torch.testing.assert_close(
+            losses['assignments'], torch.tensor([[1, -1]]))
+        losses['mask'].backward()
+        self.assertEqual(mask_logits.grad[0, 0, 0].count_nonzero().item(), 0)
+        self.assertGreater(mask_logits.grad[0, 0, 1].abs().sum().item(), 0)
+
     def test_text_pooling_excludes_left_right_padding_image_and_special_tokens(self):
         hidden = torch.tensor([[[99.], [10.], [20.], [2.], [4.], [88.]],
                                [[10.], [20.], [2.], [4.], [88.], [99.]]])

@@ -42,7 +42,7 @@ oracle_relation_anchor_rank: 16
 
 object_slots:
   enabled: True
-  num_slots: 6
+  num_slots: 2
   slot_dim: 128
   decoder_layers: 2
   num_heads: 4
@@ -61,9 +61,10 @@ rvt:
   oracle_prior_mode: none
   object_prediction_confidence_threshold: 0.25
   object_slot_mask_loss_weight: 1.0
-  # Legacy heatmap diagnostic; joint config enables semantic NULL supervision.
-  object_slot_null_loss_weight: 0.0
-  object_slot_diversity_loss_weight: 0.01
+  # Supervise semantic Reference absence separately from geometric validity.
+  object_slot_null_loss_weight: 0.25
+  # One-to-one Target/Reference matching now provides slot separation.
+  object_slot_diversity_loss_weight: 0.0
   oracle_prior_sigma: 2.0
   oracle_prior_active_role: auto
   oracle_prior_strict: False

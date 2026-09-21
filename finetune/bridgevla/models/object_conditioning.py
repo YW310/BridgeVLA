@@ -161,6 +161,130 @@ def reference_null_loss(probability, present=None, known=None):
     return (values * weights).sum() / weights.sum().clamp_min(1)
 
 
+def _exact_role_slot_assignment(cost, role_valid):
+    '''Solve the at-most-two-role assignment exactly, without SciPy.'''
+    batch, slots, roles = cost.shape
+    if roles != 2 or role_valid.shape != (batch, 2):
+        raise ValueError('cost and role_valid must describe two roles')
+    assignments = torch.full(
+        (batch, 2), -1, device=cost.device, dtype=torch.long,
+    )
+    with torch.no_grad():
+        cost = cost.detach()
+        for batch_index in range(batch):
+            valid_roles = torch.nonzero(
+                role_valid[batch_index], as_tuple=False).flatten()
+            if valid_roles.numel() == 0:
+                continue
+            if valid_roles.numel() == 1:
+                role_index = int(valid_roles[0].item())
+                assignments[batch_index, role_index] = cost[
+                    batch_index, :, role_index].argmin()
+                continue
+            if slots < 2:
+                raise ValueError('Two valid roles require at least two object slots')
+            first_role, second_role = (int(value.item()) for value in valid_roles)
+            pair_cost = (
+                cost[batch_index, :, first_role, None]
+                + cost[batch_index, None, :, second_role]
+            )
+            pair_cost.fill_diagonal_(torch.inf)
+            flat_index = int(pair_cost.argmin().item())
+            assignments[batch_index, first_role] = flat_index // slots
+            assignments[batch_index, second_role] = flat_index % slots
+    return assignments
+
+
+def hungarian_role_slot_losses(
+    mask_logits, role_logits, objectness_logits, target_masks, role_valid,
+    role_cost_weight=0.2, objectness_cost_weight=0.1,
+):
+    '''Match unordered slots to visible Target/Reference masks.
+
+    With two roles, exact pair enumeration is equivalent to Hungarian matching.
+    Assignment uses detached costs; gathered logits retain their gradients.
+    '''
+    if mask_logits.ndim != 5:
+        raise ValueError('mask_logits must have shape [B,V,K,H,W]')
+    batch, views, slots, height, width = mask_logits.shape
+    expected_targets = (batch, views, 2, height, width)
+    if target_masks.shape != expected_targets:
+        raise ValueError(
+            f'target_masks must have shape {expected_targets}, got '
+            f'{tuple(target_masks.shape)}')
+    if role_logits.shape != (batch, slots, 2):
+        raise ValueError('role_logits must have shape [B,K,2]')
+    if objectness_logits.shape != (batch, slots):
+        raise ValueError('objectness_logits must have shape [B,K]')
+    if role_valid.shape != (batch, 2):
+        raise ValueError('role_valid must have shape [B,2]')
+
+    target_masks = target_masks.to(device=mask_logits.device,
+                                   dtype=mask_logits.dtype)
+    role_valid = role_valid.to(device=mask_logits.device).bool()
+    expanded_logits = mask_logits[:, :, :, None]
+    expanded_targets = target_masks[:, :, None]
+    bce_cost = F.binary_cross_entropy_with_logits(
+        expanded_logits.expand(-1, -1, -1, 2, -1, -1),
+        expanded_targets.expand(-1, -1, slots, -1, -1, -1),
+        reduction='none',
+    ).mean(dim=(1, 4, 5))
+    probabilities = torch.sigmoid(expanded_logits)
+    intersection = (probabilities * expanded_targets).sum(dim=(1, 4, 5))
+    denominator = (
+        probabilities.sum(dim=(1, 4, 5))
+        + expanded_targets.sum(dim=(1, 4, 5))
+    )
+    dice_cost = 1.0 - (2.0 * intersection + 1.0) / (denominator + 1.0)
+    role_cost = -F.log_softmax(role_logits, dim=-1)
+    objectness_cost = F.softplus(-objectness_logits)[:, :, None]
+    matching_cost = (
+        bce_cost + dice_cost
+        + float(role_cost_weight) * role_cost
+        + float(objectness_cost_weight) * objectness_cost
+    )
+    assignments = _exact_role_slot_assignment(matching_cost, role_valid)
+    batch_indices, role_indices = torch.where(assignments.ge(0))
+    if batch_indices.numel() == 0:
+        zero = (
+            mask_logits.sum() + role_logits.sum() + objectness_logits.sum()
+        ) * 0.0
+        return {
+            'mask': zero, 'bce': zero, 'dice': zero, 'role': zero,
+            'objectness': zero, 'assignments': assignments,
+        }
+
+    slot_indices = assignments[batch_indices, role_indices]
+    selected_logits = mask_logits.permute(0, 2, 1, 3, 4)[
+        batch_indices, slot_indices]
+    selected_targets = target_masks.permute(0, 2, 1, 3, 4)[
+        batch_indices, role_indices]
+    bce_loss = F.binary_cross_entropy_with_logits(
+        selected_logits, selected_targets)
+    selected_probabilities = torch.sigmoid(selected_logits).flatten(1)
+    flattened_targets = selected_targets.flatten(1)
+    dice_loss = 1.0 - (
+        2.0 * (selected_probabilities * flattened_targets).sum(dim=1) + 1.0
+    ) / (
+        selected_probabilities.sum(dim=1) + flattened_targets.sum(dim=1) + 1.0
+    )
+    dice_loss = dice_loss.mean()
+    role_loss = F.cross_entropy(
+        role_logits[batch_indices, slot_indices], role_indices)
+    objectness_loss = F.binary_cross_entropy_with_logits(
+        objectness_logits[batch_indices, slot_indices],
+        torch.ones_like(objectness_logits[batch_indices, slot_indices]),
+    )
+    return {
+        'mask': bce_loss + dice_loss + float(role_cost_weight) * role_loss,
+        'bce': bce_loss,
+        'dice': dice_loss,
+        'role': role_loss,
+        'objectness': objectness_loss,
+        'assignments': assignments,
+    }
+
+
 def soft_role_geometry(prior, rendered_xyz, role_valid):
     """Differentiable visible-point centers/spreads in the current render frame.
 

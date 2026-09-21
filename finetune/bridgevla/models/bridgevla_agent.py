@@ -46,6 +46,7 @@ from bridgevla.models.oracle_prior import (
 from bridgevla.models.optimizer_utils import parameter_learning_rate
 from bridgevla.models.object_conditioning import (
     active_semantic_target_mask,
+    hungarian_role_slot_losses,
     pending_target_candidate_mask,
     reference_null_loss,
     select_object_candidate_from_waypoint,
@@ -878,19 +879,24 @@ class RVTAgent:
         stage_outputs = [output]
         if self.stage_two:
             stage_outputs.append(output['mvt2'])
-        sums = {'mask': 0.0, 'presence': 0.0, 'diversity': 0.0}
+        sums = {
+            'mask': 0.0, 'mask_bce': 0.0, 'mask_dice': 0.0,
+            'role': 0.0, 'objectness': 0.0,
+            'presence': 0.0, 'diversity': 0.0,
+        }
         for stage_output in stage_outputs:
             required = (
-                'object_slot_prior_logits',
                 'object_slot_target_prior',
                 'object_slot_masks',
+                'object_slot_mask_logits',
                 'object_slot_objectness_logits',
+                'object_slot_role_logits',
                 'object_slot_reference_null_probability',
             )
             missing = [key for key in required if key not in stage_output]
             if missing:
                 raise KeyError('Internal slot outputs are missing: ' + ', '.join(missing))
-            logits = stage_output['object_slot_prior_logits']
+            logits = stage_output['object_slot_mask_logits']
             target = stage_output['object_slot_target_prior'].to(
                 device=logits.device, dtype=logits.dtype,
             )
@@ -900,27 +906,18 @@ class RVTAgent:
                 size=(height, width),
                 mode='area',
             ).view(batch_size, num_views, 2, height, width)
-            mask_values = F.binary_cross_entropy_with_logits(
-                logits, target, reduction='none',
-            ).mean(dim=(1, 3, 4))
             valid = oracle_valid.to(device=logits.device).bool()
-            mask_loss = (
-                mask_values * valid.to(mask_values.dtype)
-            ).sum() / valid.sum().clamp_min(1)
-
-            objectness = stage_output['object_slot_objectness_logits']
-            any_object_logit = torch.logsumexp(objectness, dim=1) - math.log(
-                objectness.shape[1]
+            matched = hungarian_role_slot_losses(
+                logits,
+                stage_output['object_slot_role_logits'],
+                stage_output['object_slot_objectness_logits'],
+                target,
+                valid,
             )
-            # Positive visible support teaches objectness. Unavailable geometry
-            # is not a negative existence label (it may be an occluded object).
-            objectness_values = F.binary_cross_entropy_with_logits(
-                any_object_logit, torch.ones_like(any_object_logit), reduction='none',
-            )
-            support = valid[:, 0].to(objectness_values.dtype)
-            target_objectness_loss = (
-                objectness_values * support
-            ).sum() / support.sum().clamp_min(1)
+            mask_loss = matched['mask']
+            # Only matched visible roles are positive objectness examples.
+            # Geometric invalidity is not a negative existence label.
+            target_objectness_loss = matched['objectness']
             null_loss = reference_null_loss(
                 stage_output['object_slot_reference_null_probability'],
                 role_present, role_present_known,
@@ -944,6 +941,10 @@ class RVTAgent:
             else:
                 diversity_loss = overlap.new_zeros(())
             sums['mask'] = sums['mask'] + mask_loss
+            sums['mask_bce'] = sums['mask_bce'] + matched['bce']
+            sums['mask_dice'] = sums['mask_dice'] + matched['dice']
+            sums['role'] = sums['role'] + matched['role']
+            sums['objectness'] = sums['objectness'] + matched['objectness']
             sums['presence'] = sums['presence'] + presence_loss
             sums['diversity'] = sums['diversity'] + diversity_loss
         stage_count = len(stage_outputs)
@@ -1526,6 +1527,16 @@ class RVTAgent:
                 loss_log['action_total_loss'] = action_total_loss.item()
                 loss_log.update({
                     'object_slot_mask_loss': object_slot_losses['mask'].item(),
+                    'object_slot_mask_bce_loss': (
+                        object_slot_losses['mask_bce'].item()
+                    ),
+                    'object_slot_mask_dice_loss': (
+                        object_slot_losses['mask_dice'].item()
+                    ),
+                    'object_slot_role_loss': object_slot_losses['role'].item(),
+                    'object_slot_objectness_loss': (
+                        object_slot_losses['objectness'].item()
+                    ),
                     'object_slot_presence_loss': (
                         object_slot_losses['presence'].item()
                     ),
