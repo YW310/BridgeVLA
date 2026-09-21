@@ -2203,6 +2203,8 @@ class RLBenchGTOracleProvider:
                 grasped_candidate_known, dtype=np.bool_)
             result["oracle_effective_target_candidate_index"] = np.asarray(
                 effective_target_candidate_index, dtype=np.int64)
+            result['oracle_completed_policy_target_released'] = np.asarray(
+                completed_policy_target_released, dtype=np.bool_)
 
         result["oracle_target_object_points"] = effective_target_points
         result["oracle_reference_object_points"] = effective_reference_points
@@ -2250,6 +2252,8 @@ class RLBenchGTOracleProvider:
             entry["effective_target_source"] = effective_target_source
             entry["effective_reference"] = effective_reference_audit
             entry["effective_reference_source"] = effective_reference_source
+            entry['completed_policy_target_released'] = bool(
+                completed_policy_target_released)
             if self._step_index == 0:
                 labels = ", ".join(
                     f'{index}:{candidate["semantic_name"]}'

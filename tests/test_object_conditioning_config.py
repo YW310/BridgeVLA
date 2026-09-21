@@ -179,8 +179,14 @@ class ObjectConditioningConfigTest(unittest.TestCase):
         self.assertIn('phase=-1 objects are diagnostic-only', eval_source)
         self.assertIn("use_base=True", agent_source)
         self.assertIn("final_waypoint=pred_wpt", agent_source)
-        self.assertIn('active_semantic_target_mask(valid, phase_indices)',
+        self.assertIn('active_semantic_target_mask(\n            pending_targets, phase_indices)',
                       agent_source)
+        self.assertIn('pending_target_candidate_mask(', agent_source)
+        self.assertIn('completed_policy_target_released', provider_source)
+        self.assertIn('and not bool(pending_valid[0, self._bridgevla_target_lock].item())',
+                      agent_source)
+        self.assertIn('not gripper_open\n                    and grasped_candidate_known',
+                      provider_source)
         self.assertIn("f'{prefix}_reference_distance_m'", agent_source)
         rollout_source = (
             ROOT / 'finetune/bridgevla/libs/YARR/yarr/utils/rollout_generator.py'

@@ -19,6 +19,7 @@ from bridgevla.models.oracle_prior import (  # noqa: E402
 )
 from bridgevla.models.object_conditioning import (  # noqa: E402
     active_semantic_target_mask,
+    pending_target_candidate_mask,
     select_object_candidate_from_waypoint,
 )
 
@@ -76,6 +77,30 @@ class ObjectConditioningForwardTest(unittest.TestCase):
             waypoint, candidates, eligible)
         self.assertEqual(anchor.item(), 1)
         self.assertEqual(target.item(), -1)
+
+    def test_completed_ordered_target_is_suppressed_only_after_release(self):
+        valid = torch.tensor([[True, True, True, True]])
+        phases = torch.tensor([[0, 1, 2, -1]])
+        current = torch.tensor([1])
+
+        held = pending_target_candidate_mask(
+            valid, phases, current, torch.tensor([False]))
+        released = pending_target_candidate_mask(
+            valid, phases, current, torch.tensor([True]))
+
+        torch.testing.assert_close(held, valid)
+        torch.testing.assert_close(
+            released, torch.tensor([[False, True, True, True]]))
+
+    def test_pending_target_mask_keeps_all_candidates_without_current_phase(self):
+        valid = torch.tensor([[True, False, True]])
+        pending = pending_target_candidate_mask(
+            valid,
+            torch.tensor([[0, 1, -1]]),
+            torch.tensor([-1]),
+            torch.tensor([True]),
+        )
+        torch.testing.assert_close(pending, valid)
 
     def _small_policy(self):
         module = mvt_single.MVT.__new__(mvt_single.MVT)

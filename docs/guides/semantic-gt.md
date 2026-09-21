@@ -48,8 +48,9 @@ bash eval.sh
 
 该模式执行两次 action forward：第一次只读取 residual 前的 `trans_base`，从所有可见任务
 候选中选择最近 Target；第二次以该 Target 点云和 Reference 点云作为 residual 条件生成最终
-动作。Target 会跨接近、抓取和搬运保持锁定；只有更强的连续 heatmap 证据、空抓/丢失抓取、
-真实 grasp 覆盖或 gripper 重新打开才会改变锁定，避免 waypoint 转向放置点时误切换。
+动作。Target 会跨接近、抓取和搬运保持锁定；真实 grasp 可在夹爪闭合时覆盖 heatmap lock。
+当前 phase 推进且 gripper 打开后，旧有序 phase 的 Target 会立即解除并停止参与候选选择，
+避免已经成功放置的物体被再次锁回；未建立新可信锁时 residual 关闭并使用原始 BridgeVLA 动作。
 
 heatmap 只负责抓取前的意图候选。gripper 实际建立 grasp 后，provider 使用 simulator
 `get_grasped_objects()` 的 live handle 反查候选；若唯一匹配，它会覆盖 heatmap lock，后续
@@ -58,9 +59,11 @@ residual 与最终可视化跟随真实抓取物体。`lock_source=1` 表示 hea
 
 锁定不是永久的：heatmap 候选连续两步比当前锁定对象近至少 2 cm 时允许切换；夹爪闭合且
 连续两步确认未抓到候选时解除锁定，并在本次闭合周期屏蔽该失败候选，直到夹爪重新打开或
-真实 grasp 建立。无可信锁时对象 residual 完全关闭，动作回到原始 BridgeVLA，不回退到
+真实 grasp 建立。simulator 在松爪后可能短暂保留上一物体的 grasp 观测，此时不会重新锁回
+已完成 Target。无可信锁时对象 residual 完全关闭，动作回到原始 BridgeVLA，不回退到
 Oracle T/R。日志中 `recovery=1/2/3` 分别表示 heatmap 切换、空抓/丢失抓取解锁、真实
-grasp 覆盖；`failed_blocked=true` 表示当前 heatmap 又指向本周期已失败的候选。
+grasp 覆盖；`failed_blocked=true` 表示当前 heatmap 又指向本周期已失败的候选，
+`completed_blocked=true` 表示原始 heatmap 仍指向已完成候选但该候选已被屏蔽。
 
 评估入口会强制设置 `oracle_compute_base=True`，因此不依赖训练配置中的
 `oracle_log_base_loss`；checkpoint 无需重新训练。
