@@ -541,6 +541,7 @@ class RVTAgent:
         self.eval_diagnostic_log_path = None
         self.heatmap_action_anchor = False
         self.bridgevla_aligned_objects = False
+        self.bridgevla_aligned_reference = False
         self._heatmap_action_anchor_step = 0
         self._bridgevla_target_lock = -1
         self._bridgevla_target_lock_source = 0
@@ -549,6 +550,7 @@ class RVTAgent:
         self._bridgevla_switch_steps = 0
         self._bridgevla_closed_no_grasp_steps = 0
         self._bridgevla_failed_candidate = -1
+        self._bridgevla_reference_lock = -1
 
         print("Cameras:",self.cameras)
         self.move_pc_in_bound = move_pc_in_bound
@@ -1922,7 +1924,8 @@ class RVTAgent:
     @torch.no_grad()
     def _bridgevla_aligned_relation(
         self, output, observation, relation_state, oracle_points, oracle_valid,
-        candidate_points_local, rev_trans, dyn_cam_info,
+        candidate_points_local, reference_candidate_points_local,
+        rev_trans, dyn_cam_info,
     ):
         """Select residual T/R geometry from the base BridgeVLA action intent."""
         if oracle_points is None or oracle_points.ndim != 4:
@@ -1956,6 +1959,49 @@ class RVTAgent:
         raw_proposed_index = int(raw_proposed[0].item())
         proposed_index = int(proposed[0].item())
 
+        reference_selection_supported = False
+        reference_candidates = None
+        reference_valid = None
+        reference_eligible = None
+        reference_raw_proposed_index = -1
+        reference_proposed_index = -1
+        reference_distance = torch.full_like(distance, torch.inf)
+        reference_confidence = torch.zeros_like(confidence)
+        if self.bridgevla_aligned_reference:
+            reference_selection_supported = bool(latest_replay_value(
+                observation['oracle_reference_candidate_selection_supported'],
+                1,
+            )[0].item())
+            if reference_selection_supported:
+                reference_candidates = latest_replay_value(
+                    observation['oracle_target_candidate_reference_points'],
+                    4,
+                ).float()
+                reference_valid = latest_replay_value(
+                    observation['oracle_target_candidate_reference_valid'],
+                    2,
+                ).bool()
+                reference_occupied = latest_replay_value(
+                    observation['oracle_reference_candidate_occupied'],
+                    2,
+                ).bool()
+                reference_occupancy_known = latest_replay_value(
+                    observation['oracle_reference_candidate_occupancy_known'],
+                    2,
+                ).bool()
+                if reference_candidate_points_local is None:
+                    raise ValueError(
+                        'BridgeVLA-aligned Reference requires local candidate '
+                        'points')
+                if reference_candidates.shape[:2] != reference_valid.shape:
+                    raise ValueError(
+                        'Reference candidate points/valid shapes do not match')
+                if reference_occupied.shape != reference_valid.shape:
+                    raise ValueError(
+                        'Reference occupancy/valid shapes do not match')
+                reference_eligible = reference_valid & ~(
+                    reference_occupancy_known & reference_occupied)
+
         grasped_index = -1
         grasped_known = False
         if (
@@ -1979,6 +2025,7 @@ class RVTAgent:
             self._bridgevla_switch_steps = 0
             self._bridgevla_closed_no_grasp_steps = 0
             self._bridgevla_failed_candidate = -1
+            self._bridgevla_reference_lock = -1
 
         completed_lock_released = (
             gripper_open
@@ -2015,6 +2062,8 @@ class RVTAgent:
             self._bridgevla_switch_steps = 0
             self._bridgevla_closed_no_grasp_steps = 0
             self._bridgevla_failed_candidate = -1
+            if grasp_overrode_heatmap:
+                self._bridgevla_reference_lock = -1
             recovery_reason = 3 if grasp_overrode_heatmap else 0
         else:
             failed_grasp_unlock = (
@@ -2091,6 +2140,32 @@ class RVTAgent:
             self._bridgevla_closed_no_grasp_steps = 0
             if proposed_index != self._bridgevla_failed_candidate:
                 self._bridgevla_failed_candidate = -1
+
+        carrying_target = (
+            not gripper_open
+            and self._bridgevla_target_lock_source == 2
+            and self._bridgevla_target_lock >= 0
+            and not known_empty_grasp
+        )
+        if self.bridgevla_aligned_reference and reference_selection_supported:
+            if gripper_open or known_empty_grasp:
+                self._bridgevla_reference_lock = -1
+            if carrying_target:
+                reference_raw_proposed, _, _ = (
+                    select_object_candidate_from_waypoint(
+                        base_waypoint, reference_candidates, reference_valid))
+                reference_proposed, reference_distance, reference_confidence = (
+                    select_object_candidate_from_waypoint(
+                        base_waypoint, reference_candidates,
+                        reference_eligible))
+                reference_raw_proposed_index = int(
+                    reference_raw_proposed[0].item())
+                reference_proposed_index = int(reference_proposed[0].item())
+                if (
+                    self._bridgevla_reference_lock < 0
+                    and reference_proposed_index >= 0
+                ):
+                    self._bridgevla_reference_lock = reference_proposed_index
         self._bridgevla_last_gripper_open = gripper_open
 
         locked_index = self._bridgevla_target_lock
@@ -2110,11 +2185,29 @@ class RVTAgent:
         # BridgeVLA. Never fall back to the task Oracle T/R after losing a lock.
         aligned_points = oracle_points.clone()
         aligned_valid = torch.zeros_like(oracle_valid)
-        reference_source = 0  # Current simulator relation/phase Reference only.
+        # 0=sim relation, 1=BridgeVLA anchor, 2=NULL/not used.
+        reference_source = (
+            2 if self.bridgevla_aligned_reference
+            and reference_selection_supported else 0)
+        reference_lock_usable = False
         if lock_usable:
             aligned_points[0, 0] = candidate_points_local[0, locked_index]
             aligned_valid[0, 0] = True
-            if bool(oracle_valid[0, 1].item()):
+            if self.bridgevla_aligned_reference and reference_selection_supported:
+                reference_locked_index = self._bridgevla_reference_lock
+                reference_lock_usable = (
+                    carrying_target
+                    and 0 <= reference_locked_index < reference_valid.shape[1]
+                    and bool(reference_valid[0, reference_locked_index].item())
+                )
+                if reference_lock_usable:
+                    aligned_points[0, 1] = reference_candidate_points_local[
+                        0, reference_locked_index]
+                    aligned_valid[0, 1] = True
+                    reference_source = 1
+                else:
+                    reference_source = 2
+            elif bool(oracle_valid[0, 1].item()):
                 # Target identity is selected from BridgeVLA intent, while the
                 # Reference describes the current simulator relation/goal. Do
                 # not infer a new Reference from the Target candidate index.
@@ -2166,6 +2259,28 @@ class RVTAgent:
                 float(locked_distance[0].item()), dtype=np.float32),
             'bridgevla_aligned_reference_source': np.asarray(
                 reference_source, dtype=np.int64),
+            'bridgevla_aligned_reference_selection_supported': np.asarray(
+                reference_selection_supported, dtype=np.bool_),
+            'bridgevla_aligned_reference_raw_proposed_index': np.asarray(
+                reference_raw_proposed_index, dtype=np.int64),
+            'bridgevla_aligned_reference_proposed_index': np.asarray(
+                reference_proposed_index, dtype=np.int64),
+            'bridgevla_aligned_reference_locked_index': np.asarray(
+                self._bridgevla_reference_lock
+                if reference_lock_usable else -1,
+                dtype=np.int64),
+            'bridgevla_aligned_reference_distance_m': np.asarray(
+                float(reference_distance[0].item()), dtype=np.float32),
+            'bridgevla_aligned_reference_confidence': np.asarray(
+                float(reference_confidence[0].item()), dtype=np.float32),
+            'bridgevla_aligned_reference_used': np.asarray(
+                reference_lock_usable, dtype=np.bool_),
+            'bridgevla_aligned_reference_occupied_blocked': np.asarray(
+                reference_raw_proposed_index >= 0
+                and reference_raw_proposed_index != reference_proposed_index,
+                dtype=np.bool_),
+            'bridgevla_aligned_carrying_target': np.asarray(
+                carrying_target, dtype=np.bool_),
             'bridgevla_aligned_gripper_open': np.asarray(
                 gripper_open, dtype=np.bool_),
             'bridgevla_aligned_released_lock': np.asarray(
@@ -2201,13 +2316,23 @@ class RVTAgent:
         img_feat_ori=img_feat[0].clone()
         aligned_candidate_points_world = None
         aligned_candidate_points_local = None
+        aligned_reference_points_world = None
+        aligned_reference_points_local = None
         if self.bridgevla_aligned_objects:
-            required = (
+            required = [
                 'oracle_target_candidate_points',
                 'oracle_target_candidate_valid',
                 'oracle_target_candidate_phase_indices',
                 'oracle_target_current_candidate_index',
-            )
+            ]
+            if self.bridgevla_aligned_reference:
+                required.extend((
+                    'oracle_target_candidate_reference_points',
+                    'oracle_target_candidate_reference_valid',
+                    'oracle_reference_candidate_occupied',
+                    'oracle_reference_candidate_occupancy_known',
+                    'oracle_reference_candidate_selection_supported',
+                ))
             missing = [key for key in required if key not in observation]
             if missing:
                 raise KeyError(
@@ -2216,6 +2341,11 @@ class RVTAgent:
             aligned_candidate_points_world = latest_replay_value(
                 observation['oracle_target_candidate_points'], 4).float()
             aligned_candidate_points_local = []
+            if self.bridgevla_aligned_reference:
+                aligned_reference_points_world = latest_replay_value(
+                    observation['oracle_target_candidate_reference_points'], 4,
+                ).float()
+                aligned_reference_points_local = []
         # TODO: Vectorize
         pc_new = []
         rev_trans = []
@@ -2258,12 +2388,29 @@ class RVTAgent:
                         else self.scene_bounds,
                     )[0].reshape(candidate_shape)
                 )
+            if aligned_reference_points_local is not None:
+                reference_shape = tuple(
+                    aligned_reference_points_world.shape[1:])
+                aligned_reference_points_local.append(
+                    mvt_utils.place_pc_in_cube(
+                        _pc,
+                        app_pc=aligned_reference_points_world[
+                            batch_index].reshape(-1, 3).to(
+                                device=_pc.device, dtype=_pc.dtype),
+                        with_mean_or_bounds=self._place_with_mean,
+                        scene_bounds=None if self._place_with_mean
+                        else self.scene_bounds,
+                    )[0].reshape(reference_shape)
+                )
         pc = pc_new
         if oracle_points_local is not None:
             oracle_points = torch.stack(oracle_points_local)
         if aligned_candidate_points_local is not None:
             aligned_candidate_points_local = torch.stack(
                 aligned_candidate_points_local)
+        if aligned_reference_points_local is not None:
+            aligned_reference_points_local = torch.stack(
+                aligned_reference_points_local)
 
         bs = len(pc)
         nc = self._net_mod.num_img
@@ -2291,6 +2438,7 @@ class RVTAgent:
                 self._bridgevla_aligned_relation(
                     out, observation, relation_state, oracle_points, oracle_valid,
                     aligned_candidate_points_local,
+                    aligned_reference_points_local,
                     rev_trans, dyn_cam_info,
                 )
             )
@@ -2378,6 +2526,13 @@ class RVTAgent:
                 f'switch_steps={int(bridgevla_alignment_elements["bridgevla_aligned_switch_evidence_steps"])} '
                 f'closed_no_grasp={int(bridgevla_alignment_elements["bridgevla_aligned_closed_no_grasp_steps"])} '
                 f'reference_source={int(bridgevla_alignment_elements["bridgevla_aligned_reference_source"])} '
+                f'reference_supported={bool(bridgevla_alignment_elements["bridgevla_aligned_reference_selection_supported"])} '
+                f'reference_raw={int(bridgevla_alignment_elements["bridgevla_aligned_reference_raw_proposed_index"])} '
+                f'reference_proposed={int(bridgevla_alignment_elements["bridgevla_aligned_reference_proposed_index"])} '
+                f'reference_locked={int(bridgevla_alignment_elements["bridgevla_aligned_reference_locked_index"])} '
+                f'reference_used={bool(bridgevla_alignment_elements["bridgevla_aligned_reference_used"])} '
+                f'reference_occupied_blocked={bool(bridgevla_alignment_elements["bridgevla_aligned_reference_occupied_blocked"])} '
+                f'carrying_target={bool(bridgevla_alignment_elements["bridgevla_aligned_carrying_target"])} '
                 f'failed_candidate={failed_candidate} '
                 f'failed_blocked={failed_blocked} '
                 f'completed_blocked={completed_blocked}'
@@ -2599,6 +2754,7 @@ class RVTAgent:
         self._bridgevla_switch_steps = 0
         self._bridgevla_closed_no_grasp_steps = 0
         self._bridgevla_failed_candidate = -1
+        self._bridgevla_reference_lock = -1
 
     def eval(self):
         self._network.eval()

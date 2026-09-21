@@ -162,12 +162,16 @@ class ObjectConditioningConfigTest(unittest.TestCase):
         self.assertIn('"--heatmap-action-anchor"', parser_source)
         self.assertIn('"--heatmap-target-object"', parser_source)
         self.assertIn('"--bridgevla-aligned-objects"', parser_source)
+        self.assertIn('"--bridgevla-aligned-reference"', parser_source)
         self.assertIn('dest="heatmap_action_anchor"', parser_source)
         self.assertIn(
             'HEATMAP_ACTION_ANCHOR="${HEATMAP_ACTION_ANCHOR:-${HEATMAP_TARGET_OBJECT:-0}}"',
                        shell_source)
         self.assertIn('BRIDGEVLA_ALIGNED_OBJECTS="${BRIDGEVLA_ALIGNED_OBJECTS:-0}"',
                       shell_source)
+        self.assertIn(
+            'BRIDGEVLA_ALIGNED_REFERENCE="${BRIDGEVLA_ALIGNED_REFERENCE:-0}"',
+            shell_source)
         self.assertIn(
             'heatmap_action_anchor or bridgevla_aligned_objects', eval_source)
         self.assertIn('oracle_target_candidate_points', provider_source)
@@ -205,10 +209,16 @@ class ObjectConditioningConfigTest(unittest.TestCase):
         self.assertIn(
             'heatmap_action_anchor or bridgevla_aligned_objects', eval_source)
         self.assertIn('oracle_target_candidate_reference_points', provider_source)
-        self.assertNotIn(
+        self.assertIn(
             "observation['oracle_target_candidate_reference_valid']",
             agent_source,
         )
+        self.assertIn('oracle_reference_candidate_occupied', provider_source)
+        self.assertIn('self._bridgevla_reference_lock', agent_source)
+        self.assertIn('bridgevla_aligned_reference_used', agent_source)
+        self.assertIn(
+            'bridgevla_aligned_reference requires bridgevla_aligned_objects',
+            eval_source)
         self.assertIn('get_grasped_objects', provider_source)
         self.assertIn('oracle_grasped_target_candidate_index', provider_source)
         self.assertIn('bridgevla_aligned_grasp_overrode_heatmap', agent_source)

@@ -48,6 +48,7 @@ ORACLE_DEBUG="${ORACLE_DEBUG:-0}"
 ORACLE_DEBUG_INTERVAL="${ORACLE_DEBUG_INTERVAL:-1}"
 HEATMAP_ACTION_ANCHOR="${HEATMAP_ACTION_ANCHOR:-${HEATMAP_TARGET_OBJECT:-0}}"
 BRIDGEVLA_ALIGNED_OBJECTS="${BRIDGEVLA_ALIGNED_OBJECTS:-0}"
+BRIDGEVLA_ALIGNED_REFERENCE="${BRIDGEVLA_ALIGNED_REFERENCE:-0}"
 ORACLE_NUM_POINTS="${ORACLE_NUM_POINTS:-512}"
 ORACLE_HANDLE_ALIGNMENT="${ORACLE_HANDLE_ALIGNMENT:-verified}"
 ORACLE_HANDLE_MAP_DIR="${ORACLE_HANDLE_MAP_DIR:-}"
@@ -83,6 +84,7 @@ oracle_args=(
 )
 [[ "${HEATMAP_ACTION_ANCHOR}" == "1" ]] && oracle_args+=(--heatmap-action-anchor)
 [[ "${BRIDGEVLA_ALIGNED_OBJECTS}" == "1" ]] && oracle_args+=(--bridgevla-aligned-objects)
+[[ "${BRIDGEVLA_ALIGNED_REFERENCE}" == "1" ]] && oracle_args+=(--bridgevla-aligned-reference)
 exp_cfg_args=()
 [[ -n "${EXP_CFG_PATH}" ]] && exp_cfg_args+=(--exp_cfg_path "${EXP_CFG_PATH}")
 ground_truth_args=()

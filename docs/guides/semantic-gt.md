@@ -68,14 +68,35 @@ grasp 覆盖；`failed_blocked=true` 表示当前 heatmap 又指向本周期已�
 评估入口会强制设置 `oracle_compute_base=True`，因此不依赖训练配置中的
 `oracle_log_base_loss`；checkpoint 无需重新训练。
 
-存在可信 Target 锁时，只替换 Target；Reference 始终保留 simulator 当前
-relation/phase 的 Reference。Target candidate 的序号不定义 Reference，避免把“操作哪个物体”
-错误解释成“目标位置也按相同序号切换”。`phase=-1` 只表示该 Target 不属于当前 task phase。
-若 `used=false`，T/R residual 整体关闭，不发生 task Target 回退。
+默认只替换可信的 Target 锁；Reference 保留 simulator 当前 relation/phase 的 Reference。
+Target candidate 的序号不定义 Reference，避免把“操作哪个物体”错误解释成“目标位置也按相同
+序号切换”。`phase=-1` 只表示该 Target 不属于当前 task phase。若 `used=false`，T/R residual
+整体关闭，不发生 task Target 回退。
 该路径改变 policy action，应与纯诊断模式分别评估；它是 BridgeVLA-aligned predicted
 conditioning，不再把所选 Target 称为 Oracle GT。
 
-`BRIDGEVLA_ALIGNED_OBJECTS=1` 时，运行时 `oracle_target_object_points` 跟随
+#### 可选：让 `place_cups` Reference 跟随动作锚点
+
+若希望杯架位置也尽量匹配 BridgeVLA 的实际放置意图，可额外打开：
+
+```bash
+ORACLE_PROVIDER=rlbench_gt \
+BRIDGEVLA_ALIGNED_OBJECTS=1 \
+BRIDGEVLA_ALIGNED_REFERENCE=1 \
+bash eval.sh
+```
+
+该开关只在 `place_cups` 启用精确单 spoke 选择，不合并整个 holder，也不按 Target candidate
+序号配对 Reference。只有 simulator 已确认夹爪实际持有 Target 后，才用同一次 base BridgeVLA
+waypoint 在各个精确 spoke 点云中独立选择 Reference；已被其他杯子占用的 spoke 会被排除，当前
+手持杯子不会被计为占用。最近候选超过 0.20 m 时 Reference 为 NULL，不强行猜测。候选一旦建立，
+锁定到松爪，避免搬运过程中跳动。
+
+其他任务会显式报告 `selection_supported=false` 并继续使用原有 live simulator Reference。
+中间选择只写入 `evaluation_diagnostics.log`：重点检查 `reference_proposed`、
+`reference_locked`、`reference_used`、`reference_occupied_blocked` 和 `carrying_target`。
+
+仅设置 `BRIDGEVLA_ALIGNED_OBJECTS=1` 时，运行时 `oracle_target_object_points` 跟随
 BridgeVLA lock，作为 residual 的 effective GT；Reference 保持当前 task Reference。
 原始任务阶段标注另存为 `oracle_task_target_*` /
 `oracle_task_reference_*`，不参与 residual。provider 在 `agent.act()` 后、执行动作前接收

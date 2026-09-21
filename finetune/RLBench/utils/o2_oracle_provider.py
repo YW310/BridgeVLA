@@ -642,6 +642,38 @@ class RLBenchGTOracleProvider:
         return self._object_from_spec(
             self._task_spec()["first_reference"], "stack target plane")
 
+    def _place_cups_reference_candidate_occupancy(
+        self, phase_indices, excluded_handles: Iterable[int] = (),
+    ):
+        """Return per-spoke occupancy without counting the active Target cup."""
+        count = len(phase_indices)
+        occupied = np.zeros((count,), dtype=np.bool_)
+        known = np.zeros((count,), dtype=np.bool_)
+        if self._task_name != "place_cups" or self._index is None:
+            return occupied, known
+        cups = self._attr_objects("_cups")
+        if not cups:
+            return occupied, known
+        excluded = {int(handle) for handle in excluded_handles}
+        for candidate_index, phase_index in enumerate(phase_indices):
+            phase_index = int(phase_index)
+            if phase_index < 0:
+                continue
+            sensors = self._index.find(f"success_detector{phase_index}")
+            if len(sensors) != 1:
+                continue
+            known[candidate_index] = True
+            sensor = sensors[0]
+            for cup in cups:
+                cup_handles = set(
+                    SceneObjectIndex.handles_with_descendants((cup,)))
+                if cup_handles.intersection(excluded):
+                    continue
+                if _sensor_detects(sensor, cup):
+                    occupied[candidate_index] = True
+                    break
+        return occupied, known
+
     def _task_spec(self) -> Mapping[str, object]:
         try:
             return self.task_specs[self._task_name]
@@ -2189,6 +2221,20 @@ class RLBenchGTOracleProvider:
                             live_reference, masks, point_clouds))
                     effective_reference_audit = live_reference.audit_dict()
                     effective_reference_source = "live_stack_top"
+            excluded_reference_occupancy_handles = ()
+            if (
+                0 <= effective_target_candidate_index
+                < len(candidate_identity_handles)
+            ):
+                excluded_reference_occupancy_handles = (
+                    candidate_identity_handles[effective_target_candidate_index])
+            (
+                reference_candidate_occupied,
+                reference_candidate_occupancy_known,
+            ) = self._place_cups_reference_candidate_occupancy(
+                candidate_phase_indices,
+                excluded_reference_occupancy_handles,
+            )
             result["oracle_target_candidate_points"] = candidate_points
             result["oracle_target_candidate_valid"] = candidate_valid
             result["oracle_target_candidate_phase_indices"] = candidate_phase_indices
@@ -2197,6 +2243,12 @@ class RLBenchGTOracleProvider:
                 candidate_reference_points)
             result["oracle_target_candidate_reference_valid"] = (
                 candidate_reference_valid)
+            result["oracle_reference_candidate_occupied"] = (
+                reference_candidate_occupied)
+            result["oracle_reference_candidate_occupancy_known"] = (
+                reference_candidate_occupancy_known)
+            result["oracle_reference_candidate_selection_supported"] = np.asarray(
+                self._task_name == "place_cups", dtype=np.bool_)
             result["oracle_grasped_target_candidate_index"] = np.asarray(
                 grasped_candidate_index, dtype=np.int64)
             result["oracle_grasped_target_candidate_known"] = np.asarray(

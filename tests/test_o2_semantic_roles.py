@@ -509,6 +509,49 @@ def test_place_cups_reference_does_not_absorb_descendant_spokes():
     assert phase1.reference.handles == (21,)
 
 
+def test_place_cups_reference_occupancy_excludes_active_target():
+    cups = [FakeObject(f"mug{i}", 10 + i) for i in range(3)]
+    spokes = [
+        FakeObject(f"place_cups_holder_spoke{i}", 20 + i)
+        for i in range(3)]
+    sensors = [
+        FakeSensor("success_detector0", 30, detected_handles=(10,)),
+        FakeSensor("success_detector1", 31, detected_handles=(11,)),
+        FakeSensor("success_detector2", 32),
+    ]
+    task = FakeTask(cups + spokes + sensors)
+    task._cups = cups
+    task._spokes = spokes
+    task._index = 2
+    task._on_peg_conditions = [
+        FakeCondition(), FakeCondition(), FakeCondition()]
+    value = RLBenchGTOracleProvider(
+        ROLE_CONFIG,
+        cameras=("front",),
+        num_points=8,
+        strict=True,
+        emit_action_anchor_candidates=True,
+        follow_policy_target=True,
+    )
+    value.reset(SimpleNamespace(_task=task), "place_cups", 0, 0)
+    value.set_policy_target_candidate(1)
+
+    output = value.enrich(
+        observation([[10, 11, 12], [20, 21, 22]], gripper_open=0.0),
+        {},
+    )
+
+    assert output["oracle_reference_candidate_selection_supported"]
+    np.testing.assert_array_equal(
+        output["oracle_reference_candidate_occupancy_known"],
+        [True, True, True],
+    )
+    np.testing.assert_array_equal(
+        output["oracle_reference_candidate_occupied"],
+        [True, False, False],
+    )
+
+
 def test_policy_target_becomes_effective_gt_without_overwriting_task_gt():
     cups = [FakeObject(f"mug{i}", 10 + i) for i in range(3)]
     spokes = [

@@ -269,6 +269,7 @@ def eval(
     oracle_debug_interval=1,
     heatmap_action_anchor=False,
     bridgevla_aligned_objects=False,
+    bridgevla_aligned_reference=False,
     oracle_handle_alignment="verified",
     oracle_handle_map_dir=None,
     eval_resume=False,
@@ -292,6 +293,9 @@ def eval(
     if bridgevla_aligned_objects and replay_ground_truth:
         raise ValueError(
             "bridgevla_aligned_objects is only supported for policy evaluation")
+    if bridgevla_aligned_reference and not bridgevla_aligned_objects:
+        raise ValueError(
+            "bridgevla_aligned_reference requires bridgevla_aligned_objects")
     if not replay_ground_truth:
         ground_truth_retries = 0
     if manifest_phase_source == "demo_events":
@@ -347,6 +351,7 @@ def eval(
         agent.heatmap_action_anchor = bool(
             heatmap_action_anchor or bridgevla_aligned_objects)
         agent.bridgevla_aligned_objects = bool(bridgevla_aligned_objects)
+        agent.bridgevla_aligned_reference = bool(bridgevla_aligned_reference)
         agent.eval_diagnostic_log_path = (
             None if diagnostic_log_path is None else str(diagnostic_log_path))
 
@@ -964,6 +969,7 @@ def _eval(args):
                 use_input_place_with_mean=args.use_input_place_with_mean,
                 heatmap_action_anchor=args.heatmap_action_anchor,
                 bridgevla_aligned_objects=args.bridgevla_aligned_objects,
+                bridgevla_aligned_reference=args.bridgevla_aligned_reference,
                 runtime_files=(
                     Path(__file__),
                     Path(__file__).parent / "utils" / "custom_rlbench_env.py",
@@ -1052,8 +1058,16 @@ def _eval(args):
                     print(
                         "Evaluation policy: simulator Target residual follows "
                         "the base BridgeVLA heatmap with gripper-cycle locking; "
-                        "Reference remains the current simulator relation/phase "
-                        "Reference. This "
+                        + (
+                            "place_cups Reference independently follows one "
+                            "exact unoccupied BridgeVLA action anchor after "
+                            "grasp, while unsupported tasks retain the live "
+                            "simulator Reference. "
+                            if args.bridgevla_aligned_reference else
+                            "Reference remains the current simulator "
+                            "relation/phase Reference. "
+                        )
+                        + "This "
                         "is predicted conditioning, not Oracle Target GT."
                     )
         elif agent is not None and agent.oracle_prior_enabled:
@@ -1108,6 +1122,7 @@ def _eval(args):
             oracle_debug_interval=args.oracle_debug_interval,
             heatmap_action_anchor=args.heatmap_action_anchor,
             bridgevla_aligned_objects=args.bridgevla_aligned_objects,
+            bridgevla_aligned_reference=args.bridgevla_aligned_reference,
             oracle_handle_alignment=args.oracle_handle_alignment,
             oracle_handle_map_dir=args.oracle_handle_map_dir,
             eval_resume=args.eval_resume,

@@ -229,6 +229,16 @@ def get_eval_parser():
         ),
     )
     parser.add_argument(
+        "--bridgevla-aligned-reference",
+        action="store_true",
+        help=(
+            "Evaluation-only: independently select and lock one exact "
+            "Reference candidate from the base BridgeVLA waypoint. Requires "
+            "--bridgevla-aligned-objects; unsupported tasks keep their live "
+            "simulator Reference."
+        ),
+    )
+    parser.add_argument(
         "--oracle-handle-alignment", choices=("identity", "verified", "mask_verified"),
         default="verified",
         help="Stored-demo handle alignment; used only by demo_events.")
