@@ -199,6 +199,11 @@ class ObjectConditioningConfigTest(unittest.TestCase):
         self.assertIn('get_grasped_objects', provider_source)
         self.assertIn('oracle_grasped_target_candidate_index', provider_source)
         self.assertIn('bridgevla_aligned_grasp_overrode_heatmap', agent_source)
+        self.assertIn('self._bridgevla_failed_candidate', agent_source)
+        self.assertIn('blocked_failed_candidate', agent_source)
+        self.assertIn('aligned_valid = torch.zeros_like(oracle_valid)', agent_source)
+        self.assertIn(
+            'if self.bridgevla_aligned_objects else oracle_valid', agent_source)
 
     def test_shared_global_pooling_is_recomputed_and_base_diagnostic_kept(self):
         source = (ROOT / 'finetune/bridgevla/mvt/mvt_single.py').read_text(encoding='utf-8')

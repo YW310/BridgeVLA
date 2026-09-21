@@ -48,21 +48,28 @@ bash eval.sh
 
 该模式执行两次 action forward：第一次只读取 residual 前的 `trans_base`，从所有可见任务
 候选中选择最近 Target；第二次以该 Target 点云和 Reference 点云作为 residual 条件生成最终
-动作。Target 一旦选中，会跨接近、抓取和搬运保持锁定，直到观测到 gripper 从闭合重新打开，
-避免 waypoint 转向放置点时错误切换 Target。
+动作。Target 会跨接近、抓取和搬运保持锁定；只有更强的连续 heatmap 证据、空抓/丢失抓取、
+真实 grasp 覆盖或 gripper 重新打开才会改变锁定，避免 waypoint 转向放置点时误切换。
 
 heatmap 只负责抓取前的意图候选。gripper 实际建立 grasp 后，provider 使用 simulator
 `get_grasped_objects()` 的 live handle 反查候选；若唯一匹配，它会覆盖 heatmap lock，后续
 residual 与最终可视化跟随真实抓取物体。`lock_source=1` 表示 heatmap，`2` 表示实际 grasp；
 `grasp_override=true` 表示本步纠正了不一致。
 
+锁定不是永久的：heatmap 候选连续两步比当前锁定对象近至少 2 cm 时允许切换；夹爪闭合且
+连续两步确认未抓到候选时解除锁定，并在本次闭合周期屏蔽该失败候选，直到夹爪重新打开或
+真实 grasp 建立。无可信锁时对象 residual 完全关闭，动作回到原始 BridgeVLA，不回退到
+Oracle T/R。日志中 `recovery=1/2/3` 分别表示 heatmap 切换、空抓/丢失抓取解锁、真实
+grasp 覆盖；`failed_blocked=true` 表示当前 heatmap 又指向本周期已失败的候选。
+
 评估入口会强制设置 `oracle_compute_base=True`，因此不依赖训练配置中的
 `oracle_log_base_loss`；checkpoint 无需重新训练。
 
-优先使用配置中与所选 Target 可验证配对的 Reference；无法解析配对关系时，Reference 回退为
-simulator 当前 Reference。`phase=-1` 仍表示该 Target 不属于当前 episode，而不再意味着一定
-缺少 Reference 配对。日志
-`[BridgeVLAAlignedObjects]` 中 `reference_source=1` 表示使用配对 Reference，`0` 表示回退。
+存在可信 Target 锁时，优先使用配置中与其可验证配对的 Reference；无法解析配对关系时，
+Reference 回退为 simulator 当前 Reference。`phase=-1` 仍表示该 Target 不属于当前 episode，
+而不再意味着一定缺少 Reference 配对。日志 `[BridgeVLAAlignedObjects]` 中
+`reference_source=1` 表示使用配对 Reference，`0` 表示使用当前 Reference；若
+`used=false`，T/R residual 整体关闭，此时该字段不表示发生了 Oracle 回退。
 该路径改变 policy action，应与纯诊断模式分别评估；它是 BridgeVLA-aligned predicted
 conditioning，不再把所选 Target 称为 Oracle GT。
 

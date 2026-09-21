@@ -543,6 +543,10 @@ class RVTAgent:
         self._bridgevla_target_lock = -1
         self._bridgevla_target_lock_source = 0
         self._bridgevla_last_gripper_open = None
+        self._bridgevla_switch_candidate = -1
+        self._bridgevla_switch_steps = 0
+        self._bridgevla_closed_no_grasp_steps = 0
+        self._bridgevla_failed_candidate = -1
 
         print("Cameras:",self.cameras)
         self.move_pc_in_bound = move_pc_in_bound
@@ -1947,13 +1951,107 @@ class RVTAgent:
         if released:
             self._bridgevla_target_lock = -1
             self._bridgevla_target_lock_source = 0
-        grasp_overrode_heatmap = grasped_known and grasped_index >= 0
-        if grasp_overrode_heatmap:
+            self._bridgevla_switch_candidate = -1
+            self._bridgevla_switch_steps = 0
+            self._bridgevla_closed_no_grasp_steps = 0
+            self._bridgevla_failed_candidate = -1
+
+        known_empty_grasp = grasped_known and grasped_index < 0
+        if not gripper_open and known_empty_grasp:
+            self._bridgevla_closed_no_grasp_steps += 1
+        else:
+            self._bridgevla_closed_no_grasp_steps = 0
+
+        recovery_reason = 0  # 1=heatmap switch, 2=failed/lost grasp, 3=actual grasp
+        grasp_overrode_heatmap = (
+            grasped_known
+            and grasped_index >= 0
+            and self._bridgevla_target_lock != grasped_index
+        )
+        failed_lock_index = -1
+        if grasped_known and grasped_index >= 0:
             self._bridgevla_target_lock = grasped_index
             self._bridgevla_target_lock_source = 2
-        elif self._bridgevla_target_lock < 0 and proposed_index >= 0:
+            self._bridgevla_switch_candidate = -1
+            self._bridgevla_switch_steps = 0
+            self._bridgevla_closed_no_grasp_steps = 0
+            self._bridgevla_failed_candidate = -1
+            recovery_reason = 3 if grasp_overrode_heatmap else 0
+        else:
+            failed_grasp_unlock = (
+                self._bridgevla_target_lock >= 0
+                and self._bridgevla_closed_no_grasp_steps >= 2
+            )
+            if failed_grasp_unlock:
+                failed_lock_index = self._bridgevla_target_lock
+                self._bridgevla_failed_candidate = failed_lock_index
+                self._bridgevla_target_lock = -1
+                self._bridgevla_target_lock_source = 0
+                self._bridgevla_switch_candidate = -1
+                self._bridgevla_switch_steps = 0
+                recovery_reason = 2
+
+        previous_locked_distance = torch.full_like(distance, torch.inf)
+        locked_index_before_switch = self._bridgevla_target_lock
+        if 0 <= locked_index_before_switch < valid.shape[1]:
+            locked_points = candidates[:, locked_index_before_switch]
+            finite = torch.isfinite(locked_points).all(dim=-1)
+            point_distances = torch.linalg.vector_norm(
+                locked_points - base_waypoint[:, None], dim=-1,
+            ).masked_fill(~finite, torch.inf)
+            previous_locked_distance = point_distances.amin(dim=-1)
+
+        can_reconsider_heatmap_lock = (
+            self._bridgevla_target_lock_source == 1
+            and proposed_index >= 0
+            and proposed_index != self._bridgevla_target_lock
+            and (gripper_open or known_empty_grasp)
+        )
+        if can_reconsider_heatmap_lock:
+            current_valid = (
+                0 <= self._bridgevla_target_lock < valid.shape[1]
+                and bool(valid[0, self._bridgevla_target_lock].item())
+            )
+            materially_better = (
+                not current_valid
+                or float(distance[0].item()) + 0.02
+                < float(previous_locked_distance[0].item())
+            )
+            if materially_better:
+                if self._bridgevla_switch_candidate == proposed_index:
+                    self._bridgevla_switch_steps += 1
+                else:
+                    self._bridgevla_switch_candidate = proposed_index
+                    self._bridgevla_switch_steps = 1
+                if self._bridgevla_switch_steps >= 2:
+                    self._bridgevla_target_lock = proposed_index
+                    self._bridgevla_target_lock_source = 1
+                    self._bridgevla_switch_candidate = -1
+                    self._bridgevla_switch_steps = 0
+                    recovery_reason = 1
+            else:
+                self._bridgevla_switch_candidate = -1
+                self._bridgevla_switch_steps = 0
+        elif self._bridgevla_target_lock_source != 2:
+            self._bridgevla_switch_candidate = -1
+            self._bridgevla_switch_steps = 0
+
+        blocked_failed_candidate = (
+            not gripper_open
+            and proposed_index >= 0
+            and proposed_index == self._bridgevla_failed_candidate
+        )
+        if (
+            self._bridgevla_target_lock < 0
+            and proposed_index >= 0
+            and proposed_index != failed_lock_index
+            and not blocked_failed_candidate
+        ):
             self._bridgevla_target_lock = proposed_index
             self._bridgevla_target_lock_source = 1
+            self._bridgevla_closed_no_grasp_steps = 0
+            if proposed_index != self._bridgevla_failed_candidate:
+                self._bridgevla_failed_candidate = -1
         self._bridgevla_last_gripper_open = gripper_open
 
         locked_index = self._bridgevla_target_lock
@@ -1961,12 +2059,20 @@ class RVTAgent:
             0 <= locked_index < valid.shape[1]
             and bool(valid[0, locked_index].item())
         )
-        aligned_points = oracle_points
-        aligned_valid = oracle_valid
+        locked_distance = torch.full_like(distance, torch.inf)
+        if lock_usable:
+            locked_points = candidates[:, locked_index]
+            finite = torch.isfinite(locked_points).all(dim=-1)
+            locked_distance = torch.linalg.vector_norm(
+                locked_points - base_waypoint[:, None], dim=-1,
+            ).masked_fill(~finite, torch.inf).amin(dim=-1)
+
+        # The first pass and every unlocked recovery step must be pure
+        # BridgeVLA. Never fall back to the task Oracle T/R after losing a lock.
+        aligned_points = oracle_points.clone()
+        aligned_valid = torch.zeros_like(oracle_valid)
         reference_source = 0  # 0=current task Reference, 1=phase-paired Reference
         if lock_usable:
-            aligned_points = oracle_points.clone()
-            aligned_valid = oracle_valid.clone()
             aligned_points[0, 0] = candidate_points_local[0, locked_index]
             aligned_valid[0, 0] = True
 
@@ -1978,6 +2084,10 @@ class RVTAgent:
                     candidate_reference_points_local[0, locked_index])
                 aligned_valid[0, 1] = True
                 reference_source = 1
+            elif bool(oracle_valid[0, 1].item()):
+                # Preserve a stable task Reference only while a Target lock is
+                # active. With no Target lock both roles remain disabled.
+                aligned_valid[0, 1] = True
 
         phase_index = (
             int(phases[0, locked_index].item()) if lock_usable else -1)
@@ -2002,6 +2112,20 @@ class RVTAgent:
                 grasped_known, dtype=np.bool_),
             'bridgevla_aligned_grasp_overrode_heatmap': np.asarray(
                 grasp_overrode_heatmap, dtype=np.bool_),
+            'bridgevla_aligned_lock_recovery_reason': np.asarray(
+                recovery_reason, dtype=np.int64),
+            'bridgevla_aligned_switch_candidate_index': np.asarray(
+                self._bridgevla_switch_candidate, dtype=np.int64),
+            'bridgevla_aligned_switch_evidence_steps': np.asarray(
+                self._bridgevla_switch_steps, dtype=np.int64),
+            'bridgevla_aligned_closed_no_grasp_steps': np.asarray(
+                self._bridgevla_closed_no_grasp_steps, dtype=np.int64),
+            'bridgevla_aligned_failed_candidate_index': np.asarray(
+                self._bridgevla_failed_candidate, dtype=np.int64),
+            'bridgevla_aligned_failed_candidate_blocked': np.asarray(
+                blocked_failed_candidate, dtype=np.bool_),
+            'bridgevla_aligned_locked_distance_m': np.asarray(
+                float(locked_distance[0].item()), dtype=np.float32),
             'bridgevla_aligned_reference_source': np.asarray(
                 reference_source, dtype=np.int64),
             'bridgevla_aligned_gripper_open': np.asarray(
@@ -2132,7 +2256,10 @@ class RVTAgent:
                 or self.bridgevla_aligned_objects
             ),
             **self._oracle_network_kwargs(
-                oracle_points, oracle_valid, relation_state,
+                oracle_points,
+                (torch.zeros_like(oracle_valid)
+                 if self.bridgevla_aligned_objects else oracle_valid),
+                relation_state,
             ),
             language_goal=language_goal,
         )
@@ -2202,6 +2329,10 @@ class RVTAgent:
             )
         if self.bridgevla_aligned_objects:
             heatmap_action_anchor_elements.update(bridgevla_alignment_elements)
+            failed_candidate = int(bridgevla_alignment_elements[
+                'bridgevla_aligned_failed_candidate_index'])
+            failed_blocked = bool(bridgevla_alignment_elements[
+                'bridgevla_aligned_failed_candidate_blocked'])
             print(
                 '[BridgeVLAAlignedObjects] '
                 f'step={self._heatmap_action_anchor_step - 1} '
@@ -2212,7 +2343,13 @@ class RVTAgent:
                 f'lock_source={int(bridgevla_alignment_elements["bridgevla_aligned_target_lock_source"])} '
                 f'grasped={int(bridgevla_alignment_elements["bridgevla_aligned_grasped_candidate_index"])} '
                 f'grasp_override={bool(bridgevla_alignment_elements["bridgevla_aligned_grasp_overrode_heatmap"])} '
+                f'recovery={int(bridgevla_alignment_elements["bridgevla_aligned_lock_recovery_reason"])} '
+                f'switch_candidate={int(bridgevla_alignment_elements["bridgevla_aligned_switch_candidate_index"])} '
+                f'switch_steps={int(bridgevla_alignment_elements["bridgevla_aligned_switch_evidence_steps"])} '
+                f'closed_no_grasp={int(bridgevla_alignment_elements["bridgevla_aligned_closed_no_grasp_steps"])} '
                 f'reference_source={int(bridgevla_alignment_elements["bridgevla_aligned_reference_source"])}',
+                f'failed_candidate={failed_candidate} '
+                f'failed_blocked={failed_blocked}',
                 flush=True,
             )
         if visualize:
@@ -2407,6 +2544,10 @@ class RVTAgent:
         self._bridgevla_target_lock = -1
         self._bridgevla_target_lock_source = 0
         self._bridgevla_last_gripper_open = None
+        self._bridgevla_switch_candidate = -1
+        self._bridgevla_switch_steps = 0
+        self._bridgevla_closed_no_grasp_steps = 0
+        self._bridgevla_failed_candidate = -1
 
     def eval(self):
         self._network.eval()
