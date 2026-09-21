@@ -104,6 +104,29 @@ physical grasp 可用，`source=policy_lock` 仍表示 BridgeVLA 的预期操作
 `policy_target_prior` 一致。grasp 匹配使用 live handle namespace，并展开被抓对象的整棵
 descendant tree，避免 root/visual-shape handle 或 stored-mask 映射不同导致 `grasped=-1`。
 
+### 评估日志与最终统计
+
+`eval.sh` 的命令行只输出每个任务的 `Success rate`；`eval_parallel.py` 另外输出
+macro `Success rate`。模型加载、simulator 输出、警告和
+异常堆栈写入当前模型评估目录的 `evaluation_runtime.log`；逐步的
+`[HeatmapActionAnchor]`、`[BridgeVLAAlignedObjects]`、`[EffectiveTarget]`、候选列表、
+episode 进度与重试信息写入同目录的 `evaluation_diagnostics.log`。评估失败时命令行只给出
+失败任务和 runtime log 路径。
+
+每个完成的 episode 写入
+`episode_results/<task>/episode_N.json`；最终同时写入：
+
+- `evaluation_summary.json`：本次请求的 episode、逐 episode reward/length、成功与失败数；
+- `eval_results.csv`：当前进程的一行任务统计，启动新评估时重建，不追加历史运行；
+- `*_merged_eval_results.csv`：`eval.sh` 汇总各任务的结果。
+
+`success rate = 100 × successful episodes / completed episodes`。按照 RLBench/YARR 的
+sparse terminal reward 约定，以 `reward > 0.99` 判定 episode 成功，不直接对 reward 数值
+求平均；因此标准 `1/0` reward 与兼容的 `100/0` reward 统计一致，而任意小的正数不会被
+误判为成功。只有 `completed episodes == requested episodes` 才生成最终结果；
+中途异常不会被悄悄当作失败或缩小分母。分子、分母和 `total_transitions` 均显式写入
+CSV/JSON，便于核对。
+
 本流程把 RLBench 当前 phase 的语义角色写入 replay，供 Oracle adapter、relation anchor，
 以及 internal-slot 的角色 heatmap 监督使用。它不会生成完整场景 object slots，也不会补全
 被真实相机遮挡的物体表面。

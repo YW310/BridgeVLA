@@ -58,7 +58,8 @@ from utils.eval_reporting import (
     EVAL_FIELDS, MANIFEST_FIELDS, atomic_write_json,
     build_eval_run_signature, evaluation_result,
     generated_manifest_entry_count, manifest_result, numeric_task_scores,
-    quarantine_file, resumable_eval_episode, resumable_manifest)
+    quarantine_file, resumable_eval_episode, resumable_manifest,
+    rlbench_episode_success)
 from utils.peract_utils_rlbench import (
     CAMERAS,
     SCENE_BOUNDS,
@@ -78,6 +79,16 @@ from utils.semantic_contract import (
     validate_semantic_contract,
 )
 import os 
+
+
+def _append_evaluation_diagnostic(path, message):
+    """Persist verbose evaluation details without flooding the terminal."""
+    if path is None:
+        return
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open('a', encoding='utf-8') as stream:
+        stream.write(str(message).rstrip() + '\n')
 
 def load_agent(
     model_path=None,
@@ -314,6 +325,17 @@ def eval(
         raise ValueError(
             "manifest_continue_on_error is only valid with demo_events")
     manifest_only = manifest_phase_source == "demo_events"
+    diagnostic_log_path = None
+    if logging and log_dir is not None and not manifest_only:
+        diagnostic_log_path = Path(log_dir) / 'evaluation_diagnostics.log'
+        diagnostic_log_path.parent.mkdir(parents=True, exist_ok=True)
+        if not eval_resume:
+            diagnostic_log_path.write_text('', encoding='utf-8')
+        _append_evaluation_diagnostic(
+            diagnostic_log_path,
+            f'=== evaluation start: tasks={tasks}, start_episode={start_episode}, '
+            f'episodes={eval_episodes} ===',
+        )
     if manifest_only:
         if agent is not None:
             raise ValueError(
@@ -325,6 +347,8 @@ def eval(
         agent.heatmap_action_anchor = bool(
             heatmap_action_anchor or bridgevla_aligned_objects)
         agent.bridgevla_aligned_objects = bool(bridgevla_aligned_objects)
+        agent.eval_diagnostic_log_path = (
+            None if diagnostic_log_path is None else str(diagnostic_log_path))
 
     camera_resolution = [IMAGE_SIZE, IMAGE_SIZE]
     use_rlbench_gt = oracle_provider_name == "rlbench_gt"
@@ -362,6 +386,7 @@ def eval(
             emit_action_anchor_candidates=(
                 heatmap_action_anchor or bridgevla_aligned_objects),
             follow_policy_target=bridgevla_aligned_objects,
+            diagnostic_log_path=diagnostic_log_path,
         )
         if generating_manifest:
             print(f"[Manifest] raw data: {eval_datafolder}; "
@@ -421,13 +446,12 @@ def eval(
         # create metric saving writer
         csv_file = ("manifest_results.csv" if manifest_phase_source == "demo_events"
                     else "eval_results.csv")
-        if not os.path.exists(os.path.join(log_dir, csv_file)):
-            with open(os.path.join(log_dir, csv_file), "w") as csv_fp:
-                fieldnames = ["task", "success rate", "length", "total_transitions"]
-                if manifest_phase_source == "demo_events":
-                    fieldnames = MANIFEST_FIELDS
-                csv_writer = csv.DictWriter(csv_fp, fieldnames=fieldnames)
-                csv_writer.writeheader()
+        with open(os.path.join(log_dir, csv_file), "w", newline='') as csv_fp:
+            fieldnames = (
+                MANIFEST_FIELDS if manifest_phase_source == "demo_events"
+                else EVAL_FIELDS)
+            csv_writer = csv.DictWriter(csv_fp, fieldnames=fieldnames)
+            csv_writer.writeheader()
 
     # evaluate agent
     rollout_generator = RolloutGenerator(device)
@@ -531,19 +555,21 @@ def eval(
                     task_lengths.append(episode_steps)
                     logical_transitions += episode_steps
                     retry_attempts_used += attempts_used - 1
-                    if reward > 0 and attempts_used > 1:
+                    if rlbench_episode_success(reward) and attempts_used > 1:
                         recovered_episodes += 1
-                    elif reward <= 0:
+                    elif not rlbench_episode_success(reward):
                         failed_after_retries += 1
-                    print(
+                    _append_evaluation_diagnostic(
+                        diagnostic_log_path,
                         f"[Evaluation][RESUME] {tasks[task_id]} episode {ep} "
                         f"already complete; score={reward}, "
-                        f"length={episode_steps}; skipped", flush=True)
+                        f"length={episode_steps}; skipped")
                     continue
                 if episode_result_path.exists():
-                    print(
+                    _append_evaluation_diagnostic(
+                        diagnostic_log_path,
                         f"[Evaluation][RESUME] {tasks[task_id]} episode {ep} "
-                        f"will rerun: {resume_error}", flush=True)
+                        f"will rerun: {resume_error}")
             max_attempts = 1 + ground_truth_retries
             episode_error = None
             for attempt in range(max_attempts):
@@ -656,22 +682,24 @@ def eval(
                         f"attempt={attempt}."
                     )
                 reward = episode_rollout[-1].reward
-                if reward > 0 or attempt == max_attempts - 1:
+                if (rlbench_episode_success(reward)
+                        or attempt == max_attempts - 1):
                     break
                 if verbose:
-                    print(
+                    _append_evaluation_diagnostic(
+                        diagnostic_log_path,
                         f"Ground-truth replay failed for {tasks[task_id]} "
                         f"episode {ep}; retrying full episode "
-                        f"({attempt + 1}/{ground_truth_retries})."
+                        f"({attempt + 1}/{ground_truth_retries}).",
                     )
 
             if episode_error is not None:
                 continue
             attempts_used = attempt + 1
             retry_attempts_used += attempts_used - 1
-            if reward > 0 and attempts_used > 1:
+            if rlbench_episode_success(reward) and attempts_used > 1:
                 recovered_episodes += 1
-            elif reward <= 0:
+            elif not rlbench_episode_success(reward):
                 failed_after_retries += 1
 
             for transition in episode_rollout:
@@ -704,7 +732,7 @@ def eval(
                     / "manifest_failures" / task_name
                     / f"episode_{ep}.json")
                 failure_path.unlink(missing_ok=True)
-            if eval_resume and manifest_phase_source != "demo_events":
+            if manifest_phase_source != "demo_events":
                 atomic_write_json(
                     Path(log_dir) / "episode_results" / task_name
                     / f"episode_{ep}.json",
@@ -729,18 +757,20 @@ def eval(
                         f"{episode_logical_transitions} | Lang Goal: {lang_goal}"
                     )
                 else:
-                    print(
+                    _append_evaluation_diagnostic(
+                        diagnostic_log_path,
                         f"Evaluating {task_name} | Episode {ep} | Score: {reward} "
                         f"| Episode Length: {len(episode_rollout)} "
-                        f"| Attempts: {attempts_used} | Lang Goal: {lang_goal}"
+                        f"| Attempts: {attempts_used} | Lang Goal: {lang_goal}",
                     )
 
         if replay_ground_truth and verbose and manifest_phase_source != "demo_events":
-            print(
+            _append_evaluation_diagnostic(
+                diagnostic_log_path,
                 f"Ground-truth retry summary for {tasks[task_id]}: "
                 f"extra_attempts={retry_attempts_used}, "
                 f"recovered={recovered_episodes}, "
-                f"failed_after_retries={failed_after_retries}"
+                f"failed_after_retries={failed_after_retries}",
             )
 
         # report summaries
@@ -757,40 +787,39 @@ def eval(
                     if eval_resume:
                         writer.writeheader()
                     writer.writerow(result)
-        elif logging:
-            if eval_resume:
-                result = evaluation_result(task_name, task_rewards, task_lengths)
-                with open(os.path.join(log_dir, csv_file), "w", newline='') as csv_fp:
-                    csv_writer = csv.DictWriter(csv_fp, fieldnames=EVAL_FIELDS)
-                    csv_writer.writeheader()
-                    csv_writer.writerow(result)
-            else:
-                # writer csv first
-                with open(os.path.join(log_dir, csv_file), "a") as csv_fp:
-                    csv_writer = csv.DictWriter(csv_fp, fieldnames=EVAL_FIELDS)
-                    csv_results = {"task": task_name}
-                    for s in summaries:
-                        if s.name == "eval_envs/return":
-                            csv_results["success rate"] = s.value
-                        elif s.name == "eval_envs/length":
-                            csv_results["length"] = s.value
-                        elif s.name == "eval_envs/total_transitions":
-                            csv_results["total_transitions"] = s.value
-                        if "eval" in s.name:
-                            s.name = "%s/%s" % (s.name, task_name)
-                    csv_writer.writerow(csv_results)
         else:
+            result = evaluation_result(
+                task_name, task_rewards, task_lengths,
+                requested=eval_episodes)
             for s in summaries:
                 if "eval" in s.name:
                     s.name = "%s/%s" % (s.name, task_name)
+            if logging:
+                with open(os.path.join(log_dir, csv_file), "a", newline='') as csv_fp:
+                    csv_writer = csv.DictWriter(csv_fp, fieldnames=EVAL_FIELDS)
+                    csv_writer.writerow(result)
+                summary_filename = (
+                    'evaluation_summary.json'
+                    if len(tasks) == 1
+                    else f'evaluation_summary_{task_name}.json')
+                atomic_write_json(
+                    Path(log_dir) / summary_filename,
+                    {
+                        'schema_version': 'rlbench_eval_summary_v1',
+                        **result,
+                        'start_episode': start_episode,
+                        'episode_indices': list(range(
+                            start_episode, start_episode + eval_episodes)),
+                        'episode_rewards': [float(value) for value in task_rewards],
+                        'episode_lengths': list(task_lengths),
+                        'run_signature_sha256': eval_resume_signature_sha256,
+                    },
+                )
 
         if manifest_phase_source == "demo_events":
             task_score = result['generated coverage']
-        elif eval_resume:
-            task_score = result['success rate']
         else:
-            task_score = next((s.value for s in summaries
-                               if s.name == f"eval_envs/return/{task_name}"), None)
+            task_score = result['success rate']
 
         if manifest_phase_source == "demo_events":
             print(
@@ -865,10 +894,6 @@ def eval(
     if environment_launched:
         eval_env.shutdown()
 
-    if logging:
-        csv_fp.close()
-
-
     return scores
 
 
@@ -903,7 +928,7 @@ def _eval(args):
 
         eval_resume_signature = None
         eval_resume_signature_sha256 = None
-        if args.eval_resume and args.manifest_phase_source != "demo_events":
+        if args.manifest_phase_source != "demo_events":
             model_folder = os.path.dirname(model_path)
             effective_exp_cfg = (
                 args.exp_cfg_path
@@ -943,11 +968,12 @@ def _eval(args):
                     / "YARR" / "yarr" / "utils" / "rollout_generator.py",
                 ),
             )
-            print(
-                "Evaluation resume enabled; run signature: "
-                f"{eval_resume_signature_sha256[:12]}",
-                flush=True,
-            )
+            if args.eval_resume:
+                print(
+                    "Evaluation resume enabled; run signature: "
+                    f"{eval_resume_signature_sha256[:12]}",
+                    flush=True,
+                )
 
   
         manifest_only = (

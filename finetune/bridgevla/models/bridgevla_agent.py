@@ -537,6 +537,7 @@ class RVTAgent:
         )
         self._oracle_missing_warning_shown = False
         # Runtime-only evaluation diagnostic. It is never read by update().
+        self.eval_diagnostic_log_path = None
         self.heatmap_action_anchor = False
         self.bridgevla_aligned_objects = False
         self._heatmap_action_anchor_step = 0
@@ -560,6 +561,16 @@ class RVTAgent:
             self._net_mod = self._network
 
         self.num_all_rot = self._num_rotation_classes * 3
+
+    def _log_evaluation_diagnostic(self, message):
+        """Append verbose evaluation diagnostics without flooding stdout."""
+        if self.eval_diagnostic_log_path is None:
+            return
+        directory = os.path.dirname(self.eval_diagnostic_log_path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        with open(self.eval_diagnostic_log_path, 'a', encoding='utf-8') as stream:
+            stream.write(f'{message}\n')
 
     def build(self, training: bool, device: torch.device = None):
         self._training = training
@@ -2282,7 +2293,7 @@ class RVTAgent:
             heatmap_action_anchor_elements[
                 'heatmap_action_anchor_policy_step'] = np.asarray(
                     diagnostic_step, dtype=np.int64)
-            print(
+            self._log_evaluation_diagnostic(
                 '[HeatmapActionAnchor] '
                 f'step={diagnostic_step} '
                 f'current_target={int(heatmap_action_anchor_elements["heatmap_action_anchor_current_target_candidate_index"])} '
@@ -2298,8 +2309,7 @@ class RVTAgent:
                 f'final_matches_target={bool(heatmap_action_anchor_elements["heatmap_action_anchor_final_matches_current_target"])} '
                 f'final_near_reference={bool(heatmap_action_anchor_elements["heatmap_action_anchor_final_near_current_reference"])} '
                 f'final_reference_distance_m={float(heatmap_action_anchor_elements["heatmap_action_anchor_final_reference_distance_m"]):.4f} '
-                f'final_distance_m={float(heatmap_action_anchor_elements["heatmap_action_anchor_final_distance_m"]):.4f}',
-                flush=True,
+                f'final_distance_m={float(heatmap_action_anchor_elements["heatmap_action_anchor_final_distance_m"]):.4f}'
             )
         if self.bridgevla_aligned_objects:
             heatmap_action_anchor_elements.update(bridgevla_alignment_elements)
@@ -2307,7 +2317,7 @@ class RVTAgent:
                 'bridgevla_aligned_failed_candidate_index'])
             failed_blocked = bool(bridgevla_alignment_elements[
                 'bridgevla_aligned_failed_candidate_blocked'])
-            print(
+            self._log_evaluation_diagnostic(
                 '[BridgeVLAAlignedObjects] '
                 f'step={self._heatmap_action_anchor_step - 1} '
                 f'proposed={int(bridgevla_alignment_elements["bridgevla_aligned_target_proposed_index"])} '
@@ -2321,13 +2331,13 @@ class RVTAgent:
                 f'switch_candidate={int(bridgevla_alignment_elements["bridgevla_aligned_switch_candidate_index"])} '
                 f'switch_steps={int(bridgevla_alignment_elements["bridgevla_aligned_switch_evidence_steps"])} '
                 f'closed_no_grasp={int(bridgevla_alignment_elements["bridgevla_aligned_closed_no_grasp_steps"])} '
-                f'reference_source={int(bridgevla_alignment_elements["bridgevla_aligned_reference_source"])}',
+                f'reference_source={int(bridgevla_alignment_elements["bridgevla_aligned_reference_source"])} '
                 f'failed_candidate={failed_candidate} '
-                f'failed_blocked={failed_blocked}',
-                flush=True,
+                f'failed_blocked={failed_blocked}'
             )
         if visualize:
-            print("Visualizing")
+            self._log_evaluation_diagnostic(
+                f'[Visualization] writing policy step={step}')
             save_dir=visualize_save_dir
             if not os.path.exists(save_dir):
                 os.makedirs(save_dir)

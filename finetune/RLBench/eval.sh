@@ -145,14 +145,17 @@ if [[ "${EVAL_RESUME}" == "1" && "${#tasks[@]}" -eq 1 && "${tasks[0]}" == "all" 
     sweep_to_dustpan_of_size
     turn_tap
   )
-  echo "[Evaluation][RESUME] TASKS=all expanded into 18 isolated task processes."
 fi
 
+eval_root="${MODEL_FOLDER}/eval"
+model_dir="${MODEL_NAME%.pth}"
+
 for task in "${tasks[@]}"; do
-  echo "=========================================="
-  echo "Processing task: $task"
-  echo "=========================================="
-      
+  task_log_dir="${eval_root}/${task}/${ORACLE_PROVIDER}/${model_dir}"
+  runtime_log="${task_log_dir}/evaluation_runtime.log"
+  mkdir -p "${task_log_dir}"
+  set +e
+  {
   python3 eval.py \
     --model-folder "${MODEL_FOLDER}" \
     --eval-datafolder "${EVAL_DATAFOLDER}" \
@@ -170,22 +173,28 @@ for task in "${tasks[@]}"; do
     "${resume_args[@]}" \
     "${video_args[@]}" \
     "${visualize_args[@]}"
+  } > "${runtime_log}" 2>&1
+  eval_status=$?
+  set -e
+  if [[ "${eval_status}" -ne 0 ]]; then
+    echo "Evaluation failed for ${task}; see ${runtime_log}" >&2
+    exit "${eval_status}"
+  fi
   # --visualize_root_dir "exp/RLBench_vis" --save-video --visualize
-      
-  echo "Completed task: $task"
-  echo ""
+
+  if [[ "${MANIFEST_PHASE_SOURCE}" != "demo_events" ]]; then
+    task_csv="${task_log_dir}/eval_results.csv"
+    success_rate="$(awk -F, 'NR == 2 {gsub(/\r/, "", $2); print $2}' "${task_csv}")"
+    if [[ -z "${success_rate}" ]]; then
+      echo "Evaluation result missing for ${task}; see ${runtime_log}" >&2
+      exit 1
+    fi
+    echo "${task} Success rate: ${success_rate}%"
+  fi
 done
-
-echo "=========================================="
-echo "All tasks completed!"
-echo "=========================================="
-
-
-eval_root="${MODEL_FOLDER}/eval"
-model_dir="${MODEL_NAME%.pth}"
 output_csv="${eval_root}/${model_dir}_${ORACLE_PROVIDER}_merged_eval_results.csv"
 result_filename="eval_results.csv"
-result_header="task,success rate,length,total_transitions"
+result_header="task,success rate,successful episodes,failed episodes,completed episodes,requested episodes,length,total_transitions"
 if [[ "${MANIFEST_PHASE_SOURCE}" == "demo_events" ]]; then
     output_csv="${eval_root}/${model_dir}_${ORACLE_PROVIDER}_merged_manifest_results.csv"
     result_filename="manifest_results.csv"
@@ -206,5 +215,3 @@ for task in "${tasks[@]}"; do
     # 跳过每个文件的表头，追加数据行
     tail -n +2 "${csv_path}" >> "${output_csv}"
 done
-
-echo "Merged CSV saved to: ${output_csv}"

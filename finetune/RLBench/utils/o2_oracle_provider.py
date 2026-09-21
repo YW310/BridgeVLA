@@ -278,6 +278,7 @@ class RLBenchGTOracleProvider:
         raw_data_root: Optional[Path] = None,
         emit_action_anchor_candidates: bool = False,
         follow_policy_target: bool = False,
+        diagnostic_log_path: Optional[Path] = None,
         emit_target_candidates: Optional[bool] = None,
     ):
         if num_points <= 0:
@@ -341,6 +342,8 @@ class RLBenchGTOracleProvider:
         if self.follow_policy_target and not self.emit_action_anchor_candidates:
             raise ValueError(
                 "follow_policy_target requires emit_action_anchor_candidates")
+        self.diagnostic_log_path = (
+            None if diagnostic_log_path is None else Path(diagnostic_log_path))
         self._raw_episode_dir_cache: Optional[Path] = None
         self._raw_mask_cache: Dict[int, Dict[str, np.ndarray]] = {}
         self._live_initial_views = None
@@ -439,6 +442,13 @@ class RLBenchGTOracleProvider:
         """Set the effective GT Target selected by the previous policy action."""
         self._policy_target_candidate_index = (
             None if candidate_index is None else int(candidate_index))
+
+    def _log_diagnostic(self, message: str) -> None:
+        if self.diagnostic_log_path is None:
+            return
+        self.diagnostic_log_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.diagnostic_log_path.open('a', encoding='utf-8') as stream:
+            stream.write(str(message).rstrip() + '\n')
 
     def set_expected_sample_frames(self, sample_frames: Sequence[int]) -> None:
         """Record the complete expert keypoint sequence for manifest validation."""
@@ -2104,11 +2114,10 @@ class RLBenchGTOracleProvider:
                     self._policy_target_candidate_index = policy_index
                     effective_target_source = "actual_grasp"
                     if previous_policy_index != policy_index:
-                        print(
+                        self._log_diagnostic(
                             "[EffectiveTarget] simulator grasp overrides "
                             f"policy lock: policy={previous_policy_index}, "
                             f"actual_grasp={policy_index}",
-                            flush=True,
                         )
                 elif policy_index is None:
                     # There is no policy-selected Target before the first
@@ -2217,9 +2226,8 @@ class RLBenchGTOracleProvider:
                     f'{index}:{candidate["semantic_name"]}'
                     for index, candidate in enumerate(candidate_audits)
                 )
-                print(
+                self._log_diagnostic(
                     f"[HeatmapActionAnchorCandidates] {self._task_name}: {labels}",
-                    flush=True,
                 )
         self._entries.append(entry)
         if (

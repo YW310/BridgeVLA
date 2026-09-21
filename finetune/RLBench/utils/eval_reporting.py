@@ -16,7 +16,10 @@ MANIFEST_FIELDS = [
     'requested episodes', 'logical transitions',
 ]
 
-EVAL_FIELDS = ['task', 'success rate', 'length', 'total_transitions']
+EVAL_FIELDS = [
+    'task', 'success rate', 'successful episodes', 'failed episodes',
+    'completed episodes', 'requested episodes', 'length', 'total_transitions',
+]
 
 
 def manifest_result(task, generated, requested, logical_transitions):
@@ -50,8 +53,16 @@ def numeric_task_scores(scores):
             and math.isfinite(float(value))}
 
 
-def evaluation_result(task, rewards, lengths):
-    """Aggregate a complete set of episode results using YARR's metric units."""
+def rlbench_episode_success(reward):
+    """Match RLBench/YARR's sparse-reward episode success convention."""
+    if (not isinstance(reward, Real) or isinstance(reward, bool)
+            or not math.isfinite(float(reward))):
+        raise ValueError('RLBench episode reward must be a finite number')
+    return float(reward) > 0.99
+
+
+def evaluation_result(task, rewards, lengths, requested=None):
+    """Aggregate explicit episode outcomes; never infer success from reward scale."""
     if not rewards or len(rewards) != len(lengths):
         raise ValueError('Evaluation reporting requires one length per reward')
     if not all(isinstance(value, Real) and not isinstance(value, bool)
@@ -60,9 +71,21 @@ def evaluation_result(task, rewards, lengths):
     if not all(isinstance(value, int) and not isinstance(value, bool) and value > 0
                for value in lengths):
         raise ValueError('Evaluation lengths must be positive integers')
+    completed = len(rewards)
+    if requested is None:
+        requested = completed
+    if (not isinstance(requested, int) or isinstance(requested, bool)
+            or requested <= 0 or completed != requested):
+        raise ValueError(
+            'Evaluation reporting requires completed episodes == requested episodes')
+    successful = sum(rlbench_episode_success(value) for value in rewards)
     return dict(zip(EVAL_FIELDS, (
         task,
-        sum(float(value) for value in rewards) / len(rewards),
+        100.0 * successful / completed,
+        successful,
+        completed - successful,
+        completed,
+        requested,
         sum(lengths) / len(lengths),
         sum(lengths),
     )))

@@ -54,6 +54,13 @@ class RLBenchEvalParallelTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'expected close_jar'):
                 eval_parallel.read_task_result(path, 'close_jar')
 
+    def test_cli_reports_only_success_rate_summaries(self):
+        source = MODULE_PATH.read_text(encoding='utf-8')
+        self.assertIn('Success rate:', source)
+        self.assertIn('Macro Success rate:', source)
+        self.assertNotIn("print(f'Finished {task}'", source)
+        self.assertNotIn('print(json.dumps(summary', source)
+
 
 if __name__ == '__main__':
     unittest.main()

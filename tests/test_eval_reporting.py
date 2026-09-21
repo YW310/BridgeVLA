@@ -17,7 +17,7 @@ from utils.eval_reporting import (
     EVAL_FIELDS, MANIFEST_FIELDS, atomic_write_json, build_eval_run_signature,
     evaluation_result, generated_manifest_entry_count, manifest_result,
     numeric_task_scores, quarantine_file, resumable_eval_episode,
-    resumable_manifest)
+    resumable_manifest, rlbench_episode_success)
 
 
 def accumulator():
@@ -105,7 +105,10 @@ def test_eval_wires_separate_manifest_csv_and_tensorboard_namespace():
     assert '--eval-resume' in shell
     assert 'MANIFEST_CONTINUE_ON_ERROR="${MANIFEST_CONTINUE_ON_ERROR:-0}"' in shell
     assert '--manifest-continue-on-error' in shell
-    assert 'TASKS=all expanded into 18 isolated task processes' in shell
+    assert 'evaluation_runtime.log' in shell
+    assert 'Success rate: ${success_rate}%' in shell
+    assert 'Processing task:' not in shell
+    assert 'All tasks completed!' not in shell
     assert 'close_jar' in shell and 'turn_tap' in shell
     assert 'eval_resume does not support sim_replay ground-truth execution' in source
     assert '[Manifest][FAILED]' in source
@@ -117,6 +120,12 @@ def test_eval_wires_separate_manifest_csv_and_tensorboard_namespace():
     assert 'if log_dir is not None and generating_manifest' in source
     assert 'if oracle_provider is not None and replay_ground_truth:' in source
     assert 'if environment_launched:' in source
+    assert "Path(log_dir) / 'evaluation_diagnostics.log'" in source
+    assert "'evaluation_summary.json'" in source
+    assert 'requested=eval_episodes' in source
+    assert '"w", newline=' in source
+    assert 'successful episodes' in EVAL_FIELDS
+    assert 'completed episodes' in EVAL_FIELDS
     rollout_source = (
         ROOT / 'finetune/bridgevla/libs/YARR/yarr/utils/rollout_generator.py'
     ).read_text(encoding='utf-8')
@@ -279,12 +288,42 @@ def test_standard_eval_signature_changes_with_config_and_runtime_setting(tmp_pat
 
 
 def test_standard_eval_resume_aggregation_includes_skipped_and_new_episodes():
-    result = evaluation_result('place_cups', [100., 0., 100.], [10, 20, 30])
+    result = evaluation_result(
+        'place_cups', [1., 0., 100.], [10, 20, 30], requested=3)
     assert list(result) == EVAL_FIELDS
     assert result == {
         'task': 'place_cups', 'success rate': pytest.approx(200 / 3),
+        'successful episodes': 2, 'failed episodes': 1,
+        'completed episodes': 3, 'requested episodes': 3,
         'length': 20, 'total_transitions': 60,
     }
+
+
+def test_rlbench_success_uses_sparse_terminal_reward_convention():
+    assert rlbench_episode_success(1.)
+    assert rlbench_episode_success(100.)
+    assert not rlbench_episode_success(0.)
+    assert not rlbench_episode_success(0.5)
+
+
+def test_standard_eval_rejects_incomplete_episode_denominator():
+    with pytest.raises(ValueError, match='completed episodes'):
+        evaluation_result('place_cups', [100.], [10], requested=2)
+
+
+def test_verbose_action_anchor_diagnostics_are_logged_not_printed():
+    agent_source = (
+        ROOT / 'finetune/bridgevla/models/bridgevla_agent.py'
+    ).read_text(encoding='utf-8')
+    provider_source = (
+        ROOT / 'finetune/RLBench/utils/o2_oracle_provider.py'
+    ).read_text(encoding='utf-8')
+    assert 'def _log_evaluation_diagnostic' in agent_source
+    assert "self._log_evaluation_diagnostic(\n                '[HeatmapActionAnchor] '" in agent_source
+    assert "self._log_evaluation_diagnostic(\n                '[BridgeVLAAlignedObjects] '" in agent_source
+    assert "print(\n                '[HeatmapActionAnchor] '" not in agent_source
+    assert 'def _log_diagnostic' in provider_source
+    assert 'self._log_diagnostic(\n                            "[EffectiveTarget]' in provider_source
 
 
 @pytest.mark.parametrize('field, value, reason', [

@@ -153,8 +153,12 @@ def main(argv=None):
         futures = {executor.submit(run_task, task): task for task in args.tasks}
         for future in as_completed(futures):
             task = futures[future]
-            rows_by_task[task] = future.result()
-            print(f'Finished {task}', flush=True)
+            row = future.result()
+            rows_by_task[task] = row
+            print(
+                f'{task} Success rate: {row["success rate"]}%',
+                flush=True,
+            )
 
     rows = [rows_by_task[task] for task in args.tasks]
     merged_path = run_root / 'merged_eval_results.csv'
@@ -176,7 +180,7 @@ def main(argv=None):
         json.dumps(summary, indent=2, ensure_ascii=False) + '\n',
         encoding='utf-8',
     )
-    print(json.dumps(summary, indent=2), flush=True)
+    print(f'Macro Success rate: {macro_success_rate}%', flush=True)
     return 0
 
 
