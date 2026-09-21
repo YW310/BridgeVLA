@@ -119,6 +119,15 @@ class FakeCondition:
         return self.met, False
 
 
+class FakeSensor(FakeObject):
+    def __init__(self, name, handle, detected_handles=()):
+        super().__init__(name, handle)
+        self.detected_handles = set(detected_handles)
+
+    def is_detected(self, obj):
+        return obj.get_handle() in self.detected_handles
+
+
 class FakeTask:
     def __init__(self, objects):
         self.base = FakeObject("base", 1, children=objects)
@@ -552,6 +561,88 @@ def test_follow_policy_target_requires_candidate_emission():
             cameras=("front",),
             follow_policy_target=True,
         )
+
+
+def test_actual_grasp_overrides_policy_target_in_same_observation():
+    cups = [FakeObject(f"mug{i}", 10 + i) for i in range(3)]
+    spokes = [
+        FakeObject(f"place_cups_holder_spoke{i}", 20 + i)
+        for i in range(3)]
+    task = FakeTask(cups + spokes)
+    task._cups = cups
+    task._spokes = spokes
+    task._index = 2
+    task._on_peg_conditions = [
+        FakeCondition(), FakeCondition(), FakeCondition()]
+    gripper = SimpleNamespace(get_grasped_objects=lambda: [cups[1]])
+    value = RLBenchGTOracleProvider(
+        ROLE_CONFIG,
+        cameras=("front",),
+        num_points=8,
+        strict=True,
+        emit_action_anchor_candidates=True,
+        follow_policy_target=True,
+    )
+    value.reset(
+        SimpleNamespace(
+            _task=task,
+            _robot=SimpleNamespace(gripper=gripper),
+        ),
+        "place_cups",
+        0,
+        0,
+    )
+    value.set_policy_target_candidate(2)
+
+    output = value.enrich(
+        observation([[10, 11, 12], [20, 21, 22]], gripper_open=0.0),
+        {},
+    )
+
+    assert output["oracle_grasped_target_candidate_index"] == 1
+    assert output["oracle_effective_target_candidate_index"] == 1
+    assert value._policy_target_candidate_index == 1
+    assert value._entries[-1]["effective_target"]["semantic_name"] == "mug1"
+    assert value._entries[-1]["effective_target_source"] == "actual_grasp"
+
+
+def test_stack_blocks_reference_tracks_live_stack_top_not_demo_previous_block():
+    blocks = [
+        FakeObject(f"stack_blocks_target{i}", 10 + i, position=(0, 0, z))
+        for i, z in enumerate((0.75, 0.80, 0.20, 0.20))
+    ]
+    plane = FakeObject(
+        "stack_blocks_target_plane", 30, position=(0, 0, 0.70))
+    sensor = FakeSensor(
+        "stack_blocks_success", 40, detected_handles=(10, 11))
+    task = FakeTask([*blocks, plane, sensor])
+    task.target_blocks = blocks
+    task.blocks_to_stack = 4
+    value = RLBenchGTOracleProvider(
+        ROLE_CONFIG,
+        cameras=("front",),
+        num_points=8,
+        strict=True,
+        emit_action_anchor_candidates=True,
+        follow_policy_target=True,
+    )
+    value.reset(SimpleNamespace(_task=task), "stack_blocks", 0, 0)
+    value.set_policy_target_candidate(2)
+
+    output = value.enrich(
+        observation([[10, 11, 12, 13], [30, 40, 0, 0]], gripper_open=1.0),
+        {},
+    )
+
+    assert value._entries[-1]["reference"]["semantic_name"] == "stack_block0"
+    assert value._entries[-1]["effective_reference"]["semantic_name"] == (
+        "stack_top_block1")
+    assert value._entries[-1]["effective_reference_source"] == "live_stack_top"
+    assert output["oracle_reference_object_valid"]
+    assert not np.array_equal(
+        output["oracle_reference_object_points"],
+        output["oracle_task_reference_object_points"],
+    )
 
 
 def test_place_cups_demo_events_build_phase_manifest_without_sim_replay(tmp_path):

@@ -607,6 +607,31 @@ class RLBenchGTOracleProvider:
             live.update(reverse.get(int(handle), ()))
         return live
 
+    def _live_stack_blocks_reference(
+        self, excluded_handles: Iterable[int] = (),
+    ) -> Optional[RoleEntity]:
+        """Resolve the current physical stack top, independent of demo order."""
+        if self._task_name != "stack_blocks" or self._index is None:
+            return None
+        blocks = self._attr_objects("target_blocks")
+        sensors = self._index.find("stack_blocks_success")
+        if not blocks or not sensors:
+            return None
+        excluded = {int(handle) for handle in excluded_handles}
+        placed = []
+        for index, block in enumerate(blocks):
+            block_handles = set(
+                SceneObjectIndex.handles_with_descendants((block,)))
+            if block_handles.intersection(excluded):
+                continue
+            if _sensor_detects(sensors[0], block):
+                placed.append((float(_object_position(block)[2]), index, block))
+        if placed:
+            _, index, block = max(placed, key=lambda item: (item[0], item[1]))
+            return self._entity_object(f"stack_top_block{index}", [block])
+        return self._object_from_spec(
+            self._task_spec()["first_reference"], "stack target plane")
+
     def _task_spec(self) -> Mapping[str, object]:
         try:
             return self.task_specs[self._task_name]
@@ -2016,6 +2041,8 @@ class RLBenchGTOracleProvider:
             None if assignment.reference is None
             else assignment.reference.audit_dict())
         effective_target_candidate_index = -1
+        effective_target_source = "task"
+        effective_reference_source = "task_phase"
 
         candidate_audits = []
         candidate_identity_handles = []
@@ -2067,25 +2094,63 @@ class RLBenchGTOracleProvider:
                     candidate_identity_handles,
                 ))
             policy_index = self._policy_target_candidate_index
-            if self.follow_policy_target and policy_index is None:
-                # There is no policy-selected Target before the first action.
-                # Do not expose the task-phase Target through the runtime GT
-                # fields; the agent performs its neutral/base first pass and
-                # injects the selected candidate for the same action itself.
-                policy_index = -1
+            if self.follow_policy_target:
+                if grasped_candidate_known and grasped_candidate_index >= 0:
+                    # This observation is produced after env.step(). Once the
+                    # simulator confirms a grasp, the physical result is more
+                    # authoritative than the pre-action heatmap intention.
+                    previous_policy_index = policy_index
+                    policy_index = int(grasped_candidate_index)
+                    self._policy_target_candidate_index = policy_index
+                    effective_target_source = "actual_grasp"
+                    if previous_policy_index != policy_index:
+                        print(
+                            "[EffectiveTarget] simulator grasp overrides "
+                            f"policy lock: policy={previous_policy_index}, "
+                            f"actual_grasp={policy_index}",
+                            flush=True,
+                        )
+                elif policy_index is None:
+                    # There is no policy-selected Target before the first
+                    # action. Do not leak the task-phase Target.
+                    policy_index = -1
+                    effective_target_source = "none"
+                else:
+                    effective_target_source = "policy_lock"
             if policy_index is not None:
                 effective_target_candidate_index = int(policy_index)
-                if (
-                    0 <= policy_index < len(candidate_audits)
-                    and bool(candidate_valid[policy_index])
-                ):
-                    effective_target_points = candidate_points[policy_index]
-                    effective_target_valid = True
+                if 0 <= policy_index < len(candidate_audits):
                     effective_target_audit = candidate_audits[policy_index]
+                    if bool(candidate_valid[policy_index]):
+                        effective_target_points = candidate_points[policy_index]
+                        effective_target_valid = True
+                    else:
+                        effective_target_points = np.zeros_like(
+                            task_target_points)
+                        effective_target_valid = False
                 else:
                     effective_target_points = np.zeros_like(task_target_points)
                     effective_target_valid = False
                     effective_target_audit = None
+            if self.follow_policy_target and self._task_name == "stack_blocks":
+                excluded_handles = ()
+                gripper_closed = not bool(
+                    float(getattr(obs, "gripper_open", 0.0)) > 0.5)
+                if (
+                    gripper_closed
+                    and 0 <= effective_target_candidate_index
+                    < len(candidate_identity_handles)
+                ):
+                    excluded_handles = candidate_identity_handles[
+                        effective_target_candidate_index]
+                live_reference = self._live_stack_blocks_reference(
+                    excluded_handles)
+                if live_reference is not None:
+                    effective_reference_points, effective_reference_valid = (
+                        self._sample_entity_points(
+                            live_reference, masks, point_clouds))
+                    effective_reference_audit = live_reference.audit_dict()
+                    effective_reference_source = "live_stack_top"
             result["oracle_target_candidate_points"] = candidate_points
             result["oracle_target_candidate_valid"] = candidate_valid
             result["oracle_target_candidate_phase_indices"] = candidate_phase_indices
@@ -2144,6 +2209,9 @@ class RLBenchGTOracleProvider:
             entry["effective_target_candidate_index"] = int(
                 effective_target_candidate_index)
             entry["effective_target"] = effective_target_audit
+            entry["effective_target_source"] = effective_target_source
+            entry["effective_reference"] = effective_reference_audit
+            entry["effective_reference_source"] = effective_reference_source
             if self._step_index == 0:
                 labels = ", ".join(
                     f'{index}:{candidate["semantic_name"]}'
@@ -2173,6 +2241,8 @@ class RLBenchGTOracleProvider:
                 grasped_candidate_known,
                 effective_target_audit,
                 effective_reference_audit,
+                effective_target_source,
+                effective_reference_source,
             )
         self._step_index += 1
         return result
@@ -2517,6 +2587,8 @@ class RLBenchGTOracleProvider:
         grasped_candidate_known=False,
         effective_target_audit=None,
         effective_reference_audit=None,
+        effective_target_source='task',
+        effective_reference_source='task_phase',
     ):
         panels = []
         task_target_name = assignment.target.semantic_name
@@ -2639,8 +2711,10 @@ class RLBenchGTOracleProvider:
         draw.text(
             (4, 4),
             f'{assignment.phase_id}  GT_T={effective_target_name}  '
+            f'source={effective_target_source}  '
             f'task_T={task_target_name}  '
-            f'R={reference_name}  actual_grasp={grasped_name}  '
+            f'R={reference_name}  R_source={effective_reference_source}  '
+            f'actual_grasp={grasped_name}  '
             f'condition={int(completion_satisfied)}  '
             f"advanced={int(phase_advanced)}",
             fill=(255, 255, 255),

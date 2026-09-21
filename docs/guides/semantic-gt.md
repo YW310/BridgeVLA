@@ -80,6 +80,18 @@ BridgeVLA lock，作为 residual 的 effective GT；Reference 保持当前 task 
 Target 为 invalid；首个动作由 agent 内部的 base-forward -> 候选归属 -> conditioned-forward
 完成同一步对齐，不使用 task Target 填充。
 
+动作执行后的观测若能从 simulator 唯一确认 actual grasp，physical grasp 会立即覆盖动作前的
+policy lock，成为该观测的 effective Target，并同步后续 lock。因而审计图中夹取成立后应满足
+`GT_T == actual_grasp`；标题 `source=actual_grasp` 表示发生了这种事实覆盖。夹取发生前没有
+physical grasp 可用，`source=policy_lock` 仍表示 BridgeVLA 的预期操作对象。
+
+`stack_blocks` 是 Reference 随物理关系变化的特例。aligned closed-loop 不按专家固定
+`phase-1` 猜 Reference，而是读取当前 `stack_blocks_success` 区域中已放置的方块，并以
+世界坐标最高的方块作为当前支撑 Reference；空栈时使用 target plane，夹爪当前持有的方块
+不会被当作支撑物。审计标题中的 `R_source=live_stack_top` 表示启用了该路径。这样专家顺序
+改变时，Reference 仍表示当前栈顶，而不会永久停在最底层。demo 训练标注仍采用
+`previous_target`，因为成功专家轨迹中 previous target 与 physical stack top 等价。
+
 `ORACLE_DEBUG` 图中的红色 `GT_T` 是 effective GT，蓝色是配对 Reference，标题中的
 `task_T` 保留原始任务 GT；绿色 `actual grasp Target` 显示 simulator 确认的夹取物体。
 对齐后的 residual 以 `[BridgeVLAAlignedObjects] locked=...` 为准；打开
