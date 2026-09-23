@@ -52,6 +52,7 @@ from bridgevla.models.object_conditioning import (
     select_object_candidate_from_waypoint,
 )
 from bridgevla.models.inference_visualization import (
+    blend_heatmap_with_image,
     build_internal_slot_stage_payload,
     internal_slot_stage_diagnostics,
     save_internal_slot_step_visualization,
@@ -109,7 +110,7 @@ def visualize_images(
     heatmap_tensor: torch.Tensor,
     save_dir: str = "/opt/tiger/3D_OpenVLA/3d_policy/RVT/rvt_our/debug"
 ) -> None:
-    """Save rendered views, the final heatmap, and its argmax overlay."""
+    """Save rendered views, the final heatmap, and its blended overlay."""
     os.makedirs(save_dir, exist_ok=True)
     color_imgs = color_tensor.detach().float().cpu().numpy().transpose(0, 2, 3, 1)
     heatmaps = heatmap_tensor.detach().float().cpu().numpy()
@@ -124,10 +125,12 @@ def visualize_images(
         normalized = _normalize_heatmap(heatmaps[i])
         gray_img = (normalized * 255).astype(np.uint8)
         Image.fromarray(gray_img, mode="L").save(os.path.join(save_dir, f"gray_{i}.png"))
-        rgba = np.zeros((*original_img.shape[:2], 4), dtype=np.uint8)
-        rgba[..., :3] = original_img
-        rgba[..., 3] = 77
-        overlay_img = Image.fromarray(rgba, mode="RGBA")
+        overlay = blend_heatmap_with_image(
+            original_img.astype(np.float32) / 255.0, normalized,
+        )
+        overlay_img = Image.fromarray(
+            (overlay * 255).astype(np.uint8), mode="RGB",
+        )
         draw = ImageDraw.Draw(overlay_img)
         max_pos = np.unravel_index(normalized.argmax(), normalized.shape)
         x = max_pos[1]
@@ -135,7 +138,7 @@ def visualize_images(
         point_radius = 5
         draw.ellipse(
             [x-point_radius, y-point_radius, x+point_radius, y+point_radius],
-            fill=(255, 0, 0, 255)
+            fill=(255, 0, 0)
         )
         overlay_img.save(os.path.join(save_dir, f"overlay_{i}.png"))
 
@@ -170,7 +173,7 @@ def save_heatmap_views(
     prefix: str,
     color_tensor: torch.Tensor,
 ) -> None:
-    """Save one grayscale map and red heatmap overlay for every MVT view."""
+    """Save one grayscale map and a 30%-RGB overlay for every MVT view."""
     os.makedirs(save_dir, exist_ok=True)
     if (
         heatmap_tensor.ndim == 3
@@ -192,12 +195,8 @@ def save_heatmap_views(
         Image.fromarray(gray, mode='L').save(
             os.path.join(save_dir, f'{prefix}_{index}.png')
         )
-        original = (np.clip(color_imgs[index], 0, 1) * 255).astype(np.float32)
-        alpha = (0.65 * normalized)[..., None]
-        red = np.zeros_like(original)
-        red[..., 0] = 255
-        overlay = np.clip(original * (1 - alpha) + red * alpha, 0, 255)
-        Image.fromarray(overlay.astype(np.uint8)).save(
+        overlay = blend_heatmap_with_image(color_imgs[index], normalized)
+        Image.fromarray((overlay * 255).astype(np.uint8)).save(
             os.path.join(save_dir, f'{prefix}_overlay_{index}.png')
         )
 

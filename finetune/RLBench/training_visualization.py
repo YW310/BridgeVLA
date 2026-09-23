@@ -29,6 +29,7 @@ _CELL_GAP = 4
 _LABEL_WIDTH = 72
 _HEADER_HEIGHT = 52
 _BORDER_COLOR = (70, 70, 70)
+_ORIGINAL_IMAGE_WEIGHT = 0.30
 
 
 def _fit_cell_size(width: int, height: int, columns: int, rows: int):
@@ -101,6 +102,19 @@ def _heatmap_rgb(value: np.ndarray) -> np.ndarray:
     green = np.clip(1.5 * value - 0.35, 0.0, 1.0)
     blue = np.clip(1.0 - 1.5 * value, 0.0, 1.0)
     return np.stack((red, green, blue), axis=-1)
+
+
+def _blend_heatmap_with_image(
+    input_image: np.ndarray,
+    normalized_heatmap: np.ndarray,
+) -> np.ndarray:
+    """Render 70% colored heatmap over 30% of the corresponding RGB view."""
+    image = np.clip(input_image, 0.0, 1.0)
+    heatmap = _heatmap_rgb(normalized_heatmap)
+    return (
+        _ORIGINAL_IMAGE_WEIGHT * image
+        + (1.0 - _ORIGINAL_IMAGE_WEIGHT) * heatmap
+    )
 
 
 def _as_uint8_image(value: np.ndarray, size) -> Image.Image:
@@ -199,7 +213,9 @@ def _stage_montage(
                 cell = _as_uint8_image(inputs[view_index], cell_size)
             elif key in heatmaps:
                 cell = _as_uint8_image(
-                    _heatmap_rgb(heatmaps[key][view_index]),
+                    _blend_heatmap_with_image(
+                        inputs[view_index], heatmaps[key][view_index],
+                    ),
                     cell_size,
                 )
             else:

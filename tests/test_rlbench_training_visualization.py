@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import numpy as np
 import torch
 
 
@@ -34,6 +35,21 @@ class _Writer:
 
 
 class RLBenchTrainingVisualizationTest(unittest.TestCase):
+    def test_heatmap_cells_keep_thirty_percent_of_rgb(self):
+        input_image = np.full((2, 3, 3), 0.5, dtype=np.float32)
+        heatmap = np.ones((2, 3), dtype=np.float32)
+        blended = training_visualization._blend_heatmap_with_image(
+            input_image, heatmap,
+        )
+        np.testing.assert_allclose(
+            blended,
+            np.broadcast_to(
+                np.array([0.85, 0.85, 0.15], dtype=np.float32),
+                blended.shape,
+            ),
+            atol=1e-6,
+        )
+
     def test_interval_is_optimizer_step_based(self):
         self.assertFalse(
             training_visualization.visualization_due(False, 10, 0)

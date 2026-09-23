@@ -16,6 +16,7 @@ _CELL_GAP = 4
 _LABEL_WIDTH = 92
 _HEADER_HEIGHT = 52
 _BORDER_COLOR = (70, 70, 70)
+_ORIGINAL_IMAGE_WEIGHT = 0.30
 
 
 def _draw_centered_text(draw, bounds, text, fill=(0, 0, 0)):
@@ -83,6 +84,34 @@ def _heatmap_rgb(value: np.ndarray) -> np.ndarray:
     green = np.clip(1.5 * value - 0.35, 0.0, 1.0)
     blue = np.clip(1.0 - 1.5 * value, 0.0, 1.0)
     return np.stack((red, green, blue), axis=-1)
+
+
+def blend_heatmap_with_image(
+    input_image: np.ndarray,
+    normalized_heatmap: np.ndarray,
+    image_weight: float = _ORIGINAL_IMAGE_WEIGHT,
+) -> np.ndarray:
+    """Blend a colored heatmap with its RGB view using 30% RGB by default."""
+    if input_image.ndim != 3 or input_image.shape[-1] != 3:
+        raise ValueError('input_image must have shape [H,W,3]')
+    if not 0.0 <= image_weight <= 1.0:
+        raise ValueError('image_weight must be in [0, 1]')
+    if normalized_heatmap.ndim != 2:
+        raise ValueError('normalized_heatmap must have shape [H,W]')
+    if normalized_heatmap.shape != input_image.shape[:2]:
+        resampling = getattr(Image, 'Resampling', Image)
+        normalized_heatmap = np.asarray(
+            Image.fromarray(
+                np.asarray(normalized_heatmap, dtype=np.float32), mode='F',
+            ).resize(
+                (input_image.shape[1], input_image.shape[0]),
+                resampling.BILINEAR,
+            ),
+            dtype=np.float32,
+        )
+    image = np.clip(input_image, 0.0, 1.0)
+    heatmap = _heatmap_rgb(normalized_heatmap)
+    return image_weight * image + (1.0 - image_weight) * heatmap
 
 
 def _as_image(value: np.ndarray, size) -> Image.Image:
@@ -263,7 +292,10 @@ def internal_slot_montage(
                 cell = _as_image(input_image, cell_size)
             elif key in heatmaps:
                 cell = _as_image(
-                    _heatmap_rgb(heatmaps[key][view_index]), cell_size,
+                    blend_heatmap_with_image(
+                        input_image, heatmaps[key][view_index],
+                    ),
+                    cell_size,
                 )
             else:
                 cell = Image.new('RGB', cell_size, color=(224, 224, 224))

@@ -133,7 +133,8 @@ flowchart LR
 Input、Slot 0/1、Target pred、Reference pred、Relation anchor 与 Action pred；同时生成
 `internal_slots_metrics.json`，记录 confidence、valid、objectness、role probability 和
 Reference NULL probability。热图按视角独立归一化，只适合比较空间位置；绝对可靠性应结合 JSON
-数值与闭环成功率判断。
+数值与闭环成功率判断。训练与推理拼图中的 heatmap 均叠加对应的 30% 原始 RGB 图像，便于
+直接确认响应落在哪个物体上。
 
 ## rlbench_o2_semantic_gt_joint.yaml
 
