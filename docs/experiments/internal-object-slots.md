@@ -77,3 +77,18 @@ oracle_object_valid：仍表示几何可用
 
 报告 role-map quality、NULL accuracy、confidence、waypoint error、各动作分量、closed-loop success、
 延迟和显存。辅助 loss 下降、单帧 slots 或结构上的隐式上下文不证明恢复/causal 能力。
+
+## 无 GT 推理可视化
+
+```bash
+ORACLE_PROVIDER=none \
+VISUALIZE=1 \
+VISUALIZE_ROOT_DIR=exp/RLBench_internal_slots_vis \
+EXP_CFG_PATH=configs/rlbench_o2_internal_slots.yaml \
+bash eval.sh
+```
+
+每个 `stepN/` 保存一张 `internal_slots_montage.png`，其行覆盖 `mvt1/mvt2` 的全部视角，列为
+Input、原始 slots、预测 Target/Reference、relation anchor 和最终 action heatmap。相同目录的
+`internal_slots_metrics.json` 保存置信度、valid、objectness、role probability 与 Reference
+NULL probability。这里没有 GT、IoU 或 Dice；图中的 `pred` 不能解释为正确标签。
