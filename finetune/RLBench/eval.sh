@@ -68,7 +68,7 @@ if [[ -z "${SAVE_VIDEO+x}" ]]; then
   fi
 fi
 VISUALIZE="${VISUALIZE:-0}"
-VISUALIZE_ROOT_DIR="${VISUALIZE_ROOT_DIR:-exp/RLBench_vis}"
+VISUALIZE_ROOT_DIR="${VISUALIZE_ROOT_DIR:-${MODEL_FOLDER}/eval/visualizations/${ORACLE_PROVIDER}/${MODEL_NAME%.pth}}"
 
 oracle_args=(
   --oracle-provider "${ORACLE_PROVIDER}"
@@ -182,7 +182,7 @@ for task in "${tasks[@]}"; do
     echo "Evaluation failed for ${task}; see ${runtime_log}" >&2
     exit "${eval_status}"
   fi
-  # --visualize_root_dir "exp/RLBench_vis" --save-video --visualize
+  # --visualize_root_dir "/custom/path" --save-video --visualize
 
   if [[ "${MANIFEST_PHASE_SOURCE}" != "demo_events" ]]; then
     task_csv="${task_log_dir}/eval_results.csv"

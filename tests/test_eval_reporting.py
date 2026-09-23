@@ -106,6 +106,8 @@ def test_eval_wires_separate_manifest_csv_and_tensorboard_namespace():
     assert 'MANIFEST_CONTINUE_ON_ERROR="${MANIFEST_CONTINUE_ON_ERROR:-0}"' in shell
     assert '--manifest-continue-on-error' in shell
     assert 'evaluation_runtime.log' in shell
+    assert ('VISUALIZE_ROOT_DIR="${VISUALIZE_ROOT_DIR:-${MODEL_FOLDER}/eval/'
+            'visualizations/${ORACLE_PROVIDER}/${MODEL_NAME%.pth}}"' in shell)
     assert 'Success rate: ${success_rate}%' in shell
     assert 'Processing task:' not in shell
     assert 'All tasks completed!' not in shell

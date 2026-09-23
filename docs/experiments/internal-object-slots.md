@@ -83,11 +83,12 @@ oracle_object_valid：仍表示几何可用
 ```bash
 ORACLE_PROVIDER=none \
 VISUALIZE=1 \
-VISUALIZE_ROOT_DIR=exp/RLBench_internal_slots_vis \
 EXP_CFG_PATH=configs/rlbench_o2_internal_slots.yaml \
 bash eval.sh
 ```
 
+未设置 `VISUALIZE_ROOT_DIR` 时，输出默认放在 checkpoint 同目录下的
+`eval/visualizations/<provider>/<model>/`；仍可显式设置该变量覆盖输出位置。
 每个 `stepN/` 保存一张 `internal_slots_montage.png`，其行覆盖 `mvt1/mvt2` 的全部视角，列为
 Input、原始 slots、预测 Target/Reference、relation anchor 和最终 action heatmap。相同目录的
 `internal_slots_metrics.json` 保存置信度、valid、objectness、role probability 与 Reference
