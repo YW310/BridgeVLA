@@ -46,6 +46,27 @@ class InternalObjectSlotsConfigTest(unittest.TestCase):
         )
         self.assertIn("return {'current_state': current_state}", source)
 
+    def test_inference_visualizations_are_flat_step_files(self):
+        agent_source = (
+            ROOT
+            / 'finetune'
+            / 'bridgevla'
+            / 'models'
+            / 'bridgevla_agent.py'
+        ).read_text(encoding='utf-8')
+        visualization_source = (
+            ROOT
+            / 'finetune'
+            / 'bridgevla'
+            / 'models'
+            / 'inference_visualization.py'
+        ).read_text(encoding='utf-8')
+        self.assertIn(
+            'if not self.internal_object_slots_enabled:', agent_source,
+        )
+        self.assertIn("stem = f'step_{step:04d}'", visualization_source)
+        self.assertIn("output_dir / f'{stem}.png'", visualization_source)
+
 
 if __name__ == '__main__':
     unittest.main()

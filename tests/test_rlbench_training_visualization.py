@@ -85,6 +85,10 @@ class RLBenchTrainingVisualizationTest(unittest.TestCase):
                 writer=writer,
             )
             self.assertTrue(saved['mvt1'].is_file())
+            self.assertEqual(
+                saved['mvt1'].name, 'step_00000500_mvt1.png'
+            )
+            self.assertEqual(saved['mvt1'].parent, Path(temporary))
         self.assertEqual(
             writer.images[0][0][0], 'train_visualization/mvt1'
         )

@@ -128,10 +128,10 @@ flowchart LR
 - 当前权重为 NULL **0.25**、旧 cosine diversity **0.0**；日志中的 diversity 值不参与反向传播。
 - 默认未启用 instruction context 或 shared action features；anchor residual 主要增强 translation。
 
-无 GT 推理可设置 `ORACLE_PROVIDER=none VISUALIZE=1`。每个 policy step 会生成
-`internal_slots_montage.png`，将 `mvt1/mvt2 × 所有视角` 合并为一张有边界的图，列依次为
+无 GT 推理可设置 `ORACLE_PROVIDER=none VISUALIZE=1`。每个 policy step 会在同一目录直接生成
+`step_0000.png`、`step_0001.png` 等扁平序列，将 `mvt1/mvt2 × 所有视角` 合并为一张有边界的图，列依次为
 Input、Slot 0/1、Target pred、Reference pred、Relation anchor 与 Action pred；同时生成
-`internal_slots_metrics.json`，记录 confidence、valid、objectness、role probability 和
+同名 `.json`，记录 confidence、valid、objectness、role probability 和
 Reference NULL probability。热图按视角独立归一化，只适合比较空间位置；绝对可靠性应结合 JSON
 数值与闭环成功率判断。训练与推理拼图中的 heatmap 均叠加对应的 30% 原始 RGB 图像，便于
 直接确认响应落在哪个物体上。

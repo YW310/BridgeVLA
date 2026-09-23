@@ -324,8 +324,9 @@ def save_internal_slot_step_visualization(
     """Save the combined PNG and machine-readable values for one step."""
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    montage_path = output_dir / 'internal_slots_montage.png'
-    diagnostics_path = output_dir / 'internal_slots_metrics.json'
+    stem = f'step_{step:04d}'
+    montage_path = output_dir / f'{stem}.png'
+    diagnostics_path = output_dir / f'{stem}.json'
     internal_slot_montage(
         payloads, step=step, diagnostics=diagnostics,
     ).save(montage_path)

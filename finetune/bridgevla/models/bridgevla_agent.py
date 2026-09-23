@@ -2558,9 +2558,10 @@ class RVTAgent:
             save_dir=visualize_save_dir
             if not os.path.exists(save_dir):
                 os.makedirs(save_dir)
-            save_dir=os.path.join(save_dir,f"step{str(step)}")
-            if not os.path.exists(save_dir):
-                os.makedirs(save_dir)
+            if not self.internal_object_slots_enabled:
+                save_dir=os.path.join(save_dir,f"step{str(step)}")
+                if not os.path.exists(save_dir):
+                    os.makedirs(save_dir)
 
             stage_outputs = [
                 ('mvt1', out, out['mvt1_ori_img'][0, :, 3:6]),
@@ -2572,11 +2573,9 @@ class RVTAgent:
             internal_slot_payloads = {}
             internal_slot_diagnostics = {}
             for stage_name, stage_out, stage_img in stage_outputs:
-                stage_dir = os.path.join(save_dir, stage_name)
                 final = translation_heatmap_probabilities(
                     stage_out['trans'][0]
                 )
-                visualize_images(stage_img, final, save_dir=stage_dir)
                 if self.internal_object_slots_enabled:
                     internal_slot_payloads[stage_name] = (
                         build_internal_slot_stage_payload(
@@ -2586,30 +2585,10 @@ class RVTAgent:
                     internal_slot_diagnostics[stage_name] = (
                         internal_slot_stage_diagnostics(stage_out)
                     )
-                    slot_masks = stage_out['object_slot_masks'][0]
-                    for slot_index in range(slot_masks.shape[1]):
-                        save_heatmap_views(
-                            slot_masks[:, slot_index], stage_dir,
-                            f'object_slot_{slot_index}', stage_img,
-                        )
-                    role_prior = stage_out['object_slot_prior'][0]
-                    save_heatmap_views(
-                        role_prior[:, 0], stage_dir,
-                        'predicted_target', stage_img,
-                    )
-                    save_heatmap_views(
-                        role_prior[:, 1], stage_dir,
-                        'predicted_reference', stage_img,
-                    )
-                    if 'oracle_relation_anchor' in stage_out:
-                        save_heatmap_views(
-                            stage_out['oracle_relation_anchor'][0],
-                            stage_dir, 'o2_relation_anchor', stage_img,
-                        )
-                    save_heatmap_views(
-                        final, stage_dir, 'o2_adapted', stage_img,
-                    )
-                elif (
+                    continue
+                stage_dir = os.path.join(save_dir, stage_name)
+                visualize_images(stage_img, final, save_dir=stage_dir)
+                if (
                     'oracle_instance_prior' in stage_out
                     and aligned_target_used
                 ):
@@ -2670,7 +2649,6 @@ class RVTAgent:
                             'Oracle prior unavailable; this step used base '
                             'BridgeVLA translation logits.\\n'
                         )
-            save_point_cloud_with_color(os.path.join(save_dir,"point_cloud.ply"), pc_ori.cpu().numpy(), img_feat_ori.cpu().numpy(), pred_wpt[0].cpu().numpy())
             if internal_slot_payloads:
                 save_internal_slot_step_visualization(
                     internal_slot_payloads,
@@ -2678,6 +2656,8 @@ class RVTAgent:
                     step=step,
                     output_dir=save_dir,
                 )
+            else:
+                save_point_cloud_with_color(os.path.join(save_dir,"point_cloud.ply"), pc_ori.cpu().numpy(), img_feat_ori.cpu().numpy(), pred_wpt[0].cpu().numpy())
         continuous_action = np.concatenate(
             (
                 pred_wpt[0].cpu().numpy(),

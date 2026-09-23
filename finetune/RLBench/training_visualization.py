@@ -254,7 +254,7 @@ def record_training_visualization(
             "TensorBoard training visualization is enabled but no writer exists"
         )
     saved: Dict[str, Path] = {}
-    step_dir = Path(output_dir) / f"step_{step:08d}"
+    output_dir = Path(output_dir)
     for stage_name, stage_payload in payload.items():
         montage = _stage_montage(
             stage_payload,
@@ -263,8 +263,8 @@ def record_training_visualization(
             language_goal=str(language_goal),
         )
         if save_png:
-            step_dir.mkdir(parents=True, exist_ok=True)
-            output_path = step_dir / f"{stage_name}.png"
+            output_dir.mkdir(parents=True, exist_ok=True)
+            output_path = output_dir / f"step_{step:08d}_{stage_name}.png"
             montage.save(output_path)
             saved[stage_name] = output_path
         if write_tensorboard:
