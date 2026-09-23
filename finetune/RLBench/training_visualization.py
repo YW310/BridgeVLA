@@ -22,6 +22,47 @@ _COLUMNS = (
     ("pred", "Adapted pred"),
 )
 
+_MAX_MONTAGE_WIDTH = 1600
+_MAX_MONTAGE_HEIGHT = 1000
+_OUTER_PADDING = 8
+_CELL_GAP = 4
+_LABEL_WIDTH = 72
+_HEADER_HEIGHT = 52
+_BORDER_COLOR = (70, 70, 70)
+
+
+def _fit_cell_size(width: int, height: int, columns: int, rows: int):
+    '''Fit the complete montage on a typical TensorBoard/browser page.'''
+    available_width = (
+        _MAX_MONTAGE_WIDTH - 2 * _OUTER_PADDING - _LABEL_WIDTH
+        - max(columns - 1, 0) * _CELL_GAP
+    )
+    available_height = (
+        _MAX_MONTAGE_HEIGHT - 2 * _OUTER_PADDING - _HEADER_HEIGHT
+        - max(rows - 1, 0) * _CELL_GAP
+    )
+    scale = min(
+        1.0,
+        available_width / max(columns * width, 1),
+        available_height / max(rows * height, 1),
+    )
+    return max(1, int(width * scale)), max(1, int(height * scale))
+
+
+def _draw_centered_text(draw, bounds, text, fill=(0, 0, 0)):
+    left, top, right, bottom = bounds
+    text = str(text)
+    if hasattr(draw, 'textbbox'):
+        box = draw.textbbox((0, 0), text)
+        text_width, text_height = box[2] - box[0], box[3] - box[1]
+    else:
+        text_width, text_height = draw.textsize(text)
+    draw.text(
+        (left + max(0, (right - left - text_width) // 2),
+         top + max(0, (bottom - top - text_height) // 2)),
+        text, fill=fill,
+    )
+
 
 def visualization_due(enabled: bool, interval: int, step: int) -> bool:
     if not enabled:
@@ -104,29 +145,56 @@ def _stage_montage(
             )
         heatmaps[key] = _normalize_heatmap(value)
 
-    label_width = 64
-    header_height = 42
+    label_width = _LABEL_WIDTH
+    header_height = _HEADER_HEIGHT
+    width, height = _fit_cell_size(
+        width, height, len(columns), view_count,
+    )
     montage = Image.new(
         "RGB",
-        (label_width + len(columns) * width, header_height + view_count * height),
+        (
+            2 * _OUTER_PADDING + label_width + len(columns) * width
+            + max(len(columns) - 1, 0) * _CELL_GAP,
+            2 * _OUTER_PADDING + header_height + view_count * height
+            + max(view_count - 1, 0) * _CELL_GAP,
+        ),
         color=(245, 245, 245),
     )
     draw = ImageDraw.Draw(montage)
     sample_text = f"step={step} task={task} goal={language_goal}"[:180]
-    draw.text((4, 2), sample_text, fill=(0, 0, 0))
+    draw.text((_OUTER_PADDING + 4, _OUTER_PADDING + 2), sample_text,
+              fill=(0, 0, 0))
     for column, (_, title) in enumerate(columns):
-        draw.text(
-            (label_width + column * width + 4, 22),
-            title,
-            fill=(0, 0, 0),
+        x = (
+            _OUTER_PADDING + label_width
+            + column * (width + _CELL_GAP)
         )
+        bounds = (
+            x, _OUTER_PADDING + 20,
+            x + width - 1, _OUTER_PADDING + header_height - 1,
+        )
+        draw.rectangle(bounds, fill=(232, 232, 232),
+                       outline=_BORDER_COLOR, width=2)
+        _draw_centered_text(draw, bounds, title)
 
     cell_size = (width, height)
     for view_index in range(view_count):
-        y = header_height + view_index * height
-        draw.text((4, y + 4), f"View {view_index}", fill=(0, 0, 0))
+        y = (
+            _OUTER_PADDING + header_height
+            + view_index * (height + _CELL_GAP)
+        )
+        label_bounds = (
+            2, y,
+            _OUTER_PADDING + label_width - 1, y + height - 1,
+        )
+        draw.rectangle(label_bounds, fill=(232, 232, 232),
+                       outline=_BORDER_COLOR, width=2)
+        _draw_centered_text(draw, label_bounds, f'View {view_index}')
         for column, (key, _) in enumerate(columns):
-            x = label_width + column * width
+            x = (
+                _OUTER_PADDING + label_width
+                + column * (width + _CELL_GAP)
+            )
             if key == "input":
                 cell = _as_uint8_image(inputs[view_index], cell_size)
             elif key in heatmaps:
@@ -140,6 +208,14 @@ def _stage_montage(
                     (6, 6), "unavailable", fill=(80, 80, 80)
                 )
             montage.paste(cell, (x, y))
+            draw.rectangle(
+                (x, y, x + width - 1, y + height - 1),
+                outline=_BORDER_COLOR, width=2,
+            )
+    draw.rectangle(
+        (0, 0, montage.width - 1, montage.height - 1),
+        outline=_BORDER_COLOR, width=2,
+    )
     return montage
 
 

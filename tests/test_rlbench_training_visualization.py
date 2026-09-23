@@ -75,6 +75,40 @@ class RLBenchTrainingVisualizationTest(unittest.TestCase):
         self.assertEqual(writer.images[0][1]['dataformats'], 'HWC')
         self.assertEqual(len(writer.text), 1)
 
+    def test_full_slot_montage_fits_page_and_has_cell_borders(self):
+        views, height, width = 3, 224, 224
+        payload = {
+            'input': torch.rand(views, 3, height, width),
+            'gt': torch.rand(views, height, width),
+        }
+        for key in (
+            'slot_target_gt', 'slot_target_pred',
+            'slot_reference_gt', 'slot_reference_pred',
+            'target_prior', 'reference_prior', 'relation_anchor',
+            'prior', 'pred',
+        ):
+            payload[key] = torch.rand(views, height, width)
+
+        montage = training_visualization._stage_montage(
+            payload, step=500, task='stack_blocks',
+            language_goal='stack the blocks',
+        )
+
+        self.assertLessEqual(
+            montage.width, training_visualization._MAX_MONTAGE_WIDTH)
+        self.assertLessEqual(
+            montage.height, training_visualization._MAX_MONTAGE_HEIGHT)
+        self.assertEqual(
+            montage.getpixel((0, 0)), training_visualization._BORDER_COLOR)
+        first_cell = (
+            training_visualization._OUTER_PADDING
+            + training_visualization._LABEL_WIDTH,
+            training_visualization._OUTER_PADDING
+            + training_visualization._HEADER_HEIGHT,
+        )
+        self.assertEqual(
+            montage.getpixel(first_cell), training_visualization._BORDER_COLOR)
+
 
 if __name__ == '__main__':
     unittest.main()
