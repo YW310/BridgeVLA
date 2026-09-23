@@ -20,14 +20,14 @@ flowchart LR
 
 | 配置 | 用途 |
 | --- | --- |
-| `rlbench_o2_internal_slots.yaml` | 旧 heatmap 诊断；默认 NULL/presence weight 为 0，可 adapter-only warm-up |
+| `rlbench_o2_internal_slots.yaml` | 2-slot Hungarian warm-up；NULL/presence 0.25，旧 cosine diversity 关闭 |
 | `rlbench_o2_internal_slots_joint.yaml` | GT gate 后的 opt-in 联合实验；instruction、soft tokens/geometry、完整动作共享 |
 
 两项新开关默认关闭，因此旧 feature 路由保持不变；NULL 监督契约已修正，不再用 `~valid`。
 新模式的 Target 不因 Reference 几何不可用而一起关闭。Reference 的 semantic NULL 用 posterior，
 unknown geometry 单独屏蔽。没有 memory 时不能定位完全遮挡物体。
 
-## 旧配置诊断
+## 2-slot adapter-only warm-up
 
 ```bash
 cd finetune/RLBench
@@ -58,7 +58,7 @@ oracle_object_valid：仍表示几何可用
 ```
 
 缺少审计和终止占位不训练 presence/NULL。present=true、valid=false 不是 NULL，也不能直接
-当 visible=false 标签；visibility head 本轮不训练。joint config 可将 NULL weight 设为 0.25，
+当 visible=false 标签；visibility head 本轮不训练。两份当前配置均以 NULL weight 0.25
 直接监督与推理一致的 `reference_null_probability`。没有有效 labels 时 NULL 部分为零；
 几何可用的正向支持仍可监督 objectness，不代表独立的 presence head。
 
@@ -71,7 +71,7 @@ oracle_object_valid：仍表示几何可用
 | --- | --- |
 | maps、tokens、NULL | `InternalObjectSlotPredictor.forward()` |
 | 可微中心/spread | `soft_role_geometry()`；hard top-k `_extract_points()` 保留作兼容 |
-| teacher loss | `RVTAgent._object_slot_auxiliary_losses()`、`reference_null_loss()` |
+| teacher loss | `RVTAgent._object_slot_auxiliary_losses()`、`hungarian_role_slot_losses()`、`reference_null_loss()` |
 | GT 隔离 | `MVT.forward()` |
 | feature 条件化与动作 | `forward_with_anchor()`、`MVTSingle.forward()` |
 

@@ -17,6 +17,7 @@ flowchart LR
 | --- | --- | --- |
 | 复现原始 BridgeVLA | [安装](guides/installation.md) | [训练](guides/training.md) → [评估](guides/evaluation.md) |
 | 生成严格 T/R 数据 | [Semantic-GT](guides/semantic-gt.md) | [O2 训练](experiments/o2-training.md) |
+| 快速理解每个 O2 YAML | [配置流程图](guides/o2-config-flows.md) | 对应实验与代码索引 |
 | 比较 Oracle、外部预测和内部 slots | [Object-prior 模式](experiments/object-prior-modes.md) | 对应实验配置 |
 | 查看 phase-dependent anchor | [Relation anchor](experiments/relation-anchor.md) | [研究设计](design/role-relation-prior.md) |
 | 先 GT、后预测的联合训练 | [联合实验](experiments/object-conditioned-joint.md) | 同预算对照 → 三-seed 配对闭环准入 |
@@ -33,6 +34,7 @@ docs/
 │   ├── replay.md
 │   ├── oracle-replay.md
 │   ├── semantic-gt.md
+│   ├── o2-config-flows.md
 │   └── evaluation.md
 ├── experiments/                      # 实验操作与结果
 │   ├── o2-training.md
@@ -57,6 +59,7 @@ docs/
 - 环境准备：[安装与依赖](guides/installation.md)。
 - 复现 baseline：[训练、8×40GB 与日志](guides/training.md) → [评估](guides/evaluation.md)。
 - 准备数据：[Raw → Replay](guides/replay.md) → [Oracle 实例增强](guides/oracle-replay.md) → [严格 Semantic-GT 角色](guides/semantic-gt.md)。
+- 配置速查：[O2 配置简易流程图](guides/o2-config-flows.md)。
 
 ## 2. 实验与结果
 

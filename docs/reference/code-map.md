@@ -1,6 +1,6 @@
 # 数据流与函数索引
 
-[文档索引](../README.md) · [Object-prior 模式](../experiments/object-prior-modes.md) · [联合实验](../experiments/object-conditioned-joint.md)
+[文档索引](../README.md) · [配置流程图](../guides/o2-config-flows.md) · [Object-prior 模式](../experiments/object-prior-modes.md) · [联合实验](../experiments/object-conditioned-joint.md)
 
 ## Semantic-GT 数据流
 
@@ -45,7 +45,7 @@ RVTAgent.update/act
 | 可微可见几何 | `object_conditioning.py::soft_role_geometry()`；`_extract_points()` 仅兼容/可视化 |
 | 原 relation / anchor query | `OracleRelationGatedFeatureAdapter`、`OracleRelationAnchorFeatureAdapter.forward_with_anchor()` |
 | 完整动作特征 | `action_feature_routes()`、`MVTSingle.forward()`，共享模式重新池化 global |
-| teacher-only 辅助监督 | `RVTAgent._object_slot_auxiliary_losses()`、`reference_null_loss()` |
+| teacher-only 辅助监督 | `RVTAgent._object_slot_auxiliary_losses()`、`hungarian_role_slot_losses()`、`reference_null_loss()` |
 | 初始化/resume | `train.py::load_initial_model_checkpoint()`、`load_training_checkpoint()` |
 | 配对闭环 CI | `tools/compare_paired_success.py::compare()` |
 
@@ -56,7 +56,7 @@ RVTAgent.update/act
 | `rlbench_o2_semantic_gt.yaml` | 旧 Oracle relation adapter |
 | `rlbench_o2_semantic_gt_relation_anchor.yaml` | 旧 translation-anchor 路由 |
 | `rlbench_o2_predicted_objects.yaml` | 外部预测 T/R |
-| `rlbench_o2_internal_slots.yaml` | 旧单帧 heatmap 诊断，NULL weight 默认 0 |
+| `rlbench_o2_internal_slots.yaml` | 2-slot Hungarian warm-up；NULL 0.25，diversity 关闭 |
 | `rlbench_o2_semantic_gt_joint.yaml` | opt-in shared action + instruction，先验证 GT |
 | `rlbench_o2_internal_slots_joint.yaml` | opt-in soft roles/geometry + joint training，GT gate 后实验 |
 | present/known、soft tokens、instruction query | 已提供代码，数值/闭环待目标环境验收 |

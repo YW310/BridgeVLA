@@ -684,4 +684,6 @@ stored-demo phase tracker。旧 buffer 若没有
 contract 但内容不匹配时仍拒绝。训练 replay 的全量 validation、handle alignment 与
 `source_alignment_validated` 检查也不会因此关闭。
 
-训练模式、消融和评估见 [O2 实验](../experiments/o2-training.md)。
+每个 O2 YAML 的输入、teacher、adapter 与动作头关系见
+[O2 配置简易流程图](o2-config-flows.md)；训练命令、消融和评估见
+[O2 实验](../experiments/o2-training.md)。
