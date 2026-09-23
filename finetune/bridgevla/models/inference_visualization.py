@@ -219,9 +219,12 @@ def internal_slot_montage(
         parts = []
         for stage_name, values in diagnostics.items():
             parts.append(
-                f'{stage_name} T={values[target_confidence]:.2f} '
-                f'R={values[reference_confidence]:.2f} '
-                f'NULL={values[reference_null_probability]:.2f}'
+                '{} T={:.2f} R={:.2f} NULL={:.2f}'.format(
+                    stage_name,
+                    float(values['target_confidence']),
+                    float(values['reference_confidence']),
+                    float(values['reference_null_probability']),
+                )
             )
         metric_summary = '; ' + '; '.join(parts)
     draw.text(

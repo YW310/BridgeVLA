@@ -53,7 +53,9 @@ class InferenceVisualizationTest(unittest.TestCase):
                 visualization.internal_slot_stage_diagnostics(stage_output)
             )
 
-        montage = visualization.internal_slot_montage(payloads, step=7)
+        montage = visualization.internal_slot_montage(
+            payloads, step=7, diagnostics=diagnostics,
+        )
         self.assertLessEqual(montage.width, visualization._MAX_MONTAGE_WIDTH)
         self.assertLessEqual(montage.height, visualization._MAX_MONTAGE_HEIGHT)
         self.assertEqual(montage.getpixel((0, 0)), visualization._BORDER_COLOR)
