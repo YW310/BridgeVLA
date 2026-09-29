@@ -161,6 +161,69 @@ def reference_null_loss(probability, present=None, known=None):
     return (values * weights).sum() / weights.sum().clamp_min(1)
 
 
+def role_supervision_mask(target_masks, role_valid, role_present=None,
+                          role_present_known=None):
+    """Return teacher-supported [B,V,2] roles, independent of predictions.
+
+    A projected prior supplies supervision only in finite, nonempty views.
+    This is projection support, not a certificate of rendered visibility.
+    """
+    if target_masks.ndim != 5 or target_masks.shape[2] != 2:
+        raise ValueError('teacher role maps must have shape [B,V,2,H,W]')
+    batch = target_masks.shape[0]
+    if role_valid.shape != (batch, 2):
+        raise ValueError('role_valid must have shape [B,2]')
+    if (role_present is None) != (role_present_known is None):
+        raise ValueError('role presence and known masks must be provided together')
+    valid = role_valid.to(device=target_masks.device).bool()
+    if role_present is not None:
+        if role_present.shape != (batch, 2) or role_present_known.shape != (batch, 2):
+            raise ValueError('role presence and known masks must have shape [B,2]')
+        valid = valid & role_present.to(device=target_masks.device).bool()
+        valid = valid & role_present_known.to(device=target_masks.device).bool()
+    teacher = target_masks.detach()
+    return (valid[:, None] & torch.isfinite(teacher).all(dim=(-2, -1))
+            & teacher.gt(0).any(dim=(-2, -1)))
+
+
+def mixed_role_map_losses(probabilities, target_masks, role_valid,
+                          role_present=None, role_present_known=None):
+    """Supervise the soft T/R maps actually consumed by the policy.
+
+    Empty teacher views, unavailable geometry and known absence are not
+    background-only mask labels. Missing presence metadata does not discard
+    otherwise valid geometry; NULL remains a separate posterior loss.
+    """
+    if probabilities.ndim != 5 or probabilities.shape[2] != 2:
+        raise ValueError('role probabilities must have shape [B,V,2,H,W]')
+    batch, views, _, height, width = probabilities.shape
+    if target_masks.ndim != 5 or target_masks.shape[:3] != (batch, views, 2):
+        raise ValueError('teacher role maps must have shape [B,V,2,H,W]')
+    target_masks = target_masks.detach().to(
+        device=probabilities.device, dtype=probabilities.dtype)
+    if target_masks.shape[-2:] != (height, width):
+        target_masks = F.interpolate(
+            target_masks.reshape(batch * views, 2, *target_masks.shape[-2:]),
+            size=(height, width), mode='area',
+        ).reshape(batch, views, 2, height, width)
+    supervised = role_supervision_mask(
+        target_masks, role_valid, role_present, role_present_known,
+    )
+    if not supervised.any():
+        zero = probabilities.sum() * 0.0
+        return {'mask': zero, 'bce': zero, 'dice': zero}
+
+    selected = probabilities[supervised].clamp(1e-6, 1 - 1e-6)
+    targets = target_masks[supervised]
+    bce = F.binary_cross_entropy(selected, targets)
+    selected, targets = selected.flatten(1), targets.flatten(1)
+    dice = 1.0 - (
+        2.0 * (selected * targets).sum(dim=1) + 1.0
+    ) / (selected.sum(dim=1) + targets.sum(dim=1) + 1.0)
+    dice = dice.mean()
+    return {'mask': bce + dice, 'bce': bce, 'dice': dice}
+
+
 def _exact_role_slot_assignment(cost, role_valid):
     '''Solve the at-most-two-role assignment exactly, without SciPy.'''
     batch, slots, roles = cost.shape
@@ -198,11 +261,14 @@ def _exact_role_slot_assignment(cost, role_valid):
 def hungarian_role_slot_losses(
     mask_logits, role_logits, objectness_logits, target_masks, role_valid,
     role_cost_weight=0.2, objectness_cost_weight=0.1,
+    *, role_view_valid=None,
 ):
     '''Match unordered slots to visible Target/Reference masks.
 
     With two roles, exact pair enumeration is equivalent to Hungarian matching.
     Assignment uses detached costs; gathered logits retain their gradients.
+    Optional teacher view validity masks both matching costs and mask losses;
+    no supported view means no assignment or positive objectness example.
     '''
     if mask_logits.ndim != 5:
         raise ValueError('mask_logits must have shape [B,V,K,H,W]')
@@ -222,19 +288,34 @@ def hungarian_role_slot_losses(
     target_masks = target_masks.to(device=mask_logits.device,
                                    dtype=mask_logits.dtype)
     role_valid = role_valid.to(device=mask_logits.device).bool()
+    if role_view_valid is not None:
+        if role_view_valid.shape != (batch, views, 2):
+            raise ValueError('role_view_valid must have shape [B,V,2]')
+        role_view_valid = role_view_valid.to(device=mask_logits.device).bool()
+        role_view_valid = role_view_valid & role_valid[:, None]
+        role_valid = role_valid & role_view_valid.any(dim=1)
+        target_masks = torch.where(
+            role_view_valid[..., None, None], target_masks.detach(), 0.,
+        )
     expanded_logits = mask_logits[:, :, :, None]
     expanded_targets = target_masks[:, :, None]
-    bce_cost = F.binary_cross_entropy_with_logits(
+    pixel_cost = F.binary_cross_entropy_with_logits(
         expanded_logits.expand(-1, -1, -1, 2, -1, -1),
         expanded_targets.expand(-1, -1, slots, -1, -1, -1),
         reduction='none',
-    ).mean(dim=(1, 4, 5))
-    probabilities = torch.sigmoid(expanded_logits)
-    intersection = (probabilities * expanded_targets).sum(dim=(1, 4, 5))
-    denominator = (
-        probabilities.sum(dim=(1, 4, 5))
-        + expanded_targets.sum(dim=(1, 4, 5))
     )
+    probabilities = torch.sigmoid(expanded_logits)
+    if role_view_valid is None:
+        bce_cost = pixel_cost.mean(dim=(1, 4, 5))
+        intersection = (probabilities * expanded_targets).sum(dim=(1, 4, 5))
+        denominator = (probabilities.sum(dim=(1, 4, 5))
+                       + expanded_targets.sum(dim=(1, 4, 5)))
+    else:
+        weights = role_view_valid[:, :, None, :, None, None].to(mask_logits.dtype)
+        pixels = role_view_valid.sum(dim=1).clamp_min(1)[:, None] * height * width
+        bce_cost = (pixel_cost * weights).sum(dim=(1, 4, 5)) / pixels
+        intersection = (probabilities * expanded_targets * weights).sum(dim=(1, 4, 5))
+        denominator = ((probabilities + expanded_targets) * weights).sum(dim=(1, 4, 5))
     dice_cost = 1.0 - (2.0 * intersection + 1.0) / (denominator + 1.0)
     role_cost = -F.log_softmax(role_logits, dim=-1)
     objectness_cost = F.softplus(-objectness_logits)[:, :, None]
@@ -259,10 +340,19 @@ def hungarian_role_slot_losses(
         batch_indices, slot_indices]
     selected_targets = target_masks.permute(0, 2, 1, 3, 4)[
         batch_indices, role_indices]
-    bce_loss = F.binary_cross_entropy_with_logits(
-        selected_logits, selected_targets)
-    selected_probabilities = torch.sigmoid(selected_logits).flatten(1)
-    flattened_targets = selected_targets.flatten(1)
+    if role_view_valid is None:
+        bce_loss = F.binary_cross_entropy_with_logits(selected_logits, selected_targets)
+        selected_probabilities = torch.sigmoid(selected_logits).flatten(1)
+        flattened_targets = selected_targets.flatten(1)
+    else:
+        selected_views = role_view_valid.permute(0, 2, 1)[batch_indices, role_indices]
+        weights = selected_views[:, :, None, None].to(mask_logits.dtype)
+        pixel_loss = F.binary_cross_entropy_with_logits(
+            selected_logits, selected_targets, reduction='none',
+        )
+        bce_loss = (pixel_loss * weights).sum() / (weights.sum() * height * width)
+        selected_probabilities = (torch.sigmoid(selected_logits) * weights).flatten(1)
+        flattened_targets = (selected_targets * weights).flatten(1)
     dice_loss = 1.0 - (
         2.0 * (selected_probabilities * flattened_targets).sum(dim=1) + 1.0
     ) / (

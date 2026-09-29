@@ -535,6 +535,7 @@ class MVT(nn.Module):
         object_slot_target_heatmap=None,
         object_conditioning_shared_action_features=False,
         object_conditioning_use_context=False,
+        inherited_object_roles=None,
         **kwargs,
     ):
         """
@@ -546,9 +547,12 @@ class MVT(nn.Module):
         bs, num_img, img_feat_dim, h, w = img.shape
         assert num_img == self.num_img
         assert h == w == self.img_size
-        if object_slot_predictor is not None and img_feat_dim < 6:
+        uses_object_roles = object_slot_predictor is not None or inherited_object_roles is not None
+        if object_slot_predictor is not None and inherited_object_roles is not None:
+            raise ValueError('refine role inheritance must not run an independent slot selector')
+        if uses_object_roles and img_feat_dim < 6:
             raise ValueError('Internal object slots require rendered XYZ and RGB channels')
-        rendered_xyz = img[:, :, 0:3] if object_slot_predictor is not None else None
+        rendered_xyz = img[:, :, 0:3] if uses_object_roles else None
         # only use rgb part
         # print("input image feature shape:",img.shape)
         img = img[:,:, 3:6, :, :] # bs,3,3,224,224
@@ -629,6 +633,9 @@ class MVT(nn.Module):
                 x, rendered_xyz, current_state=oracle_relation_state,
                 context=instruction_context,
             )
+        elif inherited_object_roles is not None:
+            object_slot_output = inherited_object_roles
+        if object_slot_output is not None:
             oracle_prior_heatmap = object_slot_output['prior']
             oracle_prior_valid = object_slot_output['valid']
             oracle_relation_points = object_slot_output['points']
@@ -665,6 +672,8 @@ class MVT(nn.Module):
                                                 if object_slot_output is not None else None),
                     geometry=(object_slot_output['geometry']
                               if object_slot_output is not None else None),
+                    role_token_valid=(object_slot_output.get('role_token_valid')
+                                      if object_slot_output is not None else None),
                 )
                 if not oracle_adapter_translation_only:
                     x = shared_features
@@ -758,15 +767,6 @@ class MVT(nn.Module):
             out.update({
                 'object_slot_prior': object_slot_output['prior'],
                 'object_slot_prior_logits': object_slot_output['prior_logits'],
-                'object_slot_masks': object_slot_output['slot_masks'],
-                'object_slot_mask_logits': object_slot_output['mask_logits'],
-                'object_slot_objectness_logits': (
-                    object_slot_output['objectness_logits']
-                ),
-                'object_slot_role_logits': object_slot_output['role_logits'],
-                'object_slot_reference_null_logit': (
-                    object_slot_output['reference_null_logit']
-                ),
                 'object_slot_reference_null_probability': (
                     object_slot_output['reference_null_probability']
                 ),
@@ -776,9 +776,20 @@ class MVT(nn.Module):
                 'object_slot_confidence': object_slot_output['confidence'],
                 'object_slot_valid': object_slot_output['valid'],
                 'object_slot_role_tokens': object_slot_output['role_tokens'],
+                'object_slot_role_token_valid': object_slot_output['role_token_valid'],
+                'object_slot_points': object_slot_output['points'],
+                'object_slot_geometry': object_slot_output['geometry'],
             })
+            for key in ('slot_masks', 'mask_logits', 'objectness_logits', 'role_logits',
+                        'reference_null_logit'):
+                if key in object_slot_output:
+                    output_key = 'masks' if key == 'slot_masks' else key
+                    out['object_slot_' + output_key] = object_slot_output[key]
+            if object_slot_output.get('roles_inherited', False):
+                out['object_slot_roles_inherited'] = True
             if object_slot_target_heatmap is not None:
                 out['object_slot_target_prior'] = object_slot_target_heatmap.detach()
+                out['object_slot_target_valid'] = object_slot_target_heatmap.detach().gt(0).any(dim=(1, 3, 4))
 
         if relation_anchor is not None:
             # Keep this diagnostic low-resolution and graph-free. Callers

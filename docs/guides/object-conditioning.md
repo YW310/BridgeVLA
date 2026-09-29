@@ -3,7 +3,7 @@
 [文档索引](../README.md) · [统一设计](../design/role-relation-prior.md) · [Semantic-GT 数据](semantic-gt.md) · [代码索引](../reference/code-map.md)
 
 > 本页合并原 O2 模式、配置流程、GT/anchor、外部预测、internal slots 与 joint 实验说明。
-> 描述现有代码，不包含计划中的两-query、跨尺度继承或 memory。除 CI/测试外，命令从仓库根目录先 `cd finetune/RLBench`；独立示例重新指定工作目录。
+> 描述现有代码，包含 opt-in 跨尺度继承；两-query 与 memory 仍未实现。除 CI/测试外，命令从仓库根目录先 `cd finetune/RLBench`；独立示例重新指定工作目录。
 
 阅读路径：[配置](#配置选择) → [数据](#数据与角色契约) → [训练](#训练) → [Checkpoint](#loss与checkpoint) → [闭环](#closed-loop评估) → [诊断](#测试诊断与可视化) → [验证](#最小验证)。
 baseline 的安装/预训练/其他 benchmark 命令仍见[训练](training.md)和[评估](evaluation.md)。
@@ -22,6 +22,7 @@ baseline 的安装/预训练/其他 benchmark 命令仍见[训练](training.md)�
 | `internal_slots` | 2 个无序 slots | 原 relation + anchor，无 instruction context | `none` |
 | `semantic_gt_joint` | 严格 Semantic-GT | instruction + 完整动作共享 | `rlbench_gt` |
 | `internal_slots_joint` | 6 个无序 slots，128 dim | soft tokens/geometry + instruction + 完整动作共享 | `none` |
+| `internal_slots_cross_scale` | 同一 coarse 的 6 slots | joint + 混合 map 监督 + 本步继承 + token 保留 | `none` |
 
 `rlbench_o2_semantic_roles.yaml` **不是训练配置**：它定义任务/variation 的 T/R、顺序与 NULL 语义，摘要进入数据/checkpoint contract。
 摘要是整个 YAML 文件字节的 SHA-256，不是逐 task 语义摘要；修改注释/格式也会改变 contract。
@@ -64,8 +65,8 @@ flowchart LR
 
 几何和输入隔离的详细定义见[统一设计](../design/role-relation-prior.md#当前实现与数据契约)。
 
-当前两级各自选角色，refine 不继承 coarse 的 Reference；soft slot tokens 的注入仍乘以该角色的
-geometry valid。裁剪外 Reference 的保留/不重选是计划能力，不能由 shared flag 或 soft posterior 推导已实现。
+旧配置两级各自选角色，token 仍受 geometry valid 屏蔽；新配置需显式开启下面的[角色一致性开关](#角色一致性开关)。
+仅 shared flag 或 soft posterior 不会自动继承角色或保留 crop 外 token。
 
 ## 训练
 
@@ -204,13 +205,90 @@ GPUS_PER_NODE=2 bash train_8x40.sh \
 joint 为 6 slots/128 dim，NULL weight=0.25、diversity=0.01，开启 instruction、soft roles/geometry、完整动作共享。
 可从验收过的 GT checkpoint init，但与 baseline 初始化分开报告。
 有效 Target 不因 Reference 几何不可用一起关闭；NULL posterior 与 geometry valid 分开。
-hard top-k XYZ 仅兼容/可视化，不是唯一条件。无 object teacher-forcing 输入替换、额外 VLM 或输出 fusion。
+hard top-k XYZ 用于兼容/可视化与 opt-in 继承的局部提示，不是唯一条件。无 object teacher-forcing 输入替换、额外 VLM 或输出 fusion。
 未匹配 slots 无完整负例，不是通用 object discovery。
 
-当前 BCE/Dice 监督的是匹配 slots，不直接监督动作前向使用的最终混合 T/R maps。
+默认 BCE/Dice 只监督匹配 slots；可另外启用最终混合 T/R maps 的直接监督。
 `rvt.object_prediction_confidence_threshold=0.25` 是预测有效性门限，
 `rvt.object_slot_null_loss_weight=0.25` 是损失权重；
 二者都不是 Hungarian 拒配阈值，当前匹配没有拒配门限。
+
+### 角色一致性开关
+
+三个独立开关默认关闭，仅支持 internal slots；GT/外部 predictor 不误启用。
+
+```yaml
+object_conditioning:
+  supervise_mixed_role_maps: False
+  inherit_coarse_roles: False
+  preserve_role_tokens: False
+rvt:
+  object_slot_mixed_role_loss_weight: 1.0
+```
+
+| 开关 | 启用后 |
+| --- | --- |
+| `supervise_mixed_role_maps` | 匹配 slot 与 mixed-map BCE/Dice 共用 stage/role/view teacher 有效性；未知/无效角色和空 teacher views 跳过 |
+| `inherit_coarse_roles` | refine 不调用 predictor2，复用 coarse tokens/NULL/几何；预测点作有 XYZ 支持的重投影提示 |
+| `preserve_role_tokens` | 可信角色 token 不随局部 geometry valid 清空；不生成虚构局部 XYZ |
+
+后两项要求 shared action features + anchor；继承还要求 stage_two 与 XYZ channels。
+继承开启时自动使用未额外归一化、未受图像增强扰动的 XYZ，RGB/VLM 不变；可沿用默认 `rvt2.yaml`。
+继承时 refine 提示为离散重投影，不另算角色/NULL/slot loss；学习式混合 map loss 只在 coarse。
+global tokens/soft geometry 仍接受 refine action 梯度，没有新的局部 mask decoder 或跨步 memory。
+有效性只读取 teacher，不由预测 confidence 决定。Reference 在 refine 全部视角没有投影支持时，两种 map loss 都跳过对应监督，也不产生该角色的 objectness 正例；presence/NULL 标签独立保留。
+teacher 是模糊、峰值归一化的点投影 prior，未验证虚拟视角遮挡，不能按严格实例分割 GT 解释。
+
+新独立配置启用全部三项，沿用 joint 的冻结范围、学习率、slots 和训练预算；已有 semantic buffer 不重写：
+
+- 冻结 vision tower、Gemma 前 18 层及既有 embedding/lm_head；训练 projector、上层 Gemma、动作头和 object 模块。
+- 非 Gemma 学习率 `4e-5`，Gemma `1e-5`；effective batch 192，50 epochs × 200 optimizer steps = 10,000 updates。
+- `--epochs` 未指定时使用 YAML/overrides，显式指定时覆盖并保存实际值；joint 不传 `--train_object_adapter_only`。
+
+```bash
+cd finetune/RLBench
+GPUS_PER_NODE=2 bash train_8x40.sh \
+  --exp_cfg_path configs/rlbench_o2_internal_slots_cross_scale.yaml \
+  --train_replay_storage_dir "$SEMANTIC_BUFFER" \
+  --init_checkpoint "$BASE_CHECKPOINT" \
+  --save_optimizer_state \
+  --exp_cfg_opts "seed 0"
+```
+
+消融只替换 overrides，其他预算保持不变：
+
+| 组 | `--exp_cfg_opts` |
+| --- | --- |
+| 旧 joint | `seed 0 object_conditioning.supervise_mixed_role_maps False object_conditioning.inherit_coarse_roles False object_conditioning.preserve_role_tokens False` |
+| 监督对齐（mixed + 有效性修正） | `seed 0 object_conditioning.inherit_coarse_roles False object_conditioning.preserve_role_tokens False` |
+| mixed + 继承 | `seed 0 object_conditioning.preserve_role_tokens False` |
+| 三项全开 | `seed 0` |
+
+要单独验证 teacher 有效性修正，可在监督对齐组追加 `rvt.object_slot_mixed_role_loss_weight 0.0`；此时不加 mixed 项，匹配 loss 仍使用修正后的有效性。
+四个路由开关（shared/context/inherit/preserve）写入 checkpoint，改变路由用 `--init_checkpoint`；监督开关/权重改变可复用兼容 optimizer，但正式消融仍从相同初始化重新训练。
+相同配置续训用 `--resume_checkpoint`，optimizer 连续性要求之前保存过 `--save_optimizer_state`。评估读取该 checkpoint 保存的 `exp_cfg.yaml` 与 `mvt_cfg.yaml`，四个路由设置不匹配会报错。
+VISUALIZE 中 refine 显示继承的 T/R maps，不伪造 slot/head 分数；JSON 标记 `roles_inherited=true, role_source=coarse`。
+
+正式训练前可先做一个 optimizer update：
+
+```bash
+cd finetune/RLBench
+GPUS_PER_NODE=1 bash train_8x40.sh \
+  --exp_cfg_path configs/rlbench_o2_internal_slots_cross_scale.yaml \
+  --train_replay_storage_dir "$SEMANTIC_BUFFER" \
+  --init_checkpoint "$BASE_CHECKPOINT" \
+  --exp_cfg_opts "seed 0 tasks place_cups bs 1 global_batch_size 1 num_workers 0 max_optimizer_steps 1 exp_id o2_cross_scale_smoke"
+```
+
+将训练输出目录设为 `SLOT_RUN`，使用其保存配置做预测-only 单 episode 检查；正式实验恢复原 batch/预算，并按相同 episodes 做配对闭环评估。
+
+```bash
+cd finetune/RLBench
+TASKS=place_cups MODEL_FOLDER="$SLOT_RUN" MODEL_NAME=model_last.pth \
+EXP_CFG_PATH="$SLOT_RUN/exp_cfg.yaml" EVAL_DATAFOLDER=/path/to/raw_eval \
+ORACLE_PROVIDER=none REPLAY_GROUND_TRUTH=0 EVAL_EPISODES=1 EVAL_RESUME=0 \
+ORACLE_DEBUG=0 SAVE_VIDEO=0 VISUALIZE=0 bash eval.sh
+```
 
 ### 外部预测对象
 
@@ -537,11 +615,15 @@ python -m pytest -q tests/test_object_conditioning.py tests/test_object_conditio
   tests/test_o2_semantic_roles.py tests/test_rollout_generator_ground_truth.py
 python -m unittest tests.test_oracle_prior tests.test_o2_joint_action_loss \
   tests.test_rlbench_training_utils tests.test_rlbench_training_visualization -v
+python -m pytest -q tests/test_role_feature_config.py tests/test_mixed_role_supervision.py \
+  tests/test_role_token_preservation.py tests/test_cross_scale_roles.py tests/test_cross_scale_render.py \
+  tests/test_object_conditioning_forward.py tests/test_inference_visualization.py \
+  tests/test_eval_place_with_mean.py tests/test_rlbench_training_utils.py
 ```
 
 训练 overrides 加 `max_optimizer_steps 1`，检查 action/object 梯度、coverage、base/适配 loss 和 checkpoint 保存。
 随后单 episode smoke：预测-only 用 `ORACLE_PROVIDER=none EVAL_EPISODES=1`，GT 组仍用 GT provider。
 外部模式先接 wrapper。smoke 只证明可运行，不能替代固定 episodes 的闭环准入。
-PyTorch/CUDA/RLBench 的数值与闭环验收须在目标环境执行；本次项目审查没有可用 Python，未执行这些实验。
+本机已在隔离的 uv/PyTorch CPU 环境验证角色监督、跨尺度梯度与小模型动作前向；完整 PaliGemma/CUDA 训练和模拟器闭环仍需在目标环境验收。
 
 函数路径统一见[代码索引](../reference/code-map.md#policy-数据流)，架构、teacher 隔离和后续设计统一见[主设计](../design/role-relation-prior.md)。

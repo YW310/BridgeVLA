@@ -33,6 +33,10 @@ Use `train_8x40.sh` for any single-node GPU count; its name does not require 8 G
 The old RLBench `train.sh` hardcodes server paths and two GPUs, and forwards unquoted `$@`,
 which splits `--exp_cfg_opts` and paths containing spaces. It is not the recommended entry.
 
+The epoch budget comes from the YAML and `--exp_cfg_opts` unless `--epochs` is explicitly supplied.
+An explicit `--epochs` overrides that budget and is recorded in the saved configuration; on resume it remains the total target epoch count.
+Older runs silently used the CLI default of 100 even when their YAML said 50. To continue such a run to its original target, supply `--epochs 100` explicitly.
+
 ```bash
 cd finetune/RLBench
 GPUS_PER_NODE=2 bash train_8x40.sh --exp_cfg_path configs/rlbench_config.yaml \

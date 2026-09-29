@@ -28,7 +28,8 @@
 ## 先分清实现与计划
 
 单帧 slots、soft role 条件化和共享动作特征已有 opt-in 代码，闭环收益仍需验证。
-最终混合角色图直接监督、两个语义 queries、跨尺度继承、temporal memory 与恢复机制尚未实现。
+混合角色图监督、跨尺度继承和 token 保留已有默认关闭的独立开关；见[运行与消融](guides/object-conditioning.md#角色一致性开关)。
+两个语义 queries、temporal memory 与恢复机制尚未实现。
 现有 YAML 不会因为设计文档更新而自动切换到计划架构。
 
 Oracle-GT 是上界/诊断路线；预测策略的动作前向不得读取 GT T/R。

@@ -19,7 +19,7 @@ flowchart TB
     ST["当前夹爪状态"] --> Q
     ST --> AC
     P --> VC["Coarse VLM + 同次 text pooling"]
-    VC --> Q["计划：T/R 语义 queries"]
+    VC --> Q["Coarse 无序 slots → T/R soft maps / tokens"]
     Q --> K["本步 role packet：tokens / maps / Reference NULL / 可信几何"]
     P -.有效 XYZ.-> K
     VC --> AC["原 anchor / adapter"]
@@ -28,7 +28,7 @@ flowchart TB
     WC --> C["现有 crop / zoom"]
     P --> C
     C --> VF["Refine VLM + 同次 text pooling：共享 backbone 权重"]
-    VF --> AR["计划：继承角色 → 原 anchor / adapter"]
+    VF --> AR["opt-in：继承角色 → 原 anchor / adapter"]
     K --> AR
     C -.实际坐标变换.-> AR
     ST --> AR
@@ -45,10 +45,8 @@ flowchart TB
     D -.训练 crop teacher forcing.-> C
     M["后续：有界 object memory"] -.历史上下文.-> Q
 
-    classDef planned fill:#fff2d9,stroke:#b7791f;
     classDef optional fill:#f0f0f0,stroke:#888;
-    class Q,K,AR planned;
-    class M optional;
+    class K,AR,M optional;
 ```
 
 每步仍是现有两次 VLM 前向（`3 × 2` 视角），text context 来自同次 hidden states。
@@ -64,10 +62,12 @@ flowchart TB
 | 已实现，默认关闭 | `shared_action_features`：translation 与 R/G/C 使用同一最终特征；`use_context`：同次 VLM 的 instruction 条件 |
 | 已实现，预测路线 | 无序 slots → role head/soft mixture → T/R maps、tokens、Reference NULL；soft geometry；GT teacher 隔离 |
 | 已实现，数据兼容 | 从旧 replay 的角色 `kind` 只读派生 presence/known；NULL loss 监督实际 posterior |
-| 本轮计划 | 最终混合 role-map 直接监督 → coarse/refine 角色继承 → 两个固定语义 queries 对照 |
+| 已实现，三个独立开关 | 混合 role-map 监督、coarse→refine 角色继承、几何 unknown 时保留可信 token；默认关闭 |
+| 后续结构对照 | 两个固定语义 queries，尚未实现 |
 | 后续可选 | temporal memory、可信历史点、局部 mask 读出、渲染改进；各自单独验收 |
 
-当前普通 internal-slot 配置为 **2 个无序 slots**，joint 为 **6 个**；都不是两个固定语义 queries，两级仍独立预测。
+当前普通 internal-slot 配置为 **2 个无序 slots**，joint 为 **6 个**；都不是两个固定语义 queries。
+旧配置两级独立预测；新 `internal_slots_cross_scale` 配置显式启用三个开关，不自动改变旧配置。
 旧配置保留旧动作路由；冻结范围见[训练设置](#训练设置)。当前 YAML 不会自动切换到图中的计划架构。
 
 ## 当前实现与数据契约
@@ -117,14 +117,14 @@ T/R 是任务角色，heatmap waypoint 是动作锚点，可在物体、接触�
 
 `soft_role_geometry()` 使用本 stage 有效 rendered XYZ 和 role maps，计算可微加权中心与标准差 spread：
 
-- 屏蔽背景、非有限 XYZ 与不可用角色；hard top-k 点仅保留作兼容/可视化。
+- 屏蔽背景、非有限 XYZ 与不可用角色；hard top-k 点用于兼容/可视化与 opt-in 继承的局部提示，不是唯一条件路径。
 - spread 描述可见支持，不是完整物体 bbox/size。
 - coarse/refine 使用各自坐标系，不混用几何。
 - 新模式下 Reference 不可靠不连带关闭有效 Target；geometry unknown 与语义 NULL 分开。
 
 没有历史或新观测，该分支不能可靠定位全遮挡物体。
-当前 anchor 注入的 soft role token 仍乘以 geometry valid；局部支持消失时不会自动保留语义条件。
-这是[跨尺度继承计划](#跨尺度角色继承计划未实现)要修复的接口限制，不是已实现的 unknown memory。
+默认 anchor 仍用 geometry valid 屏蔽 token。开启 `preserve_role_tokens` 后使用独立的角色可靠性，
+局部支持消失只关闭空间条件；不构成历史 memory，也不伪造遮挡期间的位姿。
 
 ### Teacher 与数据
 
@@ -144,18 +144,35 @@ presence 只在 `RVTAgent._object_slot_auxiliary_losses()` 使用。NULL loss �
 
 当前 replay 只标已选 T/R，不是全实例发现/跟踪数据。可见支持可训练 objectness 正例，但不能称其为语义存在概率。
 GT site 体积、点投影 prior 与当前可见实例轮廓不同，role-map 指标必须按监督定义解释。
+当前 teacher 经点投影、Gaussian blur 和峰值归一化生成，未与虚拟视角的深度遮挡逐点核验；它监督角色空间 prior，不能当作严格实例分割 GT。
 有效 replay、点云与 manifest 无需重写。
 
-## 本轮设计（未实现）
+<a id="本轮设计未实现"></a>
+
+## 角色预测与跨尺度调整
+
+三个开关位于 `object_conditioning`，均默认 `False`，只用于 internal slots：
+
+| 开关 | 实现行为 |
+| --- | --- |
+| `supervise_mixed_role_maps` | 概率空间 BCE/Dice 监督实际混合 T/R maps；保留原 slot loss |
+| `inherit_coarse_roles` | refine 跳过 slot selector，继承 tokens/NULL/变换后的几何；预测点只作局部重投影提示 |
+| `preserve_role_tokens` | token 与局部 geometry valid 解耦；可信 Target 还可启用全局 anchor 条件 |
+
+继承要求 coarse/refine、shared action features、anchor 和 XYZ correlation channels；token 保留要求 shared + anchor。
+继承不依赖 token 保留开关，但只开继承仍可能屏蔽 crop 外 token，需单独消融。
+实现与训练命令见[操作指南](../guides/object-conditioning.md#角色一致性开关)。
 
 ### 最小角色预测（计划，未实现）
 
 **当前差距。** `InternalObjectSlotPredictor.forward()` 用无序 queries 提取 masks，再经 objectness/role 分数混合成 T/R。
 `hungarian_role_slot_losses()` 按总代价做一对一匹配，没有 IoU/代价拒配阈值。
-BCE/Dice、role CE 与 objectness 正例只监督匹配 slots；最终混合 maps 未被直接监督，未匹配 slots 没有对象负例。
+BCE/Dice、role CE 与 objectness 正例原本只监督匹配 slots，未匹配 slots 仍没有对象负例。
 
-**先做监督对齐。** 保留当前 predictor，监督 policy 实际接收的混合 maps，使用同 stage GT maps/有效性。
-真实 Reference absence 监督 NULL；geometry unknown 不作为空图负例。此对照与结构替换分开。
+**已实现监督对齐。** 开启 `supervise_mixed_role_maps`，使用同 stage GT maps、有效性和已知 presence；
+`role_supervision_mask()` 统一 replay 几何有效性、当前 stage 支持、已知 presence 与有限非空 teacher views。
+该 mask 同时用于 mixed-map loss 和原匹配 loss 的代价/梯度：空 view 不监督为空图；整角色无支持时不匹配 slot、不产生 objectness 正例。absence 仍只监督 NULL posterior。
+关闭继承时两级监督；开启继承时仅 coarse 是学习式角色预测，refine 的离散提示不重复计算角色 loss。
 
 **再验证两-query 简化。** 复用 feature/mask projection、Transformer decoder 与原 anchor：
 
@@ -182,10 +199,11 @@ q_T / q_R + instruction + 当前状态
 [SlotFlow](https://arxiv.org/abs/2609.24155)保留语义/空间/全局条件。
 这些是机制参考，不证明两-query 优于 K slots；更多依据见[调研](../research/object-centric-policy-memory.md)。
 
-### 跨尺度角色继承（计划，未实现）
+<a id="跨尺度角色继承计划未实现"></a>
 
-当前两级独立调用 slot predictor，refine 不接收 coarse packet；anchor 的 token 注入还受 geometry valid 屏蔽。
-计划改为 **coarse 本步绑定一次角色，refine 只读；下一控制步重新选择**。
+### 跨尺度角色继承（opt-in 已实现）
+
+默认两级独立调用 slot predictor；开启继承后 **coarse 本步绑定一次角色，refine 只读；下一控制步重新选择**。
 不依赖 temporal memory，不增加 VLM 前向、pair search 或 phase head。
 
 #### 本步接口与条件路径
@@ -199,10 +217,13 @@ q_T / q_R + instruction + 当前状态
 | 可选 `points`、`frame` | 本步可靠点与坐标系；仅作重投影提示 |
 
 packet 不含 GT 点、presence 或目标动作；Reference NULL 只应用一次。
-anchor 分开读取全局角色条件与局部空间支持，**局部 valid 不能清空继承的全局 token**。
+anchor 分开读取全局角色条件与局部空间支持；同时开启 token 保留时，**局部 valid 不清空可信全局 token**。
 所有动作仍使用同一最终特征，waypoint 不被角色 mask 强制裁到物体表面。
 
-首版只继承 tokens/NULL/可信几何。若细定位仍是瓶颈，再试 `Q_r = W_r h_r + b_r` 的局部 mask readout：
+首版继承 tokens/NULL/可信几何，并重投影 coarse 预测点提示。逐点/视角要求当前 rendered XYZ 对应，
+容差为 unit-cube 三个像素 pitch；背景、越界或被其他表面覆盖不作为本角色支持。量化容差不保证身份正确。
+继承开启时 XYZ 使用干净的实际 crop 坐标，不受 `norm_corr` 或 RGB augmentation 污染；VLM RGB 路径不变。
+若细定位仍是瓶颈，再试 `Q_r = W_r h_r + b_r` 的局部 mask readout：
 复用 projection，不增加独立 role/objectness/NULL selector，也不覆盖全局 token。
 VLM patch-grid 分辨率不会因新增 queries 自动提高。
 
@@ -228,19 +249,20 @@ VLM patch-grid 分辨率不会因新增 queries 自动提高。
 
 #### 训练、代码落点与验收
 
-- refine 监督同一 demo 角色、实际 crop/投影下的支持；geometry unknown、映射未知或预测点越界不伪造全零负例，更不监督为 NULL。
+- 独立预测阶段监督同一 demo 角色；继承 refine 只承担 action loss，静态重投影提示不另算角色 loss。
+- geometry unknown、映射未知或预测点越界不伪造全零负例，更不监督为 NULL。
 - 不新增独立 identity loss，不对不同视域的两级二维 maps 强做逐像素一致性。
 - tokens、soft posterior 与可微中心接受 action 梯度；离散 top-k/rasterization 仅作提示。
 - 同时测试 GT crop 和预测/偏移 crop、coarse 正确与误选；不能只报告正确选择子集。
-- 新路由 opt-in；新增 residual 零初始化，但移除旧 selector 不保证新旧数值完全一致。旧 replay 不因接口变化重写。
+- 开关不增加 learned 参数；切换路由用 init，不沿用 optimizer resume。旧 replay 不重写；新旧路由初始数值不保证一致。
 
-| 位置 | 计划调整 |
+| 位置 | 当前落点 |
 | --- | --- |
-| `InternalObjectSlotPredictor.forward()` | 输出 packet；简化版替换角色选择路径 |
-| `RVTAgent._object_slot_auxiliary_losses()` | 对照新增混合 map loss；两-query 版直接监督角色 maps |
-| `mvt.MVT.forward()` | 传 packet 与实际变换，不再独立 refine 选角色 |
-| `mvt_single.MVT.forward()` | 接收全局条件；可选局部 readout 后置 |
-| `OracleRelationAnchorFeatureAdapter.forward_with_anchor()` | 分离角色可靠性、geometry valid 与逐视角支持 |
+| `InternalObjectSlotPredictor.forward()` | 输出 geometry valid 与独立 role-token valid |
+| `RVTAgent._object_slot_auxiliary_losses()` | opt-in 混合 map loss，跳过继承阶段的辅助重复 loss |
+| `cross_scale_roles.inherit_coarse_roles()` | 实际 crop 变换、逐视角 XYZ 支持与预测提示重投影 |
+| `mvt.MVT.forward()` / `mvt_single.MVT.forward()` | 传预测 packet，绕过 refine selector；teacher 单独隔离 |
+| `OracleRelationAnchorFeatureAdapter.forward_with_anchor()` | opt-in token 保留，全局条件与局部几何分开 |
 
 按主设计 A→A+M→B→C 对照，不同时改变渲染、分辨率或 memory。
 测试覆盖 crop 外/部分支持/NULL/unknown/相似物体/误选/跨步切换/teacher-forcing gap，
@@ -260,13 +282,14 @@ coarse/refine 分工已有[BridgeVLA++](https://arxiv.org/html/2608.05042#S4)先
 | A | 当前独立 slots | 预测基线 |
 | A+M | 只加最终混合 role-map 监督 | 监督与条件错位是否是瓶颈？ |
 | B | A+M 加本步跨尺度继承 | crop 外 Reference 是否仍误切换？ |
+| B+T | B 再启用 token 保留 | 不重选后，crop 外角色条件是否仍被屏蔽？ |
 | C | B 的 coarse 改为两个语义 queries | 简化选择结构是否有效？ |
 
 GT 准入采用同数据、初始化、解冻范围、训练步数和评估 episodes，至少 3 个训练 seeds；
 配对闭环成功率差的 95% CI 下界为正才进入预测联合实验。
 同时报告 decoded waypoint、预测 waypoint 下 R/G/C、失败类型、时延与显存；辅助 loss 下降不能替代闭环收益。
 
-保持渲染、mask 分辨率和 memory 不变来隔离 A→C 的作用。
+保持 RGB 渲染、mask 分辨率和 memory 不变来隔离 A→C 的作用；继承使用 clean XYZ，这是新增坐标契约的一部分。
 GT waypoint/crop teacher forcing 与推理预测 crop 的差距另行诊断；当前 `16×16` role masks 不会因 query 简化自动变精细。
 
 ### 训练设置
@@ -408,7 +431,7 @@ stack_blocks 单测正常切换、合法替代顺序、抓错、未放稳与坍�
 
 ## 真实机器人部署（后续规划）
 
-尚未真机验收；跨尺度继承、memory 与再观测控制器均未实现，规划器检查不是安全认证。
+尚未真机验收；跨尺度继承已有 opt-in 实现，memory 与再观测控制器仍未实现，规划器检查不是安全认证。
 真实动作前向不读 simulator ID、GT T/R、GT phase 或 success conditions；Oracle 仅作监督/评估。
 RGB-D、标定、当前 proprio 与时间戳必须同步，更新观测后不执行旧 packet；目标 `gripper_pose` 不当作实际 EE pose。
 训练/部署渲染一致，RGB 填色不增加真实 XYZ；simulator grasp 确认也不能替代无 GT 身份识别。

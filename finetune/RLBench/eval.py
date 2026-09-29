@@ -90,6 +90,23 @@ def _append_evaluation_diagnostic(path, message):
     with path.open('a', encoding='utf-8') as stream:
         stream.write(str(message).rstrip() + '\n')
 
+def _validate_role_feature_checkpoint(checkpoint, conditioning_cfg, source):
+    """Require the eval role-routing path recorded during training."""
+    stored = checkpoint.get('object_conditioning', {})
+    if not isinstance(stored, dict):
+        raise RuntimeError(f'Invalid object_conditioning metadata in {source}.')
+    # Legacy checkpoints used none of these routing options. A loss-only switch does
+    # not change inference and is deliberately excluded from this comparison.
+    for flag in ('shared_action_features', 'use_context',
+                 'inherit_coarse_roles', 'preserve_role_tokens'):
+        if bool(stored.get(flag, False)) != bool(getattr(conditioning_cfg, flag, False)):
+            raise RuntimeError(
+                f'Object conditioning {flag} differs from checkpoint {source}; '
+                'evaluate with its saved exp_cfg.yaml, or train the changed '
+                'routing from --init_checkpoint first.'
+            )
+
+
 def load_agent(
     model_path=None,
     exp_cfg_path=None,
@@ -114,9 +131,9 @@ def load_agent(
 
     # NOTE: to not use place_with_mean in evaluation
     # needed for rvt-1 but not rvt-2
+    old_place_with_mean = exp_cfg.rvt.place_with_mean
     if not use_input_place_with_mean:
         # for backward compatibility
-        old_place_with_mean = exp_cfg.rvt.place_with_mean
         exp_cfg.rvt.place_with_mean = True
 
     exp_cfg.freeze()
@@ -144,6 +161,9 @@ def load_agent(
         oracle_relation_anchor_rank=exp_cfg.oracle_relation_anchor_rank,
         object_conditioning_shared_action_features=exp_cfg.object_conditioning.shared_action_features,
         object_conditioning_use_context=exp_cfg.object_conditioning.use_context,
+        object_conditioning_supervise_mixed_role_maps=exp_cfg.object_conditioning.supervise_mixed_role_maps,
+        object_conditioning_inherit_coarse_roles=exp_cfg.object_conditioning.inherit_coarse_roles,
+        object_conditioning_preserve_role_tokens=exp_cfg.object_conditioning.preserve_role_tokens,
         object_slots_enabled=exp_cfg.object_slots.enabled,
         object_slot_num_slots=exp_cfg.object_slots.num_slots,
         object_slot_dim=exp_cfg.object_slots.slot_dim,
@@ -174,7 +194,11 @@ def load_agent(
         exp_cfg.rvt.object_prior_mode,
         exp_cfg.rvt.oracle_prior_mode,
     )
-    checkpoint_validator = None
+    def checkpoint_validator(checkpoint):
+        _validate_role_feature_checkpoint(
+            checkpoint, exp_cfg.object_conditioning, model_path,
+        )
+
     semantic_training_phase_source = None
     semantic_contract_status = {'value': 'not_enforced'}
     if enforce_oracle_contract and exp_cfg.oracle_semantic_audit:
@@ -207,6 +231,9 @@ def load_agent(
                 'Saved exp_cfg semantic role digest disagrees with runtime YAML')
 
         def checkpoint_validator(checkpoint):
+            _validate_role_feature_checkpoint(
+                checkpoint, exp_cfg.object_conditioning, model_path,
+            )
             verified = validate_semantic_contract(
                 checkpoint.get('semantic_contract'), runtime_contract,
                 source=model_path,

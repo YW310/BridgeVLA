@@ -32,6 +32,7 @@ from bridgevla.models.oracle_prior import (
     OracleRelationGatedFeatureAdapter,
     rasterize_instance_points,
 )
+from bridgevla.models.cross_scale_roles import inherit_coarse_roles
 
 class MVT(nn.Module):
     def __init__(
@@ -84,6 +85,9 @@ class MVT(nn.Module):
         object_slot_confidence_threshold=0.25,
         object_conditioning_shared_action_features=False,
         object_conditioning_use_context=False,
+        object_conditioning_supervise_mixed_role_maps=False,
+        object_conditioning_inherit_coarse_roles=False,
+        object_conditioning_preserve_role_tokens=False,
     ):
         super().__init__()
         if oracle_prior_adapter_rank < 0:
@@ -120,6 +124,17 @@ class MVT(nn.Module):
             raise ValueError('object instruction context requires a relation-anchor adapter')
         if object_conditioning_shared_action_features and oracle_adapter_translation_only:
             raise ValueError('shared action features conflict with translation-only routing')
+        if (object_conditioning_supervise_mixed_role_maps
+                or object_conditioning_inherit_coarse_roles
+                or object_conditioning_preserve_role_tokens) and not object_slots_enabled:
+            raise ValueError('role feature switches require internal object slots')
+        if object_conditioning_inherit_coarse_roles and not stage_two:
+            raise ValueError('inherit_coarse_roles requires stage_two=True')
+        if (object_conditioning_inherit_coarse_roles or object_conditioning_preserve_role_tokens):
+            if not object_conditioning_shared_action_features or oracle_relation_anchor_rank <= 0:
+                raise ValueError('role inheritance/preservation requires shared action features and an anchor')
+        if object_conditioning_inherit_coarse_roles and not add_corr:
+            raise ValueError('role inheritance requires rendered XYZ correlation channels')
 
         from point_renderer.rvt_renderer import RVTBoxRenderer as BoxRenderer
 
@@ -148,6 +163,9 @@ class MVT(nn.Module):
         del args['object_slot_confidence_threshold']
         del args['object_conditioning_shared_action_features']
         del args['object_conditioning_use_context']
+        del args['object_conditioning_supervise_mixed_role_maps']
+        del args['object_conditioning_inherit_coarse_roles']
+        del args['object_conditioning_preserve_role_tokens']
 
         self.rot_ver = rot_ver
         self.num_rot = num_rot
@@ -167,6 +185,9 @@ class MVT(nn.Module):
         self.object_slots_enabled = bool(object_slots_enabled)
         self.object_conditioning_shared_action_features = bool(object_conditioning_shared_action_features)
         self.object_conditioning_use_context = bool(object_conditioning_use_context)
+        self.object_conditioning_supervise_mixed_role_maps = bool(object_conditioning_supervise_mixed_role_maps)
+        self.object_conditioning_inherit_coarse_roles = bool(object_conditioning_inherit_coarse_roles)
+        self.object_conditioning_preserve_role_tokens = bool(object_conditioning_preserve_role_tokens)
         oracle_prior_channels = 2 if oracle_prior_relation else 1
         # for verifying the input
         self.feat_ver = feat_ver
@@ -199,6 +220,7 @@ class MVT(nn.Module):
                 self.object_slots_enabled and self.object_conditioning_shared_action_features
             )
             adapter_kwargs['role_token_dim'] = object_slot_dim
+            adapter_kwargs['preserve_role_tokens'] = self.object_conditioning_preserve_role_tokens
         self.oracle_prior_feature_adapter1 = (
             adapter_class(
                 self.mvt1.vlm_dim, oracle_prior_adapter_rank,
@@ -357,7 +379,7 @@ class MVT(nn.Module):
                     dyn_cam_info_itr = dyn_cam_info
 
                 if mvt.add_corr:
-                    if mvt.norm_corr:
+                    if mvt.norm_corr and not self.object_conditioning_inherit_coarse_roles:
                         img = []
                         for _pc, _img_feat, _dyn_cam_info in zip(
                             pc, img_feat, dyn_cam_info_itr
@@ -414,12 +436,18 @@ class MVT(nn.Module):
         else:
             mvt.img = img.clone().detach()
 
+        # Inherited geometry uses the actual crop frame, not independently
+        # max-normalized or RGB-augmented XYZ. RGB/VLM behavior is unchanged.
+        clean_role_xyz = (img[:, :, :3].clone()
+                          if self.object_conditioning_inherit_coarse_roles and img_aug != 0 else None)
         # image augmentation
         if img_aug != 0:
             stdv = img_aug * torch.rand(1, device=img.device)
             # values in [-stdv, stdv]
             noise = stdv * ((2 * torch.rand(*img.shape, device=img.device)) - 1)
             img = torch.clamp(img + noise, -1, 1)
+            if clean_role_xyz is not None:
+                img[:, :, :3] = clean_role_xyz
 
         if mvt.add_pixel_loc:
             bs = img.shape[0]
@@ -662,6 +690,15 @@ class MVT(nn.Module):
         
             out['wpt_local1'] = wpt_local_stage_one_noisy
             out['rev_trans'] = rev_trans
+            inherited_roles = None
+            if self.object_conditioning_inherit_coarse_roles:
+                # Outside no_grad: global soft tokens/geometry retain action
+                # gradients. Only discrete projected point hints are detached.
+                inherited_roles = inherit_coarse_roles(
+                    out, wpt_local_stage_one_noisy, self.st_sca, img[:, :, :3],
+                    lambda points: self.mvt1.get_pt_loc_on_img(points, dyn_cam_info=None),
+                    sigma=oracle_prior_sigma,
+                )
             oracle_prior2 = self._build_oracle_instance_prior(
                 oracle_prior_points, oracle_prior_valid, False, out,
                 oracle_prior_sigma,
@@ -698,7 +735,8 @@ class MVT(nn.Module):
                     None if self.object_slots_enabled else oracle_relation_points2
                 ),
                 oracle_relation_state=oracle_relation_state,
-                object_slot_predictor=self.object_slot_predictor2,
+                object_slot_predictor=(None if inherited_roles is not None else self.object_slot_predictor2),
+                inherited_object_roles=inherited_roles,
                 object_conditioning_shared_action_features=self.object_conditioning_shared_action_features,
                 object_conditioning_use_context=self.object_conditioning_use_context,
                 object_slot_target_heatmap=(

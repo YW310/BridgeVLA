@@ -128,7 +128,8 @@ def build_internal_slot_stage_payload(
     action_heatmap: torch.Tensor,
 ) -> Dict[str, torch.Tensor]:
     """Collect no-GT slot diagnostics for one MVT stage."""
-    required = ('object_slot_masks', 'object_slot_prior')
+    inherited = bool(stage_output.get('object_slot_roles_inherited', False))
+    required = ('object_slot_prior',) if inherited else ('object_slot_masks', 'object_slot_prior')
     missing = [key for key in required if key not in stage_output]
     if missing:
         raise KeyError('Internal-slot visualization is missing: ' + ', '.join(missing))
@@ -136,9 +137,10 @@ def build_internal_slot_stage_payload(
         'input': rendered_input.detach().float().cpu(),
         'action_pred': action_heatmap.detach().float().cpu(),
     }
-    slot_masks = stage_output['object_slot_masks'][0]
-    for slot_index in range(slot_masks.shape[1]):
-        payload[f'slot_{slot_index}'] = slot_masks[:, slot_index].detach().float().cpu()
+    if not inherited:
+        slot_masks = stage_output['object_slot_masks'][0]
+        for slot_index in range(slot_masks.shape[1]):
+            payload[f'slot_{slot_index}'] = slot_masks[:, slot_index].detach().float().cpu()
     role_prior = stage_output['object_slot_prior'][0]
     if role_prior.shape[1] != 2:
         raise ValueError('object_slot_prior must contain Target and Reference maps')
@@ -157,16 +159,15 @@ def internal_slot_stage_diagnostics(
     """Return JSON-safe confidence, role, and NULL diagnostics."""
     confidence = stage_output['object_slot_confidence'][0].detach().float().cpu()
     valid = stage_output['object_slot_valid'][0].detach().bool().cpu()
-    objectness = torch.sigmoid(
-        stage_output['object_slot_objectness_logits'][0].detach().float().cpu()
-    )
-    role_probability = torch.softmax(
-        stage_output['object_slot_role_logits'][0].detach().float().cpu(), dim=-1,
-    )
+    inherited = bool(stage_output.get('object_slot_roles_inherited', False))
+    objectness = ([] if inherited else torch.sigmoid(
+        stage_output['object_slot_objectness_logits'][0].detach().float().cpu()))
+    role_probability = ([] if inherited else torch.softmax(
+        stage_output['object_slot_role_logits'][0].detach().float().cpu(), dim=-1))
     null_probability = stage_output[
         'object_slot_reference_null_probability'
     ][0].detach().float().cpu()
-    return {
+    result = {
         'target_confidence': float(confidence[0]),
         'reference_confidence': float(confidence[1]),
         'target_valid': bool(valid[0]),
@@ -181,6 +182,10 @@ def internal_slot_stage_diagnostics(
             for probability in role_probability
         ],
     }
+    if inherited:
+        result['roles_inherited'] = True
+        result['role_source'] = 'coarse'
+    return result
 
 
 def _column_order(payloads: Mapping[str, Mapping[str, torch.Tensor]]):

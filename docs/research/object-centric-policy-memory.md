@@ -104,7 +104,7 @@ MemoryVLA 提供检索/融合/容量管理；PAM 用少量不同时间跨度 que
 | 当前可核对事实 | 文件 / 函数 | 对调研方案的约束 |
 | --- | --- | --- |
 | 无序 slots → objectness / role 分数 → 混合 T/R maps；forward 不接收历史状态 | [oracle_prior.py](../../finetune/bridgevla/models/oracle_prior.py)：`InternalObjectSlotPredictor.forward()` | 当前不是 Slot Attention + SSM，不提供跨帧 ID；局部变量 `memory` 是当前 decoder 的 K/V，不是 temporal bank |
-| 有效 GT T/R 与 slots 做最小代价匹配；只监督匹配 slots，无拒配阈值 | [object_conditioning.py](../../finetune/bridgevla/models/object_conditioning.py)：`hungarian_role_slot_losses()` | 不等于全场景 discovery/tracking 标签；先对齐最终混合角色图监督 |
+| 有效 GT T/R 与 slots 做最小代价匹配；只监督匹配 slots，无拒配阈值 | [object_conditioning.py](../../finetune/bridgevla/models/object_conditioning.py)：`hungarian_role_slot_losses()`、`mixed_role_map_losses()` | 不等于全场景 discovery/tracking 标签；最终混合角色图监督已 opt-in 实现，收益待验证 |
 | coarse/refine 分别调用两个 predictors，未传递共享 role packet | [mvt.py](../../finetune/bridgevla/mvt/mvt.py)：`MVT.forward()` | 本步继承仍是计划，不能写成现有能力 |
 | joint 可用 instruction context、soft geometry 与共享最终动作特征 | [mvt_single.py](../../finetune/bridgevla/mvt/mvt_single.py)：`MVT.forward()`；[joint config](../../finetune/RLBench/configs/rlbench_o2_internal_slots_joint.yaml) | 可以复用，不增加第三次 VLM 前向；当前普通配置不默认打开同一路由 |
 | 普通配置 K=2，joint K=6；当前状态是夹爪三维低维状态 | [普通 config](../../finetune/RLBench/configs/rlbench_o2_internal_slots.yaml)、上述 predictor | K 与固定 T/R queries、bank capacity 是不同参数；目标 `gripper_pose` 不能用作当前 EE state |

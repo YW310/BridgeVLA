@@ -103,6 +103,24 @@ class InferenceVisualizationTest(unittest.TestCase):
         self.assertEqual(payload['reference_pred'].shape, (3, 12, 10))
         self.assertNotIn('gt', payload)
 
+    def test_inherited_refine_has_role_maps_without_fabricated_slot_heads(self):
+        stage = _stage_output()
+        stage['object_slot_roles_inherited'] = True
+        for key in ('object_slot_masks', 'object_slot_objectness_logits', 'object_slot_role_logits'):
+            stage.pop(key)
+        payload = visualization.build_internal_slot_stage_payload(
+            stage, torch.rand(3, 3, 12, 10), torch.rand(3, 12, 10))
+        self.assertIn('target_pred', payload)
+        self.assertFalse(any(key.startswith('slot_') for key in payload))
+        diagnostics = visualization.internal_slot_stage_diagnostics(stage)
+        self.assertTrue(diagnostics['roles_inherited'])
+        self.assertEqual(diagnostics['role_source'], 'coarse')
+        self.assertEqual(diagnostics['slot_objectness'], [])
+        self.assertEqual(diagnostics['slot_role_probability'], [])
+        self.assertEqual(payload['target_pred'].shape, (3, 12, 10))
+        self.assertEqual(payload['reference_pred'].shape, (3, 12, 10))
+        self.assertNotIn('gt', payload)
+
 
 if __name__ == '__main__':
     unittest.main()

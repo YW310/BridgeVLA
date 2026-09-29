@@ -56,6 +56,7 @@ from training_utils import (
     build_batch_plan,
     freeze_for_oracle_adaptation,
     optimizer_steps_per_epoch,
+    resolve_training_epochs,
     should_disable_rgc_loss,
 )
 from training_visualization import (
@@ -528,6 +529,9 @@ def save_agent(
     checkpoint['object_conditioning'] = {
         'shared_action_features': bool(getattr(conditioning_model, 'object_conditioning_shared_action_features', False)),
         'use_context': bool(getattr(conditioning_model, 'object_conditioning_use_context', False)),
+        'supervise_mixed_role_maps': bool(getattr(conditioning_model, 'object_conditioning_supervise_mixed_role_maps', False)),
+        'inherit_coarse_roles': bool(getattr(conditioning_model, 'object_conditioning_inherit_coarse_roles', False)),
+        'preserve_role_tokens': bool(getattr(conditioning_model, 'object_conditioning_preserve_role_tokens', False)),
     }
     if semantic_contract is not None:
         checkpoint['semantic_contract'] = dict(semantic_contract)
@@ -553,11 +557,25 @@ def load_training_checkpoint(agent, path, semantic_contract=None):
     expected_conditioning = {
         'shared_action_features': bool(getattr(model, 'object_conditioning_shared_action_features', False)),
         'use_context': bool(getattr(model, 'object_conditioning_use_context', False)),
+        'supervise_mixed_role_maps': bool(getattr(model, 'object_conditioning_supervise_mixed_role_maps', False)),
+        'inherit_coarse_roles': bool(getattr(model, 'object_conditioning_inherit_coarse_roles', False)),
+        'preserve_role_tokens': bool(getattr(model, 'object_conditioning_preserve_role_tokens', False)),
     }
-    stored_conditioning = checkpoint.get('object_conditioning', {
-        'shared_action_features': False, 'use_context': False,
-    })
-    if stored_conditioning != expected_conditioning:
+    stored_conditioning = checkpoint.get('object_conditioning', {})
+    if not isinstance(stored_conditioning, dict):
+        raise RuntimeError('Invalid checkpoint object_conditioning metadata.')
+    # New keys absent from an older checkpoint mean the historical False path.
+    # Mixed-map supervision changes only the objective, not routing/parameters;
+    # it may be toggled while resuming an otherwise compatible optimizer.
+    routing_keys = (
+        'shared_action_features', 'use_context',
+        'inherit_coarse_roles', 'preserve_role_tokens',
+    )
+    routing_changed = any(
+        bool(stored_conditioning.get(key, False)) != expected_conditioning[key]
+        for key in routing_keys
+    )
+    if routing_changed:
         raise RuntimeError(
             'Object conditioning changed; initialize with --init_checkpoint '
             'instead of restoring an incompatible optimizer with --resume_checkpoint.'
@@ -806,6 +824,9 @@ def experiment(cmd_args):
     if cmd_args.exp_cfg_opts != "":
         exp_cfg.merge_from_list(cmd_args.exp_cfg_opts.split(" "))
 
+    exp_cfg.epochs = resolve_training_epochs(exp_cfg.epochs, cmd_args.epochs)
+    cmd_args.epochs = exp_cfg.epochs
+
     cmd_args.freeze_vision_tower = (
         cmd_args.freeze_vision_tower or exp_cfg.freeze_vision_tower
     )
@@ -996,9 +1017,7 @@ def experiment(cmd_args):
 
     NUM_TRAIN = 100
 
-    if exp_cfg.epochs!=cmd_args.epochs:
-        print(f"cmd args epochs != exp cfg epochs You are using {cmd_args.epochs}")
-    EPOCHS = cmd_args.epochs
+    EPOCHS = exp_cfg.epochs
 
     data_folder=DATA_FOLDER        
     log_dir = get_logdir(cmd_args, exp_cfg,dist)
@@ -1082,6 +1101,9 @@ def experiment(cmd_args):
         oracle_relation_anchor_rank=exp_cfg.oracle_relation_anchor_rank,
         object_conditioning_shared_action_features=exp_cfg.object_conditioning.shared_action_features,
         object_conditioning_use_context=exp_cfg.object_conditioning.use_context,
+        object_conditioning_supervise_mixed_role_maps=exp_cfg.object_conditioning.supervise_mixed_role_maps,
+        object_conditioning_inherit_coarse_roles=exp_cfg.object_conditioning.inherit_coarse_roles,
+        object_conditioning_preserve_role_tokens=exp_cfg.object_conditioning.preserve_role_tokens,
         object_slots_enabled=exp_cfg.object_slots.enabled,
         object_slot_num_slots=exp_cfg.object_slots.num_slots,
         object_slot_dim=exp_cfg.object_slots.slot_dim,
@@ -1413,7 +1435,10 @@ if __name__ == "__main__":
     parser.add_argument("--exp_note", type=str, default="")
     parser.add_argument("--log_dir", type=str, default="")
     parser.add_argument("--debug", action="store_true")
-    parser.add_argument("--epochs", type=int, default=100)
+    parser.add_argument(
+        "--epochs", type=int, default=None,
+        help="Override configured epochs; otherwise use the YAML/exp_cfg_opts value.",
+    )
     parser.add_argument("--freeze_vision_tower", action="store_true")
     parser.add_argument("--load_pretrain", action="store_true")
     parser.add_argument("--pretrain_path", type=str, default=None)

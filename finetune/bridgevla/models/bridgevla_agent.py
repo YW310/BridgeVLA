@@ -47,6 +47,8 @@ from bridgevla.models.optimizer_utils import parameter_learning_rate
 from bridgevla.models.object_conditioning import (
     active_semantic_target_mask,
     hungarian_role_slot_losses,
+    mixed_role_map_losses,
+    role_supervision_mask,
     pending_target_candidate_mask,
     reference_null_loss,
     select_object_candidate_from_waypoint,
@@ -476,6 +478,7 @@ class RVTAgent:
         object_slot_mask_loss_weight: float = 1.0,
         object_slot_null_loss_weight: float = 0.25,
         object_slot_diversity_loss_weight: float = 0.01,
+        object_slot_mixed_role_loss_weight: float = 1.0,
         log_dir="",
     ):
         self._network = network
@@ -533,6 +536,7 @@ class RVTAgent:
             object_slot_mask_loss_weight,
             object_slot_null_loss_weight,
             object_slot_diversity_loss_weight,
+            object_slot_mixed_role_loss_weight,
         )
         if any(weight < 0 for weight in slot_loss_weights):
             raise ValueError('object slot loss weights must be non-negative')
@@ -540,6 +544,9 @@ class RVTAgent:
         self.object_slot_null_loss_weight = float(object_slot_null_loss_weight)
         self.object_slot_diversity_loss_weight = float(
             object_slot_diversity_loss_weight
+        )
+        self.object_slot_mixed_role_loss_weight = float(
+            object_slot_mixed_role_loss_weight
         )
         self._oracle_missing_warning_shown = False
         # Runtime-only evaluation diagnostic. It is never read by update().
@@ -888,7 +895,41 @@ class RVTAgent:
             'role': 0.0, 'objectness': 0.0,
             'presence': 0.0, 'diversity': 0.0,
         }
+        supervise_mixed = bool(getattr(
+            self._net_mod, 'object_conditioning_supervise_mixed_role_maps', False))
+        if supervise_mixed:
+            sums.update({'mixed_role': 0.0, 'mixed_role_bce': 0.0,
+                         'mixed_role_dice': 0.0})
+        raw_stage_count = 0
+        mixed_stage_count = 0
         for stage_output in stage_outputs:
+            inherited = bool(stage_output.get('object_slot_roles_inherited', False))
+            if inherited:
+                # Refine only reprojects coarse predictions. It has no learned
+                # slot/readout head, so repeating map/assignment/NULL losses
+                # would add a constant or duplicate the coarse supervision.
+                continue
+            teacher_valid = oracle_valid
+            if supervise_mixed:
+                mixed_required = ('object_slot_prior', 'object_slot_target_prior')
+                missing = [key for key in mixed_required if key not in stage_output]
+                if missing:
+                    raise KeyError('Mixed role outputs are missing: ' + ', '.join(missing))
+                teacher_valid = oracle_valid.to(
+                    device=stage_output['object_slot_prior'].device).bool()
+                stage_valid = stage_output.get('object_slot_target_valid')
+                if stage_valid is not None:
+                    teacher_valid = teacher_valid & stage_valid.to(teacher_valid.device).bool()
+                mixed = mixed_role_map_losses(
+                    stage_output['object_slot_prior'],
+                    stage_output['object_slot_target_prior'],
+                    teacher_valid,
+                    role_present, role_present_known,
+                )
+                sums['mixed_role'] = sums['mixed_role'] + mixed['mask']
+                sums['mixed_role_bce'] = sums['mixed_role_bce'] + mixed['bce']
+                sums['mixed_role_dice'] = sums['mixed_role_dice'] + mixed['dice']
+                mixed_stage_count += 1
             required = (
                 'object_slot_target_prior',
                 'object_slot_masks',
@@ -911,15 +952,24 @@ class RVTAgent:
                 mode='area',
             ).view(batch_size, num_views, 2, height, width)
             valid = oracle_valid.to(device=logits.device).bool()
+            matching_kwargs = {}
+            if supervise_mixed:
+                # Use the same teacher support as mixed-map supervision. In
+                # particular a crop-external Reference must not receive an
+                # all-background mask plus a positive role/objectness label.
+                matching_kwargs['role_view_valid'] = role_supervision_mask(
+                    target, teacher_valid, role_present, role_present_known,
+                )
             matched = hungarian_role_slot_losses(
                 logits,
                 stage_output['object_slot_role_logits'],
                 stage_output['object_slot_objectness_logits'],
                 target,
                 valid,
+                **matching_kwargs,
             )
             mask_loss = matched['mask']
-            # Only matched visible roles are positive objectness examples.
+            # Only matched supervised roles are positive objectness examples.
             # Geometric invalidity is not a negative existence label.
             target_objectness_loss = matched['objectness']
             null_loss = reference_null_loss(
@@ -951,8 +1001,13 @@ class RVTAgent:
             sums['objectness'] = sums['objectness'] + matched['objectness']
             sums['presence'] = sums['presence'] + presence_loss
             sums['diversity'] = sums['diversity'] + diversity_loss
-        stage_count = len(stage_outputs)
-        return {name: value / stage_count for name, value in sums.items()}
+            raw_stage_count += 1
+        zero = output['object_slot_prior'].sum() * 0.0 if raw_stage_count == 0 else None
+        return {
+            name: (value / max(mixed_stage_count, 1) if name.startswith('mixed_role')
+                   else value / raw_stage_count if raw_stage_count else zero)
+            for name, value in sums.items()
+        }
 
     def _get_one_hot_expert_actions(
         self,
@@ -1486,6 +1541,11 @@ class RVTAgent:
                     + self.object_slot_diversity_loss_weight
                     * object_slot_losses['diversity']
             )
+                if 'mixed_role' in object_slot_losses:
+                    total_loss = (
+                        total_loss + self.object_slot_mixed_role_loss_weight
+                        * object_slot_losses['mixed_role']
+                    )
             base_total_loss = None
             if base_trans_loss is not None:
                 base_total_loss = choose_oracle_translation_loss(
@@ -1548,6 +1608,12 @@ class RVTAgent:
                         object_slot_losses['diversity'].item()
                     ),
                 })
+                if 'mixed_role' in object_slot_losses:
+                    loss_log.update({
+                        'object_slot_mixed_role_loss': object_slot_losses['mixed_role'].item(),
+                        'object_slot_mixed_role_bce_loss': object_slot_losses['mixed_role_bce'].item(),
+                        'object_slot_mixed_role_dice_loss': object_slot_losses['mixed_role_dice'].item(),
+                    })
             if base_trans_loss is not None:
                 loss_log['trans_loss_base'] = base_trans_loss.item()
             if trans_loss_valid is not None:

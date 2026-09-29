@@ -570,7 +570,8 @@ class OracleRelationAnchorFeatureAdapter(OracleRelationGatedFeatureAdapter):
     No phase label or hand-authored action anchor is consumed. A learned NULL
     token supports target-only samples. The anchor output projection is zero
     initialized, so enabling this subclass preserves the original adapter's
-    output at initialization.
+    output at initialization. Opt-in token preservation separates trusted role
+    identity from current crop geometry; it never constructs XYZ from tokens.
     '''
 
     def __init__(
@@ -583,6 +584,7 @@ class OracleRelationAnchorFeatureAdapter(OracleRelationGatedFeatureAdapter):
         use_context: bool = False,
         role_conditioning: bool = False,
         role_token_dim: int = 128,
+        preserve_role_tokens: bool = False,
     ):
         super().__init__(feature_channels, rank, prior_channels)
         if anchor_rank <= 0 or state_channels < 0:
@@ -593,6 +595,9 @@ class OracleRelationAnchorFeatureAdapter(OracleRelationGatedFeatureAdapter):
         self.state_channels = state_channels
         self.use_context = bool(use_context)
         self.role_conditioning = bool(role_conditioning)
+        self.preserve_role_tokens = bool(preserve_role_tokens)
+        if self.preserve_role_tokens and not self.role_conditioning:
+            raise ValueError('preserve_role_tokens requires role_conditioning')
         if self.use_context:
             self.context_projection = nn.Sequential(
                 nn.LayerNorm(feature_channels),
@@ -646,24 +651,56 @@ class OracleRelationAnchorFeatureAdapter(OracleRelationGatedFeatureAdapter):
             dim=1,
         )
 
+    @staticmethod
+    def _mask_geometry_support(geometry, batch_size, dtype, device):
+        '''Mask unsupported XYZ; supported coarse geometry may be crop-external.'''
+        if geometry.shape != (batch_size, 17):
+            raise ValueError('soft geometry must have shape [B,17]')
+        geometry = geometry.to(device=device, dtype=dtype)
+        geometry_valid = geometry[:, 15:17].bool()
+        # where, rather than multiplication, also removes unsupported NaN XYZ.
+        valid_xyz = geometry_valid[:, :, None]
+        centers = torch.where(
+            valid_xyz, geometry[:, :6].reshape(batch_size, 2, 3), 0.,
+        )
+        spread = torch.where(
+            valid_xyz, geometry[:, 6:12].reshape(batch_size, 2, 3), 0.,
+        )
+        displacement = torch.where(
+            geometry_valid.all(dim=1, keepdim=True), geometry[:, 12:15], 0.,
+        )
+        return torch.cat((centers.flatten(1), spread.flatten(1), displacement,
+                          geometry_valid.to(dtype=dtype)), dim=1)
+
     def forward_with_anchor(
         self, features, prior, instance_valid, relation_points=None,
         relation_state=None,
         *, current_state=None, context=None, role_tokens=None,
-        reference_null_probability=None, geometry=None,
+        reference_null_probability=None, geometry=None, role_token_valid=None,
     ):
         if current_state is not None:
             if relation_state is not None:
                 raise ValueError('pass current_state or legacy relation_state, not both')
             relation_state = current_state
         slot_role_tokens = role_tokens
+        local_prior = prior
+        if self.preserve_role_tokens:
+            local_valid = instance_valid.to(device=features.device).bool()
+            local_prior = prior * local_valid[:, None, :, None, None].to(
+                device=prior.device, dtype=prior.dtype,
+            )
+            if geometry is not None:
+                geometry = self._mask_geometry_support(
+                    geometry, features.shape[0] // prior.shape[1],
+                    features.dtype, features.device,
+                )
         (
             shared_features,
             relation_hidden,
             batch_size,
             num_views,
         ) = self._relation_components(
-            features, prior, instance_valid, relation_points, geometry=geometry,
+            features, local_prior, instance_valid, relation_points, geometry=geometry,
         )
         height, width = relation_hidden.shape[-2:]
         hidden_views = relation_hidden.view(
@@ -671,7 +708,7 @@ class OracleRelationAnchorFeatureAdapter(OracleRelationGatedFeatureAdapter):
         )
         # Area pooling retains more support for small/thin object masks than
         # bilinear-sampling a 224px prior directly onto a 16px feature grid.
-        flat_prior = prior.reshape(
+        flat_prior = local_prior.reshape(
             batch_size * num_views, self.prior_channels, *prior.shape[-2:]
         ).to(device=features.device, dtype=features.dtype)
         if flat_prior.shape[-2] >= height and flat_prior.shape[-1] >= width:
@@ -694,6 +731,11 @@ class OracleRelationAnchorFeatureAdapter(OracleRelationGatedFeatureAdapter):
             'bvrhw,bvchw->bvrc', weights, hidden_views,
         )
         role_valid = instance_valid.to(device=features.device).bool()
+        semantic_valid = role_valid
+        if self.preserve_role_tokens and role_token_valid is not None:
+            if role_token_valid.shape != (batch_size, 2):
+                raise ValueError('role_token_valid must have shape [B,2]')
+            semantic_valid = role_token_valid.to(device=features.device).bool()
         target_token = (
             role_tokens[:, :, 0] * role_valid[:, None, 0, None]
         )
@@ -711,8 +753,8 @@ class OracleRelationAnchorFeatureAdapter(OracleRelationGatedFeatureAdapter):
             )
             if slot_role_tokens is not None:
                 projected = self.role_token_projection(slot_role_tokens)
-                target_token = target_token + projected[:, None, 0] * role_valid[:, None, 0, None]
-                reference_token = reference_token + projected[:, None, 1] * reference_valid
+                target_token = target_token + projected[:, None, 0] * semantic_valid[:, None, 0, None]
+                reference_token = reference_token + projected[:, None, 1] * semantic_valid[:, None, 1, None]
             if reference_null_probability is not None:
                 probability = reference_null_probability[:, None, None].to(features.dtype)
                 reference_token = (1 - probability) * reference_token + probability * null_reference
@@ -724,6 +766,10 @@ class OracleRelationAnchorFeatureAdapter(OracleRelationGatedFeatureAdapter):
             )
         else:
             geometry = geometry.to(device=features.device, dtype=features.dtype)
+        if self.preserve_role_tokens:
+            geometry = self._mask_geometry_support(
+                geometry, batch_size, features.dtype, features.device,
+            )
         geometry = geometry[:, None].expand(-1, num_views, -1)
         if relation_state is None:
             relation_state = features.new_zeros(
@@ -756,8 +802,9 @@ class OracleRelationAnchorFeatureAdapter(OracleRelationGatedFeatureAdapter):
         )
         anchor = torch.sigmoid(anchor_logits)
         residual = self.anchor_expand(F.gelu(relation_hidden) * anchor)
-        # Target is required; Reference=False represents a valid NULL.
-        target_valid = role_valid[:, 0].to(
+        # Legacy mode needs local Target geometry. Opt-in preservation may use
+        # a reliable coarse/global Target token even without local XYZ support.
+        target_valid = semantic_valid[:, 0].to(
             device=features.device, dtype=features.dtype,
         ).repeat_interleave(num_views).view(-1, 1, 1, 1)
         translation_features = shared_features + residual * target_valid
@@ -771,7 +818,7 @@ class OracleRelationAnchorFeatureAdapter(OracleRelationGatedFeatureAdapter):
         self, features, prior, instance_valid, relation_points=None,
         relation_state=None,
         *, current_state=None, context=None, role_tokens=None,
-        reference_null_probability=None, geometry=None,
+        reference_null_probability=None, geometry=None, role_token_valid=None,
     ):
         translation_features, _, _ = self.forward_with_anchor(
             features,
@@ -781,6 +828,7 @@ class OracleRelationAnchorFeatureAdapter(OracleRelationGatedFeatureAdapter):
             relation_state,
             current_state=current_state, context=context, role_tokens=role_tokens,
             reference_null_probability=reference_null_probability, geometry=geometry,
+            role_token_valid=role_token_valid,
         )
         return translation_features
 
@@ -993,6 +1041,9 @@ class InternalObjectSlotPredictor(nn.Module):
         if not self.soft_conditioning:
             target_valid = target_valid & (reference_valid | reference_is_null)
         role_valid = torch.stack((target_valid, reference_valid), dim=1)
+        # Semantic reliability is recorded before local XYZ availability. It
+        # does not become NULL when the same object is outside the refine crop.
+        role_token_valid = role_valid
         geometry = None
         if self.soft_conditioning:
             geometry, role_valid = soft_role_geometry(role_prior, rendered_xyz, role_valid)
@@ -1016,6 +1067,7 @@ class InternalObjectSlotPredictor(nn.Module):
             'reference_null_probability': reference_null_probability,
             'reference_is_null': reference_is_null,
             'role_tokens': role_tokens,
+            'role_token_valid': role_token_valid,
             'geometry': geometry,
         }
 

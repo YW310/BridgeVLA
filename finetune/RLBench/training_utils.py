@@ -51,6 +51,14 @@ def build_batch_plan(
     )
 
 
+def resolve_training_epochs(configured_epochs: int, cli_epochs=None) -> int:
+    """Honor YAML/overrides unless --epochs is explicitly supplied."""
+    epochs = configured_epochs if cli_epochs is None else cli_epochs
+    if epochs <= 0:
+        raise ValueError('epochs must be > 0')
+    return epochs
+
+
 def optimizer_steps_per_epoch(train_samples: int, global_batch_size: int) -> int:
     """Return complete optimizer updates in an epoch-sized sample budget."""
     if train_samples <= 0:

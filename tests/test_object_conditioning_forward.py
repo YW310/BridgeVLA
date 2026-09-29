@@ -184,6 +184,43 @@ class ObjectConditioningForwardTest(unittest.TestCase):
             self.assertIsNotNone(parameter.grad)
             self.assertGreater(parameter.grad.abs().sum().item(), 0)
 
+    def test_inherited_roles_bypass_selector_and_keep_teacher_out_of_action(self):
+        module, predictor, adapter, options, seen = self._small_policy()
+        module.eval()
+        options['object_slot_predictor'] = None
+        tokens = torch.randn(1, 2, 8, requires_grad=True)
+        inherited = dict(
+            prior=torch.rand(1, 3, 2, 16, 16),
+            prior_logits=torch.zeros(1, 3, 2, 16, 16),
+            points=torch.ones(1, 2, 4, 3), valid=torch.tensor([[True, False]]),
+            confidence=torch.tensor([[.8, .7]]),
+            reference_null_probability=torch.tensor([.2]), reference_is_null=torch.tensor([False]),
+            role_tokens=tokens, role_token_valid=torch.ones(1, 2, dtype=torch.bool),
+            geometry=torch.cat((torch.rand(1, 15), torch.ones(1, 2)), dim=1),
+            roles_inherited=True,
+        )
+        options['inherited_object_roles'] = inherited
+        adapter.preserve_role_tokens = True
+        with torch.no_grad():
+            adapter.role_token_projection.weight.normal_(std=.2)
+        teacher = torch.zeros(1, 3, 2, 16, 16)
+        with mock.patch.object(mvt_single, 'select_feat_from_hm', self._sample, create=True):
+            first = module(**options, object_slot_target_heatmap=teacher)
+            second = module(**options, object_slot_target_heatmap=1 - teacher)
+        for key in ('trans', 'feat_ex_rot'):
+            torch.testing.assert_close(first[key], second[key], rtol=0, atol=0)
+        self.assertTrue(first['object_slot_roles_inherited'])
+        self.assertNotIn('object_slot_role_logits', first)
+        self.assertNotIn('object_slot_masks', first)
+        self.assertIs(first['object_slot_role_tokens'], tokens)
+        (first['trans'].square().mean() + first['feat_ex_rot'].square().mean()).backward()
+        self.assertGreater(tokens.grad.abs().sum().item(), 0)
+
+    def test_inheritance_and_independent_selector_cannot_run_together(self):
+        module, predictor, adapter, options, seen = self._small_policy()
+        with self.assertRaisesRegex(ValueError, 'independent slot selector'):
+            module(**options, inherited_object_roles={})
+
     def test_identity_residual_preserves_legacy_global_local_layout(self):
         module, predictor, adapter, options, seen = self._small_policy()
         module.eval()

@@ -68,6 +68,12 @@ _C.oracle_relation_anchor_rank = 0
 _C.object_conditioning = CN()
 _C.object_conditioning.shared_action_features = False
 _C.object_conditioning.use_context = False
+# Optional role-map supervision and coarse-to-refine role consistency.
+# Keeping all three disabled preserves historical policy/checkpoint behavior.
+# Mixed supervision also masks matched-slot losses with stage/view teacher support.
+_C.object_conditioning.supervise_mixed_role_maps = False
+_C.object_conditioning.inherit_coarse_roles = False
+_C.object_conditioning.preserve_role_tokens = False
 # Internal object-slot predictor. In o2_internal_slots mode Oracle objects are
 # supervision labels only and are never passed into the policy adapter.
 _C.object_slots = CN()
@@ -107,6 +113,7 @@ _C.rvt.oracle_prior_mode = 'none'
 _C.rvt.object_prior_mode = 'none'
 _C.rvt.object_prediction_confidence_threshold = 0.25
 _C.rvt.object_slot_mask_loss_weight = 1.0
+_C.rvt.object_slot_mixed_role_loss_weight = 1.0
 _C.rvt.object_slot_null_loss_weight = 0.0
 _C.rvt.object_slot_diversity_loss_weight = 0.01
 _C.rvt.oracle_prior_sigma = 2.0
