@@ -44,13 +44,13 @@ conda activate bridgevla
 
 ```bash
 cd finetune/RLBench
-bash train.sh --exp_cfg_path configs/rlbench_config.yaml \
+GPUS_PER_NODE=2 bash train_8x40.sh --exp_cfg_path configs/rlbench_config.yaml \
     --exp_note baseline --freeze_vision_tower \
     --log_dir exp/RLBench --load_pretrain \
     --pretrain_path PATH_TO_PRETRAINED_MODEL
 ```
 
-数据下载、8×40GB 配置、断点恢复和日志见 [训练说明](docs/guides/training.md)。
+`train_8x40.sh` 可指定 GPU 数，不限 8 卡；先配置本机 simulator 环境。数据、断点恢复和日志见 [训练说明](docs/guides/training.md)。
 
 <a id=evaluation></a>
 
@@ -58,8 +58,8 @@ bash train.sh --exp_cfg_path configs/rlbench_config.yaml \
 
 在 `finetune/RLBench` 下修改 `eval.sh` 中的任务和 checkpoint 路径后执行 `bash eval.sh`。
 长时间测试可加 `EVAL_RESUME=1`，按 episode 自动恢复；参数签名、限制和结果位置见
-[Semantic-GT 的通用恢复说明](docs/guides/semantic-gt.md#严格-semantic-gt-targetreference)。
-其他 benchmark 见 [评估说明](docs/guides/evaluation.md)；O2 的 baseline/raw/GT 对照见 [O2 实验说明](docs/experiments/o2-training.md#o2-code-path)。
+[闭环日志与恢复限制](docs/guides/object-conditioning.md#评估日志与最终统计)。
+其他 benchmark 见 [评估说明](docs/guides/evaluation.md)；O2 的 GT、预测与 no-prior 对照见 [O2 评估](docs/guides/object-conditioning.md#closed-loop评估)。
 
 ## 文档导航
 
@@ -70,17 +70,13 @@ bash train.sh --exp_cfg_path configs/rlbench_config.yaml \
 | Raw 数据转 replay | [Replay 生成](docs/guides/replay.md) |
 | Oracle 实例字段、参数和排错 | [Oracle replay](docs/guides/oracle-replay.md) |
 | 严格 simulator-GT 角色标注 | [Semantic-GT](docs/guides/semantic-gt.md) |
-| Oracle / 外部预测 / 内部 slots 总览 | [Object-prior 模式](docs/experiments/object-prior-modes.md) |
-| O2 Adapter、消融、loss、可视化与测试 | [O2 实验](docs/experiments/o2-training.md) |
-| O2 隐式 relation-anchor 模块与新配置 | [Relation anchor](docs/experiments/relation-anchor.md) |
-| O2 预测 Target/Reference 点云输入 | [Predicted objects](docs/experiments/predicted-objects.md) |
-| O2 网络内部 Target/Reference slots | [Internal object slots](docs/experiments/internal-object-slots.md) |
+| O2 配置、GT/预测训练、闭环、可视化与验收 | [统一操作指南](docs/guides/object-conditioning.md) |
 | 各 benchmark 评估命令 | [评估](docs/guides/evaluation.md) |
 | 论文结果、发布记录 | [结果与历史](docs/experiments/results.md) |
-| Object-conditioned 完整动作联合训练与 GT 准入 | [实验与命令](docs/experiments/object-conditioned-joint.md) · [研究设计](docs/design/role-relation-prior.md) |
-| 无 GT 的真实机器人部署路线 | [Real-world 设计](docs/design/real-world-deployment.md) |
-| 数据流与对应函数 | [代码索引](docs/reference/code-map.md) |
-| Oracle prior 实现交接 | [交接说明](docs/handoff/oracle-prior.md) |
+| O2 整体架构与精简角色方案（研究设计） | [架构图](docs/design/role-relation-prior.md#整体架构) |
+| 无 GT 的真实机器人部署路线 | [Real-world 设计](docs/design/role-relation-prior.md#真实机器人部署后续规划) |
+| 数据流、对应函数与项目审查 | [代码索引](docs/reference/code-map.md) |
+| Object-centric policy / memory 论文调研 | [Survey](docs/research/object-centric-policy-memory.md) |
 
 完整阅读路径见 [文档索引](docs/README.md)。O2 的 GT 配置是 Oracle 上界实验；external
 prediction 和 internal slots 才是无 Oracle 的部署路线。研究设计文档中的扩展方案不等同于已实现功能。
@@ -101,35 +97,35 @@ prediction 和 internal slots 才是无 Oracle 的部署路线。研究设计文
 
 <a id=o2-training></a>
 
-[o2-training](docs/experiments/o2-training.md#o2-training)
+[o2-training](docs/guides/object-conditioning.md#gt-adapter-only)
 
 <a id=o2-adapter-only></a>
 
-[o2-adapter-only](docs/experiments/o2-training.md#o2-adapter-only)
+[o2-adapter-only](docs/guides/object-conditioning.md#gt-adapter-only)
 
 <a id=o2-full-action></a>
 
-[o2-full-action](docs/experiments/o2-training.md#o2-full-action)
+[o2-full-action](docs/guides/object-conditioning.md#动作网络微调补充)
 
 <a id=o2-relation-switch></a>
 
-[o2-relation-switch](docs/experiments/o2-training.md#o2-relation-switch)
+[o2-relation-switch](docs/guides/object-conditioning.md#gt-adapter-only)
 
 <a id=o2-loss-comparison></a>
 
-[o2-loss-comparison](docs/experiments/o2-training.md#o2-loss-comparison)
+[o2-loss-comparison](docs/guides/object-conditioning.md#loss与checkpoint)
 
 <a id=o2-code-path></a>
 
-[o2-code-path](docs/experiments/o2-training.md#o2-code-path)
+[o2-code-path](docs/guides/object-conditioning.md#最小验证)
 
 <a id=o2-training-visualization></a>
 
-[o2-training-visualization](docs/experiments/o2-training.md#o2-training-visualization)
+[o2-training-visualization](docs/guides/object-conditioning.md#测试诊断与可视化)
 
 <a id=o2-tests></a>
 
-[o2-tests](docs/experiments/o2-training.md#o2-tests)
+[o2-tests](docs/guides/object-conditioning.md#最小验证)
 
 <a id=oracle-replay></a>
 

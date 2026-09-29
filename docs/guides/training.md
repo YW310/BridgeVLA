@@ -11,10 +11,15 @@ If you want to reproduce our results, please use the same training hyperparamete
 ## Pre-training
 
 We use the object detection data in the RoboPoint dataset to pre-train the model. We upload the data and checkpoints [here](https://huggingface.co/datasets/LPY/BridgeVLA/tree/main/). With the `pretrain/pretrain.py` file, you can do three things:
-* `visualiztion`: This function is used to visualize the pre-training dataset.
-* `pre-training`: This function is used to pre-train the Paligemma model on the dataset .
-* `evaluation`: This function is used to test the pre-trained checkpoints.
-What you need to do is to modify the checking branch in the file and then run the following code:
+
+| `--branches` | Behavior |
+| --- | --- |
+| `1` | Visualize the pre-training dataset |
+| `2` | Pre-train PaliGemma; vision tower is frozen by this entry |
+| `3` (default) | Test the pre-trained checkpoints |
+
+Choose the branch explicitly; no source edit is needed for branch selection:
+
 ```bash
 bash pretrain/pretrain.sh --branches BRANCH_OPTION --config_path PATH_TO_CONFIG_FILE --json_detection_path PATH_TO_DETECTION_JSON --image_folder PATH_TO_IMAGE_FOLDER
 ```
@@ -23,16 +28,19 @@ bash pretrain/pretrain.sh --branches BRANCH_OPTION --config_path PATH_TO_CONFIG_
 
 Prepare the dataset using [PerAct data generation](https://github.com/peract/peract?tab=readme-ov-file#data-generation), or download the [raw demonstrations](https://huggingface.co/datasets/LPY/BridgeVLA_RLBench_TRAIN_DATA/tree/main) / [prebuilt replay](https://huggingface.co/datasets/LPY/BridgeVLA_RLBench_TRAIN_BUFFER/tree/main). The standard training entry can convert raw data when replay is missing; for distributed runs, prepare it first with the [standalone replay generator](replay.md).
 
-Run from the repository root:
+Run from the repository root after configuring the simulator environment in [installation](installation.md).
+Use `train_8x40.sh` for any single-node GPU count; its name does not require 8 GPUs.
+The old RLBench `train.sh` hardcodes server paths and two GPUs, and forwards unquoted `$@`,
+which splits `--exp_cfg_opts` and paths containing spaces. It is not the recommended entry.
 
 ```bash
 cd finetune/RLBench
-bash train.sh --exp_cfg_path  configs/rlbench_config.yaml \
+GPUS_PER_NODE=2 bash train_8x40.sh --exp_cfg_path configs/rlbench_config.yaml \
               --exp_note debug \
               --freeze_vision_tower \
               --log_dir exp/RLBench \
               --load_pretrain \
-              --pretrain_path  LPY/BridgeVLA/checkpoints/RLBench/model_80.pth
+              --pretrain_path PATH_TO_2D_HEATMAP_PRETRAINED_MODEL
 ```
 
 <a id=rlbench-8x40></a>
@@ -64,6 +72,9 @@ step when `--save_optimizer_state` is enabled, so the same command can resume
 with `--resume /path/to/model_last.pth`. Prebuilt replay buffers are strongly
 recommended; replay generation is not part of the distributed training run.
 
+Optimizer-continuous resume requires `--save_optimizer_state`; otherwise weights resume with a fresh optimizer and a warning.
+Checkpoints do not restore a full RNG/loader snapshot, so this is not a bit-for-bit continuation.
+
 Evaluate all 18 tasks with one isolated simulator process per GPU:
 
 ```bash
@@ -77,6 +88,8 @@ python eval_parallel.py \
 
 The runner creates a unique run directory, merges the 18 task CSV files, and
 writes `summary.json` with the macro success rate. It does not record videos.
+It currently exposes no Oracle provider, O2 config override, or episode-resume flags;
+use [O2 evaluation](object-conditioning.md#closed-loop评估) for those runs.
 
 <a id=rlbench-training-logs></a>
 
@@ -88,7 +101,7 @@ tqdm 进度条中实时显示 total、translation、rotation、gripper 和 colli
 
 默认 TensorBoard 模式等价于：
 
-    bash train.sh [其他参数] --log_backend tensorboard
+    GPUS_PER_NODE=2 bash train_8x40.sh [其他参数] --log_backend tensorboard
 
 全部标量 loss 和 learning rate 会写入当前实验目录下的 `tensorboard` 子目录。
 
@@ -104,7 +117,7 @@ SSH 端口转发：
 默认每 10 个 iteration 额外输出一行纯文本 loss，便于保存 shell 日志。可以
 调整为每 50 步输出：
 
-    bash train.sh [其他参数] --loss_print_interval 50
+    GPUS_PER_NODE=2 bash train_8x40.sh [其他参数] --loss_print_interval 50
 
 使用 `--loss_print_interval 0` 可关闭纯文本 loss，但 tqdm 和选定的日志后端
 仍会继续工作。TensorBoard 默认每 10 秒刷新一次，可通过
@@ -112,17 +125,24 @@ SSH 端口转发：
 
 需要切换回 W&B 在线记录时：
 
-    bash train.sh [其他参数] --log_backend wandb --wandb_project BridgeVLA
+    GPUS_PER_NODE=2 bash train_8x40.sh [其他参数] --log_backend wandb --wandb_project BridgeVLA
 
 可选使用 `--wandb_entity ENTITY` 指定团队或用户。服务器无法联网时，可以先写入
 本地 W&B 离线目录，之后再执行 `wandb sync`：
 
-    bash train.sh [其他参数] --log_backend wandb --wandb_mode offline
+    GPUS_PER_NODE=2 bash train_8x40.sh [其他参数] --log_backend wandb --wandb_mode offline
 
 完全关闭 TensorBoard/W&B 指标记录可使用 `--log_backend none`；tqdm 实时 loss
 和由 `--loss_print_interval` 控制的纯文本 loss 不受影响。
 
-3. **COLOSSEUM Fine-tuning:** For COLOSSEUM, we fine-tune the model with the training dataset provided by the [COLOSSEUM challenge](https://huggingface.co/datasets/colosseum/colosseum-challenge/tree/main). Similarly, our training code will first convert the raw data into replay buffer. You can also directly download the replay buffer we preprocess [here](https://huggingface.co/datasets/LPY/BridgeVLA_COLOSSEUM_TRAIN_BUFFER/tree/main). Then, you can use the `finetune/Colosseum/train.sh` file to finetune the model. Please run the following code:
+## COLOSSEUM Fine-tuning
+
+COLOSSEUM/GemBench launchers still contain path/GPU/port placeholders and unquoted `$@`.
+Adapt the scripts before use; multi-word overrides need quoted forwarding, or call `torchrun ... train.py` directly.
+These launchers are not covered by the portable RLBench wrapper.
+
+Use the [COLOSSEUM training dataset](https://huggingface.co/datasets/colosseum/colosseum-challenge/tree/main) or the [prebuilt replay](https://huggingface.co/datasets/LPY/BridgeVLA_COLOSSEUM_TRAIN_BUFFER/tree/main). From the repository root, after adapting the launcher:
+
 ```bash
 cd finetune/Colosseum
 bash train.sh --exp_cfg_path  configs/colosseum_config.yaml \
@@ -132,7 +152,10 @@ bash train.sh --exp_cfg_path  configs/colosseum_config.yaml \
               --load_pretrain \
               --pretrain_path  PATH_TO_PRETRAINED_MODEL
 ```
-4. **GemBench Fine-tuning:** To finetune on GemBench, you should first download the dataset from [here](https://huggingface.co/datasets/rjgpinel/GEMBench/tree/main). The structure of GemBench is different from RLBench and COLOSSEUM. We did not use replay buffer and did not do demo augmentation. You can use the `finetune/GemBench/train.sh` file to finetune the model. Please run the following code:
+## GemBench Fine-tuning
+
+Download the [GemBench dataset](https://huggingface.co/datasets/rjgpinel/GEMBench/tree/main). This branch does not use RLBench replay or its demo augmentation. From the repository root, after adapting the launcher:
+
 ```bash
 cd finetune/GemBench
 bash train.sh --exp_cfg_path  configs/gembench_config.yaml \

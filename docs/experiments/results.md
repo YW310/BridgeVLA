@@ -6,6 +6,9 @@
 
 # Experimental Results
 
+本页保留原 BridgeVLA 发布结果，未重新计算；不是当前 O2/slots/memory 的复现实验报告。
+新增实验应保存训练配置与版本、完整 episode journals 和配对 CI；COLOSSEUM 历史统计口径限制见[评估](../guides/evaluation.md)。
+
 BridgeVLA's performance on three simulation benchmarks is shown in the following table:
 ### RLBench Task Success Rates (Part 1)
 

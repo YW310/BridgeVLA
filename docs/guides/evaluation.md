@@ -6,7 +6,7 @@
 
 > 新评估固定 episodes：所有有效策略失败计入分母，环境/数据异常单独记录；禁止重复测试直到收集足够成功。
 > 下文 COLOSSEUM 的 successful trials 是历史说明，原始筛选口径不能仅凭文字确认，不据此重解释历史结果。
-> GT 准入采用[三-seed 配对 CI](../experiments/object-conditioned-joint.md#3-闭环准入)。
+> GT 准入采用[三-seed 配对 CI](object-conditioning.md#闭环统计与准入)。
 
 # Evaluation
 
@@ -31,9 +31,14 @@ COLOSSEUM requires to evaluate on all the variation factors. We provide the  `Co
 cd finetune/Colosseum
 python3 cal_statics.py
 ```
-Note: During the evaluation of Variations 1 and 6, three tasks—“close laptop lid,” “wipe desk,” and “insert onto peg”—occasionally encountered errors in certain evaluation episodes. These issues stem from problems within the evaluation data itself. I have contacted the COLOSSEUM authors, who have confirmed the issue and plan to address it in a future update. In the meantime, I adopted the following workaround: I recorded only the successful trials and repeated the evaluation until I had collected 25 successful runs for each of these tasks. These 25 valid trials were then used to compute the final performance metrics.
+历史说明曾对 Variations 1/6 的 close laptop lid、wipe desk、insert onto peg 采用“重复至收集 25 个 successful trials”的 workaround。
+这不应作为新评估流程，也不能据此认定历史表格采用标准固定 episode 成功率。`cal_statics.py` 只聚合已有 task/model CSV，
+不验证完整预定任务集；新实验先检查 task/variation/episode 覆盖，再统计。历史数值保持原样，待原始日志确认口径。
 
-3. **GemBench Evaluation:** To evaluate on GemBench, you should first launch the server. Run the following code:
+3. **GemBench Evaluation:** First provision `jq` and adapt the scripts' repository/data/output paths and server port.
+`run_client.sh` currently invokes `sudo apt-get install -y jq` on every run; review or remove that installer step before evaluation.
+Then launch the server:
+
 ```bash
 cd finetune/GemBench
 bash run_server.sh  MODEL_EPOCH  MODEL_BASE_PATH
@@ -43,10 +48,13 @@ After lanuching the server, you can run the following code to evaluate the model
 cd finetune/GemBench
 bash run_client.sh  SEED MODEL_EPOCH
 ```
-The results are saved as `results.json`, which record the success status of each trial. We provide the `GemBench/cal_results.py` to compute the average success rates of each task in each setting for each seed. Just replace the results folder path in the file and run the following code:
+The client writes JSON-lines `result.json`, not a single JSON array. `cal_results.py` assumes task-list order and exactly 20 trials per task;
+it checks total line counts but does not verify per-record task/episode identity, and missing split files can be skipped.
+Before aggregation, verify task order, no duplicated append runs, and all requested splits/seeds. Set the results path and run:
+
 ```bash
 cd finetune/GemBench
 python3 cal_results.py
 ```
 
-RLBench 多 GPU 评估见 [8×40GB 说明](training.md#rlbench-8x40)；Oracle 对照见 [O2 评估](../experiments/o2-training.md#o2-code-path)。
+RLBench 多 GPU 评估见 [8×40GB 说明](training.md#rlbench-8x40)；Oracle 对照见 [O2 评估](object-conditioning.md#closed-loop评估)。

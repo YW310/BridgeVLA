@@ -6,155 +6,8 @@
 
 # 严格 Semantic-GT Target/Reference
 
-## 测试期 Heatmap Action Anchor 归因
-
-标准 closed-loop 测试可选择输出 BridgeVLA translation heatmap 对应的动作锚点：
-
-```bash
-ORACLE_PROVIDER=rlbench_gt \
-HEATMAP_ACTION_ANCHOR=1 \
-bash eval.sh
-```
-
-旧的 `HEATMAP_TARGET_OBJECT=1` 仍作为兼容别名。该开关只在 policy evaluation 中
-有效，不用于训练或 manifest 生成。provider 按需提供 YAML 中 Target
-variation/sequence 的当前可见点云；agent 分别解码：
-
-- `base`：Oracle adapter 之前的 BridgeVLA heatmap；
-- `final`：实际用于执行 translation 的最终 heatmap。
-
-若 checkpoint 没有保留 `trans_base`，`base_available=false`，此时 `base` 会回退为
-`final`，不能用于判断 adapter 前后的变化。
-
-两者都按 waypoint 到候选点云表面的最小距离输出 candidate、phase、距离和置信度，
-并报告到当前 Reference 的距离。超过 0.20 m 为 UNKNOWN。日志前缀是
-`[HeatmapActionAnchor]`。`phase=-1` 表示该物体只是配置中的非当前 episode 候选：它会
-显示为动作锚点诊断，但会从 `base_eligible` / `final_eligible` 的语义 Target 候选中排除。
-
-这些结果写入 `ActResult.replay_elements`，不覆盖当前 Oracle Target、不修改 Reference，
-也不改变实际 action。translation waypoint 可能指向 Target、Reference、接触点或自由空间；
-因此 action anchor 不是新的 Target/Reference GT，`final_matches_target=false` 也不自动表示
-Oracle 标注错误。
-
-### 让 simulator residual 跟随 BridgeVLA Target
-
-若 simulator object 只用于修正 BridgeVLA，而不应独立决定操作对象，使用：
-
-```bash
-ORACLE_PROVIDER=rlbench_gt \
-BRIDGEVLA_ALIGNED_OBJECTS=1 \
-bash eval.sh
-```
-
-该模式执行两次 action forward：第一次只读取 residual 前的 `trans_base`，从所有可见任务
-候选中选择最近 Target；第二次以该 Target 点云和 Reference 点云作为 residual 条件生成最终
-动作。Target 会跨接近、抓取和搬运保持锁定；真实 grasp 可在夹爪闭合时覆盖 heatmap lock。
-当前 phase 推进且 gripper 打开后，旧有序 phase 的 Target 会立即解除并停止参与候选选择，
-避免已经成功放置的物体被再次锁回；未建立新可信锁时 residual 关闭并使用原始 BridgeVLA 动作。
-
-heatmap 只负责抓取前的意图候选。gripper 实际建立 grasp 后，provider 使用 simulator
-`get_grasped_objects()` 的 live handle 反查候选；若唯一匹配，它会覆盖 heatmap lock，后续
-residual 与最终可视化跟随真实抓取物体。`lock_source=1` 表示 heatmap，`2` 表示实际 grasp；
-`grasp_override=true` 表示本步纠正了不一致。
-
-锁定不是永久的：heatmap 候选连续两步比当前锁定对象近至少 2 cm 时允许切换；夹爪闭合且
-连续两步确认未抓到候选时解除锁定，并在本次闭合周期屏蔽该失败候选，直到夹爪重新打开或
-真实 grasp 建立。simulator 在松爪后可能短暂保留上一物体的 grasp 观测，此时不会重新锁回
-已完成 Target。无可信锁时对象 residual 完全关闭，动作回到原始 BridgeVLA，不回退到
-Oracle T/R。日志中 `recovery=1/2/3` 分别表示 heatmap 切换、空抓/丢失抓取解锁、真实
-grasp 覆盖；`failed_blocked=true` 表示当前 heatmap 又指向本周期已失败的候选，
-`completed_blocked=true` 表示原始 heatmap 仍指向已完成候选但该候选已被屏蔽。
-
-评估入口会强制设置 `oracle_compute_base=True`，因此不依赖训练配置中的
-`oracle_log_base_loss`；checkpoint 无需重新训练。
-
-默认只替换可信的 Target 锁；Reference 保留 simulator 当前 relation/phase 的 Reference。
-Target candidate 的序号不定义 Reference，避免把“操作哪个物体”错误解释成“目标位置也按相同
-序号切换”。`phase=-1` 只表示该 Target 不属于当前 task phase。若 `used=false`，T/R residual
-整体关闭，不发生 task Target 回退。
-该路径改变 policy action，应与纯诊断模式分别评估；它是 BridgeVLA-aligned predicted
-conditioning，不再把所选 Target 称为 Oracle GT。
-
-#### 可选：让 `place_cups` Reference 跟随动作锚点
-
-若希望杯架位置也尽量匹配 BridgeVLA 的实际放置意图，可额外打开：
-
-```bash
-ORACLE_PROVIDER=rlbench_gt \
-BRIDGEVLA_ALIGNED_OBJECTS=1 \
-BRIDGEVLA_ALIGNED_REFERENCE=1 \
-bash eval.sh
-```
-
-该开关只在 `place_cups` 启用精确单 spoke 选择，不合并整个 holder，也不按 Target candidate
-序号配对 Reference。只有 simulator 已确认夹爪实际持有 Target 后，才用同一次 base BridgeVLA
-waypoint 在各个精确 spoke 点云中独立选择 Reference；已被其他杯子占用的 spoke 会被排除，当前
-手持杯子不会被计为占用。最近候选超过 0.20 m 时 Reference 为 NULL，不强行猜测。候选一旦建立，
-锁定到松爪，避免搬运过程中跳动。
-
-其他任务会显式报告 `selection_supported=false` 并继续使用原有 live simulator Reference。
-中间选择只写入 `evaluation_diagnostics.log`：重点检查 `reference_proposed`、
-`reference_locked`、`reference_used`、`reference_occupied_blocked` 和 `carrying_target`。
-
-仅设置 `BRIDGEVLA_ALIGNED_OBJECTS=1` 时，运行时 `oracle_target_object_points` 跟随
-BridgeVLA lock，作为 residual 的 effective GT；Reference 保持当前 task Reference。
-原始任务阶段标注另存为 `oracle_task_target_*` /
-`oracle_task_reference_*`，不参与 residual。provider 在 `agent.act()` 后、执行动作前接收
-锁定候选，因此下一观测与刚执行动作使用同一 effective GT。首次产生 lock 前，运行时
-Target 为 invalid；首个动作由 agent 内部的 base-forward -> 候选归属 -> conditioned-forward
-完成同一步对齐，不使用 task Target 填充。
-
-动作执行后的观测若能从 simulator 唯一确认 actual grasp，physical grasp 会立即覆盖动作前的
-policy lock，成为该观测的 effective Target，并同步后续 lock。因而审计图中夹取成立后应满足
-`GT_T == actual_grasp`；标题 `source=actual_grasp` 表示发生了这种事实覆盖。夹取发生前没有
-physical grasp 可用，`source=policy_lock` 仍表示 BridgeVLA 的预期操作对象。
-
-`stack_blocks` 是 Reference 随物理关系变化的特例。aligned closed-loop 不按专家固定
-`phase-1` 猜 Reference，而是读取当前 `stack_blocks_success` 区域中已放置的方块，并以
-世界坐标最高的方块作为当前支撑 Reference；空栈时使用 target plane，夹爪当前持有的方块
-不会被当作支撑物。审计标题中的 `R_source=live_stack_top` 表示启用了该路径。这样专家顺序
-改变时，Reference 仍表示当前栈顶，而不会永久停在最底层。demo 训练标注仍采用
-`previous_target`，因为成功专家轨迹中 previous target 与 physical stack top 等价。
-
-`ORACLE_DEBUG` 图中的红色 `GT_T` 是 effective GT，蓝色是配对 Reference，标题中的
-`task_T` 保留原始任务 GT；绿色 `actual grasp Target` 显示 simulator 确认的夹取物体。
-对齐后的 residual 以 `[BridgeVLAAlignedObjects] locked=...` 为准；打开
-`VISUALIZE=1` 后，只有 `used=true` 才生成
-`policy_target_prior_overlay_*.png`，它对应最终前向实际使用的 Target。无可信锁时只生成
-`o2_unavailable.txt`，不会再把被屏蔽的 Oracle prior 画成 policy Target。
-
-夹爪闭合动作在当前 `act()` 返回后才由 simulator 执行，因此实际 grasp 最早在下一步观测
-中确认；从该步起应看到 `grasped=locked`、`lock_source=2`，绿色 actual-grasp layer 与
-`policy_target_prior` 一致。grasp 匹配使用 live handle namespace，并展开被抓对象的整棵
-descendant tree，避免 root/visual-shape handle 或 stored-mask 映射不同导致 `grasped=-1`。
-
-### 评估日志与最终统计
-
-`eval.sh` 的命令行只输出每个任务的 `Success rate`；`eval_parallel.py` 另外输出
-macro `Success rate`。模型加载、simulator 输出、警告和
-异常堆栈写入当前模型评估目录的 `evaluation_runtime.log`；逐步的
-`[HeatmapActionAnchor]`、`[BridgeVLAAlignedObjects]`、`[EffectiveTarget]`、候选列表、
-episode 进度与重试信息写入同目录的 `evaluation_diagnostics.log`。评估失败时命令行只给出
-失败任务和 runtime log 路径。
-
-每个完成的 episode 写入
-`episode_results/<task>/episode_N.json`；最终同时写入：
-
-- `evaluation_summary.json`：本次请求的 episode、逐 episode reward/length、成功与失败数；
-- `eval_results.csv`：当前进程的一行任务统计，启动新评估时重建，不追加历史运行；
-- `*_merged_eval_results.csv`：`eval.sh` 汇总各任务的结果。
-
-`success rate = 100 × successful episodes / completed episodes`。按照 RLBench/YARR 的
-sparse terminal reward 约定，以 `reward > 0.99` 判定 episode 成功，不直接对 reward 数值
-求平均；因此标准 `1/0` reward 与兼容的 `100/0` reward 统计一致，而任意小的正数不会被
-误判为成功。只有 `completed episodes == requested episodes` 才生成最终结果；
-中途异常不会被悄悄当作失败或缩小分母。分子、分母和 `total_transitions` 均显式写入
-CSV/JSON，便于核对。
-
-开启 `SAVE_VIDEO=1` 时，视频使用相同的 RLBench episode seed 命名为
-`episode_N_success_<language_goal>.mp4` 或 `episode_N_fail_<language_goal>.mp4`。
-这里的 `N` 与 `episode_results/<task>/episode_N.json`、`START_EPISODE` 完全一致；
-success/fail 同样使用 `reward > 0.99`，不再使用独立的成功/失败视频计数。
+评估命令、成功率统计、逐步日志/视频及 heatmap/对象对齐诊断统一见[O2 操作指南](object-conditioning.md#closed-loop评估)。
+本页仅维护数据生成、handle 验证、manifest 与 replay 契约。
 
 本流程把 RLBench 当前 phase 的语义角色写入 replay，供 Oracle adapter、relation anchor，
 以及 internal-slot 的角色 heatmap 监督使用。它不会生成完整场景 object slots，也不会补全
@@ -607,7 +460,7 @@ python tools/rewrite_replay_with_semantic_roles.py \
 - 只做 Oracle adapter / anchor：可以直接使用这条命令生成的 buffer；
 - 做 internal-slot heatmap 消融：可以使用，但建议先设
   `rvt.object_slot_null_loss_weight: 0.0`，不要声称已学习可靠 NULL；
-- 要训练 NULL/presence：使用 [joint 配置](../experiments/object-conditioned-joint.md)，presence 来自已有 kind；
+- 要训练 NULL/presence：使用 [joint 配置](object-conditioning.md#gt-联合对照)，presence 来自已有 kind；
   缺少审计或终止占位只屏蔽该监督，`oracle_object_valid` 继续表示几何可用。
 
 这一区分也适用于遮挡：`present=True, valid=False` 只屏蔽相关几何条件，不改写为 NULL。
@@ -655,35 +508,17 @@ semantic name、kind、几何来源、原始 handle 集合、`oracle_phase_sourc
 - `--cache-frames` 与 `--cache-episodes` 都是有界 LRU；默认最多保留 128 个 Oracle
   帧和 2 个 episode 的 low-dim 数据，不会随已处理 episode 数持续增长。
 
-## 3. 正式 semantic-GT O2 训练
+## 3. 数据验收与训练交接
 
-```bash
-cd $REPO/finetune/RLBench
-bash train.sh \
-    --exp_cfg_path configs/rlbench_o2_semantic_gt.yaml \
-    --train_replay_storage_dir $SEMANTIC_BUFFER \
-    --init_checkpoint $MODEL_FOLDER/$MODEL_NAME \
-    --train_oracle_adapter_only
-```
+`rlbench_o2_semantic_gt.yaml` 启用 semantic audit/contract；启发式 buffer 使用 `rlbench_o2_gt_instance.yaml`。
+两类 buffer/checkpoint 不混在同一实验目录，GT 结果只解释为 Oracle 上界。
 
-`rlbench_o2_semantic_gt.yaml` 设置 `oracle_semantic_audit=True`；旧启发式 buffer 必须继续
-使用 `rlbench_o2_gt_instance.yaml`（audit schema 默认关闭）。两类 buffer/checkpoint 不应
-混在同一实验目录。semantic mapping 是 privileged GT，结果只能解释为 Oracle 上界。
+训练启动要求每个 task 有全量 `semantic_role_validation.json`，核对 schema、`demo_events`、点数与 role YAML SHA-256，
+以及 manifest 已转换为 stored handle namespace。训练契约不要求在线 provider 伪装成 stored-demo phase tracker。
+旧 buffer 缺 `oracle_role_config_sha256` 时按校验结果修复，使用新输出目录；`--resume` 不改已有文件。
+SHA-256 覆盖整个 role YAML 的原始字节，不是逐 task hash；注释/格式修改也使旧摘要不匹配。
+保持有效 buffer 与原 YAML 配套，不通过放宽 contract 或只更新摘要来宣称迁移完成。
 
-该配置同时启用 fail-closed semantic contract。训练启动会要求每个 task 存在全量
-`semantic_role_validation.json`，并核对 schema、`demo_events`、512 点以及 role YAML SHA-256；
-报告还必须声明 manifest 已转换为 stored handle namespace。checkpoint 保存同一 contract；
-闭环加载时使用运行时 YAML 和点数再次核对。旧 checkpoint、`sim_replay` buffer 或不同
-YAML 会明确报错，不会静默测试。该校验约束训练数据来源，不要求在线 provider 伪装成
-stored-demo phase tracker。旧 buffer 若没有
-`oracle_role_config_sha256`，请用新输出目录重新运行 rewriter；`--resume` 不会改写已存在文件。
-
-兼容既有 demo-trained checkpoint：若 checkpoint 只缺少后来新增的 `semantic_contract`
-字段，闭环不会再中止，而是打印 `legacy_demo_checkpoint` warning，并以当前
-`demo_events` 配置、role YAML 和点数运行。这个兼容只处理“字段缺失”；checkpoint 已带
-contract 但内容不匹配时仍拒绝。训练 replay 的全量 validation、handle alignment 与
-`source_alignment_validated` 检查也不会因此关闭。
-
-每个 O2 YAML 的输入、teacher、adapter 与动作头关系见
-[O2 配置简易流程图](o2-config-flows.md)；训练命令、消融和评估见
-[O2 实验](../experiments/o2-training.md)。
+训练命令与各模式差异见 [O2 操作指南](object-conditioning.md#训练)；
+checkpoint 初始化、resume、既有 demo checkpoint 的评估兼容例外见[Loss与Checkpoint](object-conditioning.md#loss与checkpoint)。
+已有 contract 不匹配仍拒绝，兼容字段缺失不会关闭 replay 全量 validation、handle alignment 或 `source_alignment_validated`。

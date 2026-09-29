@@ -7,7 +7,7 @@
 # RLBench Oracle 3D 物体 Replay 数据准备
 
 > 本节导航：[参数表](#oracle-parameters) · [关键行为与检查](#oracle-checks) ·
-> [O2 Target/Reference 训练](../experiments/o2-training.md#o2-training)
+> [O2 Target/Reference 训练](object-conditioning.md#gt-adapter-only)
 
 `tools/augment_replay_with_oracle_objects.py` 可直接为已有 BridgeVLA replay 追加
 RLBench GT instance 点云，无需重新采集数据或重建原始 replay。脚本用每个
@@ -323,7 +323,7 @@ python tools/augment_replay_with_oracle_objects.py \
 训练加载 Oracle replay 时，通过 `--train_replay_storage_dir` 显式指定 Oracle
 输出根目录，并启用与数据准备阶段一致的张量尺寸：
 
-    bash train.sh --train_replay_storage_dir /path/to/augmented_replay \
+    GPUS_PER_NODE=2 bash train_8x40.sh --train_replay_storage_dir /path/to/augmented_replay \
         --exp_cfg_opts 'use_oracle_objects True oracle_max_objects 32 oracle_num_points 512' \
         [其他训练参数]
 
