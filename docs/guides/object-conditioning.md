@@ -3,7 +3,7 @@
 [文档索引](../README.md) · [统一设计](../design/role-relation-prior.md) · [Semantic-GT 数据](semantic-gt.md) · [代码索引](../reference/code-map.md)
 
 > 本页合并原 O2 模式、配置流程、GT/anchor、外部预测、internal slots 与 joint 实验说明。
-> 描述现有代码，包含 opt-in 跨尺度继承；两-query 与 memory 仍未实现。除 CI/测试外，命令从仓库根目录先 `cd finetune/RLBench`；独立示例重新指定工作目录。
+> 描述现有代码，包含 opt-in 跨尺度继承与固定 T/R queries；跨步 memory 仍未实现。除 CI/测试外，命令从仓库根目录先 `cd finetune/RLBench`；独立示例重新指定工作目录。
 
 阅读路径：[配置](#配置选择) → [数据](#数据与角色契约) → [训练](#训练) → [Checkpoint](#loss与checkpoint) → [闭环](#closed-loop评估) → [诊断](#测试诊断与可视化) → [验证](#最小验证)。
 baseline 的安装/预训练/其他 benchmark 命令仍见[训练](training.md)和[评估](evaluation.md)。
@@ -11,7 +11,7 @@ baseline 的安装/预训练/其他 benchmark 命令仍见[训练](training.md)�
 ## 配置选择
 
 三种 object 来源共用 prior → 原 relation/anchor → action decoder；差别是来源、特征路由与训练范围。
-以下配置均在 `finetune/RLBench/configs/`，不是新的网络结构。
+以下配置均在 `finetune/RLBench/configs/`；只有 `role_queries` 切换 object predictor 结构，旧配置保持原样。
 
 | 配置（省略 `rlbench_o2_` 前缀与 `.yaml`） | Object 来源 | 动作特征 | 评估 provider |
 | --- | --- | --- | --- |
@@ -23,6 +23,7 @@ baseline 的安装/预训练/其他 benchmark 命令仍见[训练](training.md)�
 | `semantic_gt_joint` | 严格 Semantic-GT | instruction + 完整动作共享 | `rlbench_gt` |
 | `internal_slots_joint` | 6 个无序 slots，128 dim | soft tokens/geometry + instruction + 完整动作共享 | `none` |
 | `internal_slots_cross_scale` | 同一 coarse 的 6 slots | joint + 混合 map 监督 + 本步继承 + token 保留 | `none` |
+| `role_queries` | 两个有序 T/R queries | joint + 直接角色图监督 + 本步继承 + token 保留 | `none` |
 
 `rlbench_o2_semantic_roles.yaml` **不是训练配置**：它定义任务/variation 的 T/R、顺序与 NULL 语义，摘要进入数据/checkpoint contract。
 摘要是整个 YAML 文件字节的 SHA-256，不是逐 task 语义摘要；修改注释/格式也会改变 contract。
@@ -33,7 +34,7 @@ flowchart LR
     O[当前观测 + instruction] --> F[BridgeVLA 特征]
     GT[Oracle T/R XYZ] --> P[三视角 prior]
     EX[外部 predictor XYZ] --> P
-    F --> S[内部 slots → soft T/R]
+    F --> S[内部无序 slots / 固定 T/R queries → soft T/R]
     S --> P
     P --> A[原 relation / anchor]
     F --> A
@@ -49,7 +50,7 @@ flowchart LR
 | 模式 | 训练数据要求 | 动作前向能否读取 Oracle |
 | --- | --- | --- |
 | GT / anchor / GT joint | 全量验证的 `demo_events` semantic buffer | 可以，结果单报 Oracle 上界 |
-| Internal slots | 同一 buffer 提供 T/R teacher maps；旧 kind 只读派生 presence | 不可以，GT 仅进入辅助 loss |
+| Internal slots / role queries | 同一 buffer 提供 T/R teacher maps；旧 kind 只读派生 presence | 不可以，GT 仅进入辅助 loss |
 | 外部预测 | replay/在线 wrapper 提供 `predicted_*` 字段 | 不可以，不回退到 Oracle |
 
 数据生成、handle 证书与全量验证命令只在 [Semantic-GT](semantic-gt.md)维护。
@@ -65,7 +66,7 @@ flowchart LR
 
 几何和输入隔离的详细定义见[统一设计](../design/role-relation-prior.md#当前实现与数据契约)。
 
-旧配置两级各自选角色，token 仍受 geometry valid 屏蔽；新配置需显式开启下面的[角色一致性开关](#角色一致性开关)。
+旧配置两级各自选角色，token 仍受 geometry valid 屏蔽；跨尺度与 role-query 配置显式开启下面的[角色一致性开关](#角色一致性开关)。
 仅 shared flag 或 soft posterior 不会自动继承角色或保留 crop 外 token。
 
 ## 训练
@@ -215,7 +216,7 @@ hard top-k XYZ 用于兼容/可视化与 opt-in 继承的局部提示，不是�
 
 ### 角色一致性开关
 
-三个独立开关默认关闭，仅支持 internal slots；GT/外部 predictor 不误启用。
+三个独立开关默认关闭，仅支持内部预测；GT/外部 predictor 不误启用。`role_queries` 配置使用后两项，并以自身输出角色图直接监督，不打开 mixed-map 附加损失。
 
 ```yaml
 object_conditioning:
@@ -233,7 +234,7 @@ rvt:
 | `preserve_role_tokens` | 可信角色 token 不随局部 geometry valid 清空；不生成虚构局部 XYZ |
 
 后两项要求 shared action features + anchor；继承还要求 stage_two 与 XYZ channels。
-继承开启时自动使用未额外归一化、未受图像增强扰动的 XYZ，RGB/VLM 不变；可沿用默认 `rvt2.yaml`。
+继承或 direct role-query 模式自动使用未额外归一化、未受图像增强扰动的 XYZ，RGB/VLM 不变；关闭继承做 direct-query 消融也维持该坐标契约。可沿用默认 `rvt2.yaml`。
 继承时 refine 提示为离散重投影，不另算角色/NULL/slot loss；学习式混合 map loss 只在 coarse。
 global tokens/soft geometry 仍接受 refine action 梯度，没有新的局部 mask decoder 或跨步 memory。
 有效性只读取 teacher，不由预测 confidence 决定。Reference 在 refine 全部视角没有投影支持时，两种 map loss 都跳过对应监督，也不产生该角色的 objectness 正例；presence/NULL 标签独立保留。
@@ -265,7 +266,7 @@ GPUS_PER_NODE=2 bash train_8x40.sh \
 | 三项全开 | `seed 0` |
 
 要单独验证 teacher 有效性修正，可在监督对齐组追加 `rvt.object_slot_mixed_role_loss_weight 0.0`；此时不加 mixed 项，匹配 loss 仍使用修正后的有效性。
-四个路由开关（shared/context/inherit/preserve）写入 checkpoint，改变路由用 `--init_checkpoint`；监督开关/权重改变可复用兼容 optimizer，但正式消融仍从相同初始化重新训练。
+四个路由开关（shared/context/inherit/preserve）及 predictor type 写入 checkpoint；改变路由或 slots↔role queries 用 `--init_checkpoint`；监督开关/权重改变可复用兼容 optimizer，但正式消融仍从相同初始化重新训练。
 相同配置续训用 `--resume_checkpoint`，optimizer 连续性要求之前保存过 `--save_optimizer_state`。评估读取该 checkpoint 保存的 `exp_cfg.yaml` 与 `mvt_cfg.yaml`，四个路由设置不匹配会报错。
 VISUALIZE 中 refine 显示继承的 T/R maps，不伪造 slot/head 分数；JSON 标记 `roles_inherited=true, role_source=coarse`。
 
@@ -289,6 +290,38 @@ EXP_CFG_PATH="$SLOT_RUN/exp_cfg.yaml" EVAL_DATAFOLDER=/path/to/raw_eval \
 ORACLE_PROVIDER=none REPLAY_GROUND_TRUTH=0 EVAL_EPISODES=1 EVAL_RESUME=0 \
 ORACLE_DEBUG=0 SAVE_VIDEO=0 VISUALIZE=0 bash eval.sh
 ```
+
+### 固定 T/R role queries（opt-in）
+
+独立配置 `rlbench_o2_role_queries.yaml` 设置 `object_slots.predictor_type: role_queries`、`num_slots: 2`。
+这里的 2 是有序的 Target / Reference **任务角色**，不是 2 个无序物体 slots 或跨步实例 ID。
+使用同一次多视角 VLM 特征、instruction 和当前夹爪状态直接预测 T/R maps、tokens 及 Reference NULL；不加额外 VLM 前向。
+默认 `slots` 路线和旧 checkpoint 的动作行为不变。
+
+```bash
+cd finetune/RLBench
+GPUS_PER_NODE=2 bash train_8x40.sh \
+  --exp_cfg_path configs/rlbench_o2_role_queries.yaml \
+  --train_replay_storage_dir "$SEMANTIC_BUFFER" \
+  --init_checkpoint "$BASE_CHECKPOINT" \
+  --exp_cfg_opts "seed 0 exp_id o2_role_queries"
+```
+
+该配置沿用 joint 的冻结范围、学习率与训练预算；不传 `--train_object_adapter_only`。
+角色图 BCE/Dice 直接监督策略使用的 T/R maps，权重为 `rvt.object_slot_mask_loss_weight`；
+真实 Reference absence 才监督其 NULL posterior，权重为 `rvt.object_slot_null_loss_weight`。
+`supervise_mixed_role_maps: False` 避免重复计数；本模式没有 Hungarian、role CE、slot objectness/diversity 项，也没有 Target NULL head。
+几何不可用不等于语义 NULL；无可靠 GT 几何/标注的视角按 teacher 有效性跳过，不伪造空 mask 负例。
+Reference 空间 prior 含一次 `(1-p_NULL)`，anchor 中的语义 token 另按该 posterior 条件化；
+`confidence` 是预测图峰值支持分数，不是校准身份、存在或可见性置信度。
+refine 继承本步 coarse 角色与可用全局条件，局部 map 是当前 XYZ 核验后的离散提示，不是新的学习式 mask decoder 或 temporal memory。
+
+从旧 slots checkpoint 切换结构时，`--init_checkpoint` 保留兼容的 BridgeVLA backbone/action 权重，
+**同时重新初始化 predictor 与 adapter**；不能用 `--resume_checkpoint` 沿用旧 optimizer。
+checkpoint 的 `object_predictor_type` 记录模式，缺字段的旧 checkpoint 按 `slots` 解释。
+评估使用本次训练保存的 `exp_cfg.yaml`、`ORACLE_PROVIDER=none`，命令与上面的预测-only 示例相同；
+固定相同数据、初始化来源、训练预算与 episodes，和 6-slot 跨尺度配置做配对闭环对照。
+目前没有此结构优于 slots 的实测成功率结论。
 
 ### 外部预测对象
 
@@ -473,8 +506,10 @@ ORACLE_PROVIDER=none VISUALIZE=1 EVAL_RESUME=0 bash eval.sh
 ```
 
 默认输出为 checkpoint 同目录 `eval/visualizations/<provider>/<model>/`，可用 `VISUALIZE_ROOT_DIR` 覆盖。
-language-goal 目录保存扁平 `step_0000.png` 与同名 JSON：两级全部视角，列为 Input、slots、
-Target/Reference pred、anchor、action；JSON 含 confidence/valid/objectness/role probability/Reference NULL。
+language-goal 目录保存扁平 `step_0000.png` 与同名 JSON：两级全部视角，列为 Input、
+Target/Reference pred、anchor、action；无序 slot 模式另显示各 slot masks。
+JSON 含 confidence/valid/Reference NULL；仅无序 slot 模式有 slot objectness/role probability。
+role-query 模式标 `predictor_type=role_queries`、`confidence_calibrated=false`，不能把空 slot 字段解释成预测失败。
 热图每视角独立归一化，叠加 30% 原 RGB；无 GT 时没有 IoU/Dice，pred 不是正确标签。
 训练图为 `step_00000500_mvt1.png` / `mvt2.png`；`train_visualization` 控制输出。
 
@@ -617,6 +652,7 @@ python -m unittest tests.test_oracle_prior tests.test_o2_joint_action_loss \
   tests.test_rlbench_training_utils tests.test_rlbench_training_visualization -v
 python -m pytest -q tests/test_role_feature_config.py tests/test_mixed_role_supervision.py \
   tests/test_role_token_preservation.py tests/test_cross_scale_roles.py tests/test_cross_scale_render.py \
+  tests/test_role_query_predictor.py tests/test_role_query_config.py \
   tests/test_object_conditioning_forward.py tests/test_inference_visualization.py \
   tests/test_eval_place_with_mean.py tests/test_rlbench_training_utils.py
 ```
@@ -624,6 +660,7 @@ python -m pytest -q tests/test_role_feature_config.py tests/test_mixed_role_supe
 训练 overrides 加 `max_optimizer_steps 1`，检查 action/object 梯度、coverage、base/适配 loss 和 checkpoint 保存。
 随后单 episode smoke：预测-only 用 `ORACLE_PROVIDER=none EVAL_EPISODES=1`，GT 组仍用 GT provider。
 外部模式先接 wrapper。smoke 只证明可运行，不能替代固定 episodes 的闭环准入。
-本机已在隔离的 uv/PyTorch CPU 环境验证角色监督、跨尺度梯度与小模型动作前向；完整 PaliGemma/CUDA 训练和模拟器闭环仍需在目标环境验收。
+隔离的 uv/PyTorch CPU 环境已通过相关回归（包括新增 role-query 配置/前向测试）；
+这不代表角色准确率或闭环收益。完整 PaliGemma/CUDA 训练和模拟器闭环仍需在目标环境验收。
 
 函数路径统一见[代码索引](../reference/code-map.md#policy-数据流)，架构、teacher 隔离和后续设计统一见[主设计](../design/role-relation-prior.md)。

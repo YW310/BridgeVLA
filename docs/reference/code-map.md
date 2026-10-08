@@ -2,7 +2,7 @@
 
 [文档索引](../README.md) · [配置流程](../guides/object-conditioning.md#配置选择) · [接口契约](../design/role-relation-prior.md#当前实现与数据契约) · [联合实验](../guides/object-conditioning.md#gt-联合对照)
 
-> 本页定位现有代码。角色监督/继承/token 保留已有 opt-in 实现；语义 queries 与 temporal memory 仍未实现。
+> 本页定位现有代码。角色监督/继承/token 保留与有序 T/R queries 均有 opt-in 实现；temporal memory 仍未实现，闭环收益待验证。
 
 ## Semantic-GT 数据流
 
@@ -29,13 +29,13 @@ role YAML + stored demo → Oracle provider → phase/handle manifest
 RVTAgent.update/act
   → mvt.MVT.forward：模式解析、prior/crop 与输入隔离
   → mvt_single.MVT.forward：同次 VLM features / text context
-  → slots（预测模式）→ 原 relation/anchor adapter
+  → 无序 slots / 固定 T/R queries（预测模式）→ 原 relation/anchor adapter
   → action_feature_routes → translation / R/G/C
 ```
 
 | 文件 | 当前职责与函数 |
 | --- | --- |
-| [oracle_prior.py](../../finetune/bridgevla/models/oracle_prior.py) | `resolve_object_prior_mode()`；`rasterize_instance_points()`；`InternalObjectSlotPredictor.forward()` / `_extract_points()`；`OracleRelationAnchorFeatureAdapter.forward_with_anchor()` |
+| [oracle_prior.py](../../finetune/bridgevla/models/oracle_prior.py) | `resolve_object_prior_mode()`；`rasterize_instance_points()`；`InternalObjectSlotPredictor.forward()` / `InternalRoleQueryPredictor.forward()`；`OracleRelationAnchorFeatureAdapter.forward_with_anchor()` |
 | [bridgevla_agent.py](../../finetune/bridgevla/models/bridgevla_agent.py) | `_select_oracle_prior_points()`、`_oracle_network_kwargs()`；teacher-only `_object_slot_auxiliary_losses()` |
 | [mvt.py](../../finetune/bridgevla/mvt/mvt.py) | `MVT.forward()`、`_build_oracle_instance_prior()`；管理 coarse/refine 投影与 crop |
 | [mvt_single.py](../../finetune/bridgevla/mvt/mvt_single.py) | `MVT.forward()`；VLM/decoder、预测策略的 GT 隔离、共享模式 global 重池化 |
@@ -58,7 +58,8 @@ RVTAgent.update/act
 | `rlbench_o2_internal_slots.yaml` | 2 个无序 slots，Hungarian warm-up；NULL loss weight = 0.25，diversity 关闭 |
 | `rlbench_o2_semantic_gt_joint.yaml` | opt-in shared action + instruction，先做 GT 对照 |
 | `rlbench_o2_internal_slots_joint.yaml` | 6 个无序 slots，soft roles/geometry + joint training；GT 准入后实验 |
-| `rlbench_o2_internal_slots_cross_scale.yaml` | 同 joint 预算，显式启用 mixed supervision / inheritance / token preservation |
+| `rlbench_o2_internal_slots_cross_scale.yaml` | 同 joint 预算，6 无序 slots，显式启用 mixed supervision / inheritance / token preservation |
+| `rlbench_o2_role_queries.yaml` | 2 有序 T/R queries；直接角色图 + Reference NULL loss，本步继承/token 保留；与 6-slot 跨尺度路线分开消融 |
 
 默认旧配置不切换新路由；数值与闭环收益须在目标环境验收。
 `current_state[B,3]` 是当前夹爪状态，旧 relation-state 名称兼容；
@@ -68,7 +69,7 @@ RVTAgent.update/act
 
 | 尚未实现 | 设计入口 |
 | --- | --- |
-| 两个语义 queries、可训练 refine mask readout | [角色预测](../design/role-relation-prior.md#最小角色预测计划未实现)；已实现开关见[操作指南](../guides/object-conditioning.md#角色一致性开关) |
+| 可训练 refine mask readout；当前仍是经 XYZ 核验的离散提示 | [跨尺度角色继承](../design/role-relation-prior.md#跨尺度角色继承计划未实现)；固定 T/R queries 已有[操作指南](../guides/object-conditioning.md#固定-tr-role-queriesopt-in) |
 | 跨步 object bank、序列 loader、act/reset 状态 | [Memory](../design/role-relation-prior.md#object-centric-memory后续未实现) |
 | visibility / 当前 EE pose / phase graph / object-local views / risk head | 不进入当前主线，按标签与瓶颈另验 |
 
@@ -99,7 +100,7 @@ resume 签名对 checkpoint 使用 path/size/mtime，对 raw data 使用目录�
 | --- | --- |
 | opt-in shared action routes、同次 text pooling、预测 teacher 隔离 | 旧 YAML 不自动启用；训练仍用 GT waypoint/crop，推理用预测 waypoint/crop |
 | soft T/R posterior、可微几何、Reference NULL loss | 默认仍按 geometry valid 屏蔽 token；opt-in 保留可靠角色；没有 Target NULL head |
-| 默认独立 slots；opt-in 混合 map 监督/本步继承 | 继承时只有 coarse 学习角色，refine 提示不另算辅助 loss；无完整 distractor 负例 |
+| 默认独立 slots；opt-in 混合 map 监督/本步继承；另有有序 T/R queries | 继承时只有 coarse 学习角色，refine 提示不另算辅助 loss；role-query 没有 Hungarian/objectness/diversity，不是全实例发现 |
 | kind 只读派生 presence、全量语义校验 | role YAML 是全文件 hash；resume 不迁移旧 replay；mask-only/局部身份证书不认证整场景 XYZ |
 | RLBench 稀疏 reward 统计、完成数校验、episode/video 同编号 | 配对 CI 只接收 `100/0` journals；历史表格不能当当前 O2 验收结果 |
 
@@ -109,9 +110,9 @@ resume 签名对 checkpoint 使用 path/size/mtime，对 raw data 使用目录�
 ### 验证与下一步
 
 本机完成 16 个 first-party Bash 脚本的 `bash -n`，以及未引用/已引用 `$@` 的独立参数复现。
-实施后复核 13 份 Markdown：185 个本地链接、77 个锚点引用、46 个 Bash 示例通过静态校验；
+实施后复核 13 份 Markdown：本地链接/锚点与 Bash 示例通过静态校验；
 语法通过不代表 placeholder、依赖或模型数值正确。
-隔离环境（Python 3.12 / PyTorch 2.5.1 CPU）已通过 132 项相关回归，覆盖角色 loss/梯度、跨尺度继承、小模型动作前向、可视化、配置与训练预算；20 个新增/修改的 Python 文件通过 AST/编译检查。
+隔离环境（Python 3.12 / PyTorch 2.5.1 CPU）已通过相关回归，覆盖角色 loss/梯度、跨尺度继承、role-query 配置/前向、小模型动作前向与可视化；不代表完整 CUDA/模拟器验证或闭环收益。
 同时修复了 RLBench eval 的 `--use-input-place-with-mean` 未初始化变量，以及 YAML epochs 被 CLI 默认 100 覆盖的问题。完整 PaliGemma/CUDA 单步训练、真实 renderer 与模拟器闭环尚未运行。
 
 目标 Linux/CUDA 环境按以下顺序验收：

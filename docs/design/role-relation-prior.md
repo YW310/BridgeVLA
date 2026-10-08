@@ -4,7 +4,7 @@
 
 > 更新：2026-09-29。设计与接口统一在本文维护。实现状态见下表；memory 与真机部署为后续方案，不代表当前代码能力。
 
-阅读导航：[架构](#整体架构) → [当前实现与数据](#当前实现与数据契约) → [本轮调整](#本轮设计未实现) → [实验](#实验顺序)；后续查[Memory](#object-centric-memory后续未实现)、[真机部署](#真实机器人部署后续规划)、[投影扩展](#其他可选扩展未实现)。
+阅读导航：[架构](#整体架构) → [当前实现与数据](#当前实现与数据契约) → [角色方案](#角色预测与跨尺度调整) → [实验](#实验顺序)；后续查[Memory](#object-centric-memory后续未实现)、[真机部署](#真实机器人部署后续规划)、[投影扩展](#其他可选扩展未实现)。
 
 ## 整体架构
 
@@ -19,7 +19,7 @@ flowchart TB
     ST["当前夹爪状态"] --> Q
     ST --> AC
     P --> VC["Coarse VLM + 同次 text pooling"]
-    VC --> Q["Coarse 无序 slots → T/R soft maps / tokens"]
+    VC --> Q["Coarse 角色预测：无序 slots 或 opt-in 固定 T/R queries"]
     Q --> K["本步 role packet：tokens / maps / Reference NULL / 可信几何"]
     P -.有效 XYZ.-> K
     VC --> AC["原 anchor / adapter"]
@@ -60,15 +60,15 @@ flowchart TB
 | 状态 | 内容 |
 | --- | --- |
 | 已实现，默认关闭 | `shared_action_features`：translation 与 R/G/C 使用同一最终特征；`use_context`：同次 VLM 的 instruction 条件 |
-| 已实现，预测路线 | 无序 slots → role head/soft mixture → T/R maps、tokens、Reference NULL；soft geometry；GT teacher 隔离 |
+| 已实现，预测路线 | 默认无序 slots → soft T/R；opt-in 固定 T/R queries → 直接角色 maps/tokens；两者均预测 Reference NULL、隔离 GT teacher |
 | 已实现，数据兼容 | 从旧 replay 的角色 `kind` 只读派生 presence/known；NULL loss 监督实际 posterior |
 | 已实现，三个独立开关 | 混合 role-map 监督、coarse→refine 角色继承、几何 unknown 时保留可信 token；默认关闭 |
-| 后续结构对照 | 两个固定语义 queries，尚未实现 |
+| 已实现，结构对照 | `object_slots.predictor_type: role_queries`：两个有序角色 queries，默认仍为 `slots`；闭环收益待验证 |
 | 后续可选 | temporal memory、可信历史点、局部 mask 读出、渲染改进；各自单独验收 |
 
-当前普通 internal-slot 配置为 **2 个无序 slots**，joint 为 **6 个**；都不是两个固定语义 queries。
-旧配置两级独立预测；新 `internal_slots_cross_scale` 配置显式启用三个开关，不自动改变旧配置。
-旧配置保留旧动作路由；冻结范围见[训练设置](#训练设置)。当前 YAML 不会自动切换到图中的计划架构。
+当前普通 internal-slot 配置为 **2 个无序 slots**，joint 为 **6 个**；独立 `role_queries` 配置才是两个固定语义 queries。
+旧配置两级独立预测；`internal_slots_cross_scale` 和 `role_queries` 显式启用本步继承，不自动改变旧配置。
+旧配置保留旧动作路由；冻结范围见[训练设置](#训练设置)。只有显式选择新 YAML/开关才会切换结构或路由。
 
 ## 当前实现与数据契约
 
@@ -151,7 +151,7 @@ GT site 体积、点投影 prior 与当前可见实例轮廓不同，role-map �
 
 ## 角色预测与跨尺度调整
 
-三个开关位于 `object_conditioning`，均默认 `False`，只用于 internal slots：
+三个开关位于 `object_conditioning`，均默认 `False`，只用于内部预测；role-query 配置只启用后两项，角色图采用自身直接监督：
 
 | 开关 | 实现行为 |
 | --- | --- |
@@ -163,9 +163,11 @@ GT site 体积、点投影 prior 与当前可见实例轮廓不同，role-map �
 继承不依赖 token 保留开关，但只开继承仍可能屏蔽 crop 外 token，需单独消融。
 实现与训练命令见[操作指南](../guides/object-conditioning.md#角色一致性开关)。
 
-### 最小角色预测（计划，未实现）
+<a id="最小角色预测计划未实现"></a>
 
-**当前差距。** `InternalObjectSlotPredictor.forward()` 用无序 queries 提取 masks，再经 objectness/role 分数混合成 T/R。
+### 角色预测：无序 slots 与固定 T/R queries
+
+**无序 slots 路线。** `InternalObjectSlotPredictor.forward()` 用无序 queries 提取 masks，再经 objectness/role 分数混合成 T/R。
 `hungarian_role_slot_losses()` 按总代价做一对一匹配，没有 IoU/代价拒配阈值。
 BCE/Dice、role CE 与 objectness 正例原本只监督匹配 slots，未匹配 slots 仍没有对象负例。
 
@@ -174,7 +176,7 @@ BCE/Dice、role CE 与 objectness 正例原本只监督匹配 slots，未匹配 
 该 mask 同时用于 mixed-map loss 和原匹配 loss 的代价/梯度：空 view 不监督为空图；整角色无支持时不匹配 slot、不产生 objectness 正例。absence 仍只监督 NULL posterior。
 关闭继承时两级监督；开启继承时仅 coarse 是学习式角色预测，refine 的离散提示不重复计算角色 loss。
 
-**再验证两-query 简化。** 复用 feature/mask projection、Transformer decoder 与原 anchor：
+**已实现的两-query 结构对照（收益待验）。** `object_slots.predictor_type: role_queries` 复用三视角特征、query decoder、原 anchor 与同次 instruction/current-state 条件：
 
 ```text
 q_T / q_R + instruction + 当前状态
@@ -183,21 +185,26 @@ q_T / q_R + instruction + 当前状态
   → 本步 packet → refine / anchor → 完整动作
 ```
 
-固定的是角色，不是物体 ID。移除无序匹配、role 分类与 slot objectness，仍保留完整场景特征；
-两个 queries 也可能混淆同类实例，不能称为通用 object discovery。
+固定的是 T/R **角色顺序**，不是物体 ID。每个 query 直接输出对应 mask/token；Reference 单独预测 NULL posterior。
+参考角色图为 `M_R=(1-p_{NULL})\,\sigma(L_R)`；Reference token 在 anchor 的条件分支应用非 NULL mass，二者属于不同空间/语义路径。
+它移除无序匹配、role 分类、slot objectness/diversity，不引入第三次 VLM 前向；仍保留完整场景特征。
+输出 `confidence` 仅为角色图峰值支持分数，不是校准的对象身份、存在或可见性概率。两个 queries 仍可能混淆同类实例，不能称为全实例发现。
 
-损失为 `L_action + λ_map(L_T + L_R) + λ_null L_NULL`：
+损失为 `L_action + λ_map(L_T + L_R) + λ_null L_NULL`；`λ_map` 复用 `rvt.object_slot_mask_loss_weight`，本模式不叠加 `supervise_mixed_role_maps`：
 
 - maps 使用 BCE/Dice 和有效 GT role maps；NULL 只用可靠 absence 标签。
-- Reference token 按非 NULL 条件归一化，NULL mass 在 anchor 只应用一次。
+- Reference token 由角色 query 产生；NULL mass 在 anchor 的语义条件分支只应用一次。
 - 没有可靠 Target absence 标签时不新增 Target NULL head；终止占位不参与角色 loss。
 - 复用 text pooling、soft geometry 与共享动作路由，保留 action 到 queries/maps/anchor 的梯度。
 
-新结构另设 opt-in 配置；当前 YAML 仍是无序 slots，架构变化用 init 而非 optimizer resume。
-[SlotVLA](https://arxiv.org/html/2511.06754v1#S4)依赖更丰富的实例/时序监督；
+新结构由独立 [role-query 配置](../../finetune/RLBench/configs/rlbench_o2_role_queries.yaml)启用，旧配置仍为无序 slots；checkpoint 记录 predictor type。
+从 slots 切换时用 `--init_checkpoint`，联合重置 predictor 与 adapter、沿用兼容 backbone/action 权重，不沿用旧 optimizer resume。
+[SlotVLA](https://arxiv.org/html/2511.06754#S4)已有对象 slots、relation queries，且依赖更丰富的实例/时序监督；
+[SR-WM](https://arxiv.org/abs/2608.22294)已有 task-conditioned functional role binding；
+[STORM](https://arxiv.org/html/2601.20381#S3.SS1)已有轻量 task-aware slots 与分阶段适配；其策略 loss 与 slot 模块梯度隔离，不能当作本项目动作 loss 反传到角色 query 的直接先例。
 [FocusPool](https://arxiv.org/html/2609.08408v1)支持状态条件 attention，
 [SlotFlow](https://arxiv.org/abs/2609.24155)保留语义/空间/全局条件。
-这些是机制参考，不证明两-query 优于 K slots；更多依据见[调研](../research/object-centric-policy-memory.md)。
+因此不能以“两 query”“角色绑定”“轻量 adapter”本身宣称新颖或有效；本项目可检验的是同一决策步在 BridgeVLA heatmap coarse/refine 间保持角色绑定、把语义与局部支持分开。依据见[调研](../research/object-centric-policy-memory.md)。
 
 <a id="跨尺度角色继承计划未实现"></a>
 
@@ -222,7 +229,7 @@ anchor 分开读取全局角色条件与局部空间支持；同时开启 token 
 
 首版继承 tokens/NULL/可信几何，并重投影 coarse 预测点提示。逐点/视角要求当前 rendered XYZ 对应，
 容差为 unit-cube 三个像素 pitch；背景、越界或被其他表面覆盖不作为本角色支持。量化容差不保证身份正确。
-继承开启时 XYZ 使用干净的实际 crop 坐标，不受 `norm_corr` 或 RGB augmentation 污染；VLM RGB 路径不变。
+继承或 direct role-query 模式的 XYZ 使用干净的实际 crop 坐标，不受 `norm_corr` 或 RGB augmentation 污染；即使关闭继承做 direct-query 消融也保留此坐标契约。VLM RGB 路径不变。
 若细定位仍是瓶颈，再试 `Q_r = W_r h_r + b_r` 的局部 mask readout：
 复用 projection，不增加独立 role/objectness/NULL selector，也不覆盖全局 token。
 VLM patch-grid 分辨率不会因新增 queries 自动提高。
@@ -283,13 +290,13 @@ coarse/refine 分工已有[BridgeVLA++](https://arxiv.org/html/2608.05042#S4)先
 | A+M | 只加最终混合 role-map 监督 | 监督与条件错位是否是瓶颈？ |
 | B | A+M 加本步跨尺度继承 | crop 外 Reference 是否仍误切换？ |
 | B+T | B 再启用 token 保留 | 不重选后，crop 外角色条件是否仍被屏蔽？ |
-| C | B 的 coarse 改为两个语义 queries | 简化选择结构是否有效？ |
+| C | B+T 的 coarse 改为两个固定 T/R queries；其余路由/数据/预算相同 | 去匹配简化是否优于 6-slot 对照？ |
 
 GT 准入采用同数据、初始化、解冻范围、训练步数和评估 episodes，至少 3 个训练 seeds；
 配对闭环成功率差的 95% CI 下界为正才进入预测联合实验。
 同时报告 decoded waypoint、预测 waypoint 下 R/G/C、失败类型、时延与显存；辅助 loss 下降不能替代闭环收益。
 
-保持 RGB 渲染、mask 分辨率和 memory 不变来隔离 A→C 的作用；继承使用 clean XYZ，这是新增坐标契约的一部分。
+保持 RGB 渲染、mask 分辨率和 memory 不变来隔离 A→C 的作用；C 的参数量、训练收敛与算力仍须单报，不把“同预算”说成“同参数量”。继承使用 clean XYZ，这是新增坐标契约的一部分。
 GT waypoint/crop teacher forcing 与推理预测 crop 的差距另行诊断；当前 `16×16` role masks 不会因 query 简化自动变精细。
 
 ### 训练设置
@@ -297,11 +304,11 @@ GT waypoint/crop teacher forcing 与推理预测 crop 的差距另行诊断；�
 | 配置 | 冻结 | 训练 |
 | --- | --- | --- |
 | semantic GT joint | vision tower、projector、Gemma 前 6 层 | 其余 Gemma、action decoder、O2 模块 |
-| internal slots joint | vision tower、Gemma 前 18 层 | projector、其余 Gemma、action decoder、object 模块 |
+| internal slots joint / role queries | vision tower、Gemma 前 18 层 | projector、其余 Gemma、action decoder、object 模块 |
 
 沿用已有 embedding/lm_head 冻结；分组 LR 为非 Gemma `4e-5`、Gemma `1e-5`。
 使用 `--init_checkpoint` 初始化已有参数，新增 residual 输出端零初始化，允许新增参数缺失。
-架构/路由变化不能沿用旧 optimizer resume；同架构续训才用 resume，checkpoint 记录 conditioning 开关。
+架构/路由变化不能沿用旧 optimizer resume；同架构续训才用 resume。checkpoint 记录 conditioning 开关和 `object_predictor_type`；跨 slots→role queries 的 init 联合重置 predictor/adapter，保留兼容的 backbone/action 参数。
 
 命令和统计工具见[联合实验](../guides/object-conditioning.md#gt-联合对照)。
 base diagnostic loss 不等于独立训练 baseline；CI 工具不丢弃失败、不接受不匹配 episodes，也不替代训练预算核对。
@@ -315,7 +322,7 @@ base diagnostic loss 不等于独立训练 baseline；CI 工具不丢弃失败�
 
 当前没有跨控制步 temporal memory；predictor 的 `memory` 只是当前 attention K/V。
 先完成单帧与跨尺度验收，现有 replay loader 尚未支持本节的序列训练。
-本步角色继承不跨步锁定；两个 role tokens 也不是持久实例 bank。
+本步角色继承不跨步锁定；两个固定 role-query tokens 也不是持久实例 bank。
 
 ### 什么时候需要 memory
 

@@ -23,7 +23,9 @@
 
 | 工作与版本 | 方法 / 监督 | 可借鉴内容与限制 |
 | --- | --- | --- |
-| [SlotVLA](https://arxiv.org/html/2511.06754v1)，[作者页：ICRA 2026](https://slot-vla.github.io/) | slot carryover、实例 box/mask/objectness 与时序 tracking loss；instruction 筛选相关 slots，再生成 relation tokens | 对象与 relation 的表示已有先例；LIBERO+ 的实例级监督比当前 T/R replay 丰富 |
+| [SlotVLA](https://arxiv.org/html/2511.06754)，[作者页：ICRA 2026](https://slot-vla.github.io/) | slot carryover、实例 box/mask/objectness 与时序 tracking loss；instruction 筛选相关 slots，再以可学习 queries 生成 relation tokens | 对象与 relation queries 已有先例；LIBERO+ 的实例级监督比当前 T/R replay 丰富 |
+| [STORM](https://arxiv.org/html/2601.20381#S3.SS1)，2026 预印本 | 冻结视觉 foundation encoder 上训练 task-aware slots；先视觉/语义预训练，后与策略并行更新但 slot 特征 detach，策略 loss 不反传 slot 模块 | 轻量 slot adapter、阶段训练已有先例；本项目的动作梯度至角色 query 是不同监督路径，效果需单独验证 |
+| [SR-WM](https://arxiv.org/abs/2608.22294)，2026-08 预印本 | task-conditioned entity hypotheses 绑定 target/goal/relation/phase 等功能角色，结合 action-conditioned dynamics 与规划 | 显式角色绑定已有直接先例；其 world model/候选规划与本项目热图策略是不同假设，不能宣称角色本身新颖 |
 | [SlotSSM](https://arxiv.org/html/2406.12272v6)，NeurIPS 2024 | 各 slot 独立共享参数的状态更新，小型 Slot Mixer 交换信息；OC 版本学习对象分解 | 可作为固定容量时序模型；模块化 state 不自动保证真实对象 ID 或机器人闭环收益 |
 | [Embodied-SlotSSM](https://ojs.aaai.org/index.php/AAAI/article/download/37337/41299)，AAAI 2026 正式论文 | 时序 slots、历史/未来 latent 预测、Slot Fusion 与 Relation Encoder；实验版本加入 oracle subgoal | 是直接的机器人 memory 先例，但不能当作自主阶段识别已解决的证据 |
 | [PSB](https://arxiv.org/html/2402.17077)，[作者页：ICML 2024](https://parallel-st-binder.github.io/) | 底向上 attention、时轴 attention、对象轴 attention；支持因果 mask 与序列并行训练 | 提供不同于 GRU/SSM 的可扩展路径；在线成本仍依赖历史窗口，不能称为无限历史常数成本 |
@@ -61,7 +63,7 @@ SemanticSlots 的核心是 decoder 能访问当前 frame features，而不是单
 
 RandSF.Q 的“next-frame features”指 **新帧已经到达后**使用其特征，不是提前偷看尚未观测的未来。它的轻量 transitioner 同时读旧 slots 与新特征；简单 slot carryover 是必须比较的基线。[方法 §Informative Query Prediction](https://arxiv.org/html/2508.01345v7)
 
-**本项目推论：**历史 token 作为当前 coarse 查询的辅助条件；当前可见位置由新证据更新。不要反复投影旧 heatmap，也不要用语义相似度独自确认同类实例。提议的 T/R queries 是任务角色，而上述论文的 slots 主要用于场景对象分解，两者不等价。
+**本项目推论：**未来若加入历史 token，应只将其作为当前 coarse 查询的辅助条件；当前可见位置由新证据更新。不要反复投影旧 heatmap，也不要用语义相似度独自确认同类实例。已实现的 opt-in T/R queries 是任务角色，不是上述论文所需的持久场景对象 ID。
 
 ### 3.2 SSM 解决时序计算，不替代身份与监督
 
@@ -105,7 +107,8 @@ MemoryVLA 提供检索/融合/容量管理；PAM 用少量不同时间跨度 que
 | --- | --- | --- |
 | 无序 slots → objectness / role 分数 → 混合 T/R maps；forward 不接收历史状态 | [oracle_prior.py](../../finetune/bridgevla/models/oracle_prior.py)：`InternalObjectSlotPredictor.forward()` | 当前不是 Slot Attention + SSM，不提供跨帧 ID；局部变量 `memory` 是当前 decoder 的 K/V，不是 temporal bank |
 | 有效 GT T/R 与 slots 做最小代价匹配；只监督匹配 slots，无拒配阈值 | [object_conditioning.py](../../finetune/bridgevla/models/object_conditioning.py)：`hungarian_role_slot_losses()`、`mixed_role_map_losses()` | 不等于全场景 discovery/tracking 标签；最终混合角色图监督已 opt-in 实现，收益待验证 |
-| coarse/refine 分别调用两个 predictors，未传递共享 role packet | [mvt.py](../../finetune/bridgevla/mvt/mvt.py)：`MVT.forward()` | 本步继承仍是计划，不能写成现有能力 |
+| 默认两级独立；opt-in coarse 预测后将本步 role packet 传给 refine | [mvt.py](../../finetune/bridgevla/mvt/mvt.py)：`MVT.forward()`；[cross_scale_roles.py](../../finetune/bridgevla/models/cross_scale_roles.py) | 只约束同一控制步的 T/R，不能称作跨步 ID 或 temporal memory；refine 提示是离散重投影，不是学习式局部 mask decoder |
+| opt-in 两个有序 T/R queries 直接读出角色图与 Reference NULL | [oracle_prior.py](../../finetune/bridgevla/models/oracle_prior.py)：`InternalRoleQueryPredictor.forward()` | 不是全实例发现；峰值 map confidence 未校准，不产生 phase/对象长期身份 |
 | joint 可用 instruction context、soft geometry 与共享最终动作特征 | [mvt_single.py](../../finetune/bridgevla/mvt/mvt_single.py)：`MVT.forward()`；[joint config](../../finetune/RLBench/configs/rlbench_o2_internal_slots_joint.yaml) | 可以复用，不增加第三次 VLM 前向；当前普通配置不默认打开同一路由 |
 | 普通配置 K=2，joint K=6；当前状态是夹爪三维低维状态 | [普通 config](../../finetune/RLBench/configs/rlbench_o2_internal_slots.yaml)、上述 predictor | K 与固定 T/R queries、bank capacity 是不同参数；目标 `gripper_pose` 不能用作当前 EE state |
 
@@ -119,7 +122,7 @@ MemoryVLA 提供检索/融合/容量管理；PAM 用少量不同时间跨度 que
 
 ```mermaid
 flowchart LR
-    O[当前 coarse 特征 + instruction + 当前状态] --> Q[计划: 两个语义 T/R queries]
+    O[当前 coarse 特征 + instruction + 当前状态] --> Q[opt-in: 两个有序 T/R queries]
     Q --> P[本步 role packet]
     P --> F[Refine 继承: 全局角色 / 局部支持分开]
     F --> A[共享最终特征与完整动作]
@@ -127,7 +130,7 @@ flowchart LR
     Q -.当前观测且关联可信时更新.-> B
 ```
 
-首轮仅验证最终角色图监督、跨尺度继承与两个语义 queries，保持当前三视角 `3×2` 路径和 heatmap decoder。relation/phase 仍由当前对象、instruction 与状态隐式条件化，不增加离散 phase、pair search 或显式进度 head。[实施次序](../design/role-relation-prior.md#实验顺序)
+首轮仅验证最终角色图监督、跨尺度继承与两个有序 T/R queries，保持当前三视角 `3×2` 路径和 heatmap decoder。三项均有 opt-in 代码，闭环收益仍待验证。relation/phase 仍由当前对象、instruction 与状态隐式条件化，不增加离散 phase、pair search 或显式进度 head。[实施次序](../design/role-relation-prior.md#实验顺序)
 
 ### 时序扩展的最小契约
 
@@ -163,9 +166,9 @@ token 可保留，旧几何须独立失效；全遮挡时不把最后位置冒�
 
 ## 7. Motivation 与创新主张
 
-已有工作已经包含 object slots、relation tokens、SSM、scene/object memory 和验证后更新。将这些模块组合不能单独构成创新，也不能把“隐式阶段”“失败恢复”“因果能力”当作架构自带属性。
+已有工作已经包含 object slots、relation queries、task-conditioned role binder、轻量 slot 适配、SSM、scene/object memory 和验证后更新。将这些模块组合不能单独构成创新，也不能把“隐式阶段”“失败恢复”“因果能力”当作架构自带属性。[SlotVLA](https://arxiv.org/html/2511.06754)、[SR-WM](https://arxiv.org/abs/2608.22294)、[STORM](https://arxiv.org/abs/2601.20381)分别限制了这些新颖性表述。
 
-本项目更具体的研究假设是：**在三视角 coarse/refine 动作定位中，以同一角色条件贯穿两级；历史只辅助当前对象绑定，身份与可能过期的几何分开，减少 crop 导致的角色漂移和错误空间条件。** 当前“两个 queries 足够”“实例 memory 更好”“共享状态改善恢复”均需对照。
+本项目更具体的研究假设是：**在 BridgeVLA 三视角 heatmap 动作定位中，coarse 绑定本步 T/R，refine 保持同一角色、仅更新可核实的局部支持，同时将语义条件与可能缺失的几何分开。** 这与 [BridgeVLA++](https://arxiv.org/html/2608.05042) 的粗级历史/细级初始点云重编码不同，也不是已证明的性能优势。后续历史仅辅助当前绑定，身份与可能过期的几何分开；“两个 queries 足够”“实例 memory 更好”“共享状态改善恢复”仍需对照。
 
 可证伪条件：若仅监督最终角色图已获得相同收益，继承/queries 不应独占功劳；若 scene 历史同样有效，不主张 object-centric 必要性；若只减少角色漂移但不改善闭环，不主张操作性能提高；若依赖 GT ID、oracle subgoal 或在线 simulator success，单独标为 Oracle 上界。
 
