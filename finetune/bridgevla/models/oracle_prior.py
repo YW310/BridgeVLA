@@ -833,13 +833,8 @@ class OracleRelationAnchorFeatureAdapter(OracleRelationGatedFeatureAdapter):
         return translation_features
 
 
-class InternalObjectSlotPredictor(nn.Module):
-    '''Predict Target/Reference masks and point sets from BridgeVLA features.
-
-    Learned slots attend jointly to all virtual-view tokens. Role heads then
-    mix unordered slot masks into Target and Reference priors, with an explicit
-    NULL alternative for Reference. GT object tensors are not consumed here.
-    '''
+class _ObjectQueryDecoder(nn.Module):
+    '''Shared multiview query decoder; never consumes GT object tensors.'''
 
     def __init__(
         self,
@@ -897,12 +892,6 @@ class InternalObjectSlotPredictor(nn.Module):
             norm_first=True,
         )
         self.decoder = nn.TransformerDecoder(decoder_layer, decoder_layers)
-        self.objectness_head = nn.Linear(slot_dim, 1)
-        self.role_head = nn.Linear(slot_dim, 2)
-        self.reference_null_head = nn.Linear(slot_dim + state_channels, 1)
-        # Start below the validity threshold so a new predictor cannot perturb
-        # a pretrained policy before the auxiliary object loss has learned.
-        nn.init.constant_(self.objectness_head.bias, -2.0)
 
     @staticmethod
     def _xy_grid(height, width, device, dtype):
@@ -947,7 +936,7 @@ class InternalObjectSlotPredictor(nn.Module):
         points = points * role_valid[:, :, None, None].to(points.dtype)
         return points
 
-    def forward(self, features, rendered_xyz, relation_state=None, *, current_state=None,
+    def _decode(self, features, rendered_xyz, relation_state=None, *, current_state=None,
                 context=None):
         if current_state is not None:
             if relation_state is not None:
@@ -996,6 +985,26 @@ class InternalObjectSlotPredictor(nn.Module):
         mask_logits = torch.einsum(
             'bkd,bvdhw->bvkhw', mask_queries, keys,
         ) / math.sqrt(self.slot_dim)
+        return slots, mask_logits, relation_state
+
+
+class InternalObjectSlotPredictor(_ObjectQueryDecoder):
+    '''Unordered instance slots mixed into Target/Reference (legacy mode).'''
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.objectness_head = nn.Linear(self.slot_dim, 1)
+        self.role_head = nn.Linear(self.slot_dim, 2)
+        self.reference_null_head = nn.Linear(self.slot_dim + self.state_channels, 1)
+        # Preserve the legacy state keys and initialization order exactly.
+        nn.init.constant_(self.objectness_head.bias, -2.0)
+
+    def forward(self, features, rendered_xyz, relation_state=None, *, current_state=None,
+                context=None):
+        slots, mask_logits, relation_state = self._decode(
+            features, rendered_xyz, relation_state,
+            current_state=current_state, context=context,
+        )
         slot_masks = torch.sigmoid(mask_logits)
         objectness_logits = self.objectness_head(slots).squeeze(-1)
         role_logits = self.role_head(slots)
@@ -1068,6 +1077,57 @@ class InternalObjectSlotPredictor(nn.Module):
             'reference_is_null': reference_is_null,
             'role_tokens': role_tokens,
             'role_token_valid': role_token_valid,
+            'geometry': geometry,
+        }
+
+
+class InternalRoleQueryPredictor(_ObjectQueryDecoder):
+    '''Two fixed semantic queries [Target, Reference], with no slot assignment.
+
+    Maps are independent (roles need not be disjoint). Reference NULL is a
+    separate semantic posterior, not a test of visibility or rendered geometry.
+    Confidence is only map support, not calibrated object identity confidence.
+    '''
+
+    def __init__(self, *args, num_slots=2, **kwargs):
+        if num_slots != 2:
+            raise ValueError('role_queries requires exactly two queries: Target/Reference')
+        super().__init__(*args, num_slots=num_slots, **kwargs)
+        if not self.soft_conditioning:
+            raise ValueError('role_queries requires soft_conditioning=True')
+        self.reference_null_head = nn.Linear(self.slot_dim + self.state_channels, 1)
+
+    def forward(self, features, rendered_xyz, relation_state=None, *, current_state=None,
+                context=None):
+        roles, mask_logits, state = self._decode(
+            features, rendered_xyz, relation_state,
+            current_state=current_state, context=context,
+        )
+        null_logit = self.reference_null_head(torch.cat(
+            (roles[:, 1], state), dim=-1,
+        )).squeeze(-1)
+        null_probability = null_logit.sigmoid()
+        masks = mask_logits.sigmoid()
+        prior = torch.stack((
+            masks[:, :, 0],
+            masks[:, :, 1] * (1.0 - null_probability)[:, None, None, None],
+        ), dim=2)
+        confidence = prior.amax(dim=(1, 3, 4))
+        token_valid = confidence >= self.confidence_threshold
+        geometry, valid = soft_role_geometry(prior, rendered_xyz, token_valid)
+        return {
+            'predictor_type': 'role_queries',
+            'prior': prior,
+            'prior_logits': torch.logit(prior.clamp(1e-5, 1.0 - 1e-5)),
+            'points': self._extract_points(prior, rendered_xyz, valid),
+            'valid': valid,
+            'confidence': confidence,
+            'mask_logits': mask_logits,
+            'reference_null_logit': null_logit,
+            'reference_null_probability': null_probability,
+            'reference_is_null': null_probability >= 1.0 - self.confidence_threshold,
+            'role_tokens': roles,
+            'role_token_valid': token_valid,
             'geometry': geometry,
         }
 

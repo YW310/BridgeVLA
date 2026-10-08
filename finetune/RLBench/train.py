@@ -526,6 +526,9 @@ def save_agent(
         "model_state": model_state,
     }
     conditioning_model = model.module if isinstance(model, DDP) else model
+    checkpoint['object_predictor_type'] = str(getattr(
+        conditioning_model, 'object_slot_predictor_type', 'slots',
+    ))
     checkpoint['object_conditioning'] = {
         'shared_action_features': bool(getattr(conditioning_model, 'object_conditioning_shared_action_features', False)),
         'use_context': bool(getattr(conditioning_model, 'object_conditioning_use_context', False)),
@@ -553,6 +556,16 @@ def load_training_checkpoint(agent, path, semantic_contract=None):
 
     if isinstance(model, DDP):
         model = model.module
+
+    expected_predictor_type = str(getattr(model, 'object_slot_predictor_type', 'slots'))
+    stored_predictor_type = str(checkpoint.get('object_predictor_type', 'slots'))
+    if stored_predictor_type != expected_predictor_type:
+        raise RuntimeError(
+            'Object predictor type changed from '
+            f'{stored_predictor_type!r} to {expected_predictor_type!r}; '
+            'initialize with --init_checkpoint instead of restoring an '
+            'incompatible optimizer with --resume_checkpoint.'
+        )
 
     expected_conditioning = {
         'shared_action_features': bool(getattr(model, 'object_conditioning_shared_action_features', False)),
@@ -622,6 +635,28 @@ def load_initial_model_checkpoint(agent, path):
     model_state, removed_fusion_keys = strip_deprecated_oracle_fusion_state(
         checkpoint['model_state']
     )
+    stored_predictor_type = str(checkpoint.get('object_predictor_type', 'slots'))
+    target_predictor_type = str(getattr(model, 'object_slot_predictor_type', 'slots'))
+    if stored_predictor_type != target_predictor_type:
+        # Role-query and unordered-slot heads have incompatible query/head
+        # semantics, while the adapter consumes those different role tokens.
+        # Retain BridgeVLA backbone/action weights, but reinitialize both
+        # object components together. strict=False cannot load shape-mismatched
+        # tensors sharing the same key, so remove them before loading.
+        predictor_keys = [key for key in model_state if 'object_slot_predictor' in key]
+        adapter_keys = [key for key in model_state if 'oracle_prior_feature_adapter' in key]
+        model_state = {
+            key: value for key, value in model_state.items()
+            if key not in predictor_keys and key not in adapter_keys
+        }
+        print(
+            'WARNING: object predictor architecture changed '
+            f'{stored_predictor_type!r} -> {target_predictor_type!r}; '
+            f'reinitialized {len(predictor_keys)} predictor and '
+            f'{len(adapter_keys)} adapter tensors while retaining BridgeVLA '
+            'backbone/action weights.',
+            flush=True,
+        )
     incompatible = model.load_state_dict(model_state, strict=False)
     unexpected = list(incompatible.unexpected_keys)
     disallowed_missing = [
@@ -1106,6 +1141,7 @@ def experiment(cmd_args):
         object_conditioning_preserve_role_tokens=exp_cfg.object_conditioning.preserve_role_tokens,
         object_slots_enabled=exp_cfg.object_slots.enabled,
         object_slot_num_slots=exp_cfg.object_slots.num_slots,
+        object_slot_predictor_type=exp_cfg.object_slots.predictor_type,
         object_slot_dim=exp_cfg.object_slots.slot_dim,
         object_slot_decoder_layers=exp_cfg.object_slots.decoder_layers,
         object_slot_num_heads=exp_cfg.object_slots.num_heads,

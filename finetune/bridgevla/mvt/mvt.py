@@ -27,6 +27,7 @@ from bridgevla.mvt.mvt_single import MVT as MVTSingle
 from bridgevla.mvt.config import get_cfg_defaults
 from bridgevla.models.oracle_prior import (
     InternalObjectSlotPredictor,
+    InternalRoleQueryPredictor,
     OraclePriorFeatureAdapter,
     OracleRelationAnchorFeatureAdapter,
     OracleRelationGatedFeatureAdapter,
@@ -77,6 +78,7 @@ class MVT(nn.Module):
         oracle_adapter_translation_only=False,
         oracle_relation_anchor_rank=0,
         object_slots_enabled=False,
+        object_slot_predictor_type='slots',
         object_slot_num_slots=6,
         object_slot_dim=128,
         object_slot_decoder_layers=2,
@@ -135,6 +137,17 @@ class MVT(nn.Module):
                 raise ValueError('role inheritance/preservation requires shared action features and an anchor')
         if object_conditioning_inherit_coarse_roles and not add_corr:
             raise ValueError('role inheritance requires rendered XYZ correlation channels')
+        if object_slot_predictor_type not in ('slots', 'role_queries'):
+            raise ValueError('object_slot_predictor_type must be slots or role_queries')
+        if object_slot_predictor_type == 'role_queries':
+            if not object_slots_enabled or object_slot_num_slots != 2:
+                raise ValueError('role_queries requires enabled object slots and num_slots=2')
+            if not object_conditioning_shared_action_features or oracle_relation_anchor_rank <= 0:
+                raise ValueError('role_queries requires shared action features and an anchor')
+            if object_conditioning_supervise_mixed_role_maps:
+                raise ValueError('role_queries already supervises role maps; disable supervise_mixed_role_maps')
+            if not add_corr:
+                raise ValueError('role_queries requires rendered XYZ correlation channels')
 
         from point_renderer.rvt_renderer import RVTBoxRenderer as BoxRenderer
 
@@ -155,6 +168,7 @@ class MVT(nn.Module):
         del args['oracle_adapter_translation_only']
         del args['oracle_relation_anchor_rank']
         del args['object_slots_enabled']
+        del args['object_slot_predictor_type']
         del args['object_slot_num_slots']
         del args['object_slot_dim']
         del args['object_slot_decoder_layers']
@@ -183,6 +197,7 @@ class MVT(nn.Module):
         )
         self.oracle_relation_anchor_rank = int(oracle_relation_anchor_rank)
         self.object_slots_enabled = bool(object_slots_enabled)
+        self.object_slot_predictor_type = object_slot_predictor_type
         self.object_conditioning_shared_action_features = bool(object_conditioning_shared_action_features)
         self.object_conditioning_use_context = bool(object_conditioning_use_context)
         self.object_conditioning_supervise_mixed_role_maps = bool(object_conditioning_supervise_mixed_role_maps)
@@ -247,13 +262,18 @@ class MVT(nn.Module):
             'use_context': self.object_conditioning_use_context,
             'soft_conditioning': self.object_conditioning_shared_action_features,
         }
+        predictor_class = (InternalRoleQueryPredictor
+                           if object_slot_predictor_type == 'role_queries'
+                           else InternalObjectSlotPredictor)
         self.object_slot_predictor1 = (
-            InternalObjectSlotPredictor(**slot_kwargs)
+            predictor_class(**slot_kwargs)
             if self.object_slots_enabled else None
         )
         self.object_slot_predictor2 = (
-            InternalObjectSlotPredictor(**slot_kwargs)
-            if self.object_slots_enabled and stage_two else None
+            predictor_class(**slot_kwargs)
+            if self.object_slots_enabled and stage_two
+            and not (object_slot_predictor_type == 'role_queries'
+                     and self.object_conditioning_inherit_coarse_roles) else None
         )
 
 
@@ -370,6 +390,10 @@ class MVT(nn.Module):
         assert isinstance(mvt1_or_mvt2, bool)
 
         mvt = self.mvt1
+        use_clean_role_xyz = (
+            self.object_conditioning_inherit_coarse_roles
+            or getattr(self, 'object_slot_predictor_type', 'slots') == 'role_queries'
+        )
 
         with torch.no_grad():
             # with autocast(enabled=False):
@@ -379,7 +403,7 @@ class MVT(nn.Module):
                     dyn_cam_info_itr = dyn_cam_info
 
                 if mvt.add_corr:
-                    if mvt.norm_corr and not self.object_conditioning_inherit_coarse_roles:
+                    if mvt.norm_corr and not use_clean_role_xyz:
                         img = []
                         for _pc, _img_feat, _dyn_cam_info in zip(
                             pc, img_feat, dyn_cam_info_itr
@@ -436,10 +460,10 @@ class MVT(nn.Module):
         else:
             mvt.img = img.clone().detach()
 
-        # Inherited geometry uses the actual crop frame, not independently
-        # max-normalized or RGB-augmented XYZ. RGB/VLM behavior is unchanged.
+        # Role queries and inherited geometry use the actual cube/crop frame,
+        # including independent-refine ablations. RGB/VLM behavior is unchanged.
         clean_role_xyz = (img[:, :, :3].clone()
-                          if self.object_conditioning_inherit_coarse_roles and img_aug != 0 else None)
+                          if use_clean_role_xyz and img_aug != 0 else None)
         # image augmentation
         if img_aug != 0:
             stdv = img_aug * torch.rand(1, device=img.device)

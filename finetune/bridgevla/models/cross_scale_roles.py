@@ -98,4 +98,5 @@ def inherit_coarse_roles(stage_output, crop_center, scale, rendered_xyz, project
         'reference_null_probability': stage_output['object_slot_reference_null_probability'],
         'reference_is_null': stage_output['object_slot_reference_is_null'],
         'roles_inherited': True,
+        'predictor_type': stage_output.get('object_slot_predictor_type', 'slots'),
     }

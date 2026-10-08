@@ -121,6 +121,51 @@ class InferenceVisualizationTest(unittest.TestCase):
         self.assertEqual(payload['reference_pred'].shape, (3, 12, 10))
         self.assertNotIn('gt', payload)
 
+    def test_direct_role_queries_visualize_maps_without_fabricated_slots(self):
+        stage = _stage_output()
+        stage['object_slot_predictor_type'] = 'role_queries'
+        for key in ('object_slot_masks', 'object_slot_objectness_logits',
+                    'object_slot_role_logits'):
+            stage.pop(key)
+        payload = visualization.build_internal_slot_stage_payload(
+            stage, torch.rand(3, 3, 12, 10), torch.rand(3, 12, 10))
+        self.assertEqual(payload['target_pred'].shape, (3, 12, 10))
+        self.assertEqual(payload['reference_pred'].shape, (3, 12, 10))
+        self.assertFalse(any(key.startswith('slot_') for key in payload))
+        diagnostics = visualization.internal_slot_stage_diagnostics(stage)
+        self.assertEqual(diagnostics['predictor_type'], 'role_queries')
+        self.assertFalse(diagnostics['confidence_calibrated'])
+        self.assertEqual(diagnostics['slot_objectness'], [])
+        self.assertEqual(diagnostics['slot_role_probability'], [])
+        self.assertNotIn('role_source', diagnostics)
+
+        stage['object_slot_roles_inherited'] = True
+        inherited = visualization.internal_slot_stage_diagnostics(stage)
+        self.assertEqual(inherited['role_source'], 'coarse')
+        self.assertEqual(inherited['predictor_type'], 'role_queries')
+
+    def test_direct_role_montage_and_json_have_no_gt_or_slot_columns(self):
+        stage = _stage_output()
+        stage['object_slot_predictor_type'] = 'role_queries'
+        for key in ('object_slot_masks', 'object_slot_objectness_logits',
+                    'object_slot_role_logits'):
+            stage.pop(key)
+        payload = visualization.build_internal_slot_stage_payload(
+            stage, torch.rand(3, 3, 12, 10), torch.rand(3, 12, 10))
+        diagnostics = visualization.internal_slot_stage_diagnostics(stage)
+        montage = visualization.internal_slot_montage(
+            {'mvt1': payload}, step=3, diagnostics={'mvt1': diagnostics})
+        self.assertLessEqual(montage.width, visualization._MAX_MONTAGE_WIDTH)
+        with tempfile.TemporaryDirectory() as temporary:
+            output = visualization.save_internal_slot_step_visualization(
+                {'mvt1': payload}, {'mvt1': diagnostics},
+                step=3, output_dir=temporary)
+            saved = json.loads(output['diagnostics'].read_text(encoding='utf-8'))
+            self.assertEqual(saved['mvt1']['predictor_type'], 'role_queries')
+            self.assertFalse(saved['mvt1']['confidence_calibrated'])
+        self.assertFalse(any(key.startswith('slot_') for key in payload))
+        self.assertNotIn('gt', payload)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -83,6 +83,8 @@ def _model_guard_namespace(**overrides):
         'oracle_adapter_translation_only': False,
         'oracle_relation_anchor_rank': 16,
         'object_slots_enabled': True,
+        'object_slot_predictor_type': 'slots',
+        'object_slot_num_slots': 6,
         'object_conditioning_use_context': True,
         'object_conditioning_shared_action_features': True,
         'object_conditioning_supervise_mixed_role_maps': False,
@@ -210,7 +212,7 @@ class RoleFeatureConfigTest(unittest.TestCase):
         render = next(node for node in model.body
                       if isinstance(node, ast.FunctionDef) and node.name == 'render')
         normalized_guard = ast.parse(
-            'mvt.norm_corr and not self.object_conditioning_inherit_coarse_roles',
+            'mvt.norm_corr and not use_clean_role_xyz',
             mode='eval',
         ).body
         self.assertTrue(any(
@@ -222,7 +224,7 @@ class RoleFeatureConfigTest(unittest.TestCase):
                      if isinstance(node, ast.Assign)
                      and ast.unparse(node.targets[0]) == 'clean_role_xyz')
         self.assertIsInstance(clean.value, ast.IfExp)
-        self.assertIn('self.object_conditioning_inherit_coarse_roles',
+        self.assertIn('use_clean_role_xyz',
                       ast.unparse(clean.value.test))
         self.assertIsNone(ast.literal_eval(clean.value.orelse))
         self.assertEqual(ast.unparse(clean.value.body), 'img[:, :, :3].clone()')
@@ -241,11 +243,11 @@ class RoleFeatureConfigTest(unittest.TestCase):
         functions = {node.name: node for node in ast.parse(source).body
                      if isinstance(node, ast.FunctionDef)}
         payload = ast.unparse(functions['build_internal_slot_stage_payload'])
-        self.assertIn("('object_slot_prior',) if inherited else", payload)
-        self.assertIn('if not inherited:', payload)
+        self.assertIn("('object_slot_prior',) if inherited or direct else", payload)
+        self.assertIn('if not inherited and (not direct):', payload)
         diagnostic = ast.unparse(functions['internal_slot_stage_diagnostics'])
-        self.assertIn('[] if inherited else torch.sigmoid', diagnostic)
-        self.assertIn('[] if inherited else torch.softmax', diagnostic)
+        self.assertIn('[] if inherited or direct else torch.sigmoid', diagnostic)
+        self.assertIn('[] if inherited or direct else torch.softmax', diagnostic)
         self.assertIn("result['role_source'] = 'coarse'", diagnostic)
 
     def test_save_records_all_flags(self):

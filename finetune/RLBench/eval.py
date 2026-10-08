@@ -90,8 +90,16 @@ def _append_evaluation_diagnostic(path, message):
     with path.open('a', encoding='utf-8') as stream:
         stream.write(str(message).rstrip() + '\n')
 
-def _validate_role_feature_checkpoint(checkpoint, conditioning_cfg, source):
+def _validate_role_feature_checkpoint(checkpoint, conditioning_cfg, source,
+                                      predictor_type='slots'):
     """Require the eval role-routing path recorded during training."""
+    stored_predictor_type = str(checkpoint.get('object_predictor_type', 'slots'))
+    if stored_predictor_type != str(predictor_type):
+        raise RuntimeError(
+            'Object predictor type differs from checkpoint '
+            f'{source}: stored={stored_predictor_type!r}, '
+            f'eval={predictor_type!r}. Evaluate using its saved exp_cfg.yaml.'
+        )
     stored = checkpoint.get('object_conditioning', {})
     if not isinstance(stored, dict):
         raise RuntimeError(f'Invalid object_conditioning metadata in {source}.')
@@ -166,6 +174,7 @@ def load_agent(
         object_conditioning_preserve_role_tokens=exp_cfg.object_conditioning.preserve_role_tokens,
         object_slots_enabled=exp_cfg.object_slots.enabled,
         object_slot_num_slots=exp_cfg.object_slots.num_slots,
+        object_slot_predictor_type=exp_cfg.object_slots.predictor_type,
         object_slot_dim=exp_cfg.object_slots.slot_dim,
         object_slot_decoder_layers=exp_cfg.object_slots.decoder_layers,
         object_slot_num_heads=exp_cfg.object_slots.num_heads,
@@ -197,6 +206,7 @@ def load_agent(
     def checkpoint_validator(checkpoint):
         _validate_role_feature_checkpoint(
             checkpoint, exp_cfg.object_conditioning, model_path,
+            exp_cfg.object_slots.predictor_type,
         )
 
     semantic_training_phase_source = None
@@ -233,6 +243,7 @@ def load_agent(
         def checkpoint_validator(checkpoint):
             _validate_role_feature_checkpoint(
                 checkpoint, exp_cfg.object_conditioning, model_path,
+                exp_cfg.object_slots.predictor_type,
             )
             verified = validate_semantic_contract(
                 checkpoint.get('semantic_contract'), runtime_contract,

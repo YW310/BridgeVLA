@@ -129,7 +129,9 @@ def build_internal_slot_stage_payload(
 ) -> Dict[str, torch.Tensor]:
     """Collect no-GT slot diagnostics for one MVT stage."""
     inherited = bool(stage_output.get('object_slot_roles_inherited', False))
-    required = ('object_slot_prior',) if inherited else ('object_slot_masks', 'object_slot_prior')
+    direct = stage_output.get('object_slot_predictor_type') == 'role_queries'
+    required = ('object_slot_prior',) if inherited or direct else (
+        'object_slot_masks', 'object_slot_prior')
     missing = [key for key in required if key not in stage_output]
     if missing:
         raise KeyError('Internal-slot visualization is missing: ' + ', '.join(missing))
@@ -137,7 +139,7 @@ def build_internal_slot_stage_payload(
         'input': rendered_input.detach().float().cpu(),
         'action_pred': action_heatmap.detach().float().cpu(),
     }
-    if not inherited:
+    if not inherited and not direct:
         slot_masks = stage_output['object_slot_masks'][0]
         for slot_index in range(slot_masks.shape[1]):
             payload[f'slot_{slot_index}'] = slot_masks[:, slot_index].detach().float().cpu()
@@ -160,9 +162,10 @@ def internal_slot_stage_diagnostics(
     confidence = stage_output['object_slot_confidence'][0].detach().float().cpu()
     valid = stage_output['object_slot_valid'][0].detach().bool().cpu()
     inherited = bool(stage_output.get('object_slot_roles_inherited', False))
-    objectness = ([] if inherited else torch.sigmoid(
+    direct = stage_output.get('object_slot_predictor_type') == 'role_queries'
+    objectness = ([] if inherited or direct else torch.sigmoid(
         stage_output['object_slot_objectness_logits'][0].detach().float().cpu()))
-    role_probability = ([] if inherited else torch.softmax(
+    role_probability = ([] if inherited or direct else torch.softmax(
         stage_output['object_slot_role_logits'][0].detach().float().cpu(), dim=-1))
     null_probability = stage_output[
         'object_slot_reference_null_probability'
@@ -185,6 +188,10 @@ def internal_slot_stage_diagnostics(
     if inherited:
         result['roles_inherited'] = True
         result['role_source'] = 'coarse'
+    if direct:
+        result['predictor_type'] = 'role_queries'
+        # These are scores/validity gates, not calibrated object probabilities.
+        result['confidence_calibrated'] = False
     return result
 
 

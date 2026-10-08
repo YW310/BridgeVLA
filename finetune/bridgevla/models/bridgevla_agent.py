@@ -909,6 +909,43 @@ class RVTAgent:
                 # slot/readout head, so repeating map/assignment/NULL losses
                 # would add a constant or duplicate the coarse supervision.
                 continue
+            if stage_output.get('object_slot_predictor_type') == 'role_queries':
+                # Direct T/R queries already emit the policy maps. They have
+                # no unordered slots, so matching/role/objectness/diversity
+                # losses would fabricate heads and labels that do not exist.
+                if supervise_mixed:
+                    raise ValueError(
+                        'Direct-role queries use the intrinsic map loss; '
+                        'disable supervise_mixed_role_maps')
+                required = ('object_slot_prior', 'object_slot_target_prior',
+                            'object_slot_reference_null_probability')
+                missing = [key for key in required if key not in stage_output]
+                if missing:
+                    raise KeyError('Direct-role outputs are missing: ' + ', '.join(missing))
+                predicted = stage_output['object_slot_prior']
+                teacher_valid = oracle_valid.to(device=predicted.device).bool()
+                stage_valid = stage_output.get('object_slot_target_valid')
+                if stage_valid is not None:
+                    teacher_valid = teacher_valid & stage_valid.to(
+                        device=predicted.device).bool()
+                direct = mixed_role_map_losses(
+                    predicted, stage_output['object_slot_target_prior'],
+                    teacher_valid, role_present, role_present_known,
+                )
+                null_loss = reference_null_loss(
+                    stage_output['object_slot_reference_null_probability'],
+                    role_present, role_present_known,
+                )
+                zero = (predicted.sum()
+                        + stage_output['object_slot_reference_null_probability'].sum()) * 0.0
+                sums['mask'] = sums['mask'] + direct['mask']
+                sums['mask_bce'] = sums['mask_bce'] + direct['bce']
+                sums['mask_dice'] = sums['mask_dice'] + direct['dice']
+                sums['presence'] = sums['presence'] + null_loss
+                for name in ('role', 'objectness', 'diversity'):
+                    sums[name] = sums[name] + zero
+                raw_stage_count += 1
+                continue
             teacher_valid = oracle_valid
             if supervise_mixed:
                 mixed_required = ('object_slot_prior', 'object_slot_target_prior')

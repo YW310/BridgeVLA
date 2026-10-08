@@ -787,6 +787,8 @@ class MVT(nn.Module):
                     out['object_slot_' + output_key] = object_slot_output[key]
             if object_slot_output.get('roles_inherited', False):
                 out['object_slot_roles_inherited'] = True
+            if 'predictor_type' in object_slot_output:
+                out['object_slot_predictor_type'] = object_slot_output['predictor_type']
             if object_slot_target_heatmap is not None:
                 out['object_slot_target_prior'] = object_slot_target_heatmap.detach()
                 out['object_slot_target_valid'] = object_slot_target_heatmap.detach().gt(0).any(dim=(1, 3, 4))

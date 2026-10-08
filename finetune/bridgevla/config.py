@@ -78,6 +78,7 @@ _C.object_conditioning.preserve_role_tokens = False
 # supervision labels only and are never passed into the policy adapter.
 _C.object_slots = CN()
 _C.object_slots.enabled = False
+_C.object_slots.predictor_type = 'slots'
 _C.object_slots.num_slots = 6
 _C.object_slots.slot_dim = 128
 _C.object_slots.decoder_layers = 2

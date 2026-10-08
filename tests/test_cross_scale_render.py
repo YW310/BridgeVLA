@@ -18,7 +18,7 @@ class CrossScaleRenderTest(unittest.TestCase):
         exec(compile(ast.Module(body=[render], type_ignores=[]), '<render>', 'exec'), namespace)
         return namespace['render']
 
-    def _run_render(self, inherited, augmentation=0.):
+    def _run_render(self, inherited, augmentation=0., predictor_type='slots'):
         capture = {}
         stage = SimpleNamespace(add_corr=True, norm_corr=True, add_pixel_loc=False)
 
@@ -27,7 +27,8 @@ class CrossScaleRenderTest(unittest.TestCase):
             return feature.reshape(1, 2, 2, 6)
 
         model = SimpleNamespace(mvt1=stage, renderer=renderer,
-                                object_conditioning_inherit_coarse_roles=inherited)
+                                object_conditioning_inherit_coarse_roles=inherited,
+                                object_slot_predictor_type=predictor_type)
         points = torch.tensor([[1.5, .2, .3], [.2, .3, .4], [.4, .5, .6], [0., 0., 0.]])
         colors = torch.full((4, 3), .3)
         result = self._render_method()(model, [points], [colors], augmentation, True, None)
@@ -50,6 +51,14 @@ class CrossScaleRenderTest(unittest.TestCase):
         torch.testing.assert_close(inherited[:, :, :3], expected, rtol=0, atol=0)
         torch.testing.assert_close(inherited[:, :, 3:6], legacy[:, :, 3:6], rtol=0, atol=0)
         self.assertEqual(inherited[0, 0, :3, 1, 1].count_nonzero().item(), 0)
+
+    def test_direct_roles_keep_clean_xyz_when_inheritance_is_ablated(self):
+        torch.manual_seed(13)
+        inherited, _, _ = self._run_render(True, .5)
+        torch.manual_seed(13)
+        independent, points, capture = self._run_render(False, .5, 'role_queries')
+        torch.testing.assert_close(capture['feature'][:, :3], points, rtol=0, atol=0)
+        torch.testing.assert_close(independent, inherited, rtol=0, atol=0)
 
 
 if __name__ == '__main__':
