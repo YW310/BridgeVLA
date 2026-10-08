@@ -1,0 +1,32 @@
+# Fill these three unknown calibration values from the actual exporter.
+# Data audit works before calibration; replay construction refuses unknown values.
+scene_bounds: null
+link_to_tcp: null       # 4x4 data EE link -> chosen policy TCP; explicit identity if equal
+image_size: [120, 160]  # exact stride 4 from 480x640
+rotation_classes: 72
+video_timestamp_tolerance: 0.0084333333
+depth:
+  encoding: null       # metric / scaled_integer sidecars, or documented linear_channel MP4
+  kind: null           # z / ray
+  path_pattern: null   # relative to dataset root; supports task,episode,camera,frame
+  limits: [0.001, 10.0]
+keypoints:
+  max_translation: 0.04
+  max_rotation_degrees: 8
+  max_frames: 30
+cameras:
+  global_left:
+    intrinsics: [[320, 0, 320], [0, 320, 240], [0, 0, 1]]
+    optical_to_sensor: null
+  global_right:
+    intrinsics: [[320, 0, 320], [0, 320, 240], [0, 0, 1]]
+    optical_to_sensor: null
+  local_left:
+    intrinsics: [[337.197, 0, 320], [0, 337.197, 240], [0, 0, 1]]
+    optical_to_sensor: null
+  local_right:
+    intrinsics: [[337.197, 0, 320], [0, 337.197, 240], [0, 0, 1]]
+    optical_to_sensor: null
+  wrist:
+    intrinsics: [[337.197, 0, 320], [0, 337.197, 240], [0, 0, 1]]
+    optical_to_sensor: null

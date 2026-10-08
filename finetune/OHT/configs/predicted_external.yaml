@@ -1,0 +1,6 @@
+extends: baseline.yaml
+mode: predicted_external
+object:
+  rank: 16
+  anchor_rank: 16
+  confidence_threshold: 0.25

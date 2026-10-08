@@ -1,0 +1,29 @@
+mode: baseline
+seed: 0
+batch_size: 2
+accumulation_steps: 8
+optimizer_steps: 2000
+checkpoint_interval: 250
+num_workers: 0
+learning_rate: 0.00004
+freeze_vision_tower: true
+freeze_gemma_prefix_layers: 18
+freeze_multimodal_projector: false
+efficient_paligemma_forward: true
+gradient_checkpointing: true
+point_count: 512
+agent:
+  add_rgc_loss: true
+  collision_loss_weight: 0.0
+  transform_augmentation: false
+  place_with_mean: false
+  img_aug: 0.0
+  move_pc_in_bound: true
+  optimizer_type: adam
+  rot_x_y_aug: 0
+mvt:
+  stage_two: true
+  add_corr: true
+  use_point_renderer: true
+  num_rot: 72
+  rot_ver: 0

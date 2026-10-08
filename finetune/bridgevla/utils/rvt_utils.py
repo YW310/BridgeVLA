@@ -4,10 +4,8 @@ import argparse
 import sys
 
 import torch
-from torch.utils.tensorboard import SummaryWriter
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from bridgevla.models.peract_official import PreprocessAgent2
 
 def get_pc_img_feat(obs, pcd, bounds=None):
     """
@@ -71,6 +69,7 @@ def move_pc_in_bound(pc, img_feat, bounds, no_op=False):
 
 class TensorboardManager:
     def __init__(self, path):
+        from torch.utils.tensorboard import SummaryWriter
         self.writer = SummaryWriter(path)
 
     def update(self, split, step, vals):
@@ -288,10 +287,12 @@ def load_agent(
     agent_path, agent=None, only_epoch=False, strict=False,
     checkpoint_validator=None,
 ):
-    if isinstance(agent, PreprocessAgent2):
-        assert not only_epoch
-        agent._pose_agent.load_weights(agent_path)
-        return 0
+    if hasattr(agent, '_pose_agent'):
+        from bridgevla.models.peract_official import PreprocessAgent2
+        if isinstance(agent, PreprocessAgent2):
+            assert not only_epoch
+            agent._pose_agent.load_weights(agent_path)
+            return 0
 
     checkpoint = torch.load(agent_path, map_location="cpu")
     if checkpoint_validator is not None:

@@ -1,0 +1,10 @@
+-r requirements-data.txt
+# Install the CUDA build of torch==2.5.1 and torchvision==0.20.1 separately.
+transformers==4.51.3
+accelerate>=0.26.0
+safetensors
+einops
+yacs
+matplotlib
+transforms3d
+# Build the vendored point-renderer against the chosen torch/CUDA installation.

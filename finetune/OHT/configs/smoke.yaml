@@ -1,0 +1,5 @@
+extends: baseline.yaml
+batch_size: 1
+accumulation_steps: 1
+optimizer_steps: 2
+checkpoint_interval: 1

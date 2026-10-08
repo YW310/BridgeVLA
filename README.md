@@ -38,6 +38,10 @@ conda activate bridgevla
 
 <a id=training></a>
 
+### OHT v423
+
+OHT 数据迁移、baseline 与 predicted object assistance 的命令和接入说明见 [OHT 实施指南](finetune/OHT/README.md)；设计依据见 [迁移方案](docs/design/oht-data-migration.md)。
+
 ### RLBench 训练
 
 准备 raw data 或预生成 replay，修改配置中的保存路径，然后从仓库根目录运行：

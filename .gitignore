@@ -17,6 +17,7 @@ dist/
 
 # Virtual environments
 .venv/
+.venv-oht/
 venv/
 env/
 .conda/

@@ -96,6 +96,7 @@ _C.peract.gemma_lr = 0.0
 _C.peract.gemma_layer_lr_decay = 1.0
 _C.peract.optimizer_type =  "adam" # "lamb"
 _C.peract.add_rgc_loss = True
+_C.peract.collision_loss_weight = 1.0
 _C.peract.num_rotation_classes = 72
 _C.peract.transform_augmentation = True
 _C.peract.transform_augmentation_xyz = [0.1, 0.1, 0.1]

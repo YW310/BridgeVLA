@@ -1,0 +1,11 @@
+extends: baseline.yaml
+mode: role_queries
+role_loss:
+  map: 1.0
+  reference_null: 0.25
+object:
+  rank: 16
+  anchor_rank: 16
+  confidence_threshold: 0.25
+  slot_dim: 128
+  point_samples: 128

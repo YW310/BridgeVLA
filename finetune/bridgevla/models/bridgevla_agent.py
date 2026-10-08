@@ -28,11 +28,12 @@ from torch.nn.parallel.distributed import DistributedDataParallel
 import sys
 import os
 sys.path.append(os.path.join(os.path.dirname(__file__), "..."))
-import RLBench.utils.peract_utils_rlbench as rlbench_utils
-import GemBench.utils.peract_utils_gembench as gembench_utils
+from bridgevla.data.observations import (
+    DEFAULT_CAMERAS, DEFAULT_SCENE_BOUNDS, preprocess_inputs,
+)
 import bridgevla.mvt.utils as mvt_utils
 import bridgevla.utils.rvt_utils as rvt_utils
-from bridgevla.mvt.augmentation import apply_se3_aug_con, aug_utils
+from bridgevla.mvt import aug_utils
 from bridgevla.models.oracle_prior import (
     build_training_visualization_payload,
     choose_oracle_translation_loss,
@@ -64,6 +65,12 @@ from PIL import Image, ImageDraw
 import torch
 import numpy as np
 import os
+
+
+def apply_se3_aug_con(*args, **kwargs):
+    # OHT disables SE(3) augmentation and need not load PyTorch3D for data checks.
+    from bridgevla.mvt.augmentation import apply_se3_aug_con as augment
+    return augment(*args, **kwargs)
 
 
 def save_point_cloud_with_color(filename, points, colors, keypoint=None):
@@ -462,8 +469,8 @@ class RVTAgent:
         gt_hm_sigma: float = 1.5,
         img_aug: bool = False,
         add_rgc_loss: bool = False,
-        scene_bounds: list = rlbench_utils.SCENE_BOUNDS,
-        cameras: list = rlbench_utils.CAMERAS,
+        scene_bounds: list = DEFAULT_SCENE_BOUNDS,
+        cameras: list = DEFAULT_CAMERAS,
         rot_ver: int = 0,
         rot_x_y_aug: int = 2,
         oracle_prior_mode: str = 'none',
@@ -480,6 +487,7 @@ class RVTAgent:
         object_slot_diversity_loss_weight: float = 0.01,
         object_slot_mixed_role_loss_weight: float = 1.0,
         log_dir="",
+        collision_loss_weight: float = 1.0,
     ):
         self._network = network
         self._num_rotation_classes = num_rotation_classes
@@ -502,6 +510,9 @@ class RVTAgent:
         self.gt_hm_sigma = gt_hm_sigma
         self.img_aug = img_aug
         self.add_rgc_loss = add_rgc_loss
+        if not math.isfinite(collision_loss_weight) or collision_loss_weight < 0:
+            raise ValueError('collision_loss_weight must be finite and non-negative')
+        self.collision_loss_weight = float(collision_loss_weight)
         self.stage_two = stage_two
         self.log_dir = log_dir
         self.scene_bounds = scene_bounds
@@ -1255,7 +1266,7 @@ class RVTAgent:
                     oracle_valid.float().mean().item()
                 )
 
-        obs, pcd = rlbench_utils._preprocess_inputs(replay_sample, self.cameras)
+        obs, pcd = preprocess_inputs(replay_sample, self.cameras)
         
         with torch.no_grad():
             pc, img_feat = rvt_utils.get_pc_img_feat(
@@ -1512,7 +1523,7 @@ class RVTAgent:
                 
                 collision_loss = self._cross_entropy_loss(
                     collision_q, action_collision_one_hot.argmax(-1)
-                ).mean()
+                ).mean() * self.collision_loss_weight
 
             base_rot_loss_x = base_rot_loss_y = base_rot_loss_z = None
             base_grip_loss = base_collision_loss = None
@@ -1549,7 +1560,7 @@ class RVTAgent:
                     base_collision_loss = self._cross_entropy_loss(
                         base_collision_q,
                         action_collision_one_hot.argmax(-1),
-                    ).mean()
+                    ).mean() * self.collision_loss_weight
 
             action_total_loss = (
                 optimized_trans_loss
@@ -1712,6 +1723,7 @@ class RVTAgent:
         action_grip = action_gripper_pose[:, -1].int()   # (b,)
         return_out = {}
 
+        from GemBench.utils import peract_utils_gembench as gembench_utils
         obs, pcd = gembench_utils._preprocess_inputs_gembench(replay_sample, cameras)
         
         with torch.no_grad():
@@ -1868,7 +1880,7 @@ class RVTAgent:
                 
                 collision_loss = self._cross_entropy_loss(
                     collision_q, action_collision_one_hot.argmax(-1)
-                ).mean()
+                ).mean() * self.collision_loss_weight
 
             total_loss = (
                 trans_loss
@@ -2422,7 +2434,7 @@ class RVTAgent:
             observation['low_dim_state'], 2,
         ).float()[:, :3]
         language_goal =observation["language_goal"]
-        obs, pcd = rlbench_utils._preprocess_inputs(observation, self.cameras)
+        obs, pcd = preprocess_inputs(observation, self.cameras)
         pc, img_feat = rvt_utils.get_pc_img_feat(
             obs,
             pcd,
