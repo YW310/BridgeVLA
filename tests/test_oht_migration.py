@@ -29,13 +29,13 @@ from finetune.OHT.config import load
 from finetune.OHT.model import load_weights
 
 
-def video(path, n=7):
+def video(path, n=7, size=16):
     import av
     container = av.open(str(path), mode="w")
     stream = container.add_stream("mpeg4", rate=60)
-    stream.width, stream.height, stream.pix_fmt = 16, 16, "yuv420p"
+    stream.width, stream.height, stream.pix_fmt = size, size, "yuv420p"
     for i in range(n):
-        pixels = np.full((16, 16, 3), 20 + i * 25, np.uint8)
+        pixels = np.full((size, size, 3), 20 + i * 25, np.uint8)
         frame = av.VideoFrame.from_ndarray(pixels, format="rgb24")
         for packet in stream.encode(frame):
             container.mux(packet)
@@ -121,6 +121,46 @@ def test_real_parquet_video_metric_depth_to_agent_batch(replay_fixture):
     assert batch["rot_grip_action_indicies"].shape==(2,1,4)
     assert batch["ignore_collisions"].shape==(2,1,1)
     assert batch["lang_goal"][0][0][0]==row["goal"]
+
+
+def test_native_gray12_parquet_to_replay_with_previews(replay_fixture, tmp_path):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    from finetune.OHT.data.common import read_config
+    from test_oht_depth_video import write_gray12_video
+
+    root = tmp_path / "raw"
+    dataset = root / TASKS[0] / "lerobot_dataset"
+    parquet = dataset / "data/chunk-000/episode_000000.parquet"
+    parquet.parent.mkdir(parents=True)
+    source = replay_fixture.root / TASKS[0] / "lerobot_dataset/data/chunk-000/episode_000000.parquet"
+    columns = pq.read_table(source).to_pydict()
+    n = len(columns["timestamp"])
+    video(dataset / "rgb.mp4", n=n, size=64)
+    samples = [np.full((64, 64), 1000 + frame * 20, dtype=np.uint16) for frame in range(n)]
+    for sample in samples:
+        sample[0, :2] = [0, 4095]
+    write_gray12_video(dataset / "depth.mp4", samples)
+    config = read_config(Path(__file__).resolve().parents[1] / "finetune/OHT/configs/dataset.yaml")
+    config["image_size"] = [8, 8]
+    for camera in CAMERAS:
+        columns[f"observation.images.{camera}"] = [dict(Path="rgb.mp4", Timestamp=[i/60]) for i in range(n)]
+        columns[f"observation.depth.{camera}"] = [dict(Path="depth.mp4", Timestamp=[i/60]) for i in range(n)]
+        columns[f"observation.{camera}_extrinsic"] = [[.4, 0, 1.6, 0, 0, 0, 1]] * n
+        config["cameras"][camera]["intrinsics"] = [[32,0,32],[0,32,32],[0,0,1]]
+    pq.write_table(pa.table(columns), parquet)
+    manifest = tmp_path / "audit.json"
+    assert audit(root, manifest)["valid_episodes"] == 1
+    output, previews = tmp_path / "replay", tmp_path / "previews"
+    count = build(root, manifest, config, output, sample_stride=2,
+                  visualize_every=1, visualize_output_dir=previews)
+    data = OHTDataset(output, "train")
+    assert data.validate_all() == count > 0
+    assert len(list(previews.rglob("*.png"))) == count
+    row = data[0]
+    np.testing.assert_allclose(row["wrist_depth"][0, 1:, :], 1.)
+    assert np.isnan(row["wrist_point_cloud"][:, 0, 0]).all()
+    assert np.isfinite(row["wrist_point_cloud"][:, 1:, :]).all()
 
 
 def test_audit_splits_keep_duplicate_trajectories_and_scene_groups():

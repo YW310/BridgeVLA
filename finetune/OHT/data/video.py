@@ -15,7 +15,7 @@ class VideoReader:
         self.before = None
         self.previous_request = -np.inf
 
-    def read(self, timestamp):
+    def read(self, timestamp, *, format="rgb24", expected_format=None):
         timestamp = float(timestamp)
         if not np.isfinite(timestamp) or timestamp < 0:
             raise ValueError("Invalid video timestamp")
@@ -46,7 +46,19 @@ class VideoReader:
                 best, best_error = current, error
         if best is None or best_error > self.tolerance:
             raise ValueError(f"Video timestamp {timestamp} unmatched; error={best_error}")
-        return best.to_ndarray(format="rgb24")
+        if expected_format is not None and best.format.name != expected_format:
+            raise ValueError(
+                f"Expected video pixel format {expected_format}, got {best.format.name}; "
+                "do not convert numeric depth through RGB"
+            )
+        if format is None and best.format.name == "gray12le":
+            # Older PyAV versions cannot export gray12le via to_ndarray().
+            # FFmpeg stores each 12-bit sample in a little-endian uint16 word;
+            # preserve those words and remove row padding without reformatting.
+            plane = best.planes[0]
+            words = np.frombuffer(plane, dtype="<u2").reshape(plane.height, plane.line_size // 2)
+            return words[:best.height, :best.width].copy()
+        return best.to_ndarray() if format is None else best.to_ndarray(format=format)
 
     def close(self):
         self.container.close()
@@ -57,14 +69,14 @@ class EpisodeVideos:
         self.dataset, self.tolerance = dataset, tolerance
         self.readers = {}
 
-    def read(self, reference):
+    def read(self, reference, *, format="rgb24", expected_format=None):
         stamp = np.asarray(reference["Timestamp"], dtype=float).reshape(-1)
         if stamp.size != 1:
             raise ValueError("Each video reference must contain one timestamp")
         path = inside(self.dataset, reference["Path"])
         if path not in self.readers:
             self.readers[path] = VideoReader(path, self.tolerance)
-        return self.readers[path].read(stamp[0])
+        return self.readers[path].read(stamp[0], format=format, expected_format=expected_format)
 
     def close(self):
         for reader in self.readers.values():
@@ -87,7 +99,9 @@ def decode_depth(raw, config):
             raw = raw[..., config["channel"]]
         elif raw.ndim != 2 or not np.issubdtype(raw.dtype, np.integer):
             raise ValueError("scaled_integer requires integer HxW depth")
-        depth = raw.astype(np.float32) * float(config["scale"]) + float(config.get("offset", 0))
+        # Apply the exact configured scale before the final float32 rounding;
+        # float32 multiplication can otherwise push valid 4094 mm above 4.094 m.
+        depth = (raw.astype(np.float64) * float(config["scale"]) + float(config.get("offset", 0))).astype(np.float32)
     else:
         raise ValueError("Unknown depth encoding; inspect depth writer before building replay")
     for value in config.get("invalid_values", []):
@@ -109,7 +123,14 @@ def metric_depth(root, record, columns, camera, frame, videos, config):
         else:
             raise ValueError("Depth sidecars must be .npy/.png/.tif/.tiff")
     else:
-        if config.get("encoding") != "linear_channel":
-            raise ValueError("MP4 depth requires documented linear_channel decoding or metric sidecars")
-        raw = videos.read(columns[f"observation.depth.{camera}"][frame])
+        reference = columns[f"observation.depth.{camera}"][frame]
+        if config.get("encoding") == "scaled_integer":
+            raw = videos.read(reference, format=None, expected_format=config.get("pixel_format"))
+        elif config.get("encoding") == "linear_channel":
+            raw = videos.read(reference)
+        else:
+            raise ValueError(
+                "Video depth requires native scaled_integer grayscale or documented "
+                "linear_channel decoding; metric depth requires floating sidecars"
+            )
     return decode_depth(raw, config)

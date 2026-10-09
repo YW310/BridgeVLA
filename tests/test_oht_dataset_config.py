@@ -41,12 +41,14 @@ def test_default_workspace_keeps_out_of_range_guard(bounds):
         check_bounds(bounds[3:], bounds)
 
 
-def test_default_camera_transforms_are_explicit_identities(dataset_config):
+def test_default_camera_transforms_convert_optical_to_usd(dataset_config):
     assert set(dataset_config["cameras"]) == {
         "global_left", "global_right", "local_left", "local_right", "wrist",
     }
     for camera in dataset_config["cameras"].values():
-        np.testing.assert_array_equal(transform_matrix(camera["optical_to_sensor"]), np.eye(4))
+        np.testing.assert_array_equal(
+            transform_matrix(camera["optical_to_sensor"]), np.diag([1, -1, -1, 1]),
+        )
 
 
 @pytest.mark.parametrize("camera", ["global_left", "global_right", "local_left", "local_right", "wrist"])
@@ -58,10 +60,18 @@ def test_missing_camera_transform_explains_config_fix(dataset_config, camera):
     assert "OpenCV" in str(error.value)
 
 
-def test_default_still_requires_documented_depth_encoding(dataset_config):
+def test_default_depth_contract_and_missing_definitions(dataset_config):
+    validate_data_config(dataset_config)
+    assert dataset_config["depth"] == {
+        "encoding": "scaled_integer", "pixel_format": "gray12le", "scale": .001,
+        "offset": 0., "kind": "ray", "invalid_values": [0, 4095],
+        "path_pattern": None, "limits": [.001, 4.094],
+    }
+    dataset_config["depth"]["encoding"] = None
     with pytest.raises(ValueError, match="depth encoding"):
         validate_data_config(dataset_config)
-    dataset_config["depth"]["encoding"] = "metric"
+    dataset_config["depth"]["encoding"] = "scaled_integer"
+    dataset_config["depth"]["kind"] = None
     with pytest.raises(ValueError, match="depth.kind"):
         validate_data_config(dataset_config)
     dataset_config["depth"]["kind"] = "z"
@@ -69,13 +79,15 @@ def test_default_still_requires_documented_depth_encoding(dataset_config):
 
 
 @pytest.mark.parametrize("camera", ["global_left", "global_right", "local_left", "local_right", "wrist"])
-def test_identity_optical_frame_preserves_world_backprojection(dataset_config, camera):
+def test_usd_camera_frame_preserves_ray_distance(dataset_config, camera):
     dataset_config["image_size"] = [2, 2]
-    dataset_config["depth"]["kind"] = "z"
     dataset_config["cameras"][camera]["intrinsics"] = np.eye(3).tolist()
     obs = camera_observation(
         camera, np.zeros((2, 2, 3), dtype=np.uint8), np.ones((2, 2)),
         [1, 2, 3, 0, 0, 0, 1], dataset_config,
     )
-    np.testing.assert_allclose(obs[f"{camera}_point_cloud"][:, 0, 0], [1, 2, 4])
-    np.testing.assert_allclose(obs[f"{camera}_point_cloud"][:, 1, 1], [2, 3, 4])
+    cloud = obs[f"{camera}_point_cloud"]
+    np.testing.assert_allclose(cloud[:, 0, 0], [1, 2, 2])
+    d = 1 / np.sqrt(3)
+    np.testing.assert_allclose(cloud[:, 1, 1], [1+d, 2-d, 3-d])
+    np.testing.assert_allclose(np.linalg.norm(cloud - np.array([1, 2, 3])[:, None, None], axis=0), 1)
