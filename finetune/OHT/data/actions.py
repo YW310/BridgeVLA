@@ -63,23 +63,93 @@ def world_tcp_poses(columns, link_to_tcp, quaternion_order):
     return np.asarray([tcp_pose(p, q, link_to_tcp) for p, q in zip(positions, orientations)])
 
 
-def keypoints(poses, observed_gripper, instruction_ids, max_translation=0.04,
-              max_rotation_degrees=8, max_frames=30):
+def keypoint_options(config=None):
+    """Validate the extraction mode; missing method preserves legacy configs."""
+    if config is not None and not isinstance(config, dict):
+        raise ValueError("keypoints must be a configuration mapping")
+    config = config or {}
+    method = config.get("method", "geometric")
+    if method == "bridgevla":
+        defaults = dict(method=method, stopping_translation_speed=.01,
+                        stopping_rotation_speed_degrees=5.)
+    elif method == "geometric":
+        defaults = dict(method=method, max_translation=.04,
+                        max_rotation_degrees=8., max_frames=30)
+    else:
+        raise ValueError("keypoints.method must be bridgevla or geometric")
+    unknown = set(config) - set(defaults)
+    if unknown:
+        raise ValueError(f"Unsupported keypoints options for {method}: {sorted(unknown)}")
+    options = {**defaults, **config}
+    for key in set(defaults) - {"method"}:
+        try:
+            value = float(options[key])
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"keypoints.{key} must be finite and positive") from error
+        if not np.isfinite(value) or value <= 0 or isinstance(options[key], bool):
+            raise ValueError(f"keypoints.{key} must be finite and positive")
+        if key == "max_frames" and value != int(value):
+            raise ValueError("keypoints.max_frames must be a positive integer")
+        options[key] = int(value) if key == "max_frames" else value
+    return options
+
+
+def keypoints(poses, observed_gripper, instruction_ids=None, *, timestamps=None, **config):
+    """Future action endpoints, extracted before observation subsampling.
+
+    bridgevla: gripper changes / stops / terminal, with the original four-frame
+    stopped buffer and adjacent-terminal pruning. Stops use both neighbouring
+    TCP motion intervals (real dt), not unverified OHT joint velocities. The
+    gripper stability window is local; never wrap around the episode start.
+    geometric: original OHT instruction / displacement / rotation / frame gaps.
+    """
+    options = keypoint_options(config)
     poses = array(poses, name="TCP poses")
+    if poses.ndim != 2 or poses.shape[1] != 7:
+        raise ValueError("Expected TCP poses[N,7]")
     n = len(poses)
-    if n < 2 or len(observed_gripper) != n or len(instruction_ids) != n:
+    if n < 2:
         raise ValueError("An episode requires at least two aligned frames")
-    if max_translation <= 0 or max_rotation_degrees <= 0 or max_frames < 1:
-        raise ValueError("Keypoint thresholds must be positive")
+    observed_gripper = array(observed_gripper, (n,), "observed binary gripper")
+    if not np.isin(observed_gripper, [0, 1]).all():
+        raise ValueError("Expected observed binary gripper in {0,1}")
+    if timestamps is not None:
+        timestamps = array(timestamps, (n,), "keypoint timestamps")
+        if np.any(np.diff(timestamps) <= 0):
+            raise ValueError("Keypoint timestamps must be strictly increasing")
+    if options["method"] == "bridgevla":
+        if timestamps is None:
+            raise ValueError("BridgeVLA keypoints require actual timestamps")
+        dt = np.diff(timestamps)
+        translation_speed = np.linalg.norm(np.diff(poses[:, :3], axis=0), axis=1) / dt
+        rotations = Rotation.from_quat(quaternion(poses[:, 3:]))
+        rotation_speed = np.rad2deg((rotations[:-1].inv() * rotations[1:]).magnitude()) / dt
+        still = ((translation_speed <= options["stopping_translation_speed"]) &
+                 (rotation_speed <= options["stopping_rotation_speed_degrees"]))
+        result, stopped_buffer = [], 0
+        for i in range(n):
+            stopped = (2 <= i < n - 2 and stopped_buffer <= 0 and
+                       np.all(observed_gripper[i - 2:i + 2] == observed_gripper[i]) and
+                       still[i - 1] and still[i])
+            stopped_buffer = 4 if stopped else stopped_buffer - 1
+            if i and (observed_gripper[i] != observed_gripper[i - 1] or i == n - 1 or stopped):
+                result.append(i)
+        if len(result) > 1 and result[-2] == result[-1] - 1:
+            result.pop(-2)
+        return result
+
+    instruction_ids = np.zeros(n) if instruction_ids is None else np.asarray(instruction_ids)
+    if instruction_ids.shape != (n,):
+        raise ValueError("Expected aligned instruction IDs[N]")
     boundaries = {n - 1}
     for i in range(1, n):
         if observed_gripper[i] != observed_gripper[i - 1] or instruction_ids[i] != instruction_ids[i - 1]:
             boundaries.update((max(1, i - 1), i))
     result, last = [], 0
     for i in range(1, n):
-        moved = np.linalg.norm(poses[i, :3] - poses[last, :3]) >= max_translation
-        rotated = rotation_error(poses[last, 3:], poses[i, 3:]) >= np.deg2rad(max_rotation_degrees)
-        if i in boundaries or moved or rotated or i - last >= max_frames:
+        moved = np.linalg.norm(poses[i, :3] - poses[last, :3]) >= options["max_translation"]
+        rotated = rotation_error(poses[last, 3:], poses[i, 3:]) >= np.deg2rad(options["max_rotation_degrees"])
+        if i in boundaries or moved or rotated or i - last >= options["max_frames"]:
             result.append(i)
             last = i
     return result

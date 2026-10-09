@@ -46,9 +46,12 @@ depth:
   path_pattern: null   # null: use Parquet depth Path/Timestamp; sidecars: root-relative pattern
   limits: [0.001, 10.0]
 keypoints:
-  max_translation: 0.04
-  max_rotation_degrees: 8
-  max_frames: 30
+  # BridgeVLA events: measured gripper changes / TCP stops / terminal.
+  # No default instruction boundaries or periodic motion subdivisions.
+  method: bridgevla
+  # OHT-specific initial thresholds, NOT RLBench joint-velocity units.
+  stopping_translation_speed: 0.01       # metres / second, actual timestamps
+  stopping_rotation_speed_degrees: 5.0  # degrees / second
 cameras:
   # Recorded camera poses use USD/OpenGL axes. Transform OpenCV optical points
   # into that sensor frame before world projection: T_world_optical = T_world_usd

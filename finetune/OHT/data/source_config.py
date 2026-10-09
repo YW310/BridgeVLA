@@ -5,6 +5,7 @@ from pathlib import Path
 import re
 import numpy as np
 from .common import inside, file_digest
+from .actions import keypoint_options
 from .observation import validate_data_config
 from .video import validate_quantization
 
@@ -112,6 +113,9 @@ def resolve_dataset_config(dataset, config):
             if spec.get("pixel_format") != "gray12le":
                 raise ValueError(f"{camera}: quantized depth requires native gray12le")
             calibration["depth"] = spec
+    # Persist the exact extraction mode/defaults, including legacy geometric
+    # mode, so a future config change cannot reinterpret buffer provenance.
+    result["keypoints"] = keypoint_options(result.get("keypoints"))
     validate_data_config(result, resolved=True)
     return result, sources
 

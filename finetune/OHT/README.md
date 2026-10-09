@@ -110,7 +110,9 @@ python tools/validate_oht_replay.py --replay /data/oht/replay-source-v2
 - 米制 RGB-D → optical XYZ → world XYZ；无效点用 NaN，进入 Agent 时按边界过滤。
 - 用未来关键点的实测 world TCP 位姿与实测二值夹爪状态生成全部标签；**原始 action 的所有分量均不参与标签生成**。网络夹爪输出为 0 关、1 开。
 - 不照搬参考转换器“仅按 EE 平移删静止帧”的采样，以免删掉原地夹爪/旋转动作。
-- 关键点包含夹爪/指令边界前后帧、位移/转角/帧距阈值与终帧；在线不输入 instruction_id。
+- 默认 `keypoints.method: bridgevla`：实测夹爪开闭变化、TCP 停稳、终帧，保留原版 4 帧 stopped buffer 与终帧相邻点去重；不默认按指令边界或固定运动跨度分段。
+- OHT 停稳用相邻 TCP 平移/旋转变化除以真实时间间隔，两侧均低于阈值且夹爪稳定才触发；默认 `0.01 m/s`、`5°/s` 是待真实轨迹验证的初值，不是 RLBench 的关节速度阈值。离线提取可读取邻帧，不给策略增加未来输入。
+- `--sample-stride` 只控制输入观测采样；每个观测仍监督严格晚于它的下一关键帧。旧配置未指定 method 时保留原 `geometric` 行为（指令/位移/转角/帧距）；切换需使用新版 YAML 和新 replay 输出目录，原始数据/audit 可复用。
 - 语言为统一任务目标，low_dim 为当前测量夹爪和两指兼容特征。collision 标签仅占位，损失权重固定 0。
 - contract.json、samples.jsonl、观测 NPZ、complete.json 分开存储，校验哈希、未来目标关系及分组划分。
 
@@ -319,12 +321,12 @@ case JSONL 每行含唯一 id、task、seed；id 每次运行需使用新 episod
 ## 9. 本地验证
 
 ~~~bash
-python -m pytest -q tests/test_oht_audit.py tests/test_oht_dataset_config.py tests/test_oht_depth_video.py tests/test_oht_migration.py tests/test_oht_visualization.py tests/test_oht_source_config.py
+python -m pytest -q tests/test_oht_keypoints.py tests/test_oht_audit.py tests/test_oht_dataset_config.py tests/test_oht_depth_video.py tests/test_oht_migration.py tests/test_oht_visualization.py tests/test_oht_source_config.py
 ~~~
 
 覆盖 12 个合成 episode → 60 条 transitions、五相机、视频 PTS、米制 depth、划分检查、教师/预测缓存、无 GT 推理隔离、真实 Agent 梯度累积与零碰撞损失、HTTP 协议、闭环失败计数和续训采样。backbone/render 使用 CPU 小替身，未验证完整 PaliGemma/point-renderer GPU 前向。另运行现有角色预测、跨尺度继承、辅助损失、前向与优化器回归测试。
 
-2026-10-09：99 项 OHT 测试通过（NumPy 1.26.4 / PyArrow 19.0.1）。覆盖 metadata K/逐相机量化/端点与 hash、EE 顺序、实测夹爪因果处理、raw action 七维扰动不影响 replay、v1 拒绝，以及原生 gray12 视频→replay→teacher 预览、诊断字段不进入 batch。
+2026-10-09：127 项 OHT 测试分批通过（NumPy 1.26.4 / PyArrow 19.0.1）。覆盖 BridgeVLA 事件关键帧/原版同等停稳信号对照、实际 dt 与纯旋转、旧几何模式、严格未来目标、metadata K/逐相机量化/端点与 hash、EE 顺序、实测夹爪因果处理、raw action 七维扰动不影响 replay、v1 拒绝，以及原生 gray12 视频→replay→teacher 预览、诊断字段不进入 batch。本机合跑出现视频库内存分配失败，限制数值库线程并逐文件分批复测通过。
 
 另已直接抽取提供转换器的纯数值函数，对照 linear/log 各 4096 个深度码值；最大差约 0.504 mm（参考 PNG 毫米舍入及浮点差异），相机变换/K 缩放和原始夹爪端点归一化通过对照。该对照不表示参考链路二次归一化后的夹爪标签或完整点云流程完全一致。
 

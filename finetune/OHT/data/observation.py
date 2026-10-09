@@ -33,8 +33,9 @@ def validate_data_config(config, *, resolved=False):
         endpoints = array([gripper.get("open"), gripper.get("close")], (2,), "gripper open/close")
         if abs(endpoints[1] - endpoints[0]) < 1e-8:
             raise ValueError("Gripper open/close endpoints must differ")
-    from .actions import gripper_step
+    from .actions import gripper_step, keypoint_options
     gripper_step(.5, config=gripper)
+    keypoint_options(config.get("keypoints"))
     cameras = config.get("cameras", {})
     if not cameras:
         raise ValueError("Camera calibration is required")

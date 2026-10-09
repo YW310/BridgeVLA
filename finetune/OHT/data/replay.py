@@ -51,7 +51,8 @@ def build(root, manifest_path, config, output, sample_stride=10, *,
         validate_episode(columns, record)
         measured, observed_gripper = gripper_states(columns["observation.state"], config["gripper"])
         poses = world_tcp_poses(columns, config["link_to_tcp"], config["ee_quaternion_order"])
-        keys = keypoints(poses, observed_gripper, columns["instruction_id"], **config.get("keypoints", {}))
+        keys = keypoints(poses, observed_gripper, columns["instruction_id"],
+                         timestamps=columns["timestamp"], **config["keypoints"])
         frames = sorted(set(range(0, len(poses) - 1, sample_stride)) | {0} | set(keys[:-1]))
         dataset = inside(root, record["dataset"])
         videos = EpisodeVideos(dataset, config.get("video_timestamp_tolerance", 1/120 + .0001))

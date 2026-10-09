@@ -44,6 +44,12 @@ def test_default_workspace_keeps_out_of_range_guard(bounds):
         check_bounds(bounds[3:], bounds)
 
 
+def test_default_keypoints_use_bridgevla_events_not_dense_motion_subdivisions(dataset_config):
+    validate_data_config(dataset_config)
+    assert dataset_config["keypoints"] == dict(method="bridgevla", stopping_translation_speed=.01,
+                                               stopping_rotation_speed_degrees=5.)
+
+
 def test_default_camera_transforms_convert_optical_to_usd(dataset_config):
     assert set(dataset_config["cameras"]) == {
         "global_left", "global_right", "local_left", "local_right", "wrist",
