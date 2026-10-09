@@ -71,7 +71,9 @@ python tools/build_oht_replay.py \
   --root /common-data-32t/data/robot_data/oht_curobo_pd_v423 \
   --manifest /data/oht/audit-seed0.json \
   --config /data/oht/dataset-calibrated.yaml \
-  --output /data/oht/replay-v1 --sample-stride 10
+  --output /data/oht/replay-v1 --sample-stride 10 \
+  --visualize-every 100 \
+  --visualize-output-dir /data/oht/previews/replay-v1
 
 python tools/validate_oht_replay.py --replay /data/oht/replay-v1
 ~~~
@@ -87,6 +89,14 @@ python tools/validate_oht_replay.py --replay /data/oht/replay-v1
 - contract.json、samples.jsonl、观测 NPZ、complete.json 分开存储，校验哈希、未来目标关系及分组划分。
 
 缓存构建使用新目录；失败目录没有有效 complete 标记，不能当作完成缓存。工具拒绝覆盖已有输出。建议先在保留相同目录结构的小样本副本上完成审计/构建；缓存需要额外磁盘空间，应根据实际样本率估算。
+
+### 生成时可视化
+
+`--visualize-every N` 按每个 episode **生成的样本数**保存 PNG，包含第一个样本，随后每隔 N 个；不是按原始视频帧计数。`1` 显示每个生成样本，默认 `0` 关闭。可省略 `--visualize-output-dir`，此时保存到 `<output>/visualizations/<task>/<episode六位>/<frame六位>.png`。预览文件存在时拒绝覆盖。
+
+每张图包含缓存分辨率的各相机 RGB、米制 depth、XY/XZ/YZ 彩色点云及当前/未来 TCP：青色为当前 TCP，品红色为下一关键点动作目标。depth 蓝色近、红色远，标注每相机当前有效深度范围（米），黑色表示无效；不同图的深度颜色范围可能不同。三视图固定使用 `scene_bounds` 世界坐标范围，显示点最多均匀抽取 20,000 个，属于 CPU 诊断投影，不是模型的虚拟 renderer。
+
+PNG 单独输出，不新增 observation/label 字段，也不改变 buffer contract 或训练样本。无需模型、CUDA 或图形桌面；仅使用数据环境已有的 NumPy/Pillow。基础 buffer 没有 T/R 标注，角色预览在下一节的 teacher 构建时生成。
 
 ## 4. Baseline 训练
 
@@ -144,7 +154,8 @@ Reference=NULL **仅示范格式**，实际任务必须逐阶段定义正确角�
 ~~~bash
 python tools/build_oht_role_teacher.py \
   --replay /data/oht/replay-v1 --annotations /data/oht/annotations.jsonl \
-  --output /data/oht/teachers-v1 --point-count 512
+  --output /data/oht/teachers-v1 --point-count 512 \
+  --visualize-every 100
 
 python tools/validate_oht_replay.py \
   --replay /data/oht/replay-v1 --mode role_queries \
@@ -156,6 +167,8 @@ python -m finetune.OHT.train \
   --output /data/oht/runs/role-queries-s0 \
   --init-checkpoint /data/oht/runs/baseline-s0/model_last.pth
 ~~~
+
+Teacher 使用相同的可视化参数，默认输出到 `<teacher-output>/visualizations/`。Target 为绿色、Reference 为蓝色、重叠为黄色；标注 mask 区域显示 `30% 原始 RGB + 70% 角色颜色`，背景保留 RGB。`site_region` 显示区域点轮廓，不能当作已验证可见的 mask。图中同时列出角色的 source、present、known 与几何有效性，NULL/unknown 不伪造点。旧 replay 未缓存当前 TCP，teacher 预览明确显示 `not cached`，未来 TCP 仍来自动作标签。
 
 上例表示从已训练 baseline 继续训练的辅助实验，有额外训练预算。公平对照应让 baseline 从相同初始 checkpoint 继续相同优化步数，或两者均从相同预训练初始化各训同样预算。正式实验用三个训练 seeds，不应把继续训练收益全部归因于物体辅助。
 

@@ -549,9 +549,9 @@ IsaacLab client（现有环境）
 | 模块 | 实际入口 | 完成内容 |
 | --- | --- | --- |
 | 原始数据审计 | tools/audit_oht_dataset.py | 全列 Parquet、四任务唯一身份、轨迹/场景分组、质量报告和固定划分 |
-| 观测/动作缓存 | tools/build_oht_replay.py | PTS 对齐、显式米制 depth、逐帧外参、world XYZ/TCP、未来关键点及夹爪标签 |
+| 观测/动作缓存 | tools/build_oht_replay.py | PTS 对齐、显式米制 depth、逐帧外参、world XYZ/TCP、未来关键点及夹爪标签；可按间隔保存 RGB-D/三视图/TCP 诊断 PNG |
 | 缓存预检 | tools/validate_oht_replay.py | contract/文件哈希、split 隔离、观测 shape、教师/预测命名空间及覆盖 |
-| 角色教师 | tools/build_oht_role_teacher.py | 显式可见表面 mask 或 site_region，区分 present/known/valid/NULL |
+| 角色教师 | tools/build_oht_role_teacher.py | 显式可见表面 mask 或 site_region，区分 present/known/valid/NULL；可保存 T/R 叠加预览 |
 | 外部预测缓存 | tools/predict_oht_objects.py | module:factory 插件、当前观测白名单、provenance、逐 episode reset |
 | 三种训练模式 | finetune/OHT/train.py 与 configs | baseline / role_queries / predicted_external，任务均匀采样、累积、DDP、checkpoint/严格续训 |
 | 推理服务 | finetune/OHT/server.py | 版本化 absolute world TCP/xyzw 协议、typed tensors、episode 重置与过期请求拒绝 |
@@ -560,6 +560,8 @@ IsaacLab client（现有环境）
 | 通用 Agent 解耦 | bridgevla/data/observations.py 等 | 通用预处理、仿真/数据增强依赖延迟加载、OHT 碰撞损失置零，其他默认权重保留 1 |
 
 验证使用 12 个合成 OHT episode、真实 Parquet/MP4/米制深度，生成 60 条 transitions。覆盖 baseline batch、教师与预测缓存、无 GT 推理隔离、真实 RVTAgent 梯度累积和优化器更新、HTTP 本地收发及闭环失败计数。渲染器/VLM 用轻量 CPU 替身，完整模型及真实仿真不在此次验证范围。现有 role queries、跨尺度继承、角色特征保留和辅助损失测试亦已回归。
+
+构建 buffer/teacher 时可用 `--visualize-every N`，默认关闭，`1` 覆盖每个生成样本；可指定 `--visualize-output-dir`。PNG 与缓存数据分开，三视图为 CPU 诊断投影，site 点投影不代表可见性已验证。参数、颜色和输出路径统一见 [OHT 运行说明](../../finetune/OHT/README.md#生成时可视化)。
 
 尚未完成且需要现场信息的工作：
 
