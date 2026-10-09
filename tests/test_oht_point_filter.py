@@ -21,11 +21,12 @@ from finetune.OHT.runtime.predicted_wrapper import PredictedObjectWrapper
 from tests.test_oht_migration import FakeAgent, replay_fixture
 
 
-def test_default_filter_is_off_and_legacy_configs_are_supported():
+def test_shipped_roi_is_enabled_but_legacy_configs_remain_unfiltered():
     path = Path(__file__).resolve().parents[1] / "finetune/OHT/configs/dataset.yaml"
     config = yaml.safe_load(path.read_text(encoding="utf-8"))
-    assert config["point_cloud_filter"] == point_filter_options() == dict(
-        enabled=False, keep_bounds=None, exclude_boxes=[])
+    assert config["point_cloud_filter"] == dict(
+        enabled=True, keep_bounds=[-.3, -.8, .4, 1.2, .8, 1.9], exclude_boxes=[])
+    assert point_filter_options() == dict(enabled=False, keep_bounds=None, exclude_boxes=[])
     validate_data_config(config)
     config.pop("point_cloud_filter")
     validate_data_config(config)

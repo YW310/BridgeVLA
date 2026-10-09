@@ -56,19 +56,20 @@ python tools/audit_oht_dataset.py \
 
 `scene_bounds` 默认设为 `[-0.5, -1.0, 0.3, 1.5, 1.0, 2.0]`，顺序 xmin,ymin,zmin,xmax,ymax,zmax，单位米；覆盖 v423 说明中的物体与路点示例并留余量。这是初始策略工作区，不是全量统计结果；训练前检查实际 EE/物体覆盖与动作越界，越界时调整配置，不静默裁剪 GT。audit 的 EE 范围仅是参考，不能替代完整物体范围。
 
-手工去除墙壁等背景可配置 `point_cloud_filter`，默认关闭，不改变动作空间。以下**仅演示排除世界坐标 x∈[1.2,1.5) 的一块区域，不是实际墙壁标定值**：
+手工去除墙壁等背景可配置 `point_cloud_filter`，不改变动作空间。仓库 YAML 已启用以下**经验保留区**，覆盖已记录的物体/TCP 示例并留余量，不是全量验证过的安全范围或实测墙壁边界：
 
 ~~~yaml
 point_cloud_filter:
   enabled: true
-  keep_bounds: null
-  exclude_boxes:
-    - [1.2, -1.0, 0.3, 1.5, 1.0, 2.0]
+  keep_bounds: [-0.3, -0.8, 0.4, 1.2, 0.8, 1.9]
+  exclude_boxes: []
 ~~~
 
-`keep_bounds` 可填一个保留框；`null` 不额外裁剪。`exclude_boxes` 可填多个排除框，点落入任意一个即移除。均为 world 米制 `[xmin,ymin,zmin,xmax,ymax,zmax]`，下界包含、上界不包含；范围必须由实际场景设定，保留桌面/夹具与 Target/Reference。`point_filter.point_cloud_mask()` 在投影前筛选 XYZ，被排除点记为 NaN，保留 RGB-D 像素对应关系；原始 RGB、米制 depth、TCP/动作/角色 presence 标签不改。原始相机图仍显示墙壁，只有正交点云图去除它。
+先预览四个任务的抓取、放置和最高抬升时刻，确认物体、夹爪及 Reference 未被误删，再用于正式训练；不能保证这个 ROI 去掉所有墙壁。`keep_bounds: null` 不额外裁剪，`enabled: false` 关闭手工过滤。`exclude_boxes` 可填多个排除框，点落入任意一个即移除；未确认墙壁位置前保持空列表。均为 world 米制 `[xmin,ymin,zmin,xmax,ymax,zmax]`，下界包含、上界不包含。`point_filter.point_cloud_mask()` 在投影前筛选 XYZ，被排除点记为 NaN，保留 RGB-D 像素对应关系；原始 RGB、米制 depth、TCP/动作/角色 presence 标签不改。原始相机图仍显示墙壁，只有正交点云图去除它。
 
 `camera_observation()` 将过滤后的 XYZ 写入 replay；训练沿用这些点进入 coarse/refine。在线 `Policy.act()` 在外部 predictor 和 agent 前使用相同过滤，CPU 全局/GT 局部预览也共用规则。单相机过滤为空允许；全场无工作区点则报错，不退回未过滤输入。可见面 teacher 若因此没有有效点，保留角色 present，仅将几何标为不可用，不改成 NULL。
+
+二阶段的局部缩放/坐标变换没有改，也不在局部坐标中再次套用世界 ROI；但它继承过滤后的点云，被删的表面无法恢复。过滤还可能改变 coarse 预测及后续裁剪中心。当前不是“仅 coarse 过滤、refine 读原始点云”的模式，必须给操作局部范围留余量。
 
 过滤配置写入各 data profile 和 replay/checkpoint 契约；旧配置缺少此块仍关闭。修改参数需在新目录重建 replay 及 teacher/预测缓存，再进行匹配的训练/推理；原始数据与 audit 可复用。只修改 YAML 不会改变旧缓存或已加载 checkpoint，不要手改 contract 来绕过一致性检查。
 
@@ -343,7 +344,7 @@ python -m pytest -q tests/test_oht_point_filter.py tests/test_oht_keypoints.py t
 
 覆盖 12 个合成 episode → 60 条 transitions、五相机、视频 PTS、米制 depth、划分检查、教师/预测缓存、无 GT 推理隔离、真实 Agent 梯度累积与零碰撞损失、HTTP 协议、闭环失败计数和续训采样。backbone/render 使用 CPU 小替身，未验证完整 PaliGemma/point-renderer GPU 前向。另运行现有角色预测、跨尺度继承、辅助损失、前向与优化器回归测试。
 
-2026-10-09：173 项 OHT 测试分批通过（NumPy 1.26.4 / PyArrow 19.0.1）。覆盖手工 XYZ 保留/排除框、边界与空场景、训练/在线/预览一致性及 RGB/GT 不变、gripper-only 关键帧、无人工终帧/尾段、无事件跳过/空缓存拒绝、BridgeVLA 事件/原版同等停稳信号对照、实际 dt 与纯旋转、旧几何模式、严格未来目标、metadata K/逐相机量化/端点与 hash、EE 顺序、实测夹爪因果处理、raw action 七维扰动不影响 replay、v1 拒绝，以及原生 gray12 视频→replay→teacher 预览、诊断字段不进入 batch。先前合跑出现视频库内存分配失败，本轮限制数值库线程并分批验证。
+2026-10-09：174 项 OHT 测试分批通过（NumPy 1.26.4 / PyArrow 19.0.1）。覆盖已启用经验 ROI 的文档坐标示例保留、手工 XYZ 保留/排除框、边界与空场景、训练/在线/预览一致性及 RGB/GT 不变、gripper-only 关键帧、无人工终帧/尾段、无事件跳过/空缓存拒绝、BridgeVLA 事件/原版同等停稳信号对照、实际 dt 与纯旋转、旧几何模式、严格未来目标、metadata K/逐相机量化/端点与 hash、EE 顺序、实测夹爪因果处理、raw action 七维扰动不影响 replay、v1 拒绝，以及原生 gray12 视频→replay→teacher 预览、诊断字段不进入 batch。先前合跑出现视频库内存分配失败，本轮限制数值库线程并分批验证。
 
 另已直接抽取提供转换器的纯数值函数，对照 linear/log 各 4096 个深度码值；最大差约 0.504 mm（参考 PNG 毫米舍入及浮点差异），相机变换/K 缩放和原始夹爪端点归一化通过对照。该对照不表示参考链路二次归一化后的夹爪标签或完整点云流程完全一致。
 

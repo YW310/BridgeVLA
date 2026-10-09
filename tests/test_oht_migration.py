@@ -130,6 +130,7 @@ def test_native_gray12_parquet_to_replay_with_previews(replay_fixture, tmp_path)
     import pyarrow as pa
     import pyarrow.parquet as pq
     from finetune.OHT.data.common import read_config
+    from finetune.OHT.data.point_filter import point_cloud_mask
     from test_oht_depth_video import write_gray12_video
 
     root = tmp_path / "raw"
@@ -168,7 +169,13 @@ def test_native_gray12_parquet_to_replay_with_previews(replay_fixture, tmp_path)
     row = data[0]
     np.testing.assert_allclose(row["wrist_depth"][0, 1:, :], 1.)
     assert np.isnan(row["wrist_point_cloud"][:, 0, 0]).all()
-    assert np.isfinite(row["wrist_point_cloud"][:, 1:, :]).all()
+    raw_points = backproject(row["wrist_depth"][0], row["wrist_camera_intrinsics"],
+                             row["wrist_camera_extrinsics"], kind="ray", limits=config["depth"]["limits"])
+    expected_valid = point_cloud_mask(raw_points, config["point_cloud_filter"])
+    np.testing.assert_array_equal(np.isfinite(row["wrist_point_cloud"]).all(axis=0), expected_valid)
+    np.testing.assert_allclose(row["wrist_point_cloud"].transpose(1, 2, 0)[expected_valid],
+                               raw_points[expected_valid], atol=1e-6)
+    assert expected_valid.any() and not expected_valid[1:].all()
 
 
 def test_missing_camera_order_fails_before_build_creates_output(replay_fixture, tmp_path):

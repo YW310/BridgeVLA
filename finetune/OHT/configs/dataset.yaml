@@ -8,10 +8,11 @@ scene_bounds: [-0.5, -1.0, 0.3, 1.5, 1.0, 2.0]
 # Optional manual background removal BEFORE global/refine projection.
 # World metres; each box: [xmin,ymin,zmin,xmax,ymax,zmax], lower <= XYZ < upper.
 # Does not change scene_bounds, action GT, original RGB or measured depth.
-# Choose boxes from actual scene geometry; do not exclude objects/fixtures.
+# Provisional ROI around documented examples, NOT full-dataset verified bounds.
+# Check all four tasks (grasp/place/high lift) before training; preserve fixtures.
 point_cloud_filter:
-  enabled: false
-  keep_bounds: null   # null: no extra ROI; otherwise keep only points in this box
+  enabled: true
+  keep_bounds: [-0.3, -0.8, 0.4, 1.2, 0.8, 1.9]  # null: no extra ROI
   exclude_boxes: []  # remove points inside ANY listed box (e.g. walls)
 # Changing this block requires a new replay/teacher; raw data and audit are reusable.
 # observation.ee_pos_world already includes the controller's gripper->TCP offset.

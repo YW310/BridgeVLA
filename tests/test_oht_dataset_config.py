@@ -9,6 +9,7 @@ from scipy.spatial.transform import Rotation
 from finetune.OHT.data.actions import world_tcp_poses
 from finetune.OHT.data.geometry import check_bounds, transform_matrix
 from finetune.OHT.data.observation import camera_observation, validate_data_config
+from finetune.OHT.data.point_filter import point_cloud_mask
 from finetune.OHT.data.visualization import project_world
 
 
@@ -25,18 +26,26 @@ def bounds(dataset_config):
     return dataset_config["scene_bounds"]
 
 
-def test_default_workspace_contains_documented_v423_examples(bounds):
+@pytest.fixture
+def documented_positions():
     # Data description sections 8.4 (objects) and 10.2 (waypoints).
-    points = np.array([
+    return np.array([
         [.283, .480, .681], [.780, .183, 1.388],
         [.374, -.548, .936], [.779, -.182, 1.388],
         [.466, .334, 1.540], [.374, -.548, 1.039],
         [.374, -.548, 1.005], [.712, -.183, 1.388],
         [.507, -.183, 1.388],
     ])
-    check_bounds(points, bounds)
-    assert np.all(points > np.asarray(bounds[:3]))
-    assert np.all(points < np.asarray(bounds[3:]))
+
+
+def test_default_workspace_contains_documented_v423_examples(bounds, documented_positions):
+    check_bounds(documented_positions, bounds)
+    assert np.all(documented_positions > np.asarray(bounds[:3]))
+    assert np.all(documented_positions < np.asarray(bounds[3:]))
+
+
+def test_provisional_roi_preserves_documented_coordinate_examples(dataset_config, documented_positions):
+    assert point_cloud_mask(documented_positions, dataset_config["point_cloud_filter"]).all()
 
 
 def test_default_workspace_keeps_out_of_range_guard(bounds):
@@ -89,6 +98,8 @@ def test_default_depth_contract_and_missing_definitions(dataset_config):
 
 @pytest.mark.parametrize("camera", ["global_left", "global_right", "local_left", "local_right", "wrist"])
 def test_usd_camera_frame_preserves_ray_distance(dataset_config, camera):
+    # Synthetic camera at (1,2,3) lies outside the provisional OHT task ROI.
+    dataset_config["point_cloud_filter"]["enabled"] = False
     dataset_config["image_size"] = [2, 2]
     dataset_config["cameras"][camera]["intrinsics"] = np.eye(3).tolist()
     obs = camera_observation(
@@ -117,6 +128,8 @@ def test_camera_order_must_be_explicit(dataset_config, order):
 
 @pytest.mark.parametrize("order", ["wxyz", "xyzw"])
 def test_raw_camera_order_to_world_xyz_and_provider_projection(dataset_config, order):
+    # Isolate camera math; these arbitrary world points are not OHT fixtures.
+    dataset_config["point_cloud_filter"]["enabled"] = False
     dataset_config["camera_quaternion_order"] = order
     dataset_config["image_size"] = [8, 8]
     K = np.array([[4., 0, 4], [0, 4., 4], [0, 0, 1]])
