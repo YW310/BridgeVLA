@@ -17,6 +17,16 @@ A 3D VLA framework that aligns the input and output within a shared 2D space in 
 As illustrated in the following figure, BridgeVLA employs a dual-phase training recipe. During pre-training, it is trained to predict 2D heatmaps on object detection datasets. During fine-tuning, point clouds are projected into multiple 2D images as inputs to the VLM backbone. The model is trained to predict 2D heatmaps for estimating the translational action and other action components. **This design aligns the input and output within a shared 2D space in both pre-training and fine-tuning.**
 ![](assets/network.png)
 
+## Current Status
+
+| Status | Module | Current Progress |
+| --- | --- | --- |
+| Completed | Data Annotation for OCRR in Simulated and Zero-Shot Scenarios | **Simulated:** generate Target/Reference object-role annotations and 3D geometric supervision from simulator semantics, masks, and point clouds.<br>**Zero-shot:** use SAM3 for object proposals/segmentation and Qwen3 for semantic Target/Reference role assignment. |
+| Completed | OCRR Implementation | Implement Target/Reference/NULL object-centric representations, relation modeling, role supervision, and cross-scale role conditioning. |
+| Completed | Object-Centric VLA | Integrate object-centric representations and relational features into the BridgeVLA training and inference paths for action prediction. |
+| In Progress | Evaluation on OHT Tasks | The first OHT v423 data contract, five-camera RGB-D decoding, world-frame action conversion, replay construction, baseline/role-query training entry points, visualization, inference service, and evaluation interfaces are implemented. Full-dataset geometry validation, role annotation, CUDA training, and IsaacLab closed-loop evaluation are in progress. |
+| Next | Object-Centric WAM | Jointly predict the next relational key state, key action, and reconstructed scene point cloud for relation-aware world-action modeling. |
+
 ## 快速开始
 
 以下命令面向 Linux / Bash。安装脚本中的路径、模拟器环境变量，以及训练配置中的数据和权重路径，需要先按机器修改；不同 benchmark 建议使用独立 Conda 环境，并提前取得 PaliGemma 权重访问权限。
