@@ -178,6 +178,93 @@ def test_native_gray12_parquet_to_replay_with_previews(replay_fixture, tmp_path)
     assert expected_valid.any() and not expected_valid[1:].all()
 
 
+def test_frame_index_replay_removes_rotation_ghost_from_shifted_video_references(replay_fixture, tmp_path):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    from tests.test_oht_depth_video import write_gray12_video
+
+    root = tmp_path / "raw"
+    dataset = root / TASKS[0] / "lerobot_dataset"
+    parquet = dataset / "data/chunk-000/episode_000000.parquet"
+    parquet.parent.mkdir(parents=True)
+    source = replay_fixture.root / TASKS[0] / "lerobot_dataset/data/chunk-000/episode_000000.parquet"
+    columns = pq.read_table(source).to_pydict()
+    n = len(columns["timestamp"])
+    video(dataset / "rgb.mp4", n=n, size=64)
+    config = copy.deepcopy(replay_fixture.config)
+    config.update(video_alignment="frame_index", camera_extrinsic_direction="camera_to_world")
+    config["cameras"] = {camera: dict(intrinsics=[[80, 0, 32], [0, 80, 32], [0, 0, 1]],
+                                     optical_to_sensor=np.diag([1, -1, -1, 1]).tolist())
+                         for camera in ("global_left", "wrist")}
+    config["depth"] = dict(encoding="scaled_integer", pixel_format="gray12le", scale=.001,
+                           kind="z", invalid_values=[0], limits=[.001, 4.094])
+    for camera in CAMERAS:
+        columns[f"observation.images.{camera}"] = [dict(Path="rgb.mp4", Timestamp=[i / 60]) for i in range(n)]
+        columns[f"observation.depth.{camera}"] = columns[f"observation.images.{camera}"]
+    v, u = np.indices((64, 64))
+    rays = np.stack(((u - 32) / 80, (v - 32) / 80, np.ones_like(u)), axis=-1)
+    for camera in config["cameras"]:
+        samples, poses = [], []
+        for frame in range(n):
+            sensor_rotation = Rotation.from_euler("xyz", [6 * frame, 3 * frame, 4 * frame] if camera == "wrist" else [0, 0, 0], degrees=True)
+            origin = np.array([.15 if camera == "wrist" else 0, 0, 1.4])
+            optical_R = sensor_rotation.as_matrix() @ np.diag([1, -1, -1])
+            depth = (.4 - origin[2]) / (rays @ optical_R.T)[..., 2]
+            assert (depth > 0).all() and (depth < 4.094).all()
+            samples.append(np.rint(depth * 1000).astype(np.uint16))
+            poses.append(np.r_[origin, sensor_rotation.as_quat()[[3, 0, 1, 2]]].tolist())
+        write_gray12_video(dataset / f"{camera}.mp4", samples)
+        columns[f"observation.images.{camera}"] = [dict(Path="rgb.mp4", Timestamp=[i / 60]) for i in range(n)]
+        # Reproduce a reference timestamp offset. The reference converter pairs
+        # decoded depth i with pose i; PTS lookup pairs depth i+1 with pose i.
+        columns[f"observation.depth.{camera}"] = [dict(Path=f"{camera}.mp4", Timestamp=[(i + int(camera == 'wrist')) / 60]) for i in range(n)]
+        columns[f"observation.{camera}_extrinsic"] = poses
+    pq.write_table(pa.table(columns), parquet)
+    manifest = tmp_path / "audit.json"
+    assert audit(root, manifest)["valid_episodes"] == 1
+    corrected = tmp_path / "frame-index"
+    build(root, manifest, config, corrected, sample_stride=2)
+    row = read_jsonl(corrected / "samples.jsonl")[0]
+    with np.load(corrected / row["observation"]) as observation:
+        for camera in config["cameras"]:
+            cloud = observation[f"{camera}_point_cloud"].reshape(3, -1).T
+            np.testing.assert_allclose(cloud[:, 2], .4, atol=.0006)
+    config["video_alignment"] = "timestamp"
+    previous = tmp_path / "timestamp"
+    build(root, manifest, config, previous, sample_stride=2)
+    old_row = read_jsonl(previous / "samples.jsonl")[0]
+    assert old_row["labels"] == row["labels"]  # The fix never rotates action GT.
+    with np.load(previous / old_row["observation"]) as observation:
+        cloud = observation["wrist_point_cloud"].reshape(3, -1).T
+        _, _, vh = np.linalg.svd(cloud - cloud.mean(axis=0), full_matrices=False)
+        assert np.arccos(abs(vh[-1, 2])) > np.deg2rad(5)
+
+
+def test_frame_count_failure_never_marks_replay_complete(replay_fixture, tmp_path):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    root = tmp_path / "raw"
+    dataset = root / TASKS[0] / "lerobot_dataset"
+    parquet = dataset / "data/chunk-000/episode_000000.parquet"
+    parquet.parent.mkdir(parents=True)
+    source = replay_fixture.root / TASKS[0] / "lerobot_dataset/data/chunk-000/episode_000000.parquet"
+    columns = pq.read_table(source).to_pydict()
+    video(dataset / "short.mp4", n=3)
+    for camera in CAMERAS:
+        columns[f"observation.images.{camera}"] = [dict(Path="short.mp4", Timestamp=[i / 60]) for i in range(7)]
+        columns[f"observation.depth.{camera}"] = columns[f"observation.images.{camera}"]
+    pq.write_table(pa.table(columns), parquet)
+    manifest = tmp_path / "audit.json"
+    audit(root, manifest)
+    config = copy.deepcopy(replay_fixture.config)
+    config["video_alignment"] = "frame_index"
+    output = tmp_path / "bad-replay"
+    with pytest.raises(ValueError, match="frame count mismatch"):
+        build(root, manifest, config, output)
+    assert not (output / "complete.json").exists()
+
+
 def test_missing_camera_order_fails_before_build_creates_output(replay_fixture, tmp_path):
     config = copy.deepcopy(replay_fixture.config)
     config.pop("camera_quaternion_order")

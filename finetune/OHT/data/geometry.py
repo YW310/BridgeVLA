@@ -37,6 +37,27 @@ def transform_matrix(value, name="transform"):
     return value
 
 
+def camera_pose_matrix(sensor_pose, quaternion_order, direction, optical_to_sensor):
+    """Canonical optical->world transform, matching the reference converter.
+
+    Invert a world->sensor source BEFORE converting the sensor's optical axes.
+    OpenGL conversion is a right multiplication; never transpose R alone or
+    pre-multiply the axis flip in world coordinates.
+    """
+    sensor_pose = array(sensor_pose, (7,), "camera sensor pose")
+    if quaternion_order not in ("wxyz", "xyzw"):
+        raise ValueError("camera quaternion order must be wxyz or xyzw")
+    orientation = sensor_pose[3:]
+    if quaternion_order == "wxyz":
+        orientation = orientation[[1, 2, 3, 0]]
+    source = pose_matrix(sensor_pose[:3], orientation)
+    if direction == "world_to_camera":
+        source = np.linalg.inv(source)
+    elif direction != "camera_to_world":
+        raise ValueError("camera_extrinsic_direction must be camera_to_world or world_to_camera")
+    return source @ transform_matrix(optical_to_sensor, "optical_to_sensor")
+
+
 def tcp_pose(position, orientation, link_to_tcp):
     matrix = pose_matrix(position, orientation) @ transform_matrix(link_to_tcp)
     return np.r_[matrix[:3, 3], Rotation.from_matrix(matrix[:3, :3]).as_quat()]

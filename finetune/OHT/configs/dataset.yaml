@@ -24,6 +24,7 @@ link_to_tcp:
   - [0, 0, 0, 1]
 # Raw observation.*_extrinsic = [x,y,z,qw,qx,qy,qz], camera->world USD pose.
 camera_quaternion_order: wxyz
+camera_extrinsic_direction: camera_to_world  # reference --input-extrinsic-direction
 ee_quaternion_order: wxyz
 # Resolve real K per task dataset, case-insensitive camera names. Never infer
 # local-camera K from a generic FOV/document example.
@@ -38,6 +39,10 @@ gripper:
   initial_state: 1    # only if the first observed state is ambiguous
 image_size: [120, 160]  # exact stride 4 from 480x640
 rotation_classes: 72
+# Reference converter pairs decoded RGB/depth frame i with raw Parquet pose i.
+# Check decoded stream lengths against Parquet; do not infer frame index from FPS.
+# Legacy configs without this field retain timestamp matching; rebuild changed XYZ.
+video_alignment: frame_index  # timestamp only for independently timestamped streams
 video_timestamp_tolerance: 0.0084333333
 depth:
   # Read native uint16 words, preserving 12-bit values (never convert to RGB).

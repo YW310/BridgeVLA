@@ -8,7 +8,7 @@ from .common import inside, file_digest
 from .actions import keypoint_options
 from .point_filter import point_filter_options
 from .observation import validate_data_config
-from .video import validate_quantization
+from .video import validate_quantization, video_alignment
 
 
 def _name(value):
@@ -118,6 +118,8 @@ def resolve_dataset_config(dataset, config):
     # reinterpret buffer provenance. Legacy geometric extraction stays explicit.
     result["keypoints"] = keypoint_options(result.get("keypoints"))
     result["point_cloud_filter"] = point_filter_options(result.get("point_cloud_filter"))
+    result["video_alignment"] = video_alignment(result)
+    result.setdefault("camera_extrinsic_direction", "camera_to_world")
     validate_data_config(result, resolved=True)
     return result, sources
 

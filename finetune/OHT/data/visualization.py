@@ -2,7 +2,7 @@
 from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw
-from .common import inside
+from .common import CAMERAS, inside
 from .point_filter import point_cloud_mask, point_filter_options
 
 
@@ -14,6 +14,8 @@ ACTION = (255, 70, 220)
 PANEL_W, PANEL_H = 256, 192
 MAX_PREVIEW_POINTS = 200_000
 LOCAL_HALF_EXTENT = 0.20  # metres; diagnostic cube, not the model's stage-two crop
+CAMERA_COLORS = dict(zip(CAMERAS, ((255, 85, 85), (85, 230, 130), (80, 150, 255),
+                                  (255, 200, 65), (190, 100, 255))))
 
 
 def role_overlay(rgb, masks):
@@ -182,7 +184,7 @@ def _sample_preview_cloud(points, colors):
 
 
 def save_preview(path, observation, config, sample, current_tcp=None, role_specs=None,
-                 role_masks=None, role_points=None, role_valid=None):
+                 role_masks=None, role_points=None, role_valid=None, color_by_camera=False):
     """Save sampled diagnostics without changing cached tensors or labels."""
     cameras = list(config["cameras"])
     action_tcp = np.asarray(sample["labels"]["gripper_pose"])
@@ -192,6 +194,8 @@ def save_preview(path, observation, config, sample, current_tcp=None, role_specs
     for camera in cameras:
         cloud = observation[f"{camera}_point_cloud"].reshape(3, -1).T
         colors = observation[f"{camera}_rgb"].reshape(3, -1).T
+        if color_by_camera:
+            colors = np.broadcast_to(CAMERA_COLORS[camera], colors.shape).astype(np.uint8)
         valid = point_cloud_mask(cloud, filter_options) & (cloud >= bounds[:3]).all(axis=1)
         valid &= (cloud < bounds[3:]).all(axis=1)
         chunks.append(cloud[valid])
@@ -212,7 +216,10 @@ def save_preview(path, observation, config, sample, current_tcp=None, role_specs
     draw.text((8, 24), f"time {sample['timestamp']:.3f} s | {sample['goal']}", fill="white")
     current = "not cached" if current_tcp is None else np.array2string(np.asarray(current_tcp)[:3], precision=3)
     draw.text((8, 42), f"World TCP {current} -> {np.array2string(action_tcp[:3], precision=3)} m", fill="white")
-    draw.text((8, 60), "Cyan=current TCP; magenta=future action; green=Target; blue=Reference; yellow=overlap", fill="white")
+    legend = ("Cyan=current TCP; magenta=future action; orthographic colors=physical camera (NOT roles)"
+              if color_by_camera else
+              "Cyan=current TCP; magenta=future action; green=Target; blue=Reference; yellow=overlap")
+    draw.text((8, 60), legend, fill="white")
     if role_specs is not None:
         status = " | ".join(f"{role}: {spec['source']} present={spec['present']} known={spec['known']} geometry={bool(role_valid[i])}"
                             for i, (role, spec) in enumerate((('target', role_specs['target']), ('reference', role_specs['reference']))))
@@ -261,7 +268,11 @@ def save_preview(path, observation, config, sample, current_tcp=None, role_specs
     else:
         draw.text((8, local_top + 300), "Local cube is fixed at the GT keypoint; it is not a coarse prediction or the model's noisy training crop.", fill="white")
     draw.text((8, ortho_top + 638), "CPU diagnostics, not BridgeVLA renderer outputs. Splats only affect display, not stored XYZ. Black depth = invalid.", fill="white")
-    draw.text((8, ortho_top + 656), "Role masks: 30% RGB + 70% color. Site outlines are projected region points; visibility is not verified.", fill="white")
+    if color_by_camera:
+        for index, camera in enumerate(cameras):
+            draw.text((8 + index * 204, ortho_top + 656), camera, fill=CAMERA_COLORS[camera])
+    else:
+        draw.text((8, ortho_top + 656), "Role masks: 30% RGB + 70% color. Site outlines are projected region points; visibility is not verified.", fill="white")
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("xb") as stream:

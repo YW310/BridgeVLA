@@ -202,3 +202,47 @@ def test_empty_local_views_are_explicitly_labelled(monkeypatch, tmp_path):
     assert any("GT-centered refine diagnostic (NOT model stage2)" in text for text in texts)
     assert any("No observed points in local cube" in text for text in texts)
     assert any("in-bounds points 1 -> shown 1" in text for text in texts)
+
+
+def test_camera_coloring_changes_only_orthographic_display(monkeypatch, tmp_path):
+    observation, config, sample = _minimal_preview(np.array([[.5, .5, .5]]), [.5, .5, .5])
+    original_arrays = {key: value.copy() for key, value in observation.items()}
+    colors_seen = []
+    original = preview_module._orthographic
+
+    def record(points, colors, *args, **kwargs):
+        colors_seen.append(colors.copy())
+        return original(points, colors, *args, **kwargs)
+
+    monkeypatch.setattr(preview_module, "_orthographic", record)
+    preview_module.save_preview(tmp_path / "camera-colors.png", observation, config, sample, color_by_camera=True)
+    assert len(colors_seen) == 6
+    for colors in colors_seen:
+        np.testing.assert_array_equal(colors, [preview_module.CAMERA_COLORS["wrist"]])
+    for key, value in observation.items():
+        np.testing.assert_array_equal(value, original_arrays[key])
+
+
+def test_geometry_cli_exports_each_physical_camera_without_changing_cache(replay_fixture, tmp_path):
+    from finetune.OHT.data.common import file_digest
+
+    f = replay_fixture
+    row = read_jsonl(f.replay / "samples.jsonl")[0]
+    before = file_digest(f.replay / row["observation"])
+    output = tmp_path / "geometry"
+    args = ["diagnose-geometry", "--replay", str(f.replay), "--sample-id", row["id"], "--output", str(output)]
+    assert main(args) == 0
+    assert {path.name for path in output.glob("*.png")} == {
+        "fused_rgb.png", "fused_camera_colors.png", *(camera + ".png" for camera in f.config["cameras"])}
+    summary = json.loads((output / "geometry.json").read_text(encoding="utf-8"))
+    assert summary["sample_id"] == row["id"]
+    assert summary["video_alignment"] == "timestamp"  # Legacy config is not silently reinterpreted.
+    for camera in f.config["cameras"]:
+        np.testing.assert_array_equal(summary["cameras"][camera]["world_from_optical"], np.eye(4))
+    assert file_digest(f.replay / row["observation"]) == before
+    with pytest.raises(FileExistsError):
+        main(args)
+    invalid = tmp_path / "missing"
+    with pytest.raises(ValueError, match="Unknown sample ID"):
+        main(["diagnose-geometry", "--replay", str(f.replay), "--sample-id", "missing", "--output", str(invalid)])
+    assert not invalid.exists()

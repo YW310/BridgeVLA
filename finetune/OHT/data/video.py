@@ -1,7 +1,29 @@
-"""Timestamp-aligned decoding; metric depth always needs an explicit encoding."""
+"""Explicit frame-index/PTS alignment; numeric depth never goes through RGB."""
 from pathlib import Path
 import numpy as np
 from .common import inside
+
+
+def video_alignment(config):
+    mode = config.get("video_alignment", "timestamp")
+    if mode not in ("timestamp", "frame_index"):
+        raise ValueError("video_alignment must be timestamp or frame_index")
+    return mode
+
+
+def _frame_array(frame, format, expected_format):
+    if expected_format is not None and frame.format.name != expected_format:
+        raise ValueError(
+            f"Expected video pixel format {expected_format}, got {frame.format.name}; "
+            "do not convert numeric depth through RGB"
+        )
+    if format is None and frame.format.name == "gray12le":
+        # Older PyAV cannot export gray12le via to_ndarray(). Preserve native
+        # little-endian uint16 words, including removal of decoder row padding.
+        plane = frame.planes[0]
+        words = np.frombuffer(plane, dtype="<u2").reshape(plane.height, plane.line_size // 2)
+        return words[:frame.height, :frame.width].copy()
+    return frame.to_ndarray() if format is None else frame.to_ndarray(format=format)
 
 
 class VideoReader:
@@ -46,37 +68,96 @@ class VideoReader:
                 best, best_error = current, error
         if best is None or best_error > self.tolerance:
             raise ValueError(f"Video timestamp {timestamp} unmatched; error={best_error}")
-        if expected_format is not None and best.format.name != expected_format:
-            raise ValueError(
-                f"Expected video pixel format {expected_format}, got {best.format.name}; "
-                "do not convert numeric depth through RGB"
-            )
-        if format is None and best.format.name == "gray12le":
-            # Older PyAV versions cannot export gray12le via to_ndarray().
-            # FFmpeg stores each 12-bit sample in a little-endian uint16 word;
-            # preserve those words and remove row padding without reformatting.
-            plane = best.planes[0]
-            words = np.frombuffer(plane, dtype="<u2").reshape(plane.height, plane.line_size // 2)
-            return words[:best.height, :best.width].copy()
-        return best.to_ndarray() if format is None else best.to_ndarray(format=format)
+        return _frame_array(best, format, expected_format)
+
+    def close(self):
+        self.container.close()
+
+
+class IndexedVideoReader:
+    """Stream the same decoded ordinal as the Parquet row, as the reference does.
+
+    Never derive an index from FPS or silently fall back to a nearby PTS.
+    Decode the unused tail at validation, so truncated/extra streams cannot
+    produce a completed replay even if sampled frames were all present.
+    """
+
+    def __init__(self, path, expected_frames):
+        if isinstance(expected_frames, (bool, np.bool_)) or not isinstance(expected_frames, (int, np.integer)) or expected_frames < 1:
+            raise ValueError("frame_index alignment requires a positive expected_frames count")
+        self.path, self.expected_frames = path, int(expected_frames)
+        self._open()
+
+    def _open(self):
+        import av
+        self.container = av.open(str(self.path))
+        self.stream = self.container.streams.video[0]
+        declared = self.stream.frames
+        if declared and declared != self.expected_frames:
+            self.container.close()
+            raise ValueError(f"Video frame count mismatch {self.path}: video={declared}, parquet={self.expected_frames}")
+        self.iterator = iter(self.container.decode(self.stream))
+        self.index, self.last, self.exhausted = -1, None, False
+
+    def _advance(self):
+        if self.exhausted:
+            return False
+        try:
+            self.last = next(self.iterator)
+        except StopIteration:
+            self.exhausted = True
+            return False
+        self.index += 1
+        if self.index >= self.expected_frames:
+            raise ValueError(f"Video frame count mismatch {self.path}: decoded>{self.expected_frames}, parquet={self.expected_frames}")
+        return True
+
+    def read(self, index, *, format="rgb24", expected_format=None):
+        if isinstance(index, (bool, np.bool_)) or not isinstance(index, (int, np.integer)) or not 0 <= index < self.expected_frames:
+            raise ValueError("Video frame_index must be an integer inside the Parquet episode")
+        if index < self.index:
+            self.close()
+            self._open()
+        while self.index < index:
+            if not self._advance():
+                raise ValueError(f"Video frame count mismatch {self.path}: decoded={self.index+1}, parquet={self.expected_frames}")
+        return _frame_array(self.last, format, expected_format)
+
+    def validate_length(self):
+        while self._advance():
+            pass
+        if self.index + 1 != self.expected_frames:
+            raise ValueError(f"Video frame count mismatch {self.path}: decoded={self.index+1}, parquet={self.expected_frames}")
 
     def close(self):
         self.container.close()
 
 
 class EpisodeVideos:
-    def __init__(self, dataset, tolerance):
+    def __init__(self, dataset, tolerance, *, alignment="timestamp", expected_frames=None):
         self.dataset, self.tolerance = dataset, tolerance
+        self.alignment = video_alignment({"video_alignment": alignment})
+        if alignment == "frame_index" and (isinstance(expected_frames, (bool, np.bool_)) or
+                not isinstance(expected_frames, (int, np.integer)) or expected_frames < 1):
+            raise ValueError("frame_index alignment requires a positive expected_frames count")
+        self.expected_frames = expected_frames
         self.readers = {}
 
-    def read(self, reference, *, format="rgb24", expected_format=None):
+    def read(self, reference, *, frame=None, format="rgb24", expected_format=None):
         stamp = np.asarray(reference["Timestamp"], dtype=float).reshape(-1)
-        if stamp.size != 1:
-            raise ValueError("Each video reference must contain one timestamp")
+        if stamp.size != 1 or not np.isfinite(stamp).all() or stamp[0] < 0:
+            raise ValueError("Each video reference must contain one finite nonnegative timestamp")
         path = inside(self.dataset, reference["Path"])
         if path not in self.readers:
-            self.readers[path] = VideoReader(path, self.tolerance)
-        return self.readers[path].read(stamp[0], format=format, expected_format=expected_format)
+            self.readers[path] = (IndexedVideoReader(path, self.expected_frames) if self.alignment == "frame_index"
+                                  else VideoReader(path, self.tolerance))
+        selected = frame if self.alignment == "frame_index" else stamp[0]
+        return self.readers[path].read(selected, format=format, expected_format=expected_format)
+
+    def validate_lengths(self):
+        if self.alignment == "frame_index":
+            for reader in self.readers.values():
+                reader.validate_length()
 
     def close(self):
         for reader in self.readers.values():
@@ -153,9 +234,9 @@ def metric_depth(root, record, columns, camera, frame, videos, config):
     else:
         reference = columns[f"observation.depth.{camera}"][frame]
         if config.get("encoding") in ("scaled_integer", "quantized"):
-            raw = videos.read(reference, format=None, expected_format=config.get("pixel_format"))
+            raw = videos.read(reference, frame=frame, format=None, expected_format=config.get("pixel_format"))
         elif config.get("encoding") == "linear_channel":
-            raw = videos.read(reference)
+            raw = videos.read(reference, frame=frame)
         else:
             raise ValueError(
                 "Video depth requires native scaled_integer/quantized grayscale or documented "

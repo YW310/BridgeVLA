@@ -1,6 +1,6 @@
 """Create the same camera tensor layout for training and online inference."""
 import numpy as np
-from .geometry import array, pose_matrix, transform_matrix, backproject
+from .geometry import array, camera_pose_matrix, transform_matrix, backproject
 from .point_filter import point_filter_options, point_cloud_mask, filter_world_points
 
 
@@ -24,6 +24,10 @@ def validate_data_config(config, *, resolved=False):
     point_filter_options(config.get("point_cloud_filter"))
     transform_matrix(config.get("link_to_tcp"), "link_to_tcp")
     _camera_quaternion_order(config)
+    if config.get("camera_extrinsic_direction", "camera_to_world") not in ("camera_to_world", "world_to_camera"):
+        raise ValueError("camera_extrinsic_direction must be camera_to_world or world_to_camera")
+    from .video import video_alignment
+    video_alignment(config)
     if config.get("ee_quaternion_order") not in ("wxyz", "xyzw"):
         raise ValueError("Set ee_quaternion_order explicitly to wxyz or xyzw; rebuild legacy caches")
     if config.get("intrinsics_source", "config") not in ("config", "metadata"):
@@ -68,7 +72,7 @@ def validate_data_config(config, *, resolved=False):
 
 
 def camera_observation(camera, rgb, depth, sensor_pose, config):
-    """Decode raw camera->world pose; only camera quaternions use the configured order."""
+    """Canonicalize the raw camera pose once; cached extrinsics are optical->world."""
     rgb = np.asarray(rgb)
     depth = np.asarray(depth)
     if rgb.ndim != 3 or rgb.shape[-1] != 3 or rgb.dtype != np.uint8 or rgb.shape[:2] != depth.shape:
@@ -78,13 +82,11 @@ def camera_observation(camera, rgb, depth, sensor_pose, config):
     if calibration.get("intrinsics") is None:
         raise ValueError(f"{camera}: unresolved intrinsics; use resolve_dataset_config() or the checkpoint's resolved data profile")
     K = array(calibration["intrinsics"], (3, 3), "intrinsics")
-    sensor_pose = array(sensor_pose, (7,), "camera sensor pose")
-    orientation = sensor_pose[3:]
-    if order == "wxyz":
-        orientation = orientation[[1, 2, 3, 0]]
-    # Internal rotations are xyzw / matrices. EE input order is independently
-    # handled in actions.world_tcp_poses(); flip camera optical axes only once.
-    world_from_optical = pose_matrix(sensor_pose[:3], orientation) @ transform_matrix(calibration["optical_to_sensor"])
+    # Same order as _canonicalize_extrinsic_pose7() followed by the reference
+    # transform's OpenGL->optical conversion. EE order is independent.
+    world_from_optical = camera_pose_matrix(
+        sensor_pose, order, config.get("camera_extrinsic_direction", "camera_to_world"),
+        calibration["optical_to_sensor"])
     depth_config = calibration.get("depth", config["depth"])
     points = backproject(depth, K, world_from_optical, depth_config["kind"],
                          tuple(depth_config.get("limits", [0.001, 10])))

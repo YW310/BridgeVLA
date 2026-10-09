@@ -59,6 +59,8 @@ def test_default_keypoints_use_only_measured_gripper_changes(dataset_config):
 
 
 def test_default_camera_transforms_convert_optical_to_usd(dataset_config):
+    assert dataset_config["camera_extrinsic_direction"] == "camera_to_world"
+    assert dataset_config["video_alignment"] == "frame_index"
     assert set(dataset_config["cameras"]) == {
         "global_left", "global_right", "local_left", "local_right", "wrist",
     }

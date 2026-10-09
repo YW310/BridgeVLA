@@ -63,14 +63,15 @@ def build(root, manifest_path, config, output, sample_stride=10, *,
         # artificial terminal goal. Other modes retain their terminal horizon.
         frames = sorted(set(range(0, keys[-1], sample_stride)) | {0} | set(keys[:-1]))
         dataset = inside(root, record["dataset"])
-        videos = EpisodeVideos(dataset, config.get("video_timestamp_tolerance", 1/120 + .0001))
+        videos = EpisodeVideos(dataset, config.get("video_timestamp_tolerance", 1/120 + .0001),
+                               alignment=config["video_alignment"], expected_frames=len(columns["frame_index"]))
         try:
             for frame in frames:
                 target = keys[bisect.bisect_right(keys, frame)]
                 sample_id = f'{record["task"]}/{record["episode_index"]:06d}/{frame:06d}'
                 observation = {"low_dim_state": low_dim(measured[frame], binary_state=observed_gripper[frame])}
                 for camera in config["cameras"]:
-                    rgb = videos.read(columns[f"observation.images.{camera}"][frame])
+                    rgb = videos.read(columns[f"observation.images.{camera}"][frame], frame=frame)
                     depth_config = config["cameras"][camera].get("depth", config["depth"])
                     depth = metric_depth(root, record, columns, camera, frame, videos, depth_config)
                     observation.update(camera_observation(
@@ -96,6 +97,7 @@ def build(root, manifest_path, config, output, sample_stride=10, *,
                                  labels={key: value.tolist() for key, value in labels.items()})
                 rows.append(sample)
                 preview.write(observation, config, sample, current_tcp=poses[frame])
+            videos.validate_lengths()
         finally:
             videos.close()
     if not rows:

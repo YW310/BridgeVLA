@@ -9,6 +9,8 @@ from .data.replay import build, load_contract
 from .data.dataset import OHTDataset
 from .data.role_cache import create_cache
 from .data.role_teacher import build_teacher
+from .data.source_config import sample_data_config
+from .data.visualization import CAMERA_COLORS, save_preview
 from .runtime.predicted_wrapper import load_predictor, PredictedObjectWrapper
 
 
@@ -39,6 +41,10 @@ def main(argv=None):
     p.add_argument("--mode", choices=("baseline", "role_queries", "predicted_external"), default="baseline")
     p.add_argument("--role-cache")
     p.add_argument("--point-count", type=int, default=512)
+    p = sub.add_parser("diagnose-geometry", help="Export one cached frame per camera and camera-colored fusion; no cache edits")
+    p.add_argument("--replay", required=True)
+    p.add_argument("--sample-id", required=True, help="task/episode/frame, as recorded in samples.jsonl")
+    p.add_argument("--output", required=True, help="New diagnostic directory; never overwrites existing files")
     p = sub.add_parser("teacher")
     for key in ("replay", "annotations", "output"):
         p.add_argument("--" + key, required=True)
@@ -66,6 +72,42 @@ def main(argv=None):
             data = OHTDataset(args.replay, split, args.mode, args.role_cache, args.point_count)
             counts[split] = data.validate_all()
         print(json.dumps(dict(valid=True, samples=counts, contract=contract["sha256"])))
+    elif args.command == "diagnose-geometry":
+        output = Path(args.output)
+        if output.exists():
+            raise FileExistsError(f"Use a new diagnostic directory: {output}")
+        contract = load_contract(args.replay)
+        with (Path(args.replay) / "samples.jsonl").open(encoding="utf-8") as stream:
+            rows = (json.loads(line) for line in stream if line.strip())
+            row = next((row for row in rows if row["id"] == args.sample_id), None)
+        if row is None:
+            raise ValueError(f"Unknown sample ID: {args.sample_id}")
+        path = inside(args.replay, row["observation"])
+        if file_digest(path) != row["observation_sha256"]:
+            raise ValueError("Observation changed")
+        with np.load(path, allow_pickle=False) as source:
+            observation = {key: source[key] for key in source.files}
+        config = sample_data_config(contract, row)
+        output.mkdir(parents=True)
+        save_preview(output / "fused_rgb.png", observation, config, row, current_tcp=row.get("current_tcp"))
+        save_preview(output / "fused_camera_colors.png", observation, config, row,
+                     current_tcp=row.get("current_tcp"), color_by_camera=True)
+        for camera in config["cameras"]:
+            selected = dict(config, cameras={camera: config["cameras"][camera]})
+            save_preview(inside(output, camera + ".png"), observation, selected, row,
+                         current_tcp=row.get("current_tcp"), color_by_camera=True)
+        write_json(output / "geometry.json", dict(
+            sample_id=row["id"], contract_sha256=contract["sha256"], data_config=config,
+            video_alignment=config.get("video_alignment", "timestamp"),
+            camera_extrinsic_direction=config.get("camera_extrinsic_direction", "camera_to_world"),
+            note="Cached geometry only; colors identify cameras, not roles. No registration or auto-correction.",
+            cameras={camera: dict(
+                color=list(CAMERA_COLORS[camera]),
+                world_from_optical=observation[f"{camera}_camera_extrinsics"].tolist(),
+                intrinsics=observation[f"{camera}_camera_intrinsics"].tolist(),
+                finite_points=int(np.isfinite(observation[f"{camera}_point_cloud"]).all(axis=0).sum()))
+                for camera in config["cameras"]}))
+        print(f"Saved geometry diagnostics to {output}")
     elif args.command == "teacher":
         result = build_teacher(args.replay, args.annotations, args.output, args.point_count,
                                visualize_every=args.visualize_every, visualize_output_dir=args.visualize_output_dir)

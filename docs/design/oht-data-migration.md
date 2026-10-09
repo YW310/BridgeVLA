@@ -51,7 +51,7 @@ Baseline 和 assistance 共用观测、相机、动作定义、控制器、训�
 
 ### 3.2 四元数与相机坐标约定
 
-原始 `observation.*_extrinsic` 默认 `[x,y,z,qw,qx,qy,qz]`，是 USD/OpenGL camera→world。`camera_observation()` 按 `camera_quaternion_order` 转内部 xyzw，再构造 `T_world_optical = T_world_usd @ diag(1,-1,-1,1)`。`world_tcp_poses()` 独立按 `ee_quaternion_order` 转换 EE；输出和内部 geometry 为 xyzw。缓存相机外参为 4×4 optical→world。
+原始 `observation.*_extrinsic` 默认 `[x,y,z,qw,qx,qy,qz]`，是 USD/OpenGL camera→world。`camera_pose_matrix()` 按 `camera_quaternion_order` 转内部 xyzw；若显式配置 `camera_extrinsic_direction: world_to_camera`，先对完整 4×4 求逆，再右乘 optical→sensor，默认得到 `T_world_optical = T_world_usd @ diag(1,-1,-1,1)`。不在世界系左乘翻轴，不只转置 R。`world_tcp_poses()` 独立按 `ee_quaternion_order` 转换 EE；输出和内部 geometry 为 xyzw。缓存相机外参为 4×4 optical→world。
 
 `link_to_tcp` 保持单位阵，禁止重复加偏移。行向量投影 `(P_world-t) @ R_world_optical` 不再额外转置。schema 升级为 `oht_bridgevla_v2`，旧 XYZ/rotation/gripper 标签须在新目录重建；原始数据/audit 可保留，角色缓存随新 contract 重建，不手改合同或恢复旧 optimizer。
 
@@ -109,7 +109,7 @@ NVIDIA 相机 API 区分 distance_to_image_plane 和 distance_to_camera，不能
     p_optical = Z * inverse(K) * [u, v, 1]^T
     p_world   = T_world_optical * [p_optical, 1]^T
 
-若记录为 ray distance，按单位射线恢复三维。先屏蔽无效深度，再融合；腕部相机每帧使用对应外参。按视频 PTS 匹配 Parquet 引用时间戳，记录匹配误差，不靠默认帧号对齐。
+若记录为 ray distance，按单位射线恢复三维。先屏蔽无效深度，再融合；腕部相机每帧使用对应外参。v423 仓库默认 `video_alignment: frame_index`，遵循已运行参考转换器：原始 RGB/depth 解码帧 i 与 Parquet pose i 配对，严格核对整段帧数，不用 FPS 计算索引。独立时间戳流显式用 `timestamp` 最近 PTS 模式，旧配置缺字段保持该行为。此修正防止引用时间偏移带来的旋转错配，不证明导出 pose 已正确同步；ray/Z 仍需公共反投影模块核对。用 `tools/diagnose_oht_geometry.py` 导出单帧逐相机与来源着色融合图及实际参数，不重建已有缓存、不自动配准；命令见 OHT README。
 
 五路传感器融合后仍渲染现有三虚拟视角；不需要把 VLM 改为五路物理相机直接输入。物理相机数与 MVT num_img 不是同一个参数。
 
@@ -556,7 +556,7 @@ IsaacLab client（现有环境）
 | 模块 | 实际入口 | 完成内容 |
 | --- | --- | --- |
 | 原始数据审计 | tools/audit_oht_dataset.py | 全列 Parquet、四任务唯一身份、轨迹/场景分组、质量报告和固定划分 |
-| 观测/动作缓存 | tools/build_oht_replay.py | PTS 对齐、显式米制 depth、逐帧外参、world XYZ/TCP、未来关键点及夹爪标签；可按间隔保存 RGB-D、全局/GT 局部三视图及 TCP 诊断 PNG |
+| 观测/动作缓存 | tools/build_oht_replay.py | 参考帧序号配对（可选 PTS）、显式米制 depth、逐帧外参、world XYZ/TCP、未来关键点及夹爪标签；可按间隔保存 RGB-D、全局/GT 局部三视图及 TCP 诊断 PNG |
 | 缓存预检 | tools/validate_oht_replay.py | contract/文件哈希、split 隔离、观测 shape、教师/预测命名空间及覆盖 |
 | 角色教师 | tools/build_oht_role_teacher.py | 显式可见表面 mask 或 site_region，区分 present/known/valid/NULL；可保存 T/R 叠加预览 |
 | 外部预测缓存 | tools/predict_oht_objects.py | module:factory 插件、当前观测白名单、provenance、逐 episode reset |
