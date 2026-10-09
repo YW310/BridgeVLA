@@ -21,11 +21,11 @@ As illustrated in the following figure, BridgeVLA employs a dual-phase training 
 
 | Status | Module | Current Progress |
 | --- | --- | --- |
-| Completed | Data Annotation for OCRR in Simulated and Zero-Shot Scenarios | **Simulated:** generate Target/Reference object-role annotations and 3D geometric supervision from simulator semantics, masks, and point clouds.<br>**Zero-shot:** use SAM3 for object proposals/segmentation and Qwen3 for semantic Target/Reference role assignment. |
-| Completed | OCRR Implementation | Implement Target/Reference/NULL object-centric representations, relation modeling, role supervision, and cross-scale role conditioning. |
-| Completed | Object-Centric VLA | Integrate object-centric representations and relational features into the BridgeVLA training and inference paths for action prediction. |
-| In Progress | Evaluation on OHT Tasks | The first OHT v423 data contract, five-camera RGB-D decoding, world-frame action conversion, replay construction, baseline/role-query training entry points, visualization, inference service, and evaluation interfaces are implemented. Full-dataset geometry validation, role annotation, CUDA training, and IsaacLab closed-loop evaluation are in progress. |
-| Next | Object-Centric WAM | Jointly predict the next relational key state, key action, and reconstructed scene point cloud for relation-aware world-action modeling. |
+| Completed | Data Annotation for OCRR in Simulated and Zero-Shot Scenarios | Simulator-based annotation; SAM3 + Qwen3 for zero-shot annotation. |
+| Completed | OCRR Implementation | Object-centric Target/Reference representation and relation modeling. |
+| Completed | Object-Centric VLA | Integrate object-centric features into BridgeVLA training and inference. |
+| In Progress | Evaluation on OHT Tasks | OHT data pipeline is ready; training and closed-loop evaluation are in progress. |
+| Next | Object-Centric WAM | Predict the next relational key state, key action, and scene point cloud. |
 
 ## 快速开始
 
