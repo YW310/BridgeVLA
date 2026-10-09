@@ -103,7 +103,12 @@ python tools/validate_oht_replay.py --replay /data/oht/replay-v1
 
 `--visualize-every N` 按每个 episode **生成的样本数**保存 PNG，包含第一个样本，随后每隔 N 个；不是按原始视频帧计数。`1` 显示每个生成样本，默认 `0` 关闭。可省略 `--visualize-output-dir`，此时保存到 `<output>/visualizations/<task>/<episode六位>/<frame六位>.png`。预览文件存在时拒绝覆盖。
 
-每张图包含缓存分辨率的各相机 RGB、米制 depth、XY/XZ/YZ 彩色点云及当前/未来 TCP：青色为当前 TCP，品红色为下一关键点动作目标。depth 蓝色近、红色远，标注每相机当前有效深度范围（米），黑色表示无效；不同图的深度颜色范围可能不同。三视图固定使用 `scene_bounds` 世界坐标范围，显示点最多均匀抽取 20,000 个，属于 CPU 诊断投影，不是模型的虚拟 renderer。
+每张图包含缓存分辨率的各相机 RGB、米制 depth，以及两排 XY/XZ/YZ 彩色点云：青色为当前 TCP，品红色为下一 GT 关键点。depth 蓝色近、红色远，标注当前有效范围（米），黑色表示无效；不同图的深度颜色范围可能不同。
+
+- 全局三视图使用 `scene_bounds`，最多显示 200,000 个点（默认五相机 120×160 的全部有效点都在预算内）。3×3 像素小面积绘制按深度处理重叠，仅改善显示空洞；品红色方框标出局部立方体的投影范围。
+- 局部三视图以 GT keypoint 为中心，各轴 ±0.20 m，显示米制坐标范围。先从完整有效点云选择局部点，再独立限制显示点数，避免全局抽样漏掉小物体；没有观测点时明确提示，不补造几何。
+
+局部图标注 **GT-centered refine diagnostic (NOT model stage2)**：它不是模型 coarse 预测或带噪训练中心产生的二阶段视图。模型真实 coarse/refine renderer 图应在训练/推理前向中另行导出。两排都显示抽样前后点数；缓存的 4 倍步长采样不因预览变密而恢复到原始分辨率。
 
 PNG 单独输出，不新增 observation/label 字段，也不改变 buffer contract 或训练样本。无需模型、CUDA 或图形桌面；仅使用数据环境已有的 NumPy/Pillow。基础 buffer 没有 T/R 标注，角色预览在下一节的 teacher 构建时生成。
 
@@ -288,4 +293,4 @@ python -m pytest -q tests/test_oht_dataset_config.py tests/test_oht_depth_video.
 
 覆盖 12 个合成 episode → 60 条 transitions、五相机、视频 PTS、米制 depth、划分检查、教师/预测缓存、无 GT 推理隔离、真实 Agent 梯度累积与零碰撞损失、HTTP 协议、闭环失败计数和续训采样。backbone/render 使用 CPU 小替身，未验证完整 PaliGemma/point-renderer GPU 前向。另运行现有角色预测、跨尺度继承、辅助损失、前向与优化器回归测试。
 
-2026-10-09 验证：上述 OHT 测试 45 项通过，包括真实合成无损 HEVC gray12le 像素往返、行 padding、PTS 回退、错误像素格式拒绝、截断值屏蔽、USD/ray 反投影，以及 Parquet→replay→预览。PyAV 12.3.0 下配置/深度专项 18 项通过。均为本地合成数据验证，尚未读取服务器 v423 全量数据；早期相关模型回归结果不代表本轮重新执行。
+2026-10-09 验证：上述 OHT 测试 50 项通过，包括真实合成无损 HEVC gray12le 像素往返、行 padding、PTS 回退、错误像素格式拒绝、截断值屏蔽、USD/ray 反投影，以及 Parquet→replay→预览。预览专项覆盖全局点数预算、深度正确的小面积绘制、GT 局部范围与空视图提示、数据不变性；生成 PNG 已检查布局。此前 PyAV 12.3.0 下配置/深度专项 18 项通过。均为本地合成数据验证，尚未读取服务器 v423 全量数据；早期相关模型回归结果不代表本轮重新执行。

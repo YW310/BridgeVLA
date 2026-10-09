@@ -11,6 +11,8 @@ OVERLAP = np.array([255, 220, 50], dtype=np.uint8)
 CURRENT = (0, 220, 255)
 ACTION = (255, 70, 220)
 PANEL_W, PANEL_H = 256, 192
+MAX_PREVIEW_POINTS = 200_000
+LOCAL_HALF_EXTENT = 0.20  # metres; diagnostic cube, not the model's stage-two crop
 
 
 def role_overlay(rgb, masks):
@@ -87,7 +89,8 @@ def _camera_rgb(observation, camera, current_tcp, action_tcp, masks, specs, role
     return image
 
 
-def _orthographic(points, colors, bounds, axes, current_tcp, action_tcp, role_points, role_valid):
+def _orthographic(points, colors, bounds, axes, current_tcp, action_tcp, role_points, role_valid,
+                  region_bounds=None):
     width, height = 340, 256
     image = np.zeros((height, width, 3), dtype=np.uint8)
     bounds = np.asarray(bounds)
@@ -99,6 +102,10 @@ def _orthographic(points, colors, bounds, axes, current_tcp, action_tcp, role_po
         return np.stack((uv[:, horizontal] * (width - 1),
                          (1 - uv[:, vertical]) * (height - 1)), axis=-1)
 
+    points, colors = np.asarray(points), np.asarray(colors)
+    valid = np.isfinite(points).all(axis=1) & (points >= bounds[:3]).all(axis=1)
+    valid &= (points < bounds[3:]).all(axis=1)
+    points, colors = points[valid], colors[valid]
     if len(points):
         xy = pixels(points).astype(int)
         normal = next(axis for axis in range(3) if axis not in axes)
@@ -108,8 +115,28 @@ def _orthographic(points, colors, bounds, axes, current_tcp, action_tcp, role_po
         _, first = np.unique(flat[order], return_index=True)
         chosen = order[first]
         image[xy[chosen, 1], xy[chosen, 0]] = colors[chosen]
+        center_depth = np.full((height, width), -np.inf)
+        center_depth[xy[chosen, 1], xy[chosen, 0]] = points[chosen, normal]
+        center_colors, depth = image.copy(), center_depth.copy()
+        # 3x3 display-only splats. Resolve every overlap by depth; use original
+        # centres so drawing never propagates into an artificial filled surface.
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                source = (slice(max(0, -dy), min(height, height-dy)),
+                          slice(max(0, -dx), min(width, width-dx)))
+                target = (slice(max(0, dy), min(height, height+dy)),
+                          slice(max(0, dx), min(width, width+dx)))
+                nearer = center_depth[source] > depth[target]
+                depth[target][nearer] = center_depth[source][nearer]
+                image[target][nearer] = center_colors[source][nearer]
     result = Image.fromarray(image)
     draw = ImageDraw.Draw(result)
+    if region_bounds is not None:
+        intersection = np.r_[np.maximum(bounds[:3], region_bounds[:3]),
+                             np.minimum(bounds[3:], region_bounds[3:])]
+        if (intersection[3:] > intersection[:3]).all():
+            corners = pixels(np.array([intersection[:3], intersection[3:]]))
+            draw.rectangle((*corners.min(axis=0), *corners.max(axis=0)), outline=ACTION, width=1)
     if role_points is not None:
         for index, color in enumerate((TARGET, REFERENCE)):
             if role_valid[index]:
@@ -129,6 +156,13 @@ def _orthographic(points, colors, bounds, axes, current_tcp, action_tcp, role_po
     return result
 
 
+def _sample_preview_cloud(points, colors):
+    if len(points) > MAX_PREVIEW_POINTS:
+        indices = np.linspace(0, len(points)-1, MAX_PREVIEW_POINTS).astype(int)
+        return points[indices], colors[indices]
+    return points, colors
+
+
 def save_preview(path, observation, config, sample, current_tcp=None, role_specs=None,
                  role_masks=None, role_points=None, role_valid=None):
     """Save sampled diagnostics without changing cached tensors or labels."""
@@ -144,12 +178,16 @@ def save_preview(path, observation, config, sample, current_tcp=None, role_specs
         chunks.append(cloud[valid])
         rgb_chunks.append(colors[valid])
     points, colors = np.concatenate(chunks), np.concatenate(rgb_chunks)
-    if len(points) > 20000:
-        indices = np.linspace(0, len(points) - 1, 20000).astype(int)
-        points, colors = points[indices], colors[indices]
+    # Select the local ROI before global display sampling so small objects do
+    # not disappear merely because distant scene points exhausted the budget.
+    local_bounds = np.r_[action_tcp[:3] - LOCAL_HALF_EXTENT, action_tcp[:3] + LOCAL_HALF_EXTENT]
+    local_mask = (points >= local_bounds[:3]).all(axis=1) & (points < local_bounds[3:]).all(axis=1)
+    local_count, global_count = int(local_mask.sum()), len(points)
+    local_points, local_colors = _sample_preview_cloud(points[local_mask], colors[local_mask])
+    points, colors = _sample_preview_cloud(points, colors)
     row_height, top = PANEL_H + 44, 96
     ortho_top = top + ((len(cameras) + 1) // 2) * row_height
-    canvas = Image.new("RGB", (1024, ortho_top + 330), (24, 24, 24))
+    canvas = Image.new("RGB", (1024, ortho_top + 686), (24, 24, 24))
     draw = ImageDraw.Draw(canvas)
     draw.text((8, 6), f"OHT {sample['id']} | {sample['split']} | frame {sample['frame']} -> {sample['target_frame']}", fill="white")
     draw.text((8, 24), f"time {sample['timestamp']:.3f} s | {sample['goal']}", fill="white")
@@ -176,13 +214,28 @@ def save_preview(path, observation, config, sample, current_tcp=None, role_specs
         else:
             text = f"Blue near {limits[0]:.3f} m / red far {limits[1]:.3f} m"
         draw.text((x + PANEL_W + 4, y + 214), text, fill="white")
-    for index, axes in enumerate(((0, 1), (0, 2), (1, 2))):
-        x = index * 341
-        draw.text((x + 4, ortho_top + 2), "".join("XYZ"[axis] for axis in axes) + " world point cloud", fill="white")
-        canvas.paste(_orthographic(points, colors, bounds, axes, current_tcp, action_tcp,
-                                   role_points, role_valid), (x, ortho_top + 22))
-    draw.text((8, ortho_top + 284), "CPU diagnostic projection, not the BridgeVLA renderer. Black depth pixels are invalid.", fill="white")
-    draw.text((8, ortho_top + 302), "Role masks: 30% RGB + 70% color. Site outlines are projected region points; visibility is not verified.", fill="white")
+    draw.text((8, ortho_top + 2),
+              f"Global workspace | in-bounds points {global_count} -> shown {len(points)} | 3x3 pixel splats", fill="white")
+    local_top = ortho_top + 318
+    draw.text((8, local_top + 2),
+              f"GT-centered refine diagnostic (NOT model stage2) | +/-{LOCAL_HALF_EXTENT:.2f} m | points {local_count} -> {len(local_points)}",
+              fill="white")
+    for row_top, cloud, rgb, view_bounds, roi in (
+        (ortho_top, points, colors, bounds, local_bounds),
+        (local_top, local_points, local_colors, local_bounds, None),
+    ):
+        for index, axes in enumerate(((0, 1), (0, 2), (1, 2))):
+            x = index * 341
+            draw.text((x + 4, row_top + 20), "".join("XYZ"[axis] for axis in axes) + " world point cloud", fill="white")
+            canvas.paste(_orthographic(cloud, rgb, view_bounds, axes, current_tcp, action_tcp,
+                                       role_points, role_valid, region_bounds=roi), (x, row_top + 38))
+    draw.text((8, ortho_top + 300), "Magenta box: local cube footprint. Local views select observed points before global sampling.", fill="white")
+    if not local_count:
+        draw.text((8, local_top + 300), "No observed points in local cube; the GT keypoint does not create geometry.", fill="white")
+    else:
+        draw.text((8, local_top + 300), "Local cube is fixed at the GT keypoint; it is not a coarse prediction or the model's noisy training crop.", fill="white")
+    draw.text((8, ortho_top + 638), "CPU diagnostics, not BridgeVLA renderer outputs. Splats only affect display, not stored XYZ. Black depth = invalid.", fill="white")
+    draw.text((8, ortho_top + 656), "Role masks: 30% RGB + 70% color. Site outlines are projected region points; visibility is not verified.", fill="white")
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("xb") as stream:

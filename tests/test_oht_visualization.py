@@ -1,7 +1,7 @@
 """Preview geometry and generation-time isolation using real OHT cache fixtures."""
 import json
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw
 import pytest
 from scipy.spatial.transform import Rotation
 
@@ -14,6 +14,7 @@ from finetune.OHT.data.role_teacher import build_teacher
 from finetune.OHT.data.visualization import (
     TARGET, REFERENCE, OVERLAP, PreviewWriter, depth_colors, project_world, role_overlay,
 )
+from finetune.OHT.data import visualization as preview_module
 
 
 def test_rgb_role_blending_preserves_background_and_input():
@@ -74,7 +75,7 @@ def test_buffer_cli_previews_do_not_change_contract_labels_or_observations(repla
     for path in images:
         assert path.name == "000000.png"
         with Image.open(path) as image:
-            assert image.format == "PNG" and image.size[0] == 1024
+            assert image.format == "PNG" and image.size == (1024, 1490)
             image.verify()
     assert not (f.replay / "visualizations").exists()
     assert not (output / "visualizations").exists()
@@ -118,3 +119,86 @@ def test_preview_writer_is_disabled_by_default(tmp_path):
     assert not writer.output.exists()
     with pytest.raises(ValueError, match="nonnegative"):
         PreviewWriter(tmp_path, -1)
+
+
+def test_global_preview_keeps_more_than_twenty_thousand_points():
+    points = np.zeros((24001, 3))
+    colors = np.zeros((24001, 3), dtype=np.uint8)
+    shown, rgb = preview_module._sample_preview_cloud(points, colors)
+    assert len(shown) == len(rgb) == len(points)
+    assert preview_module.MAX_PREVIEW_POINTS == 200_000
+
+
+def test_small_splats_keep_nearest_surface_and_do_not_propagate():
+    points = np.array([[.5, .5, .2], [.5, .5, .8]])
+    colors = np.array([[255, 0, 0], [0, 0, 255]], dtype=np.uint8)
+    bounds = [0, 0, 0, 1, 1, 1]
+    image = np.asarray(preview_module._orthographic(points, colors, bounds, (0, 1), None, None, None, None))
+    np.testing.assert_array_equal(image[126:129, 168:171], np.tile([0, 0, 255], (3, 3, 1)))
+    assert (image == [0, 0, 255]).all(axis=-1).sum() == 9
+    # A nearer splat also wins over a farther neighbouring centre pixel.
+    points = np.r_[points, [[.5 + 1/339, .5, .1]]]
+    colors = np.r_[colors, [[0, 255, 0]]].astype(np.uint8)
+    first = np.asarray(preview_module._orthographic(points, colors, bounds, (0, 1), None, None, None, None))
+    second = np.asarray(preview_module._orthographic(points[::-1], colors[::-1], bounds, (0, 1), None, None, None, None))
+    np.testing.assert_array_equal(first, second)
+    np.testing.assert_array_equal(first[127, 170], [0, 0, 255])
+
+
+def _minimal_preview(points, center):
+    count = len(points)
+    observation = {
+        "wrist_point_cloud": points.T[:, None, :],
+        "wrist_rgb": np.full((3, 1, count), 160, dtype=np.uint8),
+        "wrist_depth": np.ones((1, 1, count)),
+        "wrist_camera_intrinsics": np.eye(3),
+        "wrist_camera_extrinsics": np.eye(4),
+    }
+    config = dict(cameras={"wrist": {}}, scene_bounds=[0, 0, 0, 1, 1, 1], depth=dict(limits=[.001, 4.094]))
+    sample = dict(id="task/000000/000000", split="train", frame=0, target_frame=1,
+                  timestamp=0., goal="test", labels=dict(gripper_pose=[*center, 0, 0, 0, 1]))
+    return observation, config, sample
+
+
+@pytest.mark.parametrize("center", [[.5, .5, .5], [.98, .5, .5]])
+def test_local_views_select_before_global_sampling_and_keep_gt_center(monkeypatch, tmp_path, center):
+    center = np.array(center)
+    local_points = center + np.array([[0, 0, 0], [-.01, 0, 0], [-.02, 0, 0]])
+    points = np.r_[np.tile([.9, .9, .9], (100, 1)), local_points]
+    observation, config, sample = _minimal_preview(points, center)
+    original_arrays = {name: value.copy() for name, value in observation.items()}
+    calls = []
+    original = preview_module._orthographic
+    def record(cloud, rgb, bounds, *args, **kwargs):
+        calls.append((cloud.copy(), np.asarray(bounds).copy(), kwargs.get("region_bounds")))
+        return original(cloud, rgb, bounds, *args, **kwargs)
+    monkeypatch.setattr(preview_module, "MAX_PREVIEW_POINTS", 5)
+    monkeypatch.setattr(preview_module, "_orthographic", record)
+    path = preview_module.save_preview(tmp_path / "preview.png", observation, config, sample)
+    assert len(calls) == 6
+    expected_bounds = np.r_[center - .20, center + .20]
+    for cloud, bounds, region in calls[:3]:
+        assert len(cloud) == 5
+        np.testing.assert_allclose(region, expected_bounds)
+    for cloud, bounds, region in calls[3:]:
+        np.testing.assert_allclose(cloud, local_points)
+        np.testing.assert_allclose(bounds, expected_bounds)
+        assert region is None
+    for name, value in observation.items():
+        np.testing.assert_array_equal(value, original_arrays[name])
+    with Image.open(path) as image:
+        assert image.size == (1024, 1018)  # One physical camera, two orthographic rows.
+
+
+def test_empty_local_views_are_explicitly_labelled(monkeypatch, tmp_path):
+    observation, config, sample = _minimal_preview(np.array([[.9, .9, .9]]), [.5, .5, .5])
+    texts = []
+    original = ImageDraw.ImageDraw.text
+    def record(self, xy, text, *args, **kwargs):
+        texts.append(text)
+        return original(self, xy, text, *args, **kwargs)
+    monkeypatch.setattr(ImageDraw.ImageDraw, "text", record)
+    preview_module.save_preview(tmp_path / "empty.png", observation, config, sample)
+    assert any("GT-centered refine diagnostic (NOT model stage2)" in text for text in texts)
+    assert any("No observed points in local cube" in text for text in texts)
+    assert any("in-bounds points 1 -> shown 1" in text for text in texts)
