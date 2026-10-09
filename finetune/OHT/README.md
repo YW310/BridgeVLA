@@ -47,9 +47,10 @@ python tools/audit_oht_dataset.py \
 
 以 v423 数据说明为契约，无需重新标定或重新采集。复制 [dataset.yaml](configs/dataset.yaml) 为本地配置：相机内参采用说明中的数值，位姿沿用世界坐标、米制、xyzw；`link_to_tcp` 已设为单位阵，策略预测数据记录的 EE 参考点，执行端必须使用同一参考点。
 
-仍需明确的配置：
+`scene_bounds` 默认设为 `[-0.5, -1.0, 0.3, 1.5, 1.0, 2.0]`，顺序 xmin,ymin,zmin,xmax,ymax,zmax，单位米；覆盖 v423 说明中的物体与路点示例并留余量。这是初始策略工作区，不是全量统计结果；训练前检查实际 EE/物体覆盖与动作越界，越界时调整配置，不静默裁剪 GT。audit 的 EE 范围仅是参考，不能替代完整物体范围。
 
-- `scene_bounds`：根据训练集 EE/物体覆盖与动作工作区留余量设置，顺序 xmin,ymin,zmin,xmax,ymax,zmax。这是策略工作区选择，不是重新标定；audit 的 EE 范围仅是参考，不能替代完整物体范围。
+仍需明确的格式定义：
+
 - 每相机 `optical_to_sensor`：采用 v423 导出姿态的轴约定；若已是 optical frame，则填单位阵。当前说明未明确该约定，不能仅由 xyzw 推定。
 - `depth.encoding`、`depth.kind`：采用 v423 的米制恢复公式及 z-depth/ray-distance 定义。当前说明仅列出 H.264/yuv420p MP4；旧 OSC_HDF5 的 uint16/mm 推测不自动适用于 v423。
 

@@ -1,8 +1,11 @@
 # OHT v423 simulation contract: world coordinates in metres, quaternions xyzw.
 # Intrinsics below come from the v423 data description (info.json).
 # No physical recalibration is required. Remaining nulls are unresolved format
-# definitions or workspace choices, not a request to recollect valid data.
-scene_bounds: null     # [xmin,ymin,zmin,xmax,ymax,zmax]; choose from training EE/object coverage + margin
+# definitions, not a request to recollect valid data.
+# Initial policy workspace around the v423 documented object/waypoint examples.
+# World metres: [xmin,ymin,zmin,xmax,ymax,zmax]. Not full-dataset measured bounds.
+# Check all action targets and relevant object coverage before training; never clip GT.
+scene_bounds: [-0.5, -1.0, 0.3, 1.5, 1.0, 2.0]
 # Predict the recorded observation.ee_pos_world / ee_quat_world reference point.
 # Online execution must use that same EE reference point, not an offset grasp centre.
 link_to_tcp:
