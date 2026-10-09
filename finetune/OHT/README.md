@@ -146,7 +146,7 @@ python tools/validate_oht_replay.py --replay /data/oht/replay-source-v2
 
 每个 RGB 面板下方显示 TCP/goal 的 `in view`、`outside image`、`behind camera` 或 `unavailable`，以及缓存像素坐标/光学 Z。画外点不强制移到边缘；`in view` 仅代表在视锥内，不代表没有被遮挡。
 
-- 全局三视图使用 `scene_bounds`，最多显示 200,000 个点（默认五相机 120×160 的全部有效点都在预算内）。3×3 像素小面积绘制按深度处理重叠，仅改善显示空洞；品红色方框标出局部立方体的投影范围。
+- 全局三视图使用 `scene_bounds`，最多显示 200,000 个点（默认五相机 120×160 的全部有效点都在预算内）。全局/局部点云均以单像素绘制，不扩张相邻像素，重叠点按深度处理；TCP/goal 标记大小不变，品红色方框标出局部立方体的投影范围。
 - 局部三视图以 GT keypoint 为中心，各轴 ±0.20 m，显示米制坐标范围。先从完整有效点云选择局部点，再独立限制显示点数，避免全局抽样漏掉小物体；没有观测点时明确提示，不补造几何。
 
 局部图标注 **GT-centered refine diagnostic (NOT model stage2)**：它不是模型 coarse 预测或带噪训练中心产生的二阶段视图。模型真实 coarse/refine renderer 图应在训练/推理前向中另行导出。两排都显示抽样前后点数；缓存的 4 倍步长采样不因预览变密而恢复到原始分辨率。

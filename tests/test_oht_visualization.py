@@ -129,20 +129,23 @@ def test_global_preview_keeps_more_than_twenty_thousand_points():
     assert preview_module.MAX_PREVIEW_POINTS == 200_000
 
 
-def test_small_splats_keep_nearest_surface_and_do_not_propagate():
+def test_single_pixel_points_keep_nearest_surface_without_expanding():
     points = np.array([[.5, .5, .2], [.5, .5, .8]])
     colors = np.array([[255, 0, 0], [0, 0, 255]], dtype=np.uint8)
     bounds = [0, 0, 0, 1, 1, 1]
     image = np.asarray(preview_module._orthographic(points, colors, bounds, (0, 1), None, None, None, None))
-    np.testing.assert_array_equal(image[126:129, 168:171], np.tile([0, 0, 255], (3, 3, 1)))
-    assert (image == [0, 0, 255]).all(axis=-1).sum() == 9
-    # A nearer splat also wins over a farther neighbouring centre pixel.
+    np.testing.assert_array_equal(image[127, 169], [0, 0, 255])
+    assert (image == [0, 0, 255]).all(axis=-1).sum() == 1
+    # Adjacent pixels retain their own points; no splat covers a neighbour.
     points = np.r_[points, [[.5 + 1/339, .5, .1]]]
     colors = np.r_[colors, [[0, 255, 0]]].astype(np.uint8)
     first = np.asarray(preview_module._orthographic(points, colors, bounds, (0, 1), None, None, None, None))
     second = np.asarray(preview_module._orthographic(points[::-1], colors[::-1], bounds, (0, 1), None, None, None, None))
     np.testing.assert_array_equal(first, second)
-    np.testing.assert_array_equal(first[127, 170], [0, 0, 255])
+    np.testing.assert_array_equal(first[127, 169], [0, 0, 255])
+    np.testing.assert_array_equal(first[127, 170], [0, 255, 0])
+    assert (first == [0, 0, 255]).all(axis=-1).sum() == 1
+    assert (first == [0, 255, 0]).all(axis=-1).sum() == 1
 
 
 def _minimal_preview(points, center):

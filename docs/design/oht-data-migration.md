@@ -568,7 +568,7 @@ IsaacLab client（现有环境）
 
 验证使用 12 个合成 OHT episode、真实 Parquet/MP4/米制深度，生成 60 条 transitions。覆盖 baseline batch、教师与预测缓存、无 GT 推理隔离、真实 RVTAgent 梯度累积和优化器更新、HTTP 本地收发及闭环失败计数。渲染器/VLM 用轻量 CPU 替身，完整模型及真实仿真不在此次验证范围。现有 role queries、跨尺度继承、角色特征保留和辅助损失测试亦已回归。
 
-构建 buffer/teacher 时可用 `--visualize-every N`，默认关闭，`1` 覆盖每个生成样本；可指定 `--visualize-output-dir`。PNG 与缓存数据分开：全局三视图保留最多 20 万点，以 3×3 像素绘制改善显示空洞，并标出 GT 局部范围；局部三视图围绕下一 GT keypoint 各轴 ±0.20 m，明确标注 **GT-centered refine diagnostic**，不是模型真实二阶段输出。均为 CPU 诊断投影，不修改缓存 XYZ；site 点投影不代表可见性已验证。参数、颜色和输出路径统一见 [OHT 运行说明](../../finetune/OHT/README.md#生成时可视化)。
+构建 buffer/teacher 时可用 `--visualize-every N`，默认关闭，`1` 覆盖每个生成样本；可指定 `--visualize-output-dir`。PNG 与缓存数据分开：全局三视图保留最多 20 万点，全局/局部点云均以单像素绘制，不扩张邻域，并标出 GT 局部范围；局部三视图围绕下一 GT keypoint 各轴 ±0.20 m，明确标注 **GT-centered refine diagnostic**，不是模型真实二阶段输出。均为 CPU 诊断投影，不修改缓存 XYZ；site 点投影不代表可见性已验证。参数、颜色和输出路径统一见 [OHT 运行说明](../../finetune/OHT/README.md#生成时可视化)。
 
 尚未完成且需要现场信息的工作：
 

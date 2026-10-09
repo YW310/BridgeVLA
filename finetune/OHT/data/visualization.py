@@ -129,26 +129,13 @@ def _orthographic(points, colors, bounds, axes, current_tcp, action_tcp, role_po
     if len(points):
         xy = pixels(points).astype(int)
         normal = next(axis for axis in range(3) if axis not in axes)
-        # Diagnostic z-buffer viewed from the positive normal axis.
+        # One display pixel per projected point, without expanding neighbours.
+        # Resolve collisions by depth, viewed from the positive normal axis.
         order = np.argsort(points[:, normal], kind="stable")[::-1]
         flat = xy[:, 1] * width + xy[:, 0]
         _, first = np.unique(flat[order], return_index=True)
         chosen = order[first]
         image[xy[chosen, 1], xy[chosen, 0]] = colors[chosen]
-        center_depth = np.full((height, width), -np.inf)
-        center_depth[xy[chosen, 1], xy[chosen, 0]] = points[chosen, normal]
-        center_colors, depth = image.copy(), center_depth.copy()
-        # 3x3 display-only splats. Resolve every overlap by depth; use original
-        # centres so drawing never propagates into an artificial filled surface.
-        for dy in (-1, 0, 1):
-            for dx in (-1, 0, 1):
-                source = (slice(max(0, -dy), min(height, height-dy)),
-                          slice(max(0, -dx), min(width, width-dx)))
-                target = (slice(max(0, dy), min(height, height+dy)),
-                          slice(max(0, dx), min(width, width+dx)))
-                nearer = center_depth[source] > depth[target]
-                depth[target][nearer] = center_depth[source][nearer]
-                image[target][nearer] = center_colors[source][nearer]
     result = Image.fromarray(image)
     draw = ImageDraw.Draw(result)
     if region_bounds is not None:
@@ -248,7 +235,7 @@ def save_preview(path, observation, config, sample, current_tcp=None, role_specs
         draw.text((x + PANEL_W + 4, y + 214), text, fill="white")
     filter_status = " | manual XYZ filter ON" if filter_options["enabled"] else ""
     draw.text((8, ortho_top + 2),
-              f"Global workspace | in-bounds points {global_count} -> shown {len(points)} | 3x3 pixel splats" + filter_status, fill="white")
+              f"Global workspace | in-bounds points {global_count} -> shown {len(points)} | 1px points" + filter_status, fill="white")
     local_top = ortho_top + 318
     draw.text((8, local_top + 2),
               f"GT-centered refine diagnostic (NOT model stage2) | +/-{LOCAL_HALF_EXTENT:.2f} m | points {local_count} -> {len(local_points)}",
@@ -267,7 +254,7 @@ def save_preview(path, observation, config, sample, current_tcp=None, role_specs
         draw.text((8, local_top + 300), "No observed points in local cube; the GT keypoint does not create geometry.", fill="white")
     else:
         draw.text((8, local_top + 300), "Local cube is fixed at the GT keypoint; it is not a coarse prediction or the model's noisy training crop.", fill="white")
-    draw.text((8, ortho_top + 638), "CPU diagnostics, not BridgeVLA renderer outputs. Splats only affect display, not stored XYZ. Black depth = invalid.", fill="white")
+    draw.text((8, ortho_top + 638), "CPU diagnostics, not BridgeVLA renderer outputs. 1px points; stored XYZ unchanged. Black depth = invalid.", fill="white")
     if color_by_camera:
         for index, camera in enumerate(cameras):
             draw.text((8 + index * 204, ortho_top + 656), camera, fill=CAMERA_COLORS[camera])
