@@ -103,6 +103,9 @@ def load_contract(root):
         raise ValueError("Replay contract checksum mismatch")
     if contract.get("schema") != SCHEMA:
         raise ValueError("Unsupported replay schema")
+    # Require an explicit raw-camera convention before reusing a cache for
+    # training/teacher generation. Old v423 XYZ cannot be fixed by relabelling.
+    validate_data_config(contract["data_config"])
     if file_digest(root / "samples.jsonl") != complete["index_sha256"]:
         raise ValueError("Replay sample index changed")
     if contract.get("index_sha256") != complete["index_sha256"]:

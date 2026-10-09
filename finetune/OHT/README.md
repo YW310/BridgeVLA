@@ -45,17 +45,21 @@ python tools/audit_oht_dataset.py \
 
 ## 3. 仿真数据契约与构建共用缓存
 
-以 v423 数据说明及用户补充的深度调查为契约，无需重新标定或重新采集。可直接使用 [dataset.yaml](configs/dataset.yaml)，需要自定义时另存本地配置。相机内参采用说明中的数值，位姿沿用世界坐标、米制、xyzw；`link_to_tcp` 为单位阵，策略预测数据记录的 EE 参考点，执行端必须使用同一参考点。
+以 v423 数据说明及用户补充的深度/投影调查为契约，无需重新标定或重新采集。可直接使用 [dataset.yaml](configs/dataset.yaml)，需要自定义时另存本地配置。位置使用世界坐标、米制；**原始相机四元数为 wxyz，EE/物体及策略输出为 xyzw**。`observation.ee_pos_world` 已包含采集控制器的 gripper→TCP 偏移，`link_to_tcp` 保持单位阵，不能再加约 12 cm 偏移；执行端使用同一 TCP。
 
 `scene_bounds` 默认设为 `[-0.5, -1.0, 0.3, 1.5, 1.0, 2.0]`，顺序 xmin,ymin,zmin,xmax,ymax,zmax，单位米；覆盖 v423 说明中的物体与路点示例并留余量。这是初始策略工作区，不是全量统计结果；训练前检查实际 EE/物体覆盖与动作越界，越界时调整配置，不静默裁剪 GT。audit 的 EE 范围仅是参考，不能替代完整物体范围。
 
-调查指出相机世界姿态使用 USD/OpenGL 轴。五个相机的 `optical_to_sensor` 均设为 `diag(1,-1,-1,1)`，先将 OpenCV 光学点变换到 USD 相机 frame，再应用记录的世界姿态：`T_world_optical = T_world_usd @ optical_to_sensor`。
+原始 `observation.*_extrinsic` 为 `[x,y,z,qw,qx,qy,qz]`，定义为 camera→world、USD/OpenGL 轴。配置显式设置 `camera_quaternion_order: wxyz`，读取时仅将相机四元数转为 xyzw。五个相机的 `optical_to_sensor` 均为 `diag(1,-1,-1,1)`：`T_world_optical = T_world_usd @ optical_to_sensor`。缓存外参是 4×4 optical→world 矩阵，不再涉及四元数重排。投影使用 `(P_world - t) @ R_world_optical`，是列向量 `R_world_optical.T @ (P_world - t)` 的等价写法，不要再次转置或翻轴。
 
 深度 MP4 实际为无损 HEVC `gray12le`，不是 RGB 的 H.264/yuv420p；`info.json` 中的 RGB 编码描述不能用于深度。原生 uint16 数值乘 `0.001` 得到米制 **ray distance**，无逐帧归一化。无损指整数像素保真，米制数据仍有 1 mm 量化及量程截断。
 
 `depth.path_pattern: null` 是有效配置：通过 Parquet 的 Path/Timestamp 读取原生灰度视频，不经过 RGB 转换。调查报告未保留 raw sidecar；现有无损深度视频可直接使用，原始数据和 audit 不需重生成。`0`（无返回）和 `4095`（量程饱和）均置 NaN；有效值为 1–4094。
 
 仓库配置更新不会修改此前复制的 `dataset-calibrated.yaml`。构建始终读取 `--config` 指定的文件；请同步所需字段，保留本地已有的正确值。
+
+**旧缓存迁移**：缺少 `camera_quaternion_order` 时构建/加载会明确报错，不猜测格式。此前把 v423 相机 wxyz 当作 xyzw 生成的缓存，其世界 XYZ/外参已错，修改 YAML、合同或仅重画 PNG 都无法修复。使用正确配置构建新目录（例如 `replay-camera-wxyz-v2`），再重建绑定旧 contract 的 teacher/预测角色缓存；原始视频、Parquet 和已有 audit 可保留，TCP 动作标签的定义不变。不要手改旧 contract 冒充修复，也不要沿用旧 replay/checkpoint 做 optimizer resume。
+
+数据方提供的 frame 965 腕部投影参考值为原图 `(313.0, 378.6)`，在默认 4 倍步长缓存中应约为 `(78.25, 94.65)`。本地没有该原始样本，仍需在服务器复核多帧、多相机，不以“落在图内”代替几何对齐验证。
 
 默认 image_size=[120,160] 对原始 480×640 做严格 4 倍步长采样，K 同步缩放。这是输入 RGB-D 尺寸，模型的虚拟渲染图像仍用现有 MVT 配置。
 
@@ -91,7 +95,7 @@ python tools/validate_oht_replay.py --replay /data/oht/replay-v1
 
 - 按 Parquet 引用时间戳选择最近视频 PTS，超出容差即报错；腕部 pose 按当前帧处理。
 - 米制 RGB-D → optical XYZ → world XYZ；无效点用 NaN，进入 Agent 时按边界过滤。
-- 用测得的世界系 EE 轨迹与 TCP 变换重建下一关键点绝对目标，**不使用原始 action 前六维作标签**。
+- 用记录的世界系 TCP 轨迹重建下一关键点绝对目标（v423 的 TCP 变换为单位阵），**不使用原始 action 前六维作标签**。
 - 原始 action 最后一维仅重建夹爪意图：+1 关、−1 开、0 保持；网络输出为 0 关、1 开。
 - 关键点包含夹爪/指令边界前后帧、位移/转角/帧距阈值与终帧；在线不输入 instruction_id。
 - 语言为统一任务目标，low_dim 为当前测量夹爪和两指兼容特征。collision 标签仅占位，损失权重固定 0。
@@ -244,11 +248,13 @@ from finetune.OHT.runtime.transport import Client
 observation = {"low_dim_state": low_dim(measured_open_fraction, finger_joints)}
 for name in data_config["cameras"]:
     observation.update(camera_observation(
-        name, rgb[name], metric_depth[name], sensor_pose_world_xyzw[name], data_config
+        name, rgb[name], metric_depth[name], sensor_pose_world_wxyz[name], data_config
     ))
 client = Client("http://127.0.0.1:8010", contract["sha256"])
 absolute_target = client.act(observation, goal, episode_id, control_step, simulation_timestamp)
 ~~~
+
+上例的 pose 是与 Parquet 相同的 USD camera→world 原始 wxyz 格式，需匹配 checkpoint 的 `data_config.camera_quaternion_order`。若在线 SDK 返回 xyzw，应在调用前显式重排为 wxyz；已生成的 optical→world 缓存矩阵不能再次做这一步。
 
 返回绝对目标交给共同执行器。runtime/executor.py 中 relative_eef 提供 world→base/body 位移与旋转向量误差，并要求显式位移/旋转限幅。真实 client 的尺度、积分周期、axis-angle/Euler 约定、夹爪转换、目标到达策略和在线 IK 必须由 IsaacLab 端核对实现；该函数不是完整控制器。
 
@@ -293,4 +299,4 @@ python -m pytest -q tests/test_oht_dataset_config.py tests/test_oht_depth_video.
 
 覆盖 12 个合成 episode → 60 条 transitions、五相机、视频 PTS、米制 depth、划分检查、教师/预测缓存、无 GT 推理隔离、真实 Agent 梯度累积与零碰撞损失、HTTP 协议、闭环失败计数和续训采样。backbone/render 使用 CPU 小替身，未验证完整 PaliGemma/point-renderer GPU 前向。另运行现有角色预测、跨尺度继承、辅助损失、前向与优化器回归测试。
 
-2026-10-09 验证：上述 OHT 测试 50 项通过，包括真实合成无损 HEVC gray12le 像素往返、行 padding、PTS 回退、错误像素格式拒绝、截断值屏蔽、USD/ray 反投影，以及 Parquet→replay→预览。预览专项覆盖全局点数预算、深度正确的小面积绘制、GT 局部范围与空视图提示、数据不变性；生成 PNG 已检查布局。此前 PyAV 12.3.0 下配置/深度专项 18 项通过。均为本地合成数据验证，尚未读取服务器 v423 全量数据；早期相关模型回归结果不代表本轮重新执行。
+2026-10-09 验证：上述 OHT 测试 58 项通过（本轮隔离环境 NumPy 1.26.4 / PyArrow 19.0.1）。覆盖原始相机 wxyz/显式 xyzw、非单位旋转下的 XYZ 与数据方投影公式、TCP 不重复偏移、旧配置/缓存拒绝，以及无损 gray12le、PTS、USD/ray、Parquet→replay→预览。预览专项覆盖点数预算、深度正确的小面积绘制、GT 局部范围与空视图提示、数据不变性；前轮已检查 PNG 布局。此前 PyAV 12.3.0 下配置/深度专项 18 项通过。均为本地合成数据验证，尚未读取服务器 v423 全量数据；早期相关模型回归结果不代表本轮重新执行。

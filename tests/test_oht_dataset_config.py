@@ -4,9 +4,12 @@ from pathlib import Path
 import numpy as np
 import pytest
 import yaml
+from scipy.spatial.transform import Rotation
 
+from finetune.OHT.data.actions import world_tcp_poses
 from finetune.OHT.data.geometry import check_bounds, transform_matrix
 from finetune.OHT.data.observation import camera_observation, validate_data_config
+from finetune.OHT.data.visualization import project_world
 
 
 CONFIG = Path(__file__).resolve().parents[1] / "finetune/OHT/configs/dataset.yaml"
@@ -84,10 +87,68 @@ def test_usd_camera_frame_preserves_ray_distance(dataset_config, camera):
     dataset_config["cameras"][camera]["intrinsics"] = np.eye(3).tolist()
     obs = camera_observation(
         camera, np.zeros((2, 2, 3), dtype=np.uint8), np.ones((2, 2)),
-        [1, 2, 3, 0, 0, 0, 1], dataset_config,
+        [1, 2, 3, 1, 0, 0, 0], dataset_config,
     )
     cloud = obs[f"{camera}_point_cloud"]
     np.testing.assert_allclose(cloud[:, 0, 0], [1, 2, 2])
     d = 1 / np.sqrt(3)
     np.testing.assert_allclose(cloud[:, 1, 1], [1+d, 2-d, 3-d])
     np.testing.assert_allclose(np.linalg.norm(cloud - np.array([1, 2, 3])[:, None, None], axis=0), 1)
+
+
+@pytest.mark.parametrize("order", [None, "unknown", ""])
+def test_camera_order_must_be_explicit(dataset_config, order):
+    if order is None:
+        dataset_config.pop("camera_quaternion_order")
+    else:
+        dataset_config["camera_quaternion_order"] = order
+    with pytest.raises(ValueError, match="camera_quaternion_order explicitly"):
+        validate_data_config(dataset_config)
+    with pytest.raises(ValueError, match="camera_quaternion_order explicitly"):
+        camera_observation("wrist", np.zeros((2, 2, 3), np.uint8), np.ones((2, 2)),
+                           [0, 0, 0, 1, 0, 0, 0], dataset_config)
+
+
+@pytest.mark.parametrize("order", ["wxyz", "xyzw"])
+def test_raw_camera_order_to_world_xyz_and_provider_projection(dataset_config, order):
+    dataset_config["camera_quaternion_order"] = order
+    dataset_config["image_size"] = [8, 8]
+    K = np.array([[4., 0, 4], [0, 4., 4], [0, 0, 1]])
+    dataset_config["cameras"]["wrist"]["intrinsics"] = K.tolist()
+    # Deliberately non-symmetric, non-unit rotation: identity-only tests cannot
+    # establish a quaternion ordering or the direction of the camera transform.
+    rotation = Rotation.from_euler("xyz", [23, -41, 67], degrees=True)
+    xyzw = rotation.as_quat()
+    raw_q = xyzw[[3, 0, 1, 2]] if order == "wxyz" else xyzw
+    position = np.array([.4, -.2, 1.6])
+    obs = camera_observation("wrist", np.zeros((8, 8, 3), np.uint8), np.full((8, 8), 2.),
+                             np.r_[position, raw_q], dataset_config)
+    expected_transform = np.eye(4)
+    expected_transform[:3, :3] = rotation.as_matrix() @ np.diag([1, -1, -1])
+    expected_transform[:3, 3] = position
+    np.testing.assert_allclose(obs["wrist_camera_extrinsics"], expected_transform, atol=1e-6)
+    # Pixel (6,5), ray length 2m, independently transformed into the world.
+    ray = np.array([.5, .25, 1.])
+    optical = ray / np.linalg.norm(ray) * 2
+    world = rotation.apply(optical * [1, -1, -1]) + position
+    np.testing.assert_allclose(obs["wrist_point_cloud"][:, 5, 6], world, atol=1e-6)
+    # Reference formula supplied by the data provider, in column-vector form.
+    camera_usd = rotation.as_matrix().T @ (world - position)
+    camera_optical = camera_usd * [1, -1, -1]
+    expected_pixel = (K @ camera_optical)[:2] / camera_optical[2]
+    projected, valid = project_world(world, K, obs["wrist_camera_extrinsics"], (8, 8))
+    assert valid[0]
+    np.testing.assert_allclose(projected[0], expected_pixel, atol=1e-5)
+    np.testing.assert_allclose(projected[0], [6, 5], atol=1e-5)
+
+
+def test_v423_recorded_tcp_and_ee_quaternion_are_not_converted(dataset_config):
+    assert dataset_config["camera_quaternion_order"] == "wxyz"
+    np.testing.assert_array_equal(dataset_config["link_to_tcp"], np.eye(4))
+    orientation = Rotation.from_euler("xyz", [19, 37, -64], degrees=True).as_quat()
+    position = [.622, .183, 1.388]
+    columns = {"observation.ee_pos_world": [position], "observation.ee_quat_world": [orientation]}
+    pose = world_tcp_poses(columns, dataset_config["link_to_tcp"])[0]
+    np.testing.assert_allclose(pose[:3], position, atol=1e-9)
+    np.testing.assert_allclose(Rotation.from_quat(pose[3:]).as_matrix(),
+                               Rotation.from_quat(orientation).as_matrix(), atol=1e-9)

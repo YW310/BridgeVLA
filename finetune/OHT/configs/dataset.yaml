@@ -1,4 +1,4 @@
-# OHT v423 simulation contract: world coordinates in metres, quaternions xyzw.
+# OHT v423: world metres; EE/object quaternions xyzw, raw camera quaternions wxyz.
 # Intrinsics below come from the v423 data description (info.json).
 # Depth/axes follow the supplied v423 investigation: lossless HEVC gray12le,
 # millimetre ray distance and USD/OpenGL world camera poses. No recalibration.
@@ -6,13 +6,16 @@
 # World metres: [xmin,ymin,zmin,xmax,ymax,zmax]. Not full-dataset measured bounds.
 # Check all action targets and relevant object coverage before training; never clip GT.
 scene_bounds: [-0.5, -1.0, 0.3, 1.5, 1.0, 2.0]
-# Predict the recorded observation.ee_pos_world / ee_quat_world reference point.
-# Online execution must use that same EE reference point, not an offset grasp centre.
+# observation.ee_pos_world already includes the controller's gripper->TCP offset.
+# Predict that recorded TCP directly; never add the offset a second time.
 link_to_tcp:
   - [1, 0, 0, 0]
   - [0, 1, 0, 0]
   - [0, 0, 1, 0]
   - [0, 0, 0, 1]
+# Raw observation.*_extrinsic = [x,y,z,qw,qx,qy,qz], camera->world USD pose.
+# This does not change the EE/object or policy-output xyzw convention.
+camera_quaternion_order: wxyz
 image_size: [120, 160]  # exact stride 4 from 480x640
 rotation_classes: 72
 video_timestamp_tolerance: 0.0084333333

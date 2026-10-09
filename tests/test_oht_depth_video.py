@@ -108,7 +108,7 @@ def test_parquet_reference_to_metric_ray_cloud(depth_movie):
     # A rotated world pose catches incorrect order of the optical-axis conversion.
     q = np.sqrt(.5)
     obs = camera_observation("wrist", np.zeros((64, 66, 3), np.uint8), depth,
-                             [1, 2, 3, 0, 0, q, q], config)
+                             [1, 2, 3, q, 0, 0, q], config)
     cloud = obs["wrist_point_cloud"].transpose(1, 2, 0)
     world_rays = cloud - np.array([1, 2, 3])
     np.testing.assert_allclose(np.linalg.norm(world_rays, axis=-1), depth[::2, ::2],

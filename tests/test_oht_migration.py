@@ -51,7 +51,7 @@ def replay_fixture(tmp_path_factory):
     base = tmp_path_factory.mktemp("oht")
     root = base / "raw"
     config = dict(scene_bounds=[-2,-2,-2,2,2,2], link_to_tcp=np.eye(4).tolist(),
-                  image_size=[8,8], rotation_classes=72,
+                  image_size=[8,8], rotation_classes=72, camera_quaternion_order="wxyz",
                   depth=dict(encoding="metric", kind="z", path_pattern="{task}/depth/{episode:06d}/{frame:06d}.npy"),
                   keypoints=dict(max_translation=.03, max_rotation_degrees=8,max_frames=3),
                   cameras={camera:dict(intrinsics=[[8,0,8],[0,8,8],[0,0,1]],
@@ -87,7 +87,7 @@ def replay_fixture(tmp_path_factory):
             for camera in CAMERAS:
                 columns[f"observation.images.{camera}"]=refs
                 columns[f"observation.depth.{camera}"]=refs
-                columns[f"observation.{camera}_extrinsic"]=[[0,0,0,0,0,0,1]]*n
+                columns[f"observation.{camera}_extrinsic"]=[[0,0,0,1,0,0,0]]*n
             pq.write_table(pa.table(columns), data_path)
     manifest=base/"audit.json"
     report=audit(root,manifest, fractions=(1/3,1/3,1/3))
@@ -112,6 +112,8 @@ def test_real_parquet_video_metric_depth_to_agent_batch(replay_fixture):
     assert row["global_left_rgb"].shape==(3,8,8)
     assert row["global_left_rgb"].dtype==np.uint8
     assert np.isnan(row["global_left_point_cloud"][:,0,0]).all()
+    np.testing.assert_allclose(row["global_left_point_cloud"][:,4,4], [0,0,1])
+    assert data.contract["data_config"]["camera_quaternion_order"] == "wxyz"
     assert "privileged" not in row["goal"]
     assert not any("objects_pos" in key or "oracle" in key or "predicted" in key for key in row)
     # Original commanded EE deltas were deliberately nonsense.
@@ -146,7 +148,7 @@ def test_native_gray12_parquet_to_replay_with_previews(replay_fixture, tmp_path)
     for camera in CAMERAS:
         columns[f"observation.images.{camera}"] = [dict(Path="rgb.mp4", Timestamp=[i/60]) for i in range(n)]
         columns[f"observation.depth.{camera}"] = [dict(Path="depth.mp4", Timestamp=[i/60]) for i in range(n)]
-        columns[f"observation.{camera}_extrinsic"] = [[.4, 0, 1.6, 0, 0, 0, 1]] * n
+        columns[f"observation.{camera}_extrinsic"] = [[.4, 0, 1.6, 1, 0, 0, 0]] * n
         config["cameras"][camera]["intrinsics"] = [[32,0,32],[0,32,32],[0,0,1]]
     pq.write_table(pa.table(columns), parquet)
     manifest = tmp_path / "audit.json"
@@ -161,6 +163,36 @@ def test_native_gray12_parquet_to_replay_with_previews(replay_fixture, tmp_path)
     np.testing.assert_allclose(row["wrist_depth"][0, 1:, :], 1.)
     assert np.isnan(row["wrist_point_cloud"][:, 0, 0]).all()
     assert np.isfinite(row["wrist_point_cloud"][:, 1:, :]).all()
+
+
+def test_missing_camera_order_fails_before_build_creates_output(replay_fixture, tmp_path):
+    config = copy.deepcopy(replay_fixture.config)
+    config.pop("camera_quaternion_order")
+    output = tmp_path / "invalid-replay"
+    with pytest.raises(ValueError, match="camera_quaternion_order explicitly"):
+        build(replay_fixture.root, replay_fixture.manifest, config, output)
+    assert not output.exists()
+
+
+def test_legacy_cache_requires_camera_order_even_with_valid_checksums(replay_fixture, tmp_path):
+    import shutil
+    legacy = tmp_path / "legacy"
+    legacy.mkdir()
+    for name in ("contract.json", "complete.json", "samples.jsonl"):
+        shutil.copy2(replay_fixture.replay / name, legacy / name)
+    contract = load_contract(legacy)
+    original_hash = contract.pop("sha256")
+    contract["data_config"].pop("camera_quaternion_order")
+    contract["sha256"] = digest(contract)
+    assert contract["sha256"] != original_hash
+    complete = json.loads((legacy / "complete.json").read_text())
+    complete["contract_sha256"] = contract["sha256"]
+    write_json(legacy / "contract.json", contract)
+    write_json(legacy / "complete.json", complete)
+    with pytest.raises(ValueError, match="Legacy v423 caches"):
+        load_contract(legacy)
+    with pytest.raises(ValueError, match="camera_quaternion_order explicitly"):
+        OHTDataset(legacy, "train")
 
 
 def test_audit_splits_keep_duplicate_trajectories_and_scene_groups():

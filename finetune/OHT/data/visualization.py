@@ -46,6 +46,7 @@ def project_world(points, intrinsics, world_from_optical, image_shape):
     """Project world points using cached optical extrinsics and scaled K."""
     points = np.asarray(points, dtype=float).reshape(-1, 3)
     transform = np.asarray(world_from_optical)
+    # Row-vector form of R.T @ (P_world - t); do not transpose R again here.
     optical = (points - transform[:3, 3]) @ transform[:3, :3]
     pixels = optical @ np.asarray(intrinsics).T
     xy = np.full((len(points), 2), np.nan)

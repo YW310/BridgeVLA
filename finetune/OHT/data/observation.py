@@ -3,6 +3,17 @@ import numpy as np
 from .geometry import array, pose_matrix, transform_matrix, backproject
 
 
+def _camera_quaternion_order(config):
+    order = config.get("camera_quaternion_order")
+    if order not in ("wxyz", "xyzw"):
+        raise ValueError(
+            "Set camera_quaternion_order explicitly to wxyz (raw OHT v423 camera poses) "
+            "or xyzw. Update the YAML passed to --config. Legacy v423 caches decoded "
+            "as xyzw must be rebuilt; editing their contract cannot repair stored XYZ."
+        )
+    return order
+
+
 def validate_data_config(config):
     bounds = config.get("scene_bounds")
     from .geometry import check_bounds
@@ -10,6 +21,7 @@ def validate_data_config(config):
         raise ValueError("Set scene_bounds to the world-space OHT policy workspace")
     check_bounds(np.asarray(bounds[:3]) + (np.asarray(bounds[3:]) - bounds[:3]) / 2, bounds)
     transform_matrix(config.get("link_to_tcp"), "link_to_tcp")
+    _camera_quaternion_order(config)
     cameras = config.get("cameras", {})
     if not cameras:
         raise ValueError("Camera calibration is required")
@@ -34,6 +46,7 @@ def validate_data_config(config):
 
 
 def camera_observation(camera, rgb, depth, sensor_pose, config):
+    """Decode raw camera->world pose; only camera quaternions use the configured order."""
     rgb = np.asarray(rgb)
     depth = np.asarray(depth)
     if rgb.ndim != 3 or rgb.shape[-1] != 3 or rgb.dtype != np.uint8 or rgb.shape[:2] != depth.shape:
@@ -41,7 +54,12 @@ def camera_observation(camera, rgb, depth, sensor_pose, config):
     calibration = config["cameras"][camera]
     K = array(calibration["intrinsics"], (3, 3), "intrinsics")
     sensor_pose = array(sensor_pose, (7,), "camera sensor pose")
-    world_from_optical = pose_matrix(sensor_pose[:3], sensor_pose[3:]) @ transform_matrix(calibration["optical_to_sensor"])
+    orientation = sensor_pose[3:]
+    if _camera_quaternion_order(config) == "wxyz":
+        orientation = orientation[[1, 2, 3, 0]]
+    # Internally all rotations are xyzw / matrices. Keep EE and object poses
+    # unchanged, and apply USD/OpenGL optical-axis conversion exactly once.
+    world_from_optical = pose_matrix(sensor_pose[:3], orientation) @ transform_matrix(calibration["optical_to_sensor"])
     points = backproject(depth, K, world_from_optical, config["depth"]["kind"],
                          tuple(config["depth"].get("limits", [0.001, 10])))
     height, width = map(int, config["image_size"])

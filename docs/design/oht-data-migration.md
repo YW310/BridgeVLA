@@ -39,7 +39,7 @@ Baseline 和 assistance 共用观测、相机、动作定义、控制器、训�
 
 ## 3. 新版说明带来的条件和待核查项
 
-已说明：五路 480×640 RGB-D、相机内参、逐帧相机外参、xyzw 数据四元数、世界/基座 EE 位姿、关节顺序、分段指令、metadata 路点和 IK 解。
+已说明：五路 480×640 RGB-D、相机内参、逐帧相机外参、世界/基座 EE 位姿、关节顺序、分段指令、metadata 路点和 IK 解。2026-10-09 修订明确：EE/物体四元数为 xyzw，原始相机四元数为 wxyz；`ee_pos_world` 已是包含控制器偏移的 TCP 位置。
 
 ### 3.1 深度视频契约（2026-10-09 补充调查）
 
@@ -51,9 +51,9 @@ Baseline 和 assistance 共用观测、相机、动作定义、控制器、训�
 
 ### 3.2 四元数与相机坐标约定
 
-数据声明为 xyzw，可作为内部存储约定；但说明中“与 PyTorch3D 和 Isaac Sim 一致”不能直接成立。PyTorch3D quaternion transforms 使用 real-part-first，Isaac Sim 5.1 Camera pose API 标明 scalar-first wxyz。见 [PyTorch3D transforms](https://pytorch3d.readthedocs.io/en/latest/modules/transforms.html) 与 [Isaac Sim Camera API](https://docs.isaacsim.omniverse.nvidia.com/5.1.0/py/source/extensions/isaacsim.sensors.camera/docs/index.html)。
+用户修订说明明确原始 `observation.*_extrinsic` 为 `[x,y,z,qw,qx,qy,qz]`，是 USD/OpenGL camera→world 位姿。`camera_quaternion_order: wxyz` 在 `camera_observation()` 边界将其转为 xyzw，再构造 `T_world_optical = T_world_usd @ diag(1,-1,-1,1)`。内部 geometry、EE/物体与动作输出仍用 xyzw；缓存相机外参已是 4×4 optical→world 矩阵。
 
-实施时固定所安装版本，库边界显式 xyzw↔wxyz；相机 prim 的姿态还需变换到反投影使用的 optical frame。不要把所有库统一交换一次后继续混用。验证单位姿态、绕三个轴 90°、世界→相机→世界 round-trip、EE FK 与记录姿态。
+`ee_pos_world` 已含 gripper→TCP 偏移，`link_to_tcp` 保持单位阵，禁止重复加偏移。行向量投影 `(P_world-t) @ R_world_optical` 已等价于列向量的转置求逆，不再额外转置。缺少明确相机顺序的旧配置/缓存会报错；误读 wxyz 的旧 XYZ 必须在新目录重建，原始数据/audit 保留，绑定旧 contract 的角色缓存需重建。迁移和在线输入格式统一见 [OHT 运行说明](../../finetune/OHT/README.md#3-仿真数据契约与构建共用缓存)。
 
 NVIDIA 相机 API 区分 distance_to_image_plane 和 distance_to_camera，不能对两者直接使用同一 Z-depth 公式。
 
@@ -558,7 +558,7 @@ IsaacLab client（现有环境）
 
 尚未完成且需要现场信息的工作：
 
-1. 真实 v423 全量读取、跨相机几何及训练集工作区覆盖检查；无需重新标定。深度和相机轴已按用户调查配置为 gray12le/毫米/ray 与 USD→OpenCV 转换；记录 EE 参考点（`link_to_tcp` 为单位阵）和带余量的初始工作区保留，尚未声称服务器全量验证。
+1. 真实 v423 全量读取、跨相机几何及训练集工作区覆盖检查；无需重新标定。按用户修订说明读取 gray12le/毫米/ray、原始相机 wxyz 与 USD→OpenCV 转换，直接使用已含偏移的 TCP（`link_to_tcp` 为单位阵）。需在服务器复核 frame 965 腕部参考投影 `(313.0,378.6)` 及多帧几何，尚未声称完成全量验证。
 2. 从仿真或标注工具批量导出语义角色 masks/site；首版消费显式标注，未自动实现数据集角色路由和 mesh 重建。
 3. 完整 CUDA/PaliGemma/point-renderer smoke 与三 seed 训练，没有新 OHT 成功率。
 4. 核查 H-VLA/IsaacLab 脚本及 Task1/2 映射、真实采集和控制 API、EEF/IK/hybrid 执行器、专家目标回放和配对闭环。
