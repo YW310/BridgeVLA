@@ -46,20 +46,24 @@ video_alignment: frame_index  # timestamp only for independently timestamped str
 video_timestamp_tolerance: 0.0084333333
 depth:
   # Read native uint16 words, preserving 12-bit values (never convert to RGB).
-  # Dataset-specific numeric encoding from the supplied depth investigation:
-  # raw=897 -> 0.897 m. gray12le alone does not imply this scale.
-  encoding: scaled_integer
+  # Match _depth_video_spec() / _dequantize_depth_mm() in the reference converter.
+  # Per-camera depth metadata overrides these fallbacks; RGB metadata is ignored.
+  # raw=897 -> 1.215 m with the default log parameters, NOT 0.897 m.
+  encoding: quantized
   pixel_format: gray12le
-  # This export's info.json describes RGB only; never apply converter log defaults.
-  metadata: false
-  scale: 0.001
-  offset: 0.0
+  metadata: reference  # true: require all fields; false: use explicit YAML only
+  depth_min: 0.01
+  depth_max: 10.0
+  shift: 3.5
+  use_log: true
+  qmax: 4095
+  round_to_mm: true    # match reference uint16-mm PNG storage before mm->m
   # Match reference pointcloud_transforms.py: Z=depth, X=(u-cx)*Z/fx,
   # Y=(v-cy)*Z/fy. Do not normalize rays for this Z-depth contract.
   kind: z
-  invalid_values: [0, 4095]  # no return / saturated range for this export
+  invalid_values: [0]  # qmax is a valid decoded far plane, not an invalid code
   path_pattern: null   # null: use Parquet depth Path/Timestamp; sidecars: root-relative pattern
-  limits: [0.001, 4.094]
+  limits: [0.001, 3.0]  # reference pointcloud transform keeps 0 < Z <= 3 m
 keypoints:
   # Only changes in the measured, filtered binary gripper state.
   # No stops, instruction/motion subdivisions, or synthetic terminal goal.

@@ -61,6 +61,13 @@ def validate_data_config(config, *, resolved=False):
         transform_matrix(camera.get("optical_to_sensor"), f"{name} optical_to_sensor")
     if config.get("depth", {}).get("encoding") not in ("metric", "scaled_integer", "linear_channel", "quantized"):
         raise ValueError("Configure metric depth encoding explicitly")
+    metadata = config["depth"].get("metadata", False)
+    if not isinstance(metadata, bool) and metadata != "reference":
+        raise ValueError("depth.metadata must be true, false or reference")
+    if metadata and config["depth"]["encoding"] != "quantized":
+        raise ValueError("Depth metadata resolution requires encoding=quantized")
+    if not isinstance(config["depth"].get("round_to_mm", False), bool):
+        raise ValueError("depth.round_to_mm must be boolean")
     if config["depth"]["encoding"] == "quantized":
         from .video import validate_quantization
         validate_quantization(config["depth"])

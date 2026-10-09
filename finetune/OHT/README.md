@@ -75,15 +75,15 @@ point_cloud_filter:
 
 原始相机外参默认为 camera→world、USD/OpenGL 轴，按显式顺序转换到内部 xyzw。`camera_pose_matrix()` 与参考转换器一致：先解析 `camera_quaternion_order`，若 `camera_extrinsic_direction: world_to_camera` 则对完整 4×4 求逆，再右乘 `optical_to_sensor`。默认方向 `camera_to_world`，五个相机的光学变换均为 `diag(1,-1,-1,1)`：`T_world_optical = T_world_usd @ optical_to_sensor`。不要将翻轴矩阵左乘到世界坐标，也不要只转置 R 而忘记平移。若来源已经是 optical camera→world，显式使用 identity，禁止再翻轴。缓存外参始终是 4×4 optical→world；投影使用 `(P_world - t) @ R_world_optical`，不再次转置或翻轴。camera 与 EE 的四元数配置独立，不能靠改动作旋转修复点云。
 
-深度为无损 HEVC `gray12le`；**像素格式不能决定数值编码**。仓库配置保留此前数据调查的 `depth_m = raw × 0.001`，反投影改为与补充参考代码一致的 `kind: z`；`0` 无返回、`4095` 截断无效，`1–4094` 对应 `0.001–4.094 m`。毫米解码设置不是从 RGB 的 H.264/yuv420p metadata 推断；本地尚未拿到服务器原始帧独立验证，参考转换器的 linear/log 反量化与当前设置的差异仍须按实际 writer 核实。
+深度为无损 HEVC `gray12le`；**像素格式不能决定数值编码**。当前按用户指定的参考代码读取：原始像素是量化码，先 linear/log 反量化，再按参考 TFDS 转换器舍入为 uint16 毫米，最后转回米；使用 `kind: z` 针孔反投影。`0` 为无效码，`qmax=4095` 是有效 far plane 码，默认解为 10 m，再由参考点云的 `0 < Z <= 3 m` 范围过滤。不能直接把原始码乘 0.001，也不能将 4095 当作无效原始码。
 
-**更正此前 log 默认值**：本次 `info.json.features` 只有 RGB，没有 `observation.depth.*` 或量化参数。参考 `_depth_video_spec()` 缺字段时返回 log 默认值，但这不能证明导出端采用了 log 编码。示例 raw=897 按数据方说明为 **0.897 m**，此前 log 默认值会解成约 **1.215 m**，可造成跨相机表面变形/重影；不能靠修改外参旋转补偿，也不能据此断定所有错位已解决。
+**以参考链路为准**：`metadata: reference` 从每个相机的 `features.observation.depth.<camera>.info` 读取量化参数，`video.*` key 优先于普通 key；缺失字段采用 YAML 中与参考 `_depth_video_spec()` 一致的默认值：`depth_min=0.01`、`depth_max=10.0`、`shift=3.5`、`use_log=true`、`qmax=4095`、`pixel_format=gray12le`。RGB-only info 或没有 info 文件时也沿用这些默认值，不从 RGB codec 推断深度。默认 raw=897 解为 **1.215 m**，raw=1500 解为 **2.249 m**。此前 `raw × 0.001` 的默认配置与此链路不一致；即使外参正确且表面高度一致，也可能造成 XY 融合分离。
 
-仍支持已确认的其他 linear/log 量化导出：`encoding: quantized`，设 `n=q/qmax`，log 逆变换为 `exp(n*(log(max+shift)-log(min+shift))+log(min+shift))-shift`，linear 为 `n*(max-min)+min`。`metadata: true` 必须从**每个相机**的 `features.observation.depth.<camera>.info` 读到完整 `depth_min/depth_max/shift/use_log/qmax/pix_fmt`（`video.*` 或普通 key），缺失即报错，不混入默认值。若实际 writer 参数已独立核实，可 `metadata: false` 显式填写；不要对当前 RGB-only metadata 自动启用 log。量化 writer 的 qmax 可以表示有效 far plane，是否屏蔽由其契约决定，不能与当前毫米导出混用。
+`encoding: quantized` 时设 `n=q/qmax`，log 逆变换为 `exp(n*(log(max+shift)-log(min+shift))+log(min+shift))-shift`，linear 为 `n*(max-min)+min`。默认 `round_to_mm: true` 匹配参考 float32 运算及 PNG 毫米舍入；设为 false 可保留亚毫米浮点深度。`metadata: true` 仍为严格模式，要求每相机完整的 `depth_min/depth_max/shift/use_log/qmax/pix_fmt`，缺失即报错；`metadata: false` 只用显式 YAML 参数。已确认的原始毫米导出仍可单独配置 `encoding: scaled_integer`、`metadata: false`、`scale: 0.001`，但不再作为本次参考链路的默认值。每任务实际解析出的参数及源文件 hash 写入 contract，不能仅改 contract 来重解释旧 XYZ。
 
 `depth.path_pattern: null` 通过 Parquet 引用读取原生灰度视频，不经过 RGB；按下文 `video_alignment` 配对帧。补充的 `pointcloud_transforms.py` 明确使用 `Z=depth_m`、`X=(u-cx)*Z/fx`、`Y=(v-cy)*Z/fy`，因此默认 `depth.kind: z`，不归一化射线。将 Z-depth 按此前的 `ray` 处理会随像素离主点的距离拉近表面，造成跨相机融合变形。只有独立确认来源为相机到点的欧氏距离时才显式使用 `ray`。
 
-从旧 `kind: ray` 配置迁移时，将实际 `--config` 文件中的 `depth.kind` 改为 `z`，同时检查 `cameras.<name>.depth.kind` 的覆盖值。旧 replay/checkpoint 中记录的 kind 和已保存 XYZ 不随仓库默认值改变；在新目录重建 replay，再重建依赖的 teacher/预测缓存并训练匹配的 checkpoint。不要手改旧 contract 或把旧米制 depth/XYZ 仅重画成预览就当作修复。
+从旧 ray 或直接毫米解码配置迁移时，替换实际 `--config` 文件中的整个 depth 块，同时检查 `cameras.<name>.depth` 的旧覆盖值。旧 replay/checkpoint 中记录的编码、kind 和已保存 XYZ 不随仓库默认值改变；在新目录重建 replay，再重建依赖的 teacher/预测缓存并训练匹配的 checkpoint。不要手改旧 contract 或把旧米制 depth/XYZ 仅重画成预览就当作修复。
 
 仓库配置更新不会修改此前复制的 `dataset-calibrated.yaml`。构建始终读取 `--config` 指定的文件；请同步所需字段，保留本地已有的正确值。
 
@@ -97,18 +97,22 @@ point_cloud_filter:
 
 ~~~yaml
 depth:
-  encoding: scaled_integer
+  encoding: quantized
   pixel_format: gray12le
-  metadata: false
-  scale: 0.001
-  offset: 0.0
+  metadata: reference
+  depth_min: 0.01
+  depth_max: 10.0
+  shift: 3.5
+  use_log: true
+  qmax: 4095
+  round_to_mm: true
   kind: z
-  invalid_values: [0, 4095]
+  invalid_values: [0]
   path_pattern: null
-  limits: [0.001, 4.094]
+  limits: [0.001, 3.0]
 ~~~
 
-外部 `dataset-calibrated.yaml` 请替换**整个 depth 块**，不要保留旧 `metadata: true` 或 per-camera `depth` 覆盖。旧 buffer 的 XYZ 已经解码并保存，改 YAML 或重画预览不会修复它；先以新配置核对少量帧，再在新目录重建受影响缓存。raw/audit 不变，不删除正确数据。
+外部 `dataset-calibrated.yaml` 请替换**整个 depth 块**，不要保留旧 `encoding: scaled_integer`、`metadata: false/true` 或 per-camera `depth` 覆盖来替代上面的参考模式。旧 buffer 的 XYZ 已经解码并保存，改 YAML 或重画预览不会修复它；先以新配置核对少量帧，再在新目录（例如 `replay-reference-v2`）重建受影响缓存。raw/audit 不变，不删除正确数据。
 
 读取器检查实际像素格式，保留 12-bit 数值及视频 PTS；旧 PyAV 的 gray12le 数组兼容路径直接读取含行 padding 的 uint16 平面。仍兼容浮点 NPY（metric）、整数 PNG/TIFF（scaled_integer）和显式指定通道/scale/offset 的旧 linear_channel 编码。普通可视化视频不能据此当作米制深度。
 
@@ -404,8 +408,8 @@ HTML/诊断测试覆盖抽样/RGB/相机对齐、旧 ROI 点的显示重建、�
 
 另直接抽取参考转换器的纯相机函数，对照 1,600 组随机位姿、wxyz/xyzw、c2w/w2c 与 OpenGL/optical 输入；最终 optical→world 矩阵最大绝对差约 `2.8e-7`。这证明约定处理与提供代码相符，不证明服务器原始 pose 与图像已同步。
 
-另已直接抽取提供转换器的纯数值函数，对照 linear/log 各 4096 个深度码值；最大差约 0.504 mm（参考 PNG 毫米舍入及浮点差异），相机变换/K 缩放和原始夹爪端点归一化通过对照。该对照不表示参考链路二次归一化后的夹爪标签或完整点云流程完全一致。
+深度解码现已包含参考 float32 运算和毫米 PNG 舍入。回归使用直接执行参考 `_dequantize_depth_mm()` 得到的黄金校验值，覆盖 linear/log 各 4096 个码值；另覆盖每相机 metadata/缺字段 fallback、qmax 保留及独立的 3 m 点云过滤，并复现将量化码误当毫米时的纯 XY 分离。此前未舍入配置约 0.504 mm 的码值差不再作为当前参考模式的容差。该对照不表示参考链路二次归一化后的夹爪标签或完整模型点云采样完全一致。
 
 补充的公共反投影模块已确认使用 Z-depth，仓库默认配置已同步为 `kind: z`。回归覆盖默认 Z-depth 在五个不同姿态相机和步长下采样后的同平面对齐，以及误按 ray 处理时的表面偏移；显式 ray 支持仍保留。
 
-均为本地合成数据/纯函数验证，未读取服务器 v423 全量数据，也未验证完整 CUDA/VLM/真实闭环。原始 depth 数值编码与真实跨相机对齐仍需核实；audit 的服务器实际提速尚未测量。
+均为本地合成数据/纯函数验证，未读取服务器 v423 全量数据，也未验证完整 CUDA/VLM/真实闭环。当前以用户提供的参考代码为深度契约，真实跨相机对齐仍需用重建后的缓存复核；audit 的服务器实际提速尚未测量。

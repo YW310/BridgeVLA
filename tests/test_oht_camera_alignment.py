@@ -90,7 +90,10 @@ def test_default_z_depth_matches_reference_plane_after_downsampling():
         source = optical @ np.diag([1., -1., -1., 1.])
         raw_pose = np.r_[source[:3, 3], Rotation.from_matrix(source[:3, :3]).as_quat()[[3, 0, 1, 2]]]
         z = (.4 - optical[:3, 3] @ normal) / ((rays @ optical[:3, :3].T) @ normal)
-        raw = np.rint(z * 1000).astype(np.uint16)
+        spec = config["depth"]
+        norm = ((np.log(z + spec["shift"]) - np.log(spec["depth_min"] + spec["shift"])) /
+                (np.log(spec["depth_max"] + spec["shift"]) - np.log(spec["depth_min"] + spec["shift"])))
+        raw = np.rint(norm * spec["qmax"]).astype(np.uint16)
         assert ((raw > 0) & (raw < 4095)).all()
         depth = decode_depth(raw, config["depth"])
         reference_world = (rays * depth[..., None]) @ optical[:3, :3].T + optical[:3, 3]
@@ -99,7 +102,8 @@ def test_default_z_depth_matches_reference_plane_after_downsampling():
         observation = camera_observation(camera, rgb, depth, raw_pose, config)
         cloud = observation[f"{camera}_point_cloud"].transpose(1, 2, 0)
         np.testing.assert_allclose(cloud, reference_world[::2, ::2], atol=2e-7)
-        np.testing.assert_allclose(cloud @ normal, .4, atol=.0006)
+        # Includes writer quantization plus reference millimetre PNG rounding.
+        np.testing.assert_allclose(cloud @ normal, .4, atol=.002)
         np.testing.assert_allclose(observation[f"{camera}_camera_intrinsics"],
                                    np.diag([.5, .5, 1.]) @ K)
         wrong = deepcopy(config)
@@ -116,7 +120,8 @@ def test_log_decoding_mm_rays_creates_cross_camera_surface_misalignment():
     config["image_size"] = [11, 13]
     # This separate synthetic ray-distance export explicitly opts into ray;
     # the default OHT reference contract uses Z-depth.
-    config["depth"]["kind"] = "ray"
+    config["depth"] = dict(encoding="scaled_integer", scale=.001, kind="ray",
+                           invalid_values=[0, 4095], limits=[.001, 4.094])
     K = np.array([[14., 0, 6], [0, 15., 5], [0, 0, 1.]])
     normal = np.array([.25, -.15, 1.])
     normal /= np.linalg.norm(normal)

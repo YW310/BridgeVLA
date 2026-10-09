@@ -1,5 +1,6 @@
 """Explicit frame-index/PTS alignment; numeric depth never goes through RGB."""
 from pathlib import Path
+import math
 import numpy as np
 from .common import inside
 
@@ -188,15 +189,22 @@ def decode_depth(raw, config):
         qmax = int(config["qmax"])
         if np.any(raw < 0) or np.any(raw > qmax):
             raise ValueError(f"Quantized depth outside [0,{qmax}]")
-        normalized = raw.astype(np.float64) / qmax
+        round_to_mm = config.get("round_to_mm", False)
+        if not isinstance(round_to_mm, bool):
+            raise ValueError("depth.round_to_mm must be boolean")
+        # The reference uses float32 before uint16-mm rounding. Retain that
+        # arithmetic here so half-millimetre ties match its PNG values.
+        normalized = raw.astype(np.float32 if round_to_mm else np.float64) / float(qmax)
         near, far, shift = (float(config[key]) for key in ("depth_min", "depth_max", "shift"))
         if config["use_log"]:
-            low, high = np.log(near + shift), np.log(far + shift)
+            low, high = math.log(near + shift), math.log(far + shift)
             depth = np.exp(normalized * (high - low) + low) - shift
         else:
             depth = normalized * (far - near) + near
-        # Keep metric floats; the reference TFDS converter additionally rounds
-        # to uint16 millimetres for PNG storage, which our NPZ does not need.
+        if round_to_mm:
+            depth_mm = np.clip(np.rint(depth * 1000.0), 0, np.iinfo(np.uint16).max).astype(np.uint16)
+            depth = depth_mm.astype(np.float32) * .001
+        # Non-reference profiles can retain sub-millimetre metric floats.
         depth = depth.astype(np.float32)
         depth[raw == 0] = np.nan  # Reserved by the quantizing writer.
     elif encoding in ("scaled_integer", "linear_channel"):

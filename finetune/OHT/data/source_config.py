@@ -51,9 +51,9 @@ def resolve_dataset_config(dataset, config):
     """Return canonical, self-contained config plus metadata file fingerprints.
 
     Explicit YAML remains supported. No per-episode range fitting, quaternion
-    guessing or inferred camera focal lengths. Quantized depth metadata must
-    specify the complete writer contract; converter fallback values do not
-    establish how a dataset's numeric depth was encoded.
+    guessing or inferred camera focal lengths. Strict depth metadata requires
+    every quantization field. The explicit reference mode uses the configured
+    converter defaults for missing fields, matching _depth_video_spec().
     """
     dataset = Path(dataset)
     result, sources, loaded = deepcopy(config), {}, {}
@@ -104,10 +104,14 @@ def resolve_dataset_config(dataset, config):
             raise ValueError("Gripper endpoints unavailable in meta stats/info; set gripper.source=config and explicit open/close")
 
     depth = result["depth"]
-    if depth.pop("metadata", False):
+    metadata_mode = depth.pop("metadata", False)
+    if not isinstance(metadata_mode, bool) and metadata_mode != "reference":
+        raise ValueError("depth.metadata must be true, false or reference")
+    if metadata_mode:
         if depth["encoding"] != "quantized":
             raise ValueError("Depth metadata resolution requires encoding=quantized")
-        info = read("meta/info.json")
+        info = ({} if metadata_mode == "reference" and not inside(dataset, "meta/info.json").is_file()
+                else read("meta/info.json"))
         if not isinstance(info, dict) or not isinstance(info.get("features", {}), dict):
             raise ValueError("meta/info.json must contain a features mapping")
         for camera, calibration in result["cameras"].items():
@@ -119,21 +123,23 @@ def resolve_dataset_config(dataset, config):
             keys = ("depth_min", "depth_max", "shift", "use_log", "qmax", "pix_fmt")
             missing = [key for key in keys
                        if metadata.get("video." + key, metadata.get(key)) is None]
-            if missing:
+            if missing and metadata_mode != "reference":
                 raise ValueError(
                     f"{camera}: missing depth quantization metadata {missing} in "
                     f"meta/info.json features.observation.depth.{camera}.info. "
                     "RGB codec metadata does not specify numeric depth encoding; "
-                    "converter log defaults are not evidence of the writer contract. "
-                    "For the confirmed millimetre export, replace the entire depth "
-                    "block with encoding=scaled_integer, scale=0.001, offset=0, "
-                    "kind=z (reference pinhole projection), invalid_values=[0,4095], metadata=false. For an "
-                    "independently verified quantized writer, set metadata=false "
-                    "and supply all quantization parameters explicitly. Update "
+                    "Strict metadata mode does not apply converter defaults. "
+                    "To follow the supplied reference converter, set depth.metadata=reference "
+                    "and configure its fallback quantization parameters. Alternatively set "
+                    "metadata=false with explicit writer parameters. Update "
                     "the file passed to --config, not an existing replay contract.")
             for key in keys:
-                value = metadata.get("video." + key, metadata.get(key))
-                spec["pixel_format" if key == "pix_fmt" else key] = _boolean(value) if key == "use_log" else value
+                target = "pixel_format" if key == "pix_fmt" else key
+                value = metadata.get("video." + key, metadata.get(key, spec.get(target)))
+                # Reference _as_bool(None, default) uses its fallback.
+                if key == "use_log" and value is None and metadata_mode == "reference":
+                    value = spec[target]
+                spec[target] = _boolean(value) if key == "use_log" else value
             validate_quantization(spec)
             if spec.get("pixel_format") != "gray12le":
                 raise ValueError(f"{camera}: quantized depth requires native gray12le")

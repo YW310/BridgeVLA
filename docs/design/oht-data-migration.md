@@ -43,7 +43,7 @@ Baseline 和 assistance 共用观测、相机、动作定义、控制器、训�
 
 ### 3.1 深度视频契约（2026-10-09 补充调查）
 
-深度为 **无损 HEVC gray12le**，数值编码不能从像素格式推断。用户本次提供的 `info.json` 仅列 RGB，无深度量化参数；参考转换器的 log fallback 不是 writer 契约。仓库保留此前调查的 `raw × 0.001 m` 解码，0/4095 无效；反投影按补充参考代码改为 Z-depth。raw=897 在毫米设置下为 0.897 m，参考 log 默认值解为约 1.215 m；实际原始编码仍须按 writer 核实。仍支持独立核实的 quantized writer；若启用 metadata，必须具备每相机完整量化字段，缺失报错。配置、区别和迁移见 [OHT 运行说明](../../finetune/OHT/README.md#3-仿真数据契约与构建共用缓存)。
+深度为 **无损 HEVC gray12le**，数值编码不能从像素格式推断。当前按用户要求以参考代码为准：`encoding: quantized`、`metadata: reference`，每相机 depth metadata 优先，缺字段用参考默认 `depth_min=0.01`、`depth_max=10`、`shift=3.5`、`use_log=true`、`qmax=4095`。匹配参考 float32 反量化及毫米 PNG 舍入，再按 Z-depth 反投影。默认 raw=897 为 1.215 m；0 无效，4095 解为有效 10 m，点云独立过滤 `0 < Z <= 3 m`。此前直接 `raw × 0.001` 的默认值不再用于参考链路。严格 `metadata: true` 和显式毫米导出模式仍保留。配置、区别和旧缓存迁移见 [OHT 运行说明](../../finetune/OHT/README.md#3-仿真数据契约与构建共用缓存)。
 
 不需要 raw sidecar 或重新采集。读取器原生读取灰度平面并检查像素格式；仓库配置按原始帧序号配对，独立时间戳流可显式选择 PTS。禁止将数值深度转换成 RGB 再解码。相机世界姿态为 USD/OpenGL，使用 `T_world_optical = T_world_usd @ diag(1,-1,-1,1)`。
 
@@ -59,7 +59,7 @@ Baseline 和 assistance 共用观测、相机、动作定义、控制器、训�
 
 | 提供代码中的函数/链路 | 本轮处理 |
 |---|---|
-| `_depth_video_spec()` / `_dequantize_depth_mm()` | `video.decode_depth()` 仍支持已核实的量化公式；`source_config.resolve_dataset_config()` 不再静默套 log fallback，当前导出按数据方毫米契约显式解码 |
+| `_depth_video_spec()` / `_dequantize_depth_mm()` | 默认 reference 模式逐相机 metadata 加缺字段 fallback；匹配 float32 linear/log 反量化与 uint16-mm 舍入，raw=897 默认解为 1.215 m；0 无效，qmax 保留，3 m 范围另行过滤 |
 | `_resolve_calibration_for_view()` / `_resize_intrinsic()` | 读取真实 metadata K；RGB-D 严格步长采样，K 同步缩放，不照搬 TFDS 方形 resize |
 | `_canonicalize_extrinsic_pose7()` / optical conversion | 原始 wxyz/camera→world/OpenGL；只翻轴一次，BridgeVLA 保留 world 坐标 |
 | `_canonicalize_new_gripper_to_legacy_physical()` / `binarize_gripper_hysteresis_with_diff()` | 使用原始 motor 端点直接归一化 open01，移植因果滞回+差分；不绕经旧 TFDS 的物理开度区间 |
@@ -574,7 +574,7 @@ IsaacLab client（现有环境）
 
 尚未完成且需要现场信息的工作：
 
-1. 真实 v423 全量读取、跨相机几何及工作区覆盖检查；无需重新标定。按实际 writer 核实 gray12le 毫米/linear/log 编码，读取 metadata K/夹爪端点、显式 camera/EE 顺序；TCP 不重复偏移。公共 `pointcloud_transforms.py` 已补充，默认 Z-depth 已同步；仍需在服务器复核 frame 965 腕部参考投影 `(313.0,378.6)` 及多帧几何。
+1. 真实 v423 全量读取、跨相机几何及工作区覆盖检查；无需重新标定。已按参考代码统一 gray12le linear/log 反量化、metadata fallback、毫米舍入及 Z-depth，读取 metadata K/夹爪端点、显式 camera/EE 顺序；TCP 不重复偏移。仍需在服务器用新缓存复核 frame 965 腕部参考投影 `(313.0,378.6)` 及多帧几何。
 2. 从仿真或标注工具批量导出语义角色 masks/site；首版消费显式标注，未自动实现数据集角色路由和 mesh 重建。
 3. 完整 CUDA/PaliGemma/point-renderer smoke 与三 seed 训练，没有新 OHT 成功率。
 4. 核查 H-VLA/IsaacLab 脚本及 Task1/2 映射、真实采集和控制 API、EEF/IK/hybrid 执行器、专家目标回放和配对闭环。
