@@ -46,12 +46,10 @@ depth:
   path_pattern: null   # null: use Parquet depth Path/Timestamp; sidecars: root-relative pattern
   limits: [0.001, 10.0]
 keypoints:
-  # BridgeVLA events: measured gripper changes / TCP stops / terminal.
-  # No default instruction boundaries or periodic motion subdivisions.
-  method: bridgevla
-  # OHT-specific initial thresholds, NOT RLBench joint-velocity units.
-  stopping_translation_speed: 0.01       # metres / second, actual timestamps
-  stopping_rotation_speed_degrees: 5.0  # degrees / second
+  # Only changes in the measured, filtered binary gripper state.
+  # No stops, instruction/motion subdivisions, or synthetic terminal goal.
+  # Inputs at/after the last change are omitted (no future event to target).
+  method: gripper
 cameras:
   # Recorded camera poses use USD/OpenGL axes. Transform OpenCV optical points
   # into that sensor frame before world projection: T_world_optical = T_world_usd

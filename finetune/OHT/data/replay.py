@@ -1,6 +1,7 @@
 """Shared observation NPZ cache plus lightweight transition index."""
 import bisect
 import json
+import warnings
 from pathlib import Path
 import numpy as np
 from .common import SCHEMA, GOALS, digest, file_digest, inside, write_json, read_jsonl
@@ -42,7 +43,7 @@ def build(root, manifest_path, config, output, sample_stride=10, *,
                     sample_stride=sample_stride)
     contract["sha256"] = digest(contract)
     write_json(output / "contract.json", contract)
-    rows = []
+    rows, skipped_episodes = [], []
     for record in manifest["episodes"]:
         config = profiles[record["dataset"]]["data_config"]
         if file_digest(inside(root, record["path"])) != record["parquet_sha256"]:
@@ -53,7 +54,14 @@ def build(root, manifest_path, config, output, sample_stride=10, *,
         poses = world_tcp_poses(columns, config["link_to_tcp"], config["ee_quaternion_order"])
         keys = keypoints(poses, observed_gripper, columns["instruction_id"],
                          timestamps=columns["timestamp"], **config["keypoints"])
-        frames = sorted(set(range(0, len(poses) - 1, sample_stride)) | {0} | set(keys[:-1]))
+        if not keys:
+            skipped_episodes.append(dict(dataset=record["dataset"], task=record["task"],
+                                         episode_index=record["episode_index"], reason="no_keypoints"))
+            continue
+        # A gripper-only episode need not end at a keypoint. Inputs at/after
+        # the last event have no future target; never fill that tail with an
+        # artificial terminal goal. Other modes retain their terminal horizon.
+        frames = sorted(set(range(0, keys[-1], sample_stride)) | {0} | set(keys[:-1]))
         dataset = inside(root, record["dataset"])
         videos = EpisodeVideos(dataset, config.get("video_timestamp_tolerance", 1/120 + .0001))
         try:
@@ -90,6 +98,9 @@ def build(root, manifest_path, config, output, sample_stride=10, *,
                 preview.write(observation, config, sample, current_tcp=poses[frame])
         finally:
             videos.close()
+    if not rows:
+        raise ValueError("No replay samples: no keypoint events in the audited episodes; "
+                         "check measured gripper states and keypoints.method. No complete marker was written.")
     (output / "samples.jsonl").write_text(
         "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows), encoding="utf-8")
     # Bind checkpoints/role caches to the actual observations and transition
@@ -99,7 +110,11 @@ def build(root, manifest_path, config, output, sample_stride=10, *,
     contract["sha256"] = digest(contract)
     write_json(output / "contract.json", contract)
     write_json(output / "complete.json", dict(contract_sha256=contract["sha256"], samples=len(rows),
-                                               index_sha256=contract["index_sha256"]))
+                                               index_sha256=contract["index_sha256"],
+                                               skipped_episodes=skipped_episodes))
+    if skipped_episodes:
+        warnings.warn(f"Skipped {len(skipped_episodes)} episodes without keypoint events; "
+                      "see complete.json skipped_episodes.", stacklevel=2)
     return len(rows)
 
 

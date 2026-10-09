@@ -1,5 +1,6 @@
-"""BridgeVLA-style OHT action endpoints, without RLBench/GPU dependencies."""
+"""OHT gripper-only and legacy action endpoints, without RLBench/GPU dependencies."""
 import ast
+import json
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,6 +27,29 @@ def events(poses, gripper=None, timestamps=None, instruction_ids=None, **options
     return keypoints(poses, np.ones(n) if gripper is None else gripper, instruction_ids,
                      timestamps=np.arange(n) * .1 if timestamps is None else timestamps,
                      method="bridgevla", **options)
+
+
+@pytest.mark.parametrize("gripper,expected", [
+    ([1, 1, 1, 1], []),
+    ([0, 0, 0, 0], []),
+    ([1, 1, 0, 0], [2]),  # keep penultimate event, do not add terminal.
+    ([1, 1, 1, 0], [3]),  # terminal is a target only if the gripper changes.
+    ([1, 0, 0, 1, 1, 1], [1, 3]),
+    ([1, 1, 0, 1], [2, 3]),  # consecutive real changes must both survive.
+    ([1, 0], [1]),
+    ([0, 1], [1]),
+    ([1, 1], []),
+])
+def test_gripper_mode_keeps_only_real_changes_without_terminal_padding(gripper, expected):
+    assert keypoints(poses_from_x(np.zeros(len(gripper))), gripper, method="gripper") == expected
+    assert keypoint_options(dict(method="gripper")) == dict(method="gripper")
+
+
+def test_gripper_mode_ignores_motion_stops_rotation_and_instruction_changes():
+    poses = poses_from_x([0, .1, .2, .2, .2, .2, 1., 2.])
+    poses[:, 3:] = Rotation.from_euler("z", (np.arange(8) * 20)[:, None], degrees=True).as_quat()
+    assert keypoints(poses, [1, 1, 0, 0, 0, 0, 1, 1], np.arange(8),
+                     timestamps=np.arange(8) * .1, method="gripper") == [2, 6]
 
 
 def test_continuous_motion_does_not_create_periodic_or_instruction_keypoints():
@@ -103,6 +127,8 @@ def test_bridgevla_requires_aligned_finite_increasing_timestamps(timestamps):
 
 @pytest.mark.parametrize("options", [
     dict(method="unknown"),
+    dict(method="gripper", max_frames=30),
+    dict(method="gripper", stopping_translation_speed=.01),
     dict(method="bridgevla", max_translation=.04),
     dict(method="bridgevla", stopping_translation_speed=0),
     dict(method="bridgevla", stopping_rotation_speed_degrees=np.nan),
@@ -162,3 +188,70 @@ def test_replay_targets_next_event_and_keeps_world_absolute_gripper_labels(repla
         expected_gripper = int(expected_target == 6)
         assert row["labels"]["action"][-1] == expected_gripper
         assert row["labels"]["rot_grip_action_indicies"][-1] == expected_gripper
+
+
+@pytest.mark.parametrize("stride,expected_frames", [(1, {0, 1, 2, 3, 4}), (2, {0, 2, 4}), (10, {0, 2})])
+def test_gripper_replay_uses_next_change_and_excludes_tail(replay_fixture, tmp_path, stride, expected_frames):
+    f = replay_fixture
+    config = deepcopy(f.config)
+    config["keypoints"] = dict(method="gripper")
+    output = tmp_path / "gripper-replay"
+    build(f.root, f.manifest, config, output, sample_stride=stride)
+    rows = read_jsonl(output / "samples.jsonl")
+    assert load_contract(output)["data_config"]["keypoints"] == dict(method="gripper")
+    for record in f.report["episodes"]:
+        episode_rows = [row for row in rows if row["task"] == record["task"] and
+                        row["episode_index"] == record["episode_index"]]
+        assert {row["frame"] for row in episode_rows} == expected_frames
+    for row in rows:
+        expected_target = 2 if row["frame"] < 2 else 5
+        assert row["target_frame"] == expected_target > row["frame"]
+        assert row["frame"] < 5  # no artificial frame-6 goal for the post-release tail.
+        np.testing.assert_allclose(row["labels"]["gripper_pose"][:3],
+                                   [.1 + row["episode_index"] * .01 + expected_target * .02, 0, .5])
+        assert row["labels"]["action"][-1] == int(expected_target == 5)
+        assert row["labels"]["rot_grip_action_indicies"][-1] == int(expected_target == 5)
+
+
+@pytest.mark.parametrize("all_episodes", [False, True])
+def test_gripper_replay_skips_no_event_episodes_without_decoding_or_terminal_fallback(
+        replay_fixture, tmp_path, monkeypatch, all_episodes):
+    from finetune.OHT.data import replay
+    f = replay_fixture
+    config = deepcopy(f.config)
+    config["keypoints"] = dict(method="gripper")
+    read_episode = replay.read_episode
+    episode_videos = replay.EpisodeVideos
+    skipped = []
+    opened_videos = []
+
+    def stationary_gripper(root, record):
+        columns = read_episode(root, record)
+        if all_episodes or record["episode_index"] == 0:
+            for state in columns["observation.state"]:
+                state[6] = config["gripper"]["open"]
+            skipped.append((record["task"], record["episode_index"]))
+        return columns
+
+    def counted_videos(*args, **kwargs):
+        opened_videos.append(args[0])
+        return episode_videos(*args, **kwargs)
+
+    monkeypatch.setattr(replay, "read_episode", stationary_gripper)
+    monkeypatch.setattr(replay, "EpisodeVideos", counted_videos)
+    output = tmp_path / "no-events-replay"
+    if all_episodes:
+        with pytest.raises(ValueError, match="No replay samples.*no keypoint events"):
+            build(f.root, f.manifest, config, output)
+        assert not (output / "complete.json").exists()
+        assert not opened_videos
+    else:
+        with pytest.warns(UserWarning, match="Skipped.*episodes without keypoint events"):
+            build(f.root, f.manifest, config, output)
+        load_contract(output)
+        rows = read_jsonl(output / "samples.jsonl")
+        assert rows and all(row["episode_index"] != 0 for row in rows)
+        complete = json.loads((output / "complete.json").read_text(encoding="utf-8"))
+        assert {(item["task"], item["episode_index"]) for item in complete["skipped_episodes"]} == set(skipped)
+        assert all(item["reason"] == "no_keypoints" for item in complete["skipped_episodes"])
+        assert len(opened_videos) == len(f.report["episodes"]) - len(skipped)

@@ -137,13 +137,13 @@ metadata 路点作为事件匹配与目标验证来源；先把路点/日志映�
 
 ### 6.2 关键点
 
-默认对齐 BridgeVLA 的事件语义：**实测夹爪开闭变化、停稳、终帧**。`actions.keypoints()` 保留 4 帧 stopped buffer 与终帧相邻点去重；默认不把 instruction_id 边界或每 `4 cm / 8° / 30 帧` 当关键点。
+默认 `keypoints.method: gripper`：`actions.keypoints()` **只提取实测夹爪滤波后二值状态的切换帧**，不生成停稳、指令/运动跨度或人工终帧 goal。目标取切换帧的实测 TCP 与新夹爪状态；这是开闭事件，不是抓取/释放成功 GT。
 
-OHT 的 joint_vel 尚未核实，不直接使用 RLBench 的 `0.1` 关节速度阈值。用 TCP 相邻帧的平移/旋转变化除以实际 dt；两侧速度均低、局部四帧夹爪状态稳定才判停稳，episode 起点不反向索引尾帧。默认 `0.01 m/s`、`5°/s` 仅为配置初值，应检查关键点覆盖与专家端点执行。离线邻帧仅用于构造标签，不进入策略观测。
+`replay.build()` 先在完整轨迹提取事件，再按 sample_stride 采样输入并保留非最后事件帧作为输入；每个输入指向严格更晚的下一事件。最后一次开闭及其后的尾段无未来事件，不生成样本。无事件 episode 在解码视频前跳过，列表记入 `complete.json.skipped_episodes`；全无事件则拒绝完成空缓存。
 
-`replay.build()` 在完整轨迹上提取关键点，再按 sample_stride 采样输入，每个输入指向严格晚于它的下一关键点绝对 TCP/夹爪状态。旧配置未设置 method 时保留 `geometric`；新配置显式使用 `bridgevla`，更换采样方法后新建 replay/teacher，原始数据和 audit 无需重新生成。
+保留两个对照模式：`bridgevla` 为开闭/停稳/终帧，带原版 4 帧 stopped buffer 和终帧相邻点去重；OHT 停稳用相邻 TCP 平移/旋转速度及夹爪稳定窗口，初值 `0.01 m/s`、`5°/s`，不是未经核实的关节速度。`geometric` 另含指令/位移/转角/帧距补点，旧配置未设置 method 时维持此行为。切换模式要替换外部 YAML 的整个 keypoints 块或直接使用新版仓库配置，在新目录重建 replay/teacher；原始数据和 audit 可复用。
 
-先验证插入/拔出、抓放与必要路径转折是否覆盖；确需跨度补点时再独立比较 `geometric`，不宣称事件端点已保证避障可执行。不跨 episode 生成目标，决策步预算按实际关键点数量设置，不继承硬编码 episode_length=25。
+开闭事件模式仍沿用 BridgeVLA 的未来绝对动作标签，但不是完整 RLBench 关键帧启发式。它不监督释放后撤退或无开闭的插拔/路径转折；需用专家端点验证执行与覆盖，不能承诺直接跨越中间路径可避障。不跨 episode 生成目标，决策步预算按实际关键点数量设置，不继承硬编码 episode_length=25。
 
 ### 6.3 夹爪与低维状态
 

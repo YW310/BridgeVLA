@@ -69,14 +69,16 @@ def keypoint_options(config=None):
         raise ValueError("keypoints must be a configuration mapping")
     config = config or {}
     method = config.get("method", "geometric")
-    if method == "bridgevla":
+    if method == "gripper":
+        defaults = dict(method=method)
+    elif method == "bridgevla":
         defaults = dict(method=method, stopping_translation_speed=.01,
                         stopping_rotation_speed_degrees=5.)
     elif method == "geometric":
         defaults = dict(method=method, max_translation=.04,
                         max_rotation_degrees=8., max_frames=30)
     else:
-        raise ValueError("keypoints.method must be bridgevla or geometric")
+        raise ValueError("keypoints.method must be gripper, bridgevla or geometric")
     unknown = set(config) - set(defaults)
     if unknown:
         raise ValueError(f"Unsupported keypoints options for {method}: {sorted(unknown)}")
@@ -97,6 +99,8 @@ def keypoint_options(config=None):
 def keypoints(poses, observed_gripper, instruction_ids=None, *, timestamps=None, **config):
     """Future action endpoints, extracted before observation subsampling.
 
+    gripper: only observed binary gripper changes. No synthetic terminal or
+    stopped endpoints; an episode without changes has no action targets.
     bridgevla: gripper changes / stops / terminal, with the original four-frame
     stopped buffer and adjacent-terminal pruning. Stops use both neighbouring
     TCP motion intervals (real dt), not unverified OHT joint velocities. The
@@ -117,6 +121,8 @@ def keypoints(poses, observed_gripper, instruction_ids=None, *, timestamps=None,
         timestamps = array(timestamps, (n,), "keypoint timestamps")
         if np.any(np.diff(timestamps) <= 0):
             raise ValueError("Keypoint timestamps must be strictly increasing")
+    if options["method"] == "gripper":
+        return (np.flatnonzero(observed_gripper[1:] != observed_gripper[:-1]) + 1).tolist()
     if options["method"] == "bridgevla":
         if timestamps is None:
             raise ValueError("BridgeVLA keypoints require actual timestamps")
