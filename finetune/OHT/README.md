@@ -35,6 +35,8 @@ python tools/audit_oht_dataset.py \
 
 直接扫描四个任务的 data/chunk-*/episode_*.parquet，忽略不完整的 LeRobot features 描述和重复的 episodes.jsonl。任务身份为任务名加 episode index。检查必需列、形状、时间单调性、夹爪命令、相机引用文件、四元数及成功标记，记录 EE 范围、时间间隔、原始 action 零值率等。无成功标记或 metadata 明确失败的 episode 排除并报告；存在坏 episode 时命令返回非零，审查报告后再决定是否使用保留的 episode。
 
+每个 episode 内相同视频路径只做一次路径安全/文件存在性检查，所有帧的引用与时间戳仍逐一验证，Parquet SHA-256 和分组划分不变。CLI 默认在 stderr 显示 episode 进度、单集/累计耗时及有效/无效数；`--quiet` 关闭进度，stdout 始终保留最终 JSON 摘要。已有输出会在扫描前立即拒绝覆盖。原始数据未变、仅修改相机解码配置时，可复用已有有效 audit，无需重跑。
+
 默认按每任务 80/10/10 的目标比例划分。相同轨迹和显式关联场景必须在同一集合，组过大时实际数量可偏离目标。可添加 --groups scene-groups.json：
 
 ~~~json
@@ -294,7 +296,7 @@ case JSONL 每行含唯一 id、task、seed；id 每次运行需使用新 episod
 ## 9. 本地验证
 
 ~~~bash
-python -m pytest -q tests/test_oht_dataset_config.py tests/test_oht_depth_video.py tests/test_oht_migration.py tests/test_oht_visualization.py
+python -m pytest -q tests/test_oht_audit.py tests/test_oht_dataset_config.py tests/test_oht_depth_video.py tests/test_oht_migration.py tests/test_oht_visualization.py
 ~~~
 
 覆盖 12 个合成 episode → 60 条 transitions、五相机、视频 PTS、米制 depth、划分检查、教师/预测缓存、无 GT 推理隔离、真实 Agent 梯度累积与零碰撞损失、HTTP 协议、闭环失败计数和续训采样。backbone/render 使用 CPU 小替身，未验证完整 PaliGemma/point-renderer GPU 前向。另运行现有角色预测、跨尺度继承、辅助损失、前向与优化器回归测试。

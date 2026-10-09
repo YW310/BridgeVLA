@@ -86,6 +86,9 @@ def inspect_episode(root, record, cameras):
     columns = read_episode(root, record)
     info = validate_episode(columns, record)
     dataset = inside(root, record["dataset"])
+    # Many frames (and sometimes streams) refer to the same video. Cache only
+    # successful path checks within this episode, not timestamp validation.
+    checked_video_paths = set()
     for camera in cameras:
         extrinsic = array(columns[f"observation.{camera}_extrinsic"], (info["frames"], 7), camera)
         quaternion(extrinsic[:, 3:])
@@ -96,8 +99,13 @@ def inspect_episode(root, record, cameras):
             for reference in columns[name]:
                 if not isinstance(reference, dict) or "Path" not in reference or "Timestamp" not in reference:
                     raise ValueError(f"Invalid video reference {name}")
-                if not inside(dataset, reference["Path"]).is_file():
-                    raise FileNotFoundError(reference["Path"])
+                video_path = reference["Path"]
+                if not isinstance(video_path, str) or not video_path:
+                    raise ValueError(f"Invalid video path in {name}")
+                if video_path not in checked_video_paths:
+                    if not inside(dataset, video_path).is_file():
+                        raise FileNotFoundError(video_path)
+                    checked_video_paths.add(video_path)
                 stamp = np.asarray(reference["Timestamp"], dtype=float).reshape(-1)
                 if stamp.size != 1 or not np.isfinite(stamp).all() or stamp[0] < 0:
                     raise ValueError(f"Expected one nonnegative video timestamp in {name}")

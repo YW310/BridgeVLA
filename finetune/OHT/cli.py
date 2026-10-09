@@ -28,6 +28,7 @@ def main(argv=None):
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--fractions", nargs=3, type=float, default=[.8, .1, .1])
     p.add_argument("--groups", help="JSON mapping task/episode to a shared scene group")
+    p.add_argument("--quiet", action="store_true", help="Hide episode progress on stderr; keep the JSON summary")
     p = sub.add_parser("build")
     for key in ("root", "manifest", "config", "output"):
         p.add_argument("--" + key, required=True)
@@ -50,7 +51,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.command == "audit":
         groups = json.loads(Path(args.groups).read_text(encoding="utf-8")) if args.groups else None
-        result = audit(args.root, args.output, args.seed, args.fractions, groups=groups)
+        result = audit(args.root, args.output, args.seed, args.fractions, groups=groups, progress=not args.quiet)
         print(json.dumps({k: result[k] for k in ("valid_episodes", "invalid_episodes", "split_counts", "missing_tasks")}))
         return 1 if result["invalid_episodes"] else 0
     if args.command == "build":
