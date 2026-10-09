@@ -93,6 +93,8 @@ def test_parquet_reference_to_metric_ray_cloud(depth_movie):
     path, samples = depth_movie
     config_path = Path(__file__).resolve().parents[1] / "finetune/OHT/configs/dataset.yaml"
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    config["depth"] = dict(encoding="scaled_integer", pixel_format="gray12le", scale=.001,
+                           kind="ray", invalid_values=[0, 4095], limits=[.001, 4.094])
     videos = EpisodeVideos(path.parent, 1 / 120 + .0001)
     columns = {"observation.depth.wrist": [{"Path": path.name, "Timestamp": [i / 60]} for i in range(3)]}
     try:

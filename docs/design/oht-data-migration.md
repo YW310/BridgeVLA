@@ -39,21 +39,33 @@ Baseline 和 assistance 共用观测、相机、动作定义、控制器、训�
 
 ## 3. 新版说明带来的条件和待核查项
 
-已说明：五路 480×640 RGB-D、相机内参、逐帧相机外参、世界/基座 EE 位姿、关节顺序、分段指令、metadata 路点和 IK 解。2026-10-09 修订明确：EE/物体四元数为 xyzw，原始相机四元数为 wxyz；`ee_pos_world` 已是包含控制器偏移的 TCP 位置。
+已说明五路 480×640 RGB-D、逐帧相机外参、世界 EE 位姿、关节顺序与分段指令。2026-10-09 按用户提供的已运行转换/训练代码复核后，修正早期说明中的深度与 EE 顺序假设：raw camera/EE 默认 wxyz，分别显式配置（若参考运行覆盖为 xyzw，这里也须匹配）；输出始终 world/TCP/xyzw。`ee_pos_world` 已含控制器 TCP 偏移。
 
 ### 3.1 深度视频契约（2026-10-09 补充调查）
 
-用户提供的调查纠正了初版说明：H.264/yuv420p 描述 RGB，深度实际为 **无损 HEVC gray12le**。原生 uint16 像素乘 `0.001` 为米制 **ray distance**，offset 为 0，无逐帧归一化。有效整数为 1–4094；0 为无返回，4095 为量程饱和，两者均排除。无损仅指保存整数，仍存在 1 mm 量化及量程截断。
+深度为 **无损 HEVC gray12le**，但不是直接毫米值。参考 `_depth_video_spec()` / `_dequantize_depth_mm()` 使用 metadata 指定的固定 linear/log 量化；本轮按同一逆公式解码，默认 min=0.01/max=10/shift=3.5/use_log=true/qmax=4095。0 无效，4095 对应 depth_max，不自动剔除。NPZ 保留米制 float，不做 TFDS PNG 的毫米舍入。完整公式与配置见 [OHT 运行说明](../../finetune/OHT/README.md#3-仿真数据契约与构建共用缓存)。
 
 不需要 raw sidecar 或重新采集。读取器原生读取灰度平面、按 Parquet Timestamp 对齐 PTS，并检查像素格式；禁止将数值深度转换成 RGB 再解码。相机世界姿态为 USD/OpenGL，使用 `T_world_optical = T_world_usd @ diag(1,-1,-1,1)`。
 
-以上格式来自用户调查；本地验证合成无损 HEVC 数值往返与几何路由，不代表已在服务器全量验证跨相机对齐、工作区覆盖或任务精度。GT object 中心不能替代场景点云。
+内参按各数据集的 `meta/camera_intrinsics.json` 读取，夹爪端点来自 dataset-global stats/info，解析结果与源文件 hash 绑定 contract。`depth.kind=ray` 暂沿用数据方说明；参考 `dataset.py` 将反投影委托给未提供的 `pointcloud_transforms.py`，本轮不把 ray/Z 的一致性当作已验证。本地合成验证不代表服务器全量对齐、工作区覆盖或任务精度。
 
 ### 3.2 四元数与相机坐标约定
 
-用户修订说明明确原始 `observation.*_extrinsic` 为 `[x,y,z,qw,qx,qy,qz]`，是 USD/OpenGL camera→world 位姿。`camera_quaternion_order: wxyz` 在 `camera_observation()` 边界将其转为 xyzw，再构造 `T_world_optical = T_world_usd @ diag(1,-1,-1,1)`。内部 geometry、EE/物体与动作输出仍用 xyzw；缓存相机外参已是 4×4 optical→world 矩阵。
+原始 `observation.*_extrinsic` 默认 `[x,y,z,qw,qx,qy,qz]`，是 USD/OpenGL camera→world。`camera_observation()` 按 `camera_quaternion_order` 转内部 xyzw，再构造 `T_world_optical = T_world_usd @ diag(1,-1,-1,1)`。`world_tcp_poses()` 独立按 `ee_quaternion_order` 转换 EE；输出和内部 geometry 为 xyzw。缓存相机外参为 4×4 optical→world。
 
-`ee_pos_world` 已含 gripper→TCP 偏移，`link_to_tcp` 保持单位阵，禁止重复加偏移。行向量投影 `(P_world-t) @ R_world_optical` 已等价于列向量的转置求逆，不再额外转置。缺少明确相机顺序的旧配置/缓存会报错；误读 wxyz 的旧 XYZ 必须在新目录重建，原始数据/audit 保留，绑定旧 contract 的角色缓存需重建。迁移和在线输入格式统一见 [OHT 运行说明](../../finetune/OHT/README.md#3-仿真数据契约与构建共用缓存)。
+`link_to_tcp` 保持单位阵，禁止重复加偏移。行向量投影 `(P_world-t) @ R_world_optical` 不再额外转置。schema 升级为 `oht_bridgevla_v2`，旧 XYZ/rotation/gripper 标签须在新目录重建；原始数据/audit 可保留，角色缓存随新 contract 重建，不手改合同或恢复旧 optimizer。
+
+参考代码对照（实现均在 `finetune/OHT/data/`）：
+
+| 提供代码中的函数/链路 | 本轮处理 |
+|---|---|
+| `_depth_video_spec()` / `_dequantize_depth_mm()` | `source_config.resolve_dataset_config()` / `video.decode_depth()`：per-camera 量化 metadata、原生 gray12、0 无效、保留 qmax |
+| `_resolve_calibration_for_view()` / `_resize_intrinsic()` | 读取真实 metadata K；RGB-D 严格步长采样，K 同步缩放，不照搬 TFDS 方形 resize |
+| `_canonicalize_extrinsic_pose7()` / optical conversion | 原始 wxyz/camera→world/OpenGL；只翻轴一次，BridgeVLA 保留 world 坐标 |
+| `_canonicalize_new_gripper_to_legacy_physical()` / `binarize_gripper_hysteresis_with_diff()` | 使用原始 motor 端点直接归一化 open01，移植因果滞回+差分；不绕经旧 TFDS 的物理开度区间 |
+| `proprio_absolute` / `proprio_relative` | 复用“观测重建标签”，未来 GT keypoint 的 pose 与 gripper 均来自实测；raw action 全部仅诊断 |
+| `_filter_indices_by_ee()` / 左右 camera aliases | 不删除纯旋转/夹爪变化；五个物理相机独立命名和取外参，不把 left/right 当同一相机 |
+| `dataset.py → pointcloud_transforms` | 下游公共反投影模块未提供，保留显式 ray/Z，不能宣称完整端到端等价 |
 
 NVIDIA 相机 API 区分 distance_to_image_plane 和 distance_to_camera，不能对两者直接使用同一 Z-depth 公式。
 
@@ -136,8 +148,8 @@ joint_vel 不直接用于 RLBench 的 stopped detector。使用真实 dt 的离�
 ### 6.3 夹爪与低维状态
 
 - open=1、close=0。
-- action[6]=+1 表示期望关闭，-1 表示期望打开，0 延续上一次期望状态；首帧由实际开度初始化。
-- 保存 desired_gripper 和 measured_opening 两种量：当前输入使用测量状态，目标使用与事件对齐的期望状态。记录接触后未完全闭合情形，不能仅凭固定开度阈值判断抓取失败。
+- raw action 包括夹爪维度都不可信，只保留审计统计；标签完全来自 `observation.state[6]` 的实测开合。
+- 用 dataset-global motor 端点得到 open01，再用参考代码的因果“滞回＋差分”得到 observed binary。当前输入用当前实测量，未来 keypoint 用该帧的实测二值标签；在线使用同一 `gripper_step()`，episode reset 清空滤波状态。接触后未完全闭合不等于抓取失败，差分规则可在中间开度识别闭合动作，但不是物体 grasp GT。
 - 两指负 rad 不能直接送进现有 extract_obs：该函数裁到 [0,0.04]，会把负值全部变为 0。使用 OHT 专用归一化/标定；若保留旧输入尺度，显式定义兼容映射，不能宣称那就是物理米制开度。
 - 首版 low_dim=[measured_open, left_opening_feature, right_opening_feature, time_feature]。time_feature 可先固定 0，训练和推理一致；若启用，只由在线已执行步数/固定预算计算，不用真实剩余轨迹长度。
 - 全部关节角和当前 EE 输入作为后续独立增强，不能只给 assistance 加这些信息再与旧 baseline 比较。
@@ -407,7 +419,7 @@ tests/
 
 1. K/外参/光学轴/xyzw-wxyz/TCP 往返，已知点投影及跨相机对齐。
 2. 视频 PTS、任务 ID 和 episode 边界；重复 episodes.jsonl 不生成重复样本。
-3. PD 全零 action 的真实移动仍得到正确目标；保持命令不等同于关闭；夹爪负角不被裁成全零。
+3. 任意扰动 raw action 七维不改变关键点、观测和动作标签；夹爪由实测 motor 状态及端点得到，不把负角裁成全零。
 4. metadata keep、角度单位、关键点顺序、动作时间偏移和缺失帧处理。
 5. SE(3) 对 scene、teacher/predicted points、动作及新增当前 pose 保持同变换。
 6. 预测 inference 删除/扰动 GT object/held_obj/phase 不改变动作；baseline 不读取 object 字段。
@@ -558,7 +570,7 @@ IsaacLab client（现有环境）
 
 尚未完成且需要现场信息的工作：
 
-1. 真实 v423 全量读取、跨相机几何及训练集工作区覆盖检查；无需重新标定。按用户修订说明读取 gray12le/毫米/ray、原始相机 wxyz 与 USD→OpenCV 转换，直接使用已含偏移的 TCP（`link_to_tcp` 为单位阵）。需在服务器复核 frame 965 腕部参考投影 `(313.0,378.6)` 及多帧几何，尚未声称完成全量验证。
+1. 真实 v423 全量读取、跨相机几何及工作区覆盖检查；无需重新标定。按提供代码解析 gray12le linear/log 量化、metadata K/夹爪端点、显式 camera/EE 顺序；TCP 不重复偏移。需补公共 `pointcloud_transforms.py` 核对 ray/Z，并在服务器复核 frame 965 腕部参考投影 `(313.0,378.6)` 及多帧几何。
 2. 从仿真或标注工具批量导出语义角色 masks/site；首版消费显式标注，未自动实现数据集角色路由和 mesh 重建。
 3. 完整 CUDA/PaliGemma/point-renderer smoke 与三 seed 训练，没有新 OHT 成功率。
 4. 核查 H-VLA/IsaacLab 脚本及 Task1/2 映射、真实采集和控制 API、EEF/IK/hybrid 执行器、专家目标回放和配对闭环。

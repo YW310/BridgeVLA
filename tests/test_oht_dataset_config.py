@@ -56,6 +56,7 @@ def test_default_camera_transforms_convert_optical_to_usd(dataset_config):
 
 @pytest.mark.parametrize("camera", ["global_left", "global_right", "local_left", "local_right", "wrist"])
 def test_missing_camera_transform_explains_config_fix(dataset_config, camera):
+    dataset_config["intrinsics_source"] = "metadata"
     dataset_config["cameras"][camera]["optical_to_sensor"] = None
     with pytest.raises(ValueError, match=f"{camera} optical_to_sensor is missing") as error:
         validate_data_config(dataset_config)
@@ -65,11 +66,11 @@ def test_missing_camera_transform_explains_config_fix(dataset_config, camera):
 
 def test_default_depth_contract_and_missing_definitions(dataset_config):
     validate_data_config(dataset_config)
-    assert dataset_config["depth"] == {
-        "encoding": "scaled_integer", "pixel_format": "gray12le", "scale": .001,
-        "offset": 0., "kind": "ray", "invalid_values": [0, 4095],
-        "path_pattern": None, "limits": [.001, 4.094],
-    }
+    assert dataset_config["depth"]["encoding"] == "quantized"
+    assert dataset_config["depth"]["use_log"] is True
+    assert dataset_config["depth"]["invalid_values"] == [0]
+    assert dataset_config["depth"]["qmax"] == 4095
+    assert dataset_config["intrinsics_source"] == "metadata"
     dataset_config["depth"]["encoding"] = None
     with pytest.raises(ValueError, match="depth encoding"):
         validate_data_config(dataset_config)
@@ -142,13 +143,15 @@ def test_raw_camera_order_to_world_xyz_and_provider_projection(dataset_config, o
     np.testing.assert_allclose(projected[0], [6, 5], atol=1e-5)
 
 
-def test_v423_recorded_tcp_and_ee_quaternion_are_not_converted(dataset_config):
+@pytest.mark.parametrize("order", ["xyzw", "wxyz"])
+def test_v423_recorded_tcp_is_not_offset_again_and_ee_order_is_explicit(dataset_config, order):
     assert dataset_config["camera_quaternion_order"] == "wxyz"
     np.testing.assert_array_equal(dataset_config["link_to_tcp"], np.eye(4))
     orientation = Rotation.from_euler("xyz", [19, 37, -64], degrees=True).as_quat()
     position = [.622, .183, 1.388]
-    columns = {"observation.ee_pos_world": [position], "observation.ee_quat_world": [orientation]}
-    pose = world_tcp_poses(columns, dataset_config["link_to_tcp"])[0]
+    raw = orientation[[3, 0, 1, 2]] if order == "wxyz" else orientation
+    columns = {"observation.ee_pos_world": [position], "observation.ee_quat_world": [raw]}
+    pose = world_tcp_poses(columns, dataset_config["link_to_tcp"], order)[0]
     np.testing.assert_allclose(pose[:3], position, atol=1e-9)
     np.testing.assert_allclose(Rotation.from_quat(pose[3:]).as_matrix(),
                                Rotation.from_quat(orientation).as_matrix(), atol=1e-9)

@@ -11,7 +11,7 @@ GOALS = {
     "disassemble_left": "Disassemble the left wheel from the OHT axle and place it on the plate",
     "disassemble_right": "Disassemble the right wheel from the OHT axle and place it on the plate",
 }
-SCHEMA = "oht_bridgevla_v1"
+SCHEMA = "oht_bridgevla_v2"
 
 
 def digest(value):

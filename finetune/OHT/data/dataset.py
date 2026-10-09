@@ -5,6 +5,7 @@ from .common import read_jsonl, inside, file_digest
 from .replay import load_contract
 from .role_cache import RoleCache
 from .observation import validate_observation
+from .source_config import sample_data_config
 
 MODES = ("baseline", "role_queries", "predicted_external")
 
@@ -40,7 +41,7 @@ class OHTDataset:
             raise ValueError(f"Observation checksum mismatch: {row['id']}")
         with np.load(path, allow_pickle=False) as source:
             value = {name: source[name] for name in source.files}
-        validate_observation(value, self.contract["data_config"])
+        validate_observation(value, sample_data_config(self.contract, row))
         # Labels and observations are separate; no raw object/phase fields reach policy.
         value.update({name: np.asarray(label, dtype=np.float32 if name in ("action", "gripper_pose") else np.int32)
                       for name, label in row["labels"].items()})

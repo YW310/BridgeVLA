@@ -1,48 +1,79 @@
-"""Labels use reached future TCP poses, never the unreliable EE action columns."""
+"""Labels use observed future TCP/gripper states, never raw action commands."""
 import numpy as np
 from scipy.spatial.transform import Rotation
 from .geometry import array, quaternion, check_bounds, rotation_error, tcp_pose
 
 
-def gripper_states(states, commands):
+def gripper_step(measured, previous_measured=None, previous_state=None, config=None):
+    """Causal NumPy equivalent of the reference hysteresis-with-diff rule."""
+    config = config or {}
+    open_th, close_th, diff_th = (float(config.get(key, default)) for key, default in
+                                (("open_threshold", .9), ("close_threshold", .1), ("diff_threshold", .05)))
+    if not np.isfinite([open_th, close_th, diff_th]).all() or not 0 <= close_th < open_th <= 1 or not 0 < diff_th <= 1:
+        raise ValueError("Invalid gripper hysteresis thresholds")
+    measured = float(array(measured, (), "measured gripper open01"))
+    previous = measured if previous_measured is None else float(array(previous_measured, (), "previous gripper open01"))
+    state = config.get("initial_state", 1) if previous_state is None else previous_state
+    if state not in (0, 1) or not 0 <= measured <= 1 or not 0 <= previous <= 1:
+        raise ValueError("Expected gripper open01 in [0,1] and binary previous state")
+    if measured > open_th:
+        return 1
+    if measured < close_th:
+        return 0
+    if measured - previous > diff_th:
+        return 1
+    if measured - previous < -diff_th:
+        return 0
+    return int(state)
+
+
+def gripper_states(states, config):
     states = array(states, name="states")
-    commands = array(commands, (len(states),), "gripper commands")
-    if states.ndim != 2 or states.shape[1] != 7 or not np.isin(commands, [-1, 0, 1]).all():
-        raise ValueError("Expected state[N,7] and gripper commands in {-1,0,1}")
-    measured = np.clip((states[:, 6] + 0.040) / 0.034, 0, 1)
-    desired = np.empty(len(states), dtype=np.int64)
-    current = int(measured[0] >= 0.5)
-    for i, command in enumerate(commands):
-        if command:
-            current = int(command == -1)
-        desired[i] = current
-    return measured.astype(np.float32), desired
+    if states.ndim != 2 or states.shape[1] != 7 or not len(states):
+        raise ValueError("Expected nonempty measured state[N,7]")
+    open_raw, close_raw = float(config["open"]), float(config["close"])
+    if not np.isfinite([open_raw, close_raw]).all() or abs(close_raw - open_raw) < 1e-8:
+        raise ValueError("Gripper open/close must be distinct finite endpoints")
+    measured = np.clip((close_raw - states[:, 6]) / (close_raw - open_raw), 0, 1)
+    binary = np.empty(len(states), dtype=np.int64)
+    previous, state = None, None
+    for i, value in enumerate(measured):
+        state = gripper_step(value, previous, state, config)
+        binary[i], previous = state, value
+    return measured.astype(np.float32), binary
 
 
-def low_dim(measured, finger_joints):
-    fingers = array(finger_joints, (2,), "finger joints")
-    # Compatibility features in [0,.04], not a claim of physical metre opening.
-    opening = np.clip((fingers + 0.020) / 0.017, 0, 1) * 0.04
-    return np.asarray([float(measured >= 0.5), *opening, 0], dtype=np.float32)
+def low_dim(measured, finger_joints=None, *, binary_state=None):
+    # Canonical motor-state open01, not unverified per-finger physical endpoints.
+    # The two compatibility opening features are synthetic, not metre readings.
+    measured = float(np.clip(array(measured, (), "measured gripper open01"), 0, 1))
+    binary_state = gripper_step(measured) if binary_state is None else binary_state
+    if binary_state not in (0, 1):
+        raise ValueError("Expected measured binary gripper state")
+    return np.asarray([binary_state, measured * .04, measured * .04, 0], dtype=np.float32)
 
 
-def world_tcp_poses(columns, link_to_tcp):
+def world_tcp_poses(columns, link_to_tcp, quaternion_order):
     positions = array(columns["observation.ee_pos_world"], name="world EE positions")
     orientations = quaternion(columns["observation.ee_quat_world"])
+    if quaternion_order == "wxyz":
+        orientations = orientations[..., [1, 2, 3, 0]]
+    elif quaternion_order != "xyzw":
+        raise ValueError("Set ee_quaternion_order explicitly to wxyz or xyzw")
     return np.asarray([tcp_pose(p, q, link_to_tcp) for p, q in zip(positions, orientations)])
 
 
-def keypoints(poses, desired_gripper, instruction_ids, max_translation=0.04,
+def keypoints(poses, observed_gripper, instruction_ids, max_translation=0.04,
               max_rotation_degrees=8, max_frames=30):
     poses = array(poses, name="TCP poses")
     n = len(poses)
-    if n < 2 or len(desired_gripper) != n or len(instruction_ids) != n:
+    if n < 2 or len(observed_gripper) != n or len(instruction_ids) != n:
         raise ValueError("An episode requires at least two aligned frames")
     if max_translation <= 0 or max_rotation_degrees <= 0 or max_frames < 1:
         raise ValueError("Keypoint thresholds must be positive")
     boundaries = {n - 1}
     for i in range(1, n):
-        if desired_gripper[i] != desired_gripper[i - 1] or instruction_ids[i] != instruction_ids[i - 1]:
+        if observed_gripper[i] != observed_gripper[i - 1] or instruction_ids[i] != instruction_ids[i - 1]:
             boundaries.update((max(1, i - 1), i))
     result, last = [], 0
     for i in range(1, n):

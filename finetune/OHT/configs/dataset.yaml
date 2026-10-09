@@ -1,7 +1,6 @@
-# OHT v423: world metres; EE/object quaternions xyzw, raw camera quaternions wxyz.
-# Intrinsics below come from the v423 data description (info.json).
-# Depth/axes follow the supplied v423 investigation: lossless HEVC gray12le,
-# millimetre ray distance and USD/OpenGL world camera poses. No recalibration.
+# OHT v423 reference converter: raw camera AND EE quaternions default to wxyz.
+# Override ee_quaternion_order explicitly if the exporter/run used xyzw.
+# Policy outputs remain world metres / xyzw. No recalibration or new raw data.
 # Initial policy workspace around the v423 documented object/waypoint examples.
 # World metres: [xmin,ymin,zmin,xmax,ymax,zmax]. Not full-dataset measured bounds.
 # Check all action targets and relevant object coverage before training; never clip GT.
@@ -14,21 +13,38 @@ link_to_tcp:
   - [0, 0, 1, 0]
   - [0, 0, 0, 1]
 # Raw observation.*_extrinsic = [x,y,z,qw,qx,qy,qz], camera->world USD pose.
-# This does not change the EE/object or policy-output xyzw convention.
 camera_quaternion_order: wxyz
+ee_quaternion_order: wxyz
+# Resolve real K per task dataset, case-insensitive camera names. Never infer
+# local-camera K from a generic FOV/document example.
+intrinsics_source: metadata  # meta/camera_intrinsics.json
+gripper:
+  source: metadata  # dataset-global observation.state min/max, not episode min/max
+  open: null        # alternatively source: config with explicit raw endpoints
+  close: null
+  open_threshold: 0.9
+  close_threshold: 0.1
+  diff_threshold: 0.05
+  initial_state: 1    # only if the first observed state is ambiguous
 image_size: [120, 160]  # exact stride 4 from 480x640
 rotation_classes: 72
 video_timestamp_tolerance: 0.0084333333
 depth:
   # Read native uint16 words, preserving 12-bit values (never convert to RGB).
-  encoding: scaled_integer
+  encoding: quantized
   pixel_format: gray12le
-  scale: 0.001         # metres per integer unit; no per-frame normalization
-  offset: 0.0
-  kind: ray
-  invalid_values: [0, 4095]  # no return / saturated range; neither is a surface
+  # meta/info.json features.observation.depth.<camera>.info overrides these
+  # explicit reference-converter defaults (video.* or plain keys).
+  metadata: true
+  depth_min: 0.01
+  depth_max: 10.0
+  shift: 3.5
+  use_log: true
+  qmax: 4095
+  kind: ray           # retained from exporter description; not implied by gray12le
+  invalid_values: [0] # quantized 4095 is depth_max, NOT automatically invalid
   path_pattern: null   # null: use Parquet depth Path/Timestamp; sidecars: root-relative pattern
-  limits: [0.001, 4.094]
+  limits: [0.001, 10.0]
 keypoints:
   max_translation: 0.04
   max_rotation_degrees: 8
@@ -38,17 +54,17 @@ cameras:
   # into that sensor frame before world projection: T_world_optical = T_world_usd
   # @ diag(1,-1,-1,1). This 180-degree X rotation is its own inverse.
   global_left:
-    intrinsics: [[320, 0, 320], [0, 320, 240], [0, 0, 1]]
+    intrinsics: null  # resolved from metadata; explicit K required in config mode
     optical_to_sensor: [[1, 0, 0, 0], [0, -1, 0, 0], [0, 0, -1, 0], [0, 0, 0, 1]]
   global_right:
-    intrinsics: [[320, 0, 320], [0, 320, 240], [0, 0, 1]]
+    intrinsics: null
     optical_to_sensor: [[1, 0, 0, 0], [0, -1, 0, 0], [0, 0, -1, 0], [0, 0, 0, 1]]
   local_left:
-    intrinsics: [[337.197, 0, 320], [0, 337.197, 240], [0, 0, 1]]
+    intrinsics: null
     optical_to_sensor: [[1, 0, 0, 0], [0, -1, 0, 0], [0, 0, -1, 0], [0, 0, 0, 1]]
   local_right:
-    intrinsics: [[337.197, 0, 320], [0, 337.197, 240], [0, 0, 1]]
+    intrinsics: null
     optical_to_sensor: [[1, 0, 0, 0], [0, -1, 0, 0], [0, 0, -1, 0], [0, 0, 0, 1]]
   wrist:
-    intrinsics: [[337.197, 0, 320], [0, 337.197, 240], [0, 0, 1]]
+    intrinsics: null
     optical_to_sensor: [[1, 0, 0, 0], [0, -1, 0, 0], [0, 0, -1, 0], [0, 0, 0, 1]]

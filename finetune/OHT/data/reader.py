@@ -60,8 +60,8 @@ def validate_episode(columns, record):
     quaternion(columns["observation.ee_quat_world"])
     quaternion(np.asarray(columns["observation.objects_quat"]).reshape(n, 4, 4))
     commands = np.asarray(columns["action"])[:, 6]
-    if not np.isin(commands, [-1, 0, 1]).all():
-        raise ValueError("Invalid gripper commands")
+    # Raw actions are audit-only: do not require a trusted gripper command
+    # convention or use them to reconstruct measured opening/action labels.
     # Content grouping prevents exact duplicate trajectories crossing splits.
     from .common import digest
     trajectory_hash = digest({key: columns[key] for key in (
@@ -77,7 +77,8 @@ def validate_episode(columns, record):
                    state_gripper_max=float(np.asarray(columns["observation.state"])[:, 6].max()),
                    raw_ee_command_zero_fraction=float(zero.mean()),
                    moving_despite_zero_command_frames=int((zero[:-1] & (displacement > 1e-4)).sum()),
-                   gripper_command_counts={str(value): int((commands == value).sum()) for value in (-1, 0, 1)})
+                   gripper_command_counts={str(value): int((commands == value).sum()) for value in (-1, 0, 1)},
+                   other_gripper_command_frames=int((~np.isin(commands, [-1, 0, 1])).sum()))
     return dict(frames=n, duration=float(timestamps[-1] - timestamps[0]),
                 success=bool(any(columns["next.success"])), trajectory_hash=trajectory_hash, quality=quality)
 

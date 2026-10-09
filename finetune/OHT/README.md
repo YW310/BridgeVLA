@@ -33,7 +33,7 @@ python tools/audit_oht_dataset.py \
   --output /data/oht/audit-seed0.json --seed 0
 ~~~
 
-直接扫描四个任务的 data/chunk-*/episode_*.parquet，忽略不完整的 LeRobot features 描述和重复的 episodes.jsonl。任务身份为任务名加 episode index。检查必需列、形状、时间单调性、夹爪命令、相机引用文件、四元数及成功标记，记录 EE 范围、时间间隔、原始 action 零值率等。无成功标记或 metadata 明确失败的 episode 排除并报告；存在坏 episode 时命令返回非零，审查报告后再决定是否使用保留的 episode。
+直接扫描四个任务的 data/chunk-*/episode_*.parquet，忽略不完整的 LeRobot features 描述和重复的 episodes.jsonl。任务身份为任务名加 episode index。检查必需列、形状、时间单调性、相机引用文件、四元数及成功标记，记录 EE 范围、时间间隔、原始 action 零值率和夹爪命令分布（仅诊断，不要求可信）等。无成功标记或 metadata 明确失败的 episode 排除并报告；存在坏 episode 时命令返回非零，审查报告后再决定是否使用保留的 episode。
 
 每个 episode 内相同视频路径只做一次路径安全/文件存在性检查，所有帧的引用与时间戳仍逐一验证，Parquet SHA-256 和分组划分不变。CLI 默认在 stderr 显示 episode 进度、单集/累计耗时及有效/无效数；`--quiet` 关闭进度，stdout 始终保留最终 JSON 摘要。已有输出会在扫描前立即拒绝覆盖。原始数据未变、仅修改相机解码配置时，可复用已有有效 audit，无需重跑。
 
@@ -47,19 +47,26 @@ python tools/audit_oht_dataset.py \
 
 ## 3. 仿真数据契约与构建共用缓存
 
-以 v423 数据说明及用户补充的深度/投影调查为契约，无需重新标定或重新采集。可直接使用 [dataset.yaml](configs/dataset.yaml)，需要自定义时另存本地配置。位置使用世界坐标、米制；**原始相机四元数为 wxyz，EE/物体及策略输出为 xyzw**。`observation.ee_pos_world` 已包含采集控制器的 gripper→TCP 偏移，`link_to_tcp` 保持单位阵，不能再加约 12 cm 偏移；执行端使用同一 TCP。
+以用户提供的已运行 `convert_oht_lerobot_v21_to_tfds.py → transforms.py → dataset.py` 为本轮读取参考，无需重新标定或采集。使用 [dataset.yaml](configs/dataset.yaml)；实际参数及 metadata SHA256 写入 contract 的 `source_data_configs`，各任务分别读取，不串用左右相机参数。
+
+- 内参来自各 `<task>/lerobot_dataset/meta/camera_intrinsics.json`，支持大小写相机名和 `cameras.<name>.intrinsic`；缺失时报错，不再猜局部相机焦距。使用 YAML 内参时设 `intrinsics_source: config` 并填完整 K。
+- 原始 camera/EE 四元数默认 **wxyz**，分别由 `camera_quaternion_order` / `ee_quaternion_order` 指定；策略输出仍为 **world/TCP/xyzw**。参考转换器的默认值与早期“EE 为 xyzw”说明冲突；若成功运行时用了 `--input-quat-order xyzw`，这里也应显式设 xyzw，不能从数值猜格式。物体四元数未用于当前动作标签。
+- `ee_pos_world` 直接作为已含控制器偏移的 TCP，`link_to_tcp` 保持单位阵，不重复添加约 12 cm 偏移。
+- 夹爪从实测 `observation.state[6]` 读取，用数据集全局 stats/info 的 open=min、close=max 归一化。反向端点可用 `gripper.source: config` 显式指定；不按 episode 重估端点。采用参考 `binarize_gripper_hysteresis_with_diff()` 的因果规则：open01 大于 0.9 为 open、小于 0.1 为 close，中间根据 ±0.05 差分切换，否则保持上一状态。**raw action 全部仅用于审计，不生成监督。**
 
 `scene_bounds` 默认设为 `[-0.5, -1.0, 0.3, 1.5, 1.0, 2.0]`，顺序 xmin,ymin,zmin,xmax,ymax,zmax，单位米；覆盖 v423 说明中的物体与路点示例并留余量。这是初始策略工作区，不是全量统计结果；训练前检查实际 EE/物体覆盖与动作越界，越界时调整配置，不静默裁剪 GT。audit 的 EE 范围仅是参考，不能替代完整物体范围。
 
-原始 `observation.*_extrinsic` 为 `[x,y,z,qw,qx,qy,qz]`，定义为 camera→world、USD/OpenGL 轴。配置显式设置 `camera_quaternion_order: wxyz`，读取时仅将相机四元数转为 xyzw。五个相机的 `optical_to_sensor` 均为 `diag(1,-1,-1,1)`：`T_world_optical = T_world_usd @ optical_to_sensor`。缓存外参是 4×4 optical→world 矩阵，不再涉及四元数重排。投影使用 `(P_world - t) @ R_world_optical`，是列向量 `R_world_optical.T @ (P_world - t)` 的等价写法，不要再次转置或翻轴。
+原始相机外参为 camera→world、USD/OpenGL 轴，按显式顺序转换到内部 xyzw。五个相机的 `optical_to_sensor` 均为 `diag(1,-1,-1,1)`：`T_world_optical = T_world_usd @ optical_to_sensor`。缓存外参是 4×4 optical→world；投影使用 `(P_world - t) @ R_world_optical`，不再次转置或翻轴。
 
-深度 MP4 实际为无损 HEVC `gray12le`，不是 RGB 的 H.264/yuv420p；`info.json` 中的 RGB 编码描述不能用于深度。原生 uint16 数值乘 `0.001` 得到米制 **ray distance**，无逐帧归一化。无损指整数像素保真，米制数据仍有 1 mm 量化及量程截断。
+深度为无损 HEVC `gray12le`，但 **12-bit 像素不等于毫米值**。参考转换器从 `meta/info.json` 的 `features.observation.depth.<camera>.info` 读取固定量化参数（`video.*` 或普通 key）。设 `n=q/qmax`：对数逆变换为 `exp(n*(log(max+shift)-log(min+shift))+log(min+shift))-shift`，线性为 `n*(max-min)+min`。YAML 默认与参考代码一致：min=0.01、max=10、shift=3.5、use_log=true、qmax=4095；metadata 中存在的字段覆盖默认值。
 
-`depth.path_pattern: null` 是有效配置：通过 Parquet 的 Path/Timestamp 读取原生灰度视频，不经过 RGB 转换。调查报告未保留 raw sidecar；现有无损深度视频可直接使用，原始数据和 audit 不需重生成。`0`（无返回）和 `4095`（量程饱和）均置 NaN；有效值为 1–4094。
+`depth.path_pattern: null` 通过 Parquet Path/Timestamp 读取原生灰度视频，不经过 RGB；`0` 为无效，**qmax=4095 对应 depth_max，不自动屏蔽**。默认对数编码下 q=1024 约为 1.416 m，并非 1.024 m。参考 TFDS 为 PNG 四舍五入到毫米；这里缓存浮点米制，不额外舍入。
+
+`depth.kind: ray` 暂沿用数据方描述，也支持显式 `z`。提供的 `dataset.py` 将实际反投影交给未提供的 `pointcloud_transforms.py`，因此本轮没有声称已与它验证 ray/Z 等价；gray12le 或量化公式本身不能决定深度类型。
 
 仓库配置更新不会修改此前复制的 `dataset-calibrated.yaml`。构建始终读取 `--config` 指定的文件；请同步所需字段，保留本地已有的正确值。
 
-**旧缓存迁移**：缺少 `camera_quaternion_order` 时构建/加载会明确报错，不猜测格式。此前把 v423 相机 wxyz 当作 xyzw 生成的缓存，其世界 XYZ/外参已错，修改 YAML、合同或仅重画 PNG 都无法修复。使用正确配置构建新目录（例如 `replay-camera-wxyz-v2`），再重建绑定旧 contract 的 teacher/预测角色缓存；原始视频、Parquet 和已有 audit 可保留，TCP 动作标签的定义不变。不要手改旧 contract 冒充修复，也不要沿用旧 replay/checkpoint 做 optimizer resume。
+**旧缓存迁移**：本轮 schema 为 `oht_bridgevla_v2`；v1 replay/checkpoint 不作为已修复数据使用。用新配置在新目录（如 `replay-source-v2`）重建 replay，再重建 teacher/预测缓存。原始视频、Parquet 和已有 audit 可复用，不删除旧数据、不重采集；修改旧 contract 或只重画 PNG 无法修复旧 XYZ/rotation/gripper 标签，也不能沿用旧 optimizer resume。
 
 数据方提供的 frame 965 腕部投影参考值为原图 `(313.0, 378.6)`，在默认 4 倍步长缓存中应约为 `(78.25, 94.65)`。本地没有该原始样本，仍需在服务器复核多帧、多相机，不以“落在图内”代替几何对齐验证。
 
@@ -69,14 +76,18 @@ python tools/audit_oht_dataset.py \
 
 ~~~yaml
 depth:
-  encoding: scaled_integer
+  encoding: quantized
   pixel_format: gray12le
-  scale: 0.001
-  offset: 0.0
+  metadata: true
+  depth_min: 0.01
+  depth_max: 10.0
+  shift: 3.5
+  use_log: true
+  qmax: 4095
   kind: ray
-  invalid_values: [0, 4095]
+  invalid_values: [0]
   path_pattern: null
-  limits: [0.001, 4.094]
+  limits: [0.001, 10.0]
 ~~~
 
 读取器检查实际像素格式，保留 12-bit 数值及视频 PTS；旧 PyAV 的 gray12le 数组兼容路径直接读取含行 padding 的 uint16 平面。仍兼容浮点 NPY（metric）、整数 PNG/TIFF（scaled_integer）和显式指定通道/scale/offset 的旧 linear_channel 编码。普通可视化视频不能据此当作米制深度。
@@ -86,19 +97,19 @@ python tools/build_oht_replay.py \
   --root /common-data-32t/data/robot_data/oht_curobo_pd_v423 \
   --manifest /data/oht/audit-seed0.json \
   --config finetune/OHT/configs/dataset.yaml \
-  --output /data/oht/replay-v1 --sample-stride 10 \
+  --output /data/oht/replay-source-v2 --sample-stride 10 \
   --visualize-every 100 \
-  --visualize-output-dir /data/oht/previews/replay-v1
+  --visualize-output-dir /data/oht/previews/replay-source-v2
 
-python tools/validate_oht_replay.py --replay /data/oht/replay-v1
+python tools/validate_oht_replay.py --replay /data/oht/replay-source-v2
 ~~~
 
 实现行为：
 
 - 按 Parquet 引用时间戳选择最近视频 PTS，超出容差即报错；腕部 pose 按当前帧处理。
 - 米制 RGB-D → optical XYZ → world XYZ；无效点用 NaN，进入 Agent 时按边界过滤。
-- 用记录的世界系 TCP 轨迹重建下一关键点绝对目标（v423 的 TCP 变换为单位阵），**不使用原始 action 前六维作标签**。
-- 原始 action 最后一维仅重建夹爪意图：+1 关、−1 开、0 保持；网络输出为 0 关、1 开。
+- 用未来关键点的实测 world TCP 位姿与实测二值夹爪状态生成全部标签；**原始 action 的所有分量均不参与标签生成**。网络夹爪输出为 0 关、1 开。
+- 不照搬参考转换器“仅按 EE 平移删静止帧”的采样，以免删掉原地夹爪/旋转动作。
 - 关键点包含夹爪/指令边界前后帧、位移/转角/帧距阈值与终帧；在线不输入 instruction_id。
 - 语言为统一任务目标，low_dim 为当前测量夹爪和两指兼容特征。collision 标签仅占位，损失权重固定 0。
 - contract.json、samples.jsonl、观测 NPZ、complete.json 分开存储，校验哈希、未来目标关系及分组划分。
@@ -110,6 +121,8 @@ python tools/validate_oht_replay.py --replay /data/oht/replay-v1
 `--visualize-every N` 按每个 episode **生成的样本数**保存 PNG，包含第一个样本，随后每隔 N 个；不是按原始视频帧计数。`1` 显示每个生成样本，默认 `0` 关闭。可省略 `--visualize-output-dir`，此时保存到 `<output>/visualizations/<task>/<episode六位>/<frame六位>.png`。预览文件存在时拒绝覆盖。
 
 每张图包含缓存分辨率的各相机 RGB、米制 depth，以及两排 XY/XZ/YZ 彩色点云：青色为当前 TCP，品红色为下一 GT 关键点。depth 蓝色近、红色远，标注当前有效范围（米），黑色表示无效；不同图的深度颜色范围可能不同。
+
+每个 RGB 面板下方显示 TCP/goal 的 `in view`、`outside image`、`behind camera` 或 `unavailable`，以及缓存像素坐标/光学 Z。画外点不强制移到边缘；`in view` 仅代表在视锥内，不代表没有被遮挡。
 
 - 全局三视图使用 `scene_bounds`，最多显示 200,000 个点（默认五相机 120×160 的全部有效点都在预算内）。3×3 像素小面积绘制按深度处理重叠，仅改善显示空洞；品红色方框标出局部立方体的投影范围。
 - 局部三视图以 GT keypoint 为中心，各轴 ±0.20 m，显示米制坐标范围。先从完整有效点云选择局部点，再独立限制显示点数，避免全局抽样漏掉小物体；没有观测点时明确提示，不补造几何。
@@ -125,7 +138,7 @@ PNG 单独输出，不新增 observation/label 字段，也不改变 buffer cont
 ~~~bash
 python -m finetune.OHT.train \
   --config finetune/OHT/configs/baseline.yaml \
-  --replay /data/oht/replay-v1 --output /data/oht/check-only \
+  --replay /data/oht/replay-source-v2 --output /data/oht/check-only \
   --validate-only
 ~~~
 
@@ -134,12 +147,12 @@ python -m finetune.OHT.train \
 ~~~bash
 python -m finetune.OHT.train \
   --config finetune/OHT/configs/smoke.yaml \
-  --replay /data/oht/replay-v1 --output /data/oht/runs/smoke \
+  --replay /data/oht/replay-source-v2 --output /data/oht/runs/smoke \
   --pretrain-path /path/to/bridgevla-heatmap-pretrain
 
 python -m finetune.OHT.train \
   --config finetune/OHT/configs/baseline.yaml \
-  --replay /data/oht/replay-v1 --output /data/oht/runs/baseline-s0 \
+  --replay /data/oht/replay-source-v2 --output /data/oht/runs/baseline-s0 \
   --pretrain-path /path/to/bridgevla-heatmap-pretrain
 ~~~
 
@@ -173,22 +186,22 @@ Reference=NULL **仅示范格式**，实际任务必须逐阶段定义正确角�
 
 ~~~bash
 python tools/build_oht_role_teacher.py \
-  --replay /data/oht/replay-v1 --annotations /data/oht/annotations.jsonl \
+  --replay /data/oht/replay-source-v2 --annotations /data/oht/annotations.jsonl \
   --output /data/oht/teachers-v1 --point-count 512 \
   --visualize-every 100
 
 python tools/validate_oht_replay.py \
-  --replay /data/oht/replay-v1 --mode role_queries \
+  --replay /data/oht/replay-source-v2 --mode role_queries \
   --role-cache /data/oht/teachers-v1
 
 python -m finetune.OHT.train \
   --config finetune/OHT/configs/role_queries.yaml \
-  --replay /data/oht/replay-v1 --role-cache /data/oht/teachers-v1 \
+  --replay /data/oht/replay-source-v2 --role-cache /data/oht/teachers-v1 \
   --output /data/oht/runs/role-queries-s0 \
   --init-checkpoint /data/oht/runs/baseline-s0/model_last.pth
 ~~~
 
-Teacher 使用相同的可视化参数，默认输出到 `<teacher-output>/visualizations/`。Target 为绿色、Reference 为蓝色、重叠为黄色；标注 mask 区域显示 `30% 原始 RGB + 70% 角色颜色`，背景保留 RGB。`site_region` 显示区域点轮廓，不能当作已验证可见的 mask。图中同时列出角色的 source、present、known 与几何有效性，NULL/unknown 不伪造点。旧 replay 未缓存当前 TCP，teacher 预览明确显示 `not cached`，未来 TCP 仍来自动作标签。
+Teacher 使用相同的可视化参数，默认输出到 `<teacher-output>/visualizations/`。Target 为绿色、Reference 为蓝色、重叠为黄色；标注 mask 区域显示 `30% 原始 RGB + 70% 角色颜色`，背景保留 RGB。`site_region` 只显示区域点轮廓。图中列出角色 source/present/known/几何有效性，NULL/unknown 不伪造点。v2 在样本索引中保存当前 TCP，仅供诊断；teacher 预览可同时显示当前 TCP 和未来 goal，该字段不进入训练 batch。
 
 上例表示从已训练 baseline 继续训练的辅助实验，有额外训练预算。公平对照应让 baseline 从相同初始 checkpoint 继续相同优化步数，或两者均从相同预训练初始化各训同样预算。正式实验用三个训练 seeds，不应把继续训练收益全部归因于物体辅助。
 
@@ -215,13 +228,13 @@ provenance YAML 至少含 model_sha256（真实感知权重 SHA256）和 trainin
 
 ~~~bash
 python tools/predict_oht_objects.py \
-  --replay /data/oht/replay-v1 --predictor my_oht_predictor:create \
+  --replay /data/oht/replay-source-v2 --predictor my_oht_predictor:create \
   --provenance /data/oht/predictor-provenance.yaml \
   --output /data/oht/predictions-v1
 
 python -m finetune.OHT.train \
   --config finetune/OHT/configs/predicted_external.yaml \
-  --replay /data/oht/replay-v1 --role-cache /data/oht/predictions-v1 \
+  --replay /data/oht/replay-source-v2 --role-cache /data/oht/predictions-v1 \
   --output /data/oht/runs/predicted-external-s0 \
   --init-checkpoint /data/oht/runs/baseline-s0/model_last.pth
 ~~~
@@ -243,11 +256,19 @@ role queries 使用同一命令。external checkpoint 额外提供 --predictor�
 仿真适配器通过现有函数构造与训练一致的观测：
 
 ~~~python
-from finetune.OHT.data.actions import low_dim
+import numpy as np
+from finetune.OHT.data.actions import low_dim, gripper_step
 from finetune.OHT.data.observation import camera_observation
 from finetune.OHT.runtime.transport import Client
 
-observation = {"low_dim_state": low_dim(measured_open_fraction, finger_joints)}
+# Select the source_data_configs profile matching the online task/dataset.
+data_config = contract["source_data_configs"][source_profile]["data_config"]
+# episode reset: previous_fraction = previous_binary = None
+g = data_config["gripper"]
+measured_open_fraction = float(np.clip((g["close"] - measured_motor_position) / (g["close"] - g["open"]), 0, 1))
+binary = gripper_step(measured_open_fraction, previous_fraction, previous_binary, g)
+observation = {"low_dim_state": low_dim(measured_open_fraction, binary_state=binary)}
+previous_fraction, previous_binary = measured_open_fraction, binary
 for name in data_config["cameras"]:
     observation.update(camera_observation(
         name, rgb[name], metric_depth[name], sensor_pose_world_wxyz[name], data_config
@@ -258,6 +279,8 @@ absolute_target = client.act(observation, goal, episode_id, control_step, simula
 
 上例的 pose 是与 Parquet 相同的 USD camera→world 原始 wxyz 格式，需匹配 checkpoint 的 `data_config.camera_quaternion_order`。若在线 SDK 返回 xyzw，应在调用前显式重排为 wxyz；已生成的 optical→world 缓存矩阵不能再次做这一步。
 
+使用 contract 中已解析的 K/端点，不直接把含 null 的原始 YAML 交给 `camera_observation()`。`metric_depth[name]` 必须已按同一深度契约解码成米，不能再次解量化。low_dim 的两个开度特征为 `open01 × 0.04` 的兼容量，不是已标定的真实两指米制距离；逐帧二值夹爪采用与训练相同的因果规则，并在 episode reset 清空状态。
+
 返回绝对目标交给共同执行器。runtime/executor.py 中 relative_eef 提供 world→base/body 位移与旋转向量误差，并要求显式位移/旋转限幅。真实 client 的尺度、积分周期、axis-angle/Euler 约定、夹爪转换、目标到达策略和在线 IK 必须由 IsaacLab 端核对实现；该函数不是完整控制器。
 
 没有复制 H-VLA server、猜测两个端口的模型分工或修改远端脚本。保留用户提供的 Task1/2 脚本名，尤其 Task1 的 client 名中仍含 task2；真实映射和 joint+relative_eef 路由待远程核查。
@@ -267,7 +290,7 @@ absolute_target = client.act(observation, goal, episode_id, control_step, simula
 ~~~bash
 python -m finetune.OHT.eval open-loop \
   --checkpoint /data/oht/runs/baseline-s0/model_last.pth \
-  --replay /data/oht/replay-v1 --split val \
+  --replay /data/oht/replay-source-v2 --split val \
   --output /data/oht/eval/baseline-val.json
 ~~~
 
@@ -283,7 +306,7 @@ python -m finetune.OHT.eval open-loop \
 
 ~~~bash
 python -m finetune.OHT.eval closed-loop \
-  --server http://127.0.0.1:8010 --replay /data/oht/replay-v1 \
+  --server http://127.0.0.1:8010 --replay /data/oht/replay-source-v2 \
   --environment my_isaac_oht:create --cases /data/oht/eval-cases.jsonl \
   --executor-id verified-eef-executor-v1 --max-steps 500 \
   --output /data/oht/eval/baseline-eef-s0.json
@@ -296,9 +319,13 @@ case JSONL 每行含唯一 id、task、seed；id 每次运行需使用新 episod
 ## 9. 本地验证
 
 ~~~bash
-python -m pytest -q tests/test_oht_audit.py tests/test_oht_dataset_config.py tests/test_oht_depth_video.py tests/test_oht_migration.py tests/test_oht_visualization.py
+python -m pytest -q tests/test_oht_audit.py tests/test_oht_dataset_config.py tests/test_oht_depth_video.py tests/test_oht_migration.py tests/test_oht_visualization.py tests/test_oht_source_config.py
 ~~~
 
 覆盖 12 个合成 episode → 60 条 transitions、五相机、视频 PTS、米制 depth、划分检查、教师/预测缓存、无 GT 推理隔离、真实 Agent 梯度累积与零碰撞损失、HTTP 协议、闭环失败计数和续训采样。backbone/render 使用 CPU 小替身，未验证完整 PaliGemma/point-renderer GPU 前向。另运行现有角色预测、跨尺度继承、辅助损失、前向与优化器回归测试。
 
-2026-10-09 验证：上述 OHT 测试 58 项通过（本轮隔离环境 NumPy 1.26.4 / PyArrow 19.0.1）。覆盖原始相机 wxyz/显式 xyzw、非单位旋转下的 XYZ 与数据方投影公式、TCP 不重复偏移、旧配置/缓存拒绝，以及无损 gray12le、PTS、USD/ray、Parquet→replay→预览。预览专项覆盖点数预算、深度正确的小面积绘制、GT 局部范围与空视图提示、数据不变性；前轮已检查 PNG 布局。此前 PyAV 12.3.0 下配置/深度专项 18 项通过。均为本地合成数据验证，尚未读取服务器 v423 全量数据；早期相关模型回归结果不代表本轮重新执行。
+2026-10-09：99 项 OHT 测试通过（NumPy 1.26.4 / PyArrow 19.0.1）。覆盖 metadata K/逐相机量化/端点与 hash、EE 顺序、实测夹爪因果处理、raw action 七维扰动不影响 replay、v1 拒绝，以及原生 gray12 视频→replay→teacher 预览、诊断字段不进入 batch。
+
+另已直接抽取提供转换器的纯数值函数，对照 linear/log 各 4096 个深度码值；最大差约 0.504 mm（参考 PNG 毫米舍入及浮点差异），相机变换/K 缩放和原始夹爪端点归一化通过对照。该对照不表示参考链路二次归一化后的夹爪标签或完整点云流程完全一致。
+
+均为本地合成数据/纯函数验证，未读取服务器 v423 全量数据，也未验证完整 CUDA/VLM/真实闭环。缺少公共反投影模块，ray/Z 尚需核对；audit 的服务器实际提速尚未测量。

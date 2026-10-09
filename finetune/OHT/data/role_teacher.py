@@ -1,6 +1,7 @@
 """Build teachers from explicit per-frame masks or annotated site regions."""
 import json
 from pathlib import Path
+from .source_config import sample_data_config
 import numpy as np
 from .common import read_jsonl, inside, file_digest
 from .geometry import transform_matrix
@@ -87,7 +88,8 @@ def build_teacher(replay, annotations_path, output, point_count=512, *,
                 fields = role_fields("teacher", points, np.asarray(valid, bool),
                                      np.asarray(present, bool), np.asarray(known, bool))
                 if preview.every:
-                    preview.write(data, contract["data_config"], sample,
+                    preview.write(data, sample_data_config(contract, sample), sample,
+                                  current_tcp=sample.get("current_tcp"),
                                   role_specs=annotation, role_masks=role_masks,
                                   role_points=np.asarray(points), role_valid=np.asarray(valid, bool))
                 yield annotation["id"], fields

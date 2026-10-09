@@ -9,6 +9,7 @@ from .actions import gripper_states, low_dim, world_tcp_poses, keypoints, target
 from .observation import validate_data_config, camera_observation
 from .video import EpisodeVideos, metric_depth
 from .visualization import PreviewWriter
+from .source_config import resolve_dataset_config, sample_data_config
 
 
 def build(root, manifest_path, config, output, sample_stride=10, *,
@@ -27,8 +28,15 @@ def build(root, manifest_path, config, output, sample_stride=10, *,
     preview = PreviewWriter(visualize_output_dir or output / "visualizations", visualize_every)
     if output.exists():
         raise FileExistsError(f"Use a new replay directory: {output}")
+    profiles = {}
+    for record in manifest["episodes"]:
+        profile = record["dataset"]
+        if profile not in profiles:
+            resolved, sources = resolve_dataset_config(inside(root, profile), config)
+            profiles[profile] = dict(data_config=resolved, metadata_sha256=sources)
     output.mkdir(parents=True)
-    contract = dict(schema=SCHEMA, data_config=config, audit_manifest_sha256=recorded_hash,
+    contract = dict(schema=SCHEMA, data_config=next(iter(profiles.values()))["data_config"],
+                    source_data_configs=profiles, audit_manifest_sha256=recorded_hash,
                     policy_frame="world", quaternion_order="xyzw", target="future_absolute_tcp",
                     language="task_goal", rotation_classes=int(config.get("rotation_classes", 72)),
                     sample_stride=sample_stride)
@@ -36,14 +44,14 @@ def build(root, manifest_path, config, output, sample_stride=10, *,
     write_json(output / "contract.json", contract)
     rows = []
     for record in manifest["episodes"]:
+        config = profiles[record["dataset"]]["data_config"]
         if file_digest(inside(root, record["path"])) != record["parquet_sha256"]:
             raise ValueError(f"Raw Parquet changed after audit: {record['path']}")
         columns = read_episode(root, record)
         validate_episode(columns, record)
-        measured, desired = gripper_states(columns["observation.state"],
-                                           np.asarray(columns["action"])[:, 6])
-        poses = world_tcp_poses(columns, config["link_to_tcp"])
-        keys = keypoints(poses, desired, columns["instruction_id"], **config.get("keypoints", {}))
+        measured, observed_gripper = gripper_states(columns["observation.state"], config["gripper"])
+        poses = world_tcp_poses(columns, config["link_to_tcp"], config["ee_quaternion_order"])
+        keys = keypoints(poses, observed_gripper, columns["instruction_id"], **config.get("keypoints", {}))
         frames = sorted(set(range(0, len(poses) - 1, sample_stride)) | {0} | set(keys[:-1]))
         dataset = inside(root, record["dataset"])
         videos = EpisodeVideos(dataset, config.get("video_timestamp_tolerance", 1/120 + .0001))
@@ -51,11 +59,11 @@ def build(root, manifest_path, config, output, sample_stride=10, *,
             for frame in frames:
                 target = keys[bisect.bisect_right(keys, frame)]
                 sample_id = f'{record["task"]}/{record["episode_index"]:06d}/{frame:06d}'
-                observation = {"low_dim_state": low_dim(measured[frame],
-                                    columns["observation.gripper_joints"][frame])}
+                observation = {"low_dim_state": low_dim(measured[frame], binary_state=observed_gripper[frame])}
                 for camera in config["cameras"]:
                     rgb = videos.read(columns[f"observation.images.{camera}"][frame])
-                    depth = metric_depth(root, record, columns, camera, frame, videos, config["depth"])
+                    depth_config = config["cameras"][camera].get("depth", config["depth"])
+                    depth = metric_depth(root, record, columns, camera, frame, videos, depth_config)
                     observation.update(camera_observation(
                         camera, rgb, depth, columns[f"observation.{camera}_extrinsic"][frame], config))
                 clouds = np.concatenate([observation[f"{c}_point_cloud"].reshape(3, -1).T for c in config["cameras"]])
@@ -68,11 +76,12 @@ def build(root, manifest_path, config, output, sample_stride=10, *,
                 path = output / relative
                 path.parent.mkdir(parents=True, exist_ok=True)
                 np.savez_compressed(path, **observation)
-                labels = target_labels(poses[target], int(desired[target]), config["scene_bounds"],
+                labels = target_labels(poses[target], int(observed_gripper[target]), config["scene_bounds"],
                                        int(config.get("rotation_classes", 72)))
                 sample = dict(id=sample_id, task=record["task"], split=record["split"],
                                  episode_index=record["episode_index"], frame=frame, target_frame=target,
                                  timestamp=float(columns["timestamp"][frame]), group=record["group"],
+                                 data_profile=record["dataset"], current_tcp=poses[frame].tolist(),
                                  observation=relative, observation_sha256=file_digest(path),
                                  goal=GOALS[record["task"]],
                                  labels={key: value.tolist() for key, value in labels.items()})
@@ -102,10 +111,12 @@ def load_contract(root):
     if expected != digest(value) or complete["contract_sha256"] != expected:
         raise ValueError("Replay contract checksum mismatch")
     if contract.get("schema") != SCHEMA:
-        raise ValueError("Unsupported replay schema")
+        raise ValueError("Unsupported replay schema; rebuild v1 caches with corrected depth/EE/gripper metadata (raw data and audit can be reused)")
     # Require an explicit raw-camera convention before reusing a cache for
     # training/teacher generation. Old v423 XYZ cannot be fixed by relabelling.
-    validate_data_config(contract["data_config"])
+    validate_data_config(contract["data_config"], resolved=True)
+    for profile in contract.get("source_data_configs", {}).values():
+        validate_data_config(profile["data_config"], resolved=True)
     if file_digest(root / "samples.jsonl") != complete["index_sha256"]:
         raise ValueError("Replay sample index changed")
     if contract.get("index_sha256") != complete["index_sha256"]:
@@ -117,6 +128,7 @@ def load_contract(root):
         raise ValueError("Duplicate replay sample IDs")
     groups = {}
     for row in rows:
+        sample_data_config(contract, row)
         if row["split"] not in ("train", "val", "test") or row["target_frame"] <= row["frame"]:
             raise ValueError("Invalid replay split or non-future action target")
         previous = groups.setdefault(row["group"], row["split"])

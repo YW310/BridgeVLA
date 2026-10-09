@@ -52,6 +52,7 @@ def replay_fixture(tmp_path_factory):
     root = base / "raw"
     config = dict(scene_bounds=[-2,-2,-2,2,2,2], link_to_tcp=np.eye(4).tolist(),
                   image_size=[8,8], rotation_classes=72, camera_quaternion_order="wxyz",
+                  ee_quaternion_order="xyzw", gripper=dict(source="config", open=-.006, close=-.040),
                   depth=dict(encoding="metric", kind="z", path_pattern="{task}/depth/{episode:06d}/{frame:06d}.npy"),
                   keypoints=dict(max_translation=.03, max_rotation_degrees=8,max_frames=3),
                   cameras={camera:dict(intrinsics=[[8,0,8],[0,8,8],[0,0,1]],
@@ -144,6 +145,11 @@ def test_native_gray12_parquet_to_replay_with_previews(replay_fixture, tmp_path)
         sample[0, :2] = [0, 4095]
     write_gray12_video(dataset / "depth.mp4", samples)
     config = read_config(Path(__file__).resolve().parents[1] / "finetune/OHT/configs/dataset.yaml")
+    # This synthetic movie contains millimetres, not the exporter quantization.
+    config.update(intrinsics_source="config", ee_quaternion_order="xyzw",
+                  gripper=dict(source="config", open=-.006, close=-.040))
+    config["depth"] = dict(encoding="scaled_integer", pixel_format="gray12le", scale=.001,
+                           kind="ray", invalid_values=[0, 4095], limits=[.001, 4.094])
     config["image_size"] = [8, 8]
     for camera in CAMERAS:
         columns[f"observation.images.{camera}"] = [dict(Path="rgb.mp4", Timestamp=[i/60]) for i in range(n)]
@@ -236,11 +242,11 @@ def test_geometry_camera_axes_tcp_rotation_and_relative_controller():
     np.testing.assert_allclose(command[3:],0,atol=1e-6)
 
 
-def test_gripper_command_reconstruction_and_action_boundaries():
-    states=np.zeros((5,7)); states[:,6]=-.006
-    measured,desired=gripper_states(states,[0,1,0,-1,0])
+def test_observed_gripper_states_and_action_boundaries():
+    states=np.zeros((5,7)); states[:,6]=[-.006,-.040,-.040,-.006,-.006]
+    measured,desired=gripper_states(states, dict(open=-.006, close=-.040))
     np.testing.assert_array_equal(desired,[1,0,0,1,1])
-    np.testing.assert_allclose(measured,1)
+    np.testing.assert_allclose(measured,[1,0,0,1,1])
     labels=target_labels([0,0,0,0,0,0,1],1,[-1,-1,-1,1,1,1])
     np.testing.assert_array_equal(labels["rot_grip_action_indicies"],[36,36,36,1])
     with pytest.raises(ValueError,match="outside"):

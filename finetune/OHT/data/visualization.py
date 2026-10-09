@@ -67,6 +67,22 @@ def _mark(draw, xy, color, label=None):
         draw.text((x + 9, y - 16 if label == "TCP" else y + 6), label, fill=color)
 
 
+def projection_status(pose, intrinsics, world_from_optical, image_shape):
+    """Explain a missing marker; frustum membership is not depth visibility."""
+    if pose is None:
+        return "unavailable"
+    point = np.asarray(pose, dtype=float)[:3]
+    transform = np.asarray(world_from_optical)
+    optical = (point - transform[:3, 3]) @ transform[:3, :3]
+    if not np.isfinite(optical).all():
+        return "invalid coordinates"
+    if optical[2] <= 1e-8:
+        return f"behind camera z={optical[2]:.3f}m"
+    xy, inside_view = project_world(point, intrinsics, world_from_optical, image_shape)
+    state = "in view" if inside_view[0] else "outside image"
+    return f"{state} uv=({xy[0, 0]:.1f},{xy[0, 1]:.1f}) z={optical[2]:.3f}m"
+
+
 def _camera_rgb(observation, camera, current_tcp, action_tcp, masks, specs, role_points, role_valid):
     raw = observation[f"{camera}_rgb"].transpose(1, 2, 0)
     image = Image.fromarray(role_overlay(raw, masks)).resize((PANEL_W, PANEL_H), Image.Resampling.NEAREST)
@@ -205,6 +221,12 @@ def save_preview(path, observation, config, sample, current_tcp=None, role_specs
         draw.text((x + 4, y + 2), camera + (" RGB + roles" if role_specs is not None else " RGB"), fill="white")
         canvas.paste(_camera_rgb(observation, camera, current_tcp, action_tcp, masks,
                                 role_specs, role_points, role_valid), (x, y + 20))
+        K = observation[f"{camera}_camera_intrinsics"]
+        transform = observation[f"{camera}_camera_extrinsics"]
+        image_shape = observation[f"{camera}_rgb"].shape[1:]
+        for offset, pose, color, label in ((214, current_tcp, CURRENT, "TCP"),
+                                          (225, action_tcp, ACTION, "goal")):
+            draw.text((x + 4, y + offset), label + ": " + projection_status(pose, K, transform, image_shape), fill=color)
         depth, limits = depth_colors(observation[f"{camera}_depth"][0], config["depth"].get("limits", [0.001, 10]))
         draw.text((x + PANEL_W + 4, y + 2), camera + " metric depth", fill="white")
         canvas.paste(Image.fromarray(depth).resize((PANEL_W, PANEL_H), Image.Resampling.NEAREST), (x + PANEL_W, y + 20))

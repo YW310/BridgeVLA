@@ -83,6 +83,16 @@ class EpisodeVideos:
             reader.close()
 
 
+def validate_quantization(config):
+    """Validate the writer's fixed 12-bit linear/log quantization contract."""
+    values = [float(config[key]) for key in ("depth_min", "depth_max", "shift", "qmax")]
+    near, far, shift, qmax = values
+    if not np.isfinite(values).all() or not (0 < near < far) or shift < 0:
+        raise ValueError("Invalid depth quantization range/shift")
+    if qmax != int(qmax) or not 0 < qmax <= 65535 or not isinstance(config.get("use_log"), bool):
+        raise ValueError("Depth quantization requires integer qmax and boolean use_log")
+
+
 def decode_depth(raw, config):
     encoding = config.get("encoding")
     raw = np.asarray(raw)
@@ -90,6 +100,24 @@ def decode_depth(raw, config):
         if raw.ndim != 2 or not np.issubdtype(raw.dtype, np.floating):
             raise ValueError("metric depth requires a floating HxW array")
         depth = raw.astype(np.float32)
+    elif encoding == "quantized":
+        validate_quantization(config)
+        if raw.ndim != 2 or not np.issubdtype(raw.dtype, np.integer):
+            raise ValueError("quantized depth requires integer HxW depth")
+        qmax = int(config["qmax"])
+        if np.any(raw < 0) or np.any(raw > qmax):
+            raise ValueError(f"Quantized depth outside [0,{qmax}]")
+        normalized = raw.astype(np.float64) / qmax
+        near, far, shift = (float(config[key]) for key in ("depth_min", "depth_max", "shift"))
+        if config["use_log"]:
+            low, high = np.log(near + shift), np.log(far + shift)
+            depth = np.exp(normalized * (high - low) + low) - shift
+        else:
+            depth = normalized * (far - near) + near
+        # Keep metric floats; the reference TFDS converter additionally rounds
+        # to uint16 millimetres for PNG storage, which our NPZ does not need.
+        depth = depth.astype(np.float32)
+        depth[raw == 0] = np.nan  # Reserved by the quantizing writer.
     elif encoding in ("scaled_integer", "linear_channel"):
         if "scale" not in config or float(config["scale"]) <= 0:
             raise ValueError("Depth scale must be explicit and positive")
@@ -124,13 +152,13 @@ def metric_depth(root, record, columns, camera, frame, videos, config):
             raise ValueError("Depth sidecars must be .npy/.png/.tif/.tiff")
     else:
         reference = columns[f"observation.depth.{camera}"][frame]
-        if config.get("encoding") == "scaled_integer":
+        if config.get("encoding") in ("scaled_integer", "quantized"):
             raw = videos.read(reference, format=None, expected_format=config.get("pixel_format"))
         elif config.get("encoding") == "linear_channel":
             raw = videos.read(reference)
         else:
             raise ValueError(
-                "Video depth requires native scaled_integer grayscale or documented "
+                "Video depth requires native scaled_integer/quantized grayscale or documented "
                 "linear_channel decoding; metric depth requires floating sidecars"
             )
     return decode_depth(raw, config)

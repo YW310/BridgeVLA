@@ -1,5 +1,5 @@
 """Checkpoint-bound inference; online external predictor must match training."""
-from ..data.common import digest, read_config
+from ..data.common import SCHEMA, digest, read_config
 from ..data.observation import validate_data_config
 from ..model import build_agent, load_weights
 from .policy import Policy
@@ -16,7 +16,9 @@ def load_policy(path, device="cuda:0", pretrain_path=None, predictor=None, prove
     expected = contents.pop("sha256")
     if expected != digest(contents):
         raise ValueError("Checkpoint OHT contract checksum mismatch")
-    validate_data_config(contract["data_config"])
+    if contract.get("schema") != SCHEMA:
+        raise ValueError("Legacy OHT checkpoint data contract; rebuild replay and retrain with corrected source metadata")
+    validate_data_config(contract["data_config"], resolved=True)
     wrapper = None
     if config["mode"] == "predicted_external":
         if not predictor or not provenance:
