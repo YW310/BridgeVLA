@@ -24,6 +24,12 @@ def exporter(tmp_path):
     meta = tmp_path / "meta"
     meta.mkdir()
     config = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
+    # Separate, documented quantized-writer profile. Do not let a reference
+    # converter's log fallback determine the default v423 dataset encoding.
+    config["depth"] = dict(encoding="quantized", pixel_format="gray12le", metadata=True,
+                           depth_min=.01, depth_max=10., shift=3.5, use_log=True,
+                           qmax=4095, kind="ray", invalid_values=[0],
+                           path_pattern=None, limits=[.001, 10.])
     intrinsics = {camera.upper(): [[200 + i * 10, 0, 320], [0, 210 + i * 10, 240], [0, 0, 1]]
                   for i, camera in enumerate(config["cameras"])}
     (meta / "camera_intrinsics.json").write_text(json.dumps(intrinsics), encoding="utf-8")
@@ -74,11 +80,45 @@ def test_missing_metadata_fails_instead_of_reusing_document_focal_lengths(export
         resolve_dataset_config(root, config)
 
 
-def test_reference_depth_defaults_are_explicit_not_mm_scaling(exporter):
+def test_rgb_only_info_does_not_silently_apply_converter_log_defaults(exporter):
+    root, config, _ = exporter
+    (root / "meta/info.json").write_text(json.dumps({"features": {
+        "observation.images.wrist": {"info": {"pix_fmt": "yuv420p", "video_codec": "avc"}}
+    }}), encoding="utf-8")
+    with pytest.raises(ValueError, match="missing depth quantization metadata") as error:
+        resolve_dataset_config(root, config)
+    assert "scale=0.001" in str(error.value) and "--config" in str(error.value)
+
+
+@pytest.mark.parametrize("key", ["depth_min", "depth_max", "shift", "use_log", "qmax", "pix_fmt"])
+def test_partial_depth_metadata_cannot_mix_with_converter_defaults(exporter, key):
+    root, config, _ = exporter
+    path = root / "meta/info.json"
+    info = json.loads(path.read_text())
+    del info["features"]["observation.depth.wrist"]["info"]["video." + key]
+    path.write_text(json.dumps(info), encoding="utf-8")
+    with pytest.raises(ValueError, match=f"wrist: missing depth quantization metadata.*{key}"):
+        resolve_dataset_config(root, config)
+
+
+def test_complete_plain_depth_metadata_is_supported(exporter):
+    root, config, _ = exporter
+    path = root / "meta/info.json"
+    info = json.loads(path.read_text())
+    for feature in info["features"].values():
+        feature["info"] = {key.removeprefix("video."): value for key, value in feature["info"].items()}
+    path.write_text(json.dumps(info), encoding="utf-8")
+    resolved, _ = resolve_dataset_config(root, config)
+    assert resolved["cameras"]["wrist"]["depth"]["use_log"] is True
+    assert resolved["cameras"]["local_left"]["depth"]["use_log"] is False
+
+
+def test_verified_explicit_quantization_is_still_supported_without_metadata(exporter):
     root, config, _ = exporter
     (root / "meta/info.json").write_text('{"features": {}}', encoding="utf-8")
+    config["depth"]["metadata"] = False
     resolved, _ = resolve_dataset_config(root, config)
-    spec = resolved["cameras"]["wrist"]["depth"]
+    spec = resolved["depth"]
     raw = np.array([[0, 1, 512, 1024, 2048, 4094, 4095]], dtype=np.uint16)
     actual = decode_depth(raw, spec)
     # Independent golden values for the supplied converter's log inverse.
@@ -88,6 +128,49 @@ def test_reference_depth_defaults_are_explicit_not_mm_scaling(exporter):
     assert np.isfinite(actual[0, -1])  # qmax is a valid far-plane sample.
     reference_mm = np.rint(actual[:, 1:] * 1000).astype(np.uint16)
     np.testing.assert_array_equal(reference_mm, [[11, 654, 1416, 3385, 9996, 10000]])
+
+
+def test_rgb_only_info_with_embedded_K_and_measured_stats_uses_explicit_mm(exporter):
+    root, _, intrinsics = exporter
+    config = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
+    (root / "meta/camera_intrinsics.json").unlink()
+    (root / "meta/stats.json").unlink()
+    info = dict(camera_intrinsics=intrinsics, features={
+        f"observation.images.{camera}": {"info": dict(fps=60, pix_fmt="yuv420p", video_codec="avc")}
+        for camera in config["cameras"]}, features_stats={"observation.state": dict(
+            min=[0] * 6 + [-.04008600115776062], max=[1] * 6 + [-.005636283196508884])})
+    (root / "meta/info.json").write_text(json.dumps(info), encoding="utf-8")
+    before = deepcopy(config)
+    resolved, sources = resolve_dataset_config(root, config)
+    assert config == before
+    assert sources == {"meta/info.json": file_digest(root / "meta/info.json")}
+    for camera, calibration in resolved["cameras"].items():
+        assert calibration["intrinsics"] == intrinsics[camera.upper()]
+        assert "depth" not in calibration  # No hidden per-camera log overrides.
+    assert resolved["gripper"]["open"] == info["features_stats"]["observation.state"]["min"][-1]
+    np.testing.assert_allclose(decode_depth(np.array([[897]], np.uint16), resolved["depth"]), [[.897]])
+
+
+def test_intrinsics_sidecar_has_priority_over_embedded_info(exporter):
+    root, config, intrinsics = exporter
+    path = root / "meta/info.json"
+    info = json.loads(path.read_text())
+    info["camera_intrinsics"] = {camera: np.eye(3).tolist() for camera in config["cameras"]}
+    path.write_text(json.dumps(info), encoding="utf-8")
+    resolved, _ = resolve_dataset_config(root, config)
+    for camera, calibration in resolved["cameras"].items():
+        assert calibration["intrinsics"] == intrinsics[camera.upper()]
+
+
+def test_malformed_intrinsics_sidecar_is_not_hidden_by_info_fallback(exporter):
+    root, config, intrinsics = exporter
+    path = root / "meta/info.json"
+    info = json.loads(path.read_text())
+    info["camera_intrinsics"] = intrinsics
+    path.write_text(json.dumps(info), encoding="utf-8")
+    (root / "meta/camera_intrinsics.json").write_text('{"WRIST": null}', encoding="utf-8")
+    with pytest.raises(ValueError, match="K in meta/camera_intrinsics.json"):
+        resolve_dataset_config(root, config)
 
 
 @pytest.mark.parametrize("use_log", [True, False])
@@ -246,7 +329,8 @@ def test_v1_contract_rejected_even_with_valid_checksums(replay_fixture, tmp_path
         load_contract(root)
 
 
-def test_native_quantized_metadata_to_replay_and_teacher_preview(exporter, replay_fixture, tmp_path):
+@pytest.mark.parametrize("encoding", ["quantized", "scaled_integer"])
+def test_native_depth_to_replay_and_teacher_preview(exporter, replay_fixture, tmp_path, encoding):
     import shutil
     import pyarrow as pa
     import pyarrow.parquet as pq
@@ -273,6 +357,7 @@ def test_native_quantized_metadata_to_replay_and_teacher_preview(exporter, repla
     video(dataset / "rgb.mp4", n=n, size=64)
     raw = np.full((64, 64), 1024, np.uint16)
     raw[0, 0], raw[0, 8] = 0, 4095
+    raw[0, 16], raw[0, 24] = 897, 4094
     write_gray12_video(dataset / "depth.mp4", [raw] * n)
     rotation = Rotation.from_euler("xyz", [17, -29, 63], degrees=True)
     columns["observation.ee_quat_world"] = [rotation.as_quat()[[3, 0, 1, 2]].tolist()] * n
@@ -286,17 +371,32 @@ def test_native_quantized_metadata_to_replay_and_teacher_preview(exporter, repla
     manifest, output = tmp_path / "native-audit.json", tmp_path / "native-replay"
     assert audit(root, manifest)["valid_episodes"] == 1
     config["image_size"] = [8, 8]
+    if encoding == "scaled_integer":
+        # Same metadata layout as the user's export: RGB-only features, K
+        # embedded in info.json, no writer quantization fields or sidecars.
+        config["depth"] = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))["depth"]
+        (dataset / "meta/camera_intrinsics.json").unlink()
+        (dataset / "meta/info.json").write_text(json.dumps(dict(camera_intrinsics=K, features={
+            f"observation.images.{camera}": {"info": dict(pix_fmt="yuv420p", video_codec="avc")}
+            for camera in config["cameras"]})), encoding="utf-8")
     count = build(root, manifest, config, output, 2, visualize_every=1)
     contract = load_contract(output)
     data = OHTDataset(output, "train")
     assert data.validate_all() == count
     first = data[0]
     assert first["low_dim_state"][0] == 0  # stats close endpoint, not raw action
-    expected_log = decode_depth(raw, config["depth"])[::8, ::8]
-    np.testing.assert_allclose(first["wrist_depth"][0], expected_log, equal_nan=True)
-    # local_left has linear quantization metadata, other cameras have log.
-    linear = dict(config["depth"], use_log=False)
-    np.testing.assert_allclose(first["local_left_depth"][0], decode_depth(raw, linear)[::8, ::8], equal_nan=True)
+    expected_depth = decode_depth(raw, config["depth"])[::8, ::8]
+    np.testing.assert_allclose(first["wrist_depth"][0], expected_depth, equal_nan=True)
+    if encoding == "quantized":
+        # local_left has linear quantization metadata, other cameras have log.
+        linear = dict(config["depth"], use_log=False)
+        np.testing.assert_allclose(first["local_left_depth"][0], decode_depth(raw, linear)[::8, ::8], equal_nan=True)
+    else:
+        assert first["wrist_depth"][0, 0, 2] == np.float32(.897)
+        assert first["wrist_depth"][0, 0, 3] == np.float32(4.094)
+        assert np.isnan(first["wrist_depth"][0, 0, [0, 1]]).all()
+        for camera in config["cameras"]:
+            np.testing.assert_allclose(first[f"{camera}_depth"][0], expected_depth, equal_nan=True)
     for camera in config["cameras"]:
         expected_K = np.asarray(K[camera], float)
         expected_K[:2] /= 8

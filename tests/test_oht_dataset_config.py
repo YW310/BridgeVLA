@@ -11,6 +11,7 @@ from finetune.OHT.data.geometry import check_bounds, transform_matrix
 from finetune.OHT.data.observation import camera_observation, validate_data_config
 from finetune.OHT.data.point_filter import point_cloud_mask
 from finetune.OHT.data.visualization import project_world
+from finetune.OHT.data.video import decode_depth
 
 
 CONFIG = Path(__file__).resolve().parents[1] / "finetune/OHT/configs/dataset.yaml"
@@ -82,10 +83,11 @@ def test_missing_camera_transform_explains_config_fix(dataset_config, camera):
 
 def test_default_depth_contract_and_missing_definitions(dataset_config):
     validate_data_config(dataset_config)
-    assert dataset_config["depth"]["encoding"] == "quantized"
-    assert dataset_config["depth"]["use_log"] is True
-    assert dataset_config["depth"]["invalid_values"] == [0]
-    assert dataset_config["depth"]["qmax"] == 4095
+    assert dataset_config["depth"]["encoding"] == "scaled_integer"
+    assert dataset_config["depth"]["metadata"] is False
+    assert dataset_config["depth"]["scale"] == .001
+    assert dataset_config["depth"]["invalid_values"] == [0, 4095]
+    assert dataset_config["depth"]["limits"] == [.001, 4.094]
     assert dataset_config["intrinsics_source"] == "metadata"
     dataset_config["depth"]["encoding"] = None
     with pytest.raises(ValueError, match="depth encoding"):
@@ -96,6 +98,13 @@ def test_default_depth_contract_and_missing_definitions(dataset_config):
         validate_data_config(dataset_config)
     dataset_config["depth"]["kind"] = "z"
     validate_data_config(dataset_config)
+
+
+def test_documented_raw_depth_897_uses_mm_not_converter_log_default(dataset_config):
+    raw = np.array([[0, 1, 897, 4094, 4095]], dtype=np.uint16)
+    decoded = decode_depth(raw, dataset_config["depth"])
+    np.testing.assert_allclose(decoded, [[np.nan, .001, .897, 4.094, np.nan]],
+                               equal_nan=True)
 
 
 @pytest.mark.parametrize("camera", ["global_left", "global_right", "local_left", "local_right", "wrist"])

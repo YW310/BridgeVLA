@@ -11,7 +11,7 @@ from scipy.spatial.transform import Rotation
 
 from finetune.OHT.data.geometry import camera_pose_matrix
 from finetune.OHT.data.observation import camera_observation, validate_data_config
-from finetune.OHT.data.video import EpisodeVideos, IndexedVideoReader
+from finetune.OHT.data.video import EpisodeVideos, IndexedVideoReader, decode_depth
 from tests.test_oht_depth_video import write_gray12_video
 
 
@@ -69,6 +69,50 @@ def test_reference_axis_flip_is_on_the_right_and_inverse_includes_translation():
     np.testing.assert_allclose(actual, np.linalg.inv(source) @ flip, atol=1e-12)
     assert not np.allclose(actual, flip @ np.linalg.inv(source))
     assert not np.allclose(actual[:3, 3], source[:3, 3])
+
+
+def test_log_decoding_mm_rays_creates_cross_camera_surface_misalignment():
+    # A depth decoder mismatch can look like a rotation error despite correct
+    # extrinsics. This synthetic repro does not establish the server's encoding.
+    config = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
+    config["point_cloud_filter"]["enabled"] = False
+    config["image_size"] = [11, 13]
+    K = np.array([[14., 0, 6], [0, 15., 5], [0, 0, 1.]])
+    normal = np.array([.25, -.15, 1.])
+    normal /= np.linalg.norm(normal)
+    v, u = np.indices((11, 13))
+    rays = np.stack(((u - 6) / 14., (v - 5) / 15., np.ones_like(u)), axis=-1)
+    rays /= np.linalg.norm(rays, axis=-1, keepdims=True)
+    wrong_spec = dict(encoding="quantized", depth_min=.01, depth_max=10.,
+                      shift=3.5, use_log=True, qmax=4095, invalid_values=[0],
+                      kind="ray", limits=[.001, 10.])
+    wrong_normals = []
+    for index, camera in enumerate(config["cameras"]):
+        optical = np.eye(4)
+        optical[:3, :3] = Rotation.from_euler(
+            "xyz", [171 + index * 3, -13 + index * 5, 19 + index * 11], degrees=True).as_matrix()
+        optical[:3, 3] = [.1 + index * .07, -.2 + index * .04, 1.6]
+        source = optical @ np.diag([1., -1., -1., 1.])
+        raw_pose = np.r_[source[:3, 3], Rotation.from_matrix(source[:3, :3]).as_quat()[[3, 0, 1, 2]]]
+        ray_distance = (.4 - optical[:3, 3] @ normal) / ((rays @ optical[:3, :3].T) @ normal)
+        raw = np.rint(ray_distance * 1000).astype(np.uint16)
+        assert ((raw > 0) & (raw < 4095)).all()
+        config["cameras"][camera]["intrinsics"] = K.tolist()
+        for spec, correct in ((config["depth"], True), (wrong_spec, False)):
+            observation = camera_observation(camera, np.zeros((11, 13, 3), np.uint8),
+                                             decode_depth(raw, spec), raw_pose, dict(config, depth=spec))
+            np.testing.assert_allclose(observation[f"{camera}_camera_extrinsics"], optical, atol=1e-6)
+            cloud = observation[f"{camera}_point_cloud"].reshape(3, -1).T
+            if correct:
+                np.testing.assert_allclose(cloud @ normal, .4, atol=.00051)
+            else:
+                _, _, vh = np.linalg.svd(cloud - cloud.mean(axis=0), full_matrices=False)
+                wrong_normals.append(vh[-1])
+    # The wrong depth inverse changes apparent surface orientation differently
+    # across cameras; a single compensating world rotation cannot align them.
+    angles = [np.degrees(np.arccos(np.clip(abs(first @ second), 0, 1)))
+              for first in wrong_normals for second in wrong_normals]
+    assert max(angles) > 1.
 
 
 def test_invalid_direction_and_alignment_are_rejected():

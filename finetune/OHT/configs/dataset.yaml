@@ -28,7 +28,7 @@ camera_extrinsic_direction: camera_to_world  # reference --input-extrinsic-direc
 ee_quaternion_order: wxyz
 # Resolve real K per task dataset, case-insensitive camera names. Never infer
 # local-camera K from a generic FOV/document example.
-intrinsics_source: metadata  # meta/camera_intrinsics.json
+intrinsics_source: metadata  # meta/camera_intrinsics.json, else info.json camera_intrinsics
 gripper:
   source: metadata  # dataset-global observation.state min/max, not episode min/max
   open: null        # alternatively source: config with explicit raw endpoints
@@ -46,20 +46,18 @@ video_alignment: frame_index  # timestamp only for independently timestamped str
 video_timestamp_tolerance: 0.0084333333
 depth:
   # Read native uint16 words, preserving 12-bit values (never convert to RGB).
-  encoding: quantized
+  # Dataset-specific numeric encoding from the supplied depth investigation:
+  # raw=897 -> 0.897 m ray distance. gray12le alone does not imply this scale.
+  encoding: scaled_integer
   pixel_format: gray12le
-  # meta/info.json features.observation.depth.<camera>.info overrides these
-  # explicit reference-converter defaults (video.* or plain keys).
-  metadata: true
-  depth_min: 0.01
-  depth_max: 10.0
-  shift: 3.5
-  use_log: true
-  qmax: 4095
-  kind: ray           # retained from exporter description; not implied by gray12le
-  invalid_values: [0] # quantized 4095 is depth_max, NOT automatically invalid
+  # This export's info.json describes RGB only; never apply converter log defaults.
+  metadata: false
+  scale: 0.001
+  offset: 0.0
+  kind: ray           # supplied exporter description; not implied by gray12le
+  invalid_values: [0, 4095]  # no return / saturated range for this export
   path_pattern: null   # null: use Parquet depth Path/Timestamp; sidecars: root-relative pattern
-  limits: [0.001, 10.0]
+  limits: [0.001, 4.094]
 keypoints:
   # Only changes in the measured, filtered binary gripper state.
   # No stops, instruction/motion subdivisions, or synthetic terminal goal.

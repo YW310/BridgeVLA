@@ -15,9 +15,11 @@ def _name(value):
     return re.sub(r"[^a-z0-9]+", ".", str(value).lower()).strip(".")
 
 
-def _intrinsic(metadata, camera):
+def _intrinsic(metadata, camera, source="meta/camera_intrinsics.json"):
+    if isinstance(metadata, dict):
+        metadata = metadata.get("camera_intrinsics", metadata)
     if not isinstance(metadata, dict) or not isinstance(metadata.get("cameras", {}), dict):
-        raise ValueError("camera_intrinsics.json must contain a camera mapping")
+        raise ValueError(f"{source} must contain a camera intrinsic mapping")
     top = {_name(key): value for key, value in metadata.items()}
     cameras = {_name(key): value for key, value in metadata.get("cameras", {}).items()}
     entry = cameras.get(_name(camera), top.get(_name(camera)))
@@ -29,7 +31,7 @@ def _intrinsic(metadata, camera):
     if matrix.shape == (9,):
         matrix = matrix.reshape(3, 3)
     if matrix.shape != (3, 3) or not np.isfinite(matrix).all():
-        raise ValueError(f"Missing/invalid {camera} K in meta/camera_intrinsics.json")
+        raise ValueError(f"Missing/invalid {camera} K in {source}")
     return matrix.tolist()
 
 
@@ -49,8 +51,9 @@ def resolve_dataset_config(dataset, config):
     """Return canonical, self-contained config plus metadata file fingerprints.
 
     Explicit YAML remains supported. No per-episode range fitting, quaternion
-    guessing or inferred camera focal lengths. Depth metadata overrides the
-    explicit YAML quantization defaults exactly as in the reference converter.
+    guessing or inferred camera focal lengths. Quantized depth metadata must
+    specify the complete writer contract; converter fallback values do not
+    establish how a dataset's numeric depth was encoded.
     """
     dataset = Path(dataset)
     result, sources, loaded = deepcopy(config), {}, {}
@@ -63,9 +66,16 @@ def resolve_dataset_config(dataset, config):
         return loaded[relative]
 
     if result.get("intrinsics_source", "config") == "metadata":
-        metadata = read("meta/camera_intrinsics.json")
+        relative = ("meta/camera_intrinsics.json"
+                    if inside(dataset, "meta/camera_intrinsics.json").is_file()
+                    else "meta/info.json")
+        metadata = read(relative)
+        if relative == "meta/info.json" and "camera_intrinsics" not in metadata:
+            raise FileNotFoundError(
+                "Camera intrinsics unavailable: need meta/camera_intrinsics.json "
+                "or meta/info.json camera_intrinsics; no focal-length defaults are used")
         for camera, calibration in result["cameras"].items():
-            calibration["intrinsics"] = _intrinsic(metadata, camera)
+            calibration["intrinsics"] = _intrinsic(metadata, camera, relative)
         result["intrinsics_source"] = "config"
 
     gripper = result["gripper"]
@@ -106,10 +116,24 @@ def resolve_dataset_config(dataset, config):
             metadata = feature.get("info", {}) if isinstance(feature, dict) else {}
             if not isinstance(metadata, dict):
                 metadata = {}
-            for key in ("depth_min", "depth_max", "shift", "use_log", "qmax", "pix_fmt"):
+            keys = ("depth_min", "depth_max", "shift", "use_log", "qmax", "pix_fmt")
+            missing = [key for key in keys
+                       if metadata.get("video." + key, metadata.get(key)) is None]
+            if missing:
+                raise ValueError(
+                    f"{camera}: missing depth quantization metadata {missing} in "
+                    f"meta/info.json features.observation.depth.{camera}.info. "
+                    "RGB codec metadata does not specify numeric depth encoding; "
+                    "converter log defaults are not evidence of the writer contract. "
+                    "For the confirmed millimetre export, replace the entire depth "
+                    "block with encoding=scaled_integer, scale=0.001, offset=0, "
+                    "kind=ray, invalid_values=[0,4095], metadata=false. For an "
+                    "independently verified quantized writer, set metadata=false "
+                    "and supply all quantization parameters explicitly. Update "
+                    "the file passed to --config, not an existing replay contract.")
+            for key in keys:
                 value = metadata.get("video." + key, metadata.get(key))
-                if value is not None:
-                    spec["pixel_format" if key == "pix_fmt" else key] = _boolean(value) if key == "use_log" else value
+                spec["pixel_format" if key == "pix_fmt" else key] = _boolean(value) if key == "use_log" else value
             validate_quantization(spec)
             if spec.get("pixel_format") != "gray12le":
                 raise ValueError(f"{camera}: quantized depth requires native gray12le")

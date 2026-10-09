@@ -43,11 +43,11 @@ Baseline 和 assistance 共用观测、相机、动作定义、控制器、训�
 
 ### 3.1 深度视频契约（2026-10-09 补充调查）
 
-深度为 **无损 HEVC gray12le**，但不是直接毫米值。参考 `_depth_video_spec()` / `_dequantize_depth_mm()` 使用 metadata 指定的固定 linear/log 量化；本轮按同一逆公式解码，默认 min=0.01/max=10/shift=3.5/use_log=true/qmax=4095。0 无效，4095 对应 depth_max，不自动剔除。NPZ 保留米制 float，不做 TFDS PNG 的毫米舍入。完整公式与配置见 [OHT 运行说明](../../finetune/OHT/README.md#3-仿真数据契约与构建共用缓存)。
+深度为 **无损 HEVC gray12le**，数值编码不能从像素格式推断。用户本次提供的 `info.json` 仅列 RGB，无深度量化参数；参考转换器的 log fallback 不是 writer 契约。仓库默认更正为数据方此前调查给出的 `raw × 0.001 m` 射线距离，0/4095 无效：raw=897 应为 0.897 m，此前 log 默认值误解为约 1.215 m。仍支持独立核实的 quantized writer；若启用 metadata，必须具备每相机完整量化字段，缺失报错。配置、区别和迁移见 [OHT 运行说明](../../finetune/OHT/README.md#3-仿真数据契约与构建共用缓存)。
 
-不需要 raw sidecar 或重新采集。读取器原生读取灰度平面、按 Parquet Timestamp 对齐 PTS，并检查像素格式；禁止将数值深度转换成 RGB 再解码。相机世界姿态为 USD/OpenGL，使用 `T_world_optical = T_world_usd @ diag(1,-1,-1,1)`。
+不需要 raw sidecar 或重新采集。读取器原生读取灰度平面并检查像素格式；仓库配置按原始帧序号配对，独立时间戳流可显式选择 PTS。禁止将数值深度转换成 RGB 再解码。相机世界姿态为 USD/OpenGL，使用 `T_world_optical = T_world_usd @ diag(1,-1,-1,1)`。
 
-内参按各数据集的 `meta/camera_intrinsics.json` 读取，夹爪端点来自 dataset-global stats/info，解析结果与源文件 hash 绑定 contract。`depth.kind=ray` 暂沿用数据方说明；参考 `dataset.py` 将反投影委托给未提供的 `pointcloud_transforms.py`，本轮不把 ray/Z 的一致性当作已验证。本地合成验证不代表服务器全量对齐、工作区覆盖或任务精度。
+内参优先读取 `meta/camera_intrinsics.json`，文件不存在时读 `meta/info.json.camera_intrinsics`；夹爪端点来自 dataset-global stats/info，解析结果与源文件 hash 绑定 contract。`depth.kind=ray` 来自数据方说明；参考 `dataset.py` 将反投影委托给未提供的 `pointcloud_transforms.py`，本轮不把 ray/Z 的一致性当作已验证。错误解码可造成跨相机变形，不证明所有旋转错位都源于此；须检查有效配置及真实单帧，多相机外参/同步仍需复核。旧 XYZ 不能靠改 contract 修复，原始数据/audit 可复用。
 
 ### 3.2 四元数与相机坐标约定
 
@@ -59,7 +59,7 @@ Baseline 和 assistance 共用观测、相机、动作定义、控制器、训�
 
 | 提供代码中的函数/链路 | 本轮处理 |
 |---|---|
-| `_depth_video_spec()` / `_dequantize_depth_mm()` | `source_config.resolve_dataset_config()` / `video.decode_depth()`：per-camera 量化 metadata、原生 gray12、0 无效、保留 qmax |
+| `_depth_video_spec()` / `_dequantize_depth_mm()` | `video.decode_depth()` 仍支持已核实的量化公式；`source_config.resolve_dataset_config()` 不再静默套 log fallback，当前导出按数据方毫米契约显式解码 |
 | `_resolve_calibration_for_view()` / `_resize_intrinsic()` | 读取真实 metadata K；RGB-D 严格步长采样，K 同步缩放，不照搬 TFDS 方形 resize |
 | `_canonicalize_extrinsic_pose7()` / optical conversion | 原始 wxyz/camera→world/OpenGL；只翻轴一次，BridgeVLA 保留 world 坐标 |
 | `_canonicalize_new_gripper_to_legacy_physical()` / `binarize_gripper_hysteresis_with_diff()` | 使用原始 motor 端点直接归一化 open01，移植因果滞回+差分；不绕经旧 TFDS 的物理开度区间 |

@@ -49,7 +49,7 @@ python tools/audit_oht_dataset.py \
 
 以用户提供的已运行 `convert_oht_lerobot_v21_to_tfds.py → transforms.py → dataset.py` 为本轮读取参考，无需重新标定或采集。使用 [dataset.yaml](configs/dataset.yaml)；实际参数及 metadata SHA256 写入 contract 的 `source_data_configs`，各任务分别读取，不串用左右相机参数。
 
-- 内参来自各 `<task>/lerobot_dataset/meta/camera_intrinsics.json`，支持大小写相机名和 `cameras.<name>.intrinsic`；缺失时报错，不再猜局部相机焦距。使用 YAML 内参时设 `intrinsics_source: config` 并填完整 K。
+- 内参优先来自各 `<task>/lerobot_dataset/meta/camera_intrinsics.json`；该文件不存在时读取 `meta/info.json.camera_intrinsics`（用户本次提供的格式）。支持大小写相机名和 `cameras.<name>.intrinsic`；缺失/非法时报错，不猜焦距，也不静默绕过非法 sidecar。使用 YAML 内参时设 `intrinsics_source: config` 并填完整 K。
 - 原始 camera/EE 四元数默认 **wxyz**，分别由 `camera_quaternion_order` / `ee_quaternion_order` 指定；策略输出仍为 **world/TCP/xyzw**。参考转换器的默认值与早期“EE 为 xyzw”说明冲突；若成功运行时用了 `--input-quat-order xyzw`，这里也应显式设 xyzw，不能从数值猜格式。物体四元数未用于当前动作标签。
 - `ee_pos_world` 直接作为已含控制器偏移的 TCP，`link_to_tcp` 保持单位阵，不重复添加约 12 cm 偏移。
 - 夹爪从实测 `observation.state[6]` 读取，用数据集全局 stats/info 的 open=min、close=max 归一化。反向端点可用 `gripper.source: config` 显式指定；不按 episode 重估端点。采用参考 `binarize_gripper_hysteresis_with_diff()` 的因果规则：open01 大于 0.9 为 open、小于 0.1 为 close，中间根据 ±0.05 差分切换，否则保持上一状态。**raw action 全部仅用于审计，不生成监督。**
@@ -75,11 +75,13 @@ point_cloud_filter:
 
 原始相机外参默认为 camera→world、USD/OpenGL 轴，按显式顺序转换到内部 xyzw。`camera_pose_matrix()` 与参考转换器一致：先解析 `camera_quaternion_order`，若 `camera_extrinsic_direction: world_to_camera` 则对完整 4×4 求逆，再右乘 `optical_to_sensor`。默认方向 `camera_to_world`，五个相机的光学变换均为 `diag(1,-1,-1,1)`：`T_world_optical = T_world_usd @ optical_to_sensor`。不要将翻轴矩阵左乘到世界坐标，也不要只转置 R 而忘记平移。若来源已经是 optical camera→world，显式使用 identity，禁止再翻轴。缓存外参始终是 4×4 optical→world；投影使用 `(P_world - t) @ R_world_optical`，不再次转置或翻轴。camera 与 EE 的四元数配置独立，不能靠改动作旋转修复点云。
 
-深度为无损 HEVC `gray12le`，但 **12-bit 像素不等于毫米值**。参考转换器从 `meta/info.json` 的 `features.observation.depth.<camera>.info` 读取固定量化参数（`video.*` 或普通 key）。设 `n=q/qmax`：对数逆变换为 `exp(n*(log(max+shift)-log(min+shift))+log(min+shift))-shift`，线性为 `n*(max-min)+min`。YAML 默认与参考代码一致：min=0.01、max=10、shift=3.5、use_log=true、qmax=4095；metadata 中存在的字段覆盖默认值。
+深度为无损 HEVC `gray12le`；**像素格式不能决定数值编码**。仓库配置按用户提供的该批数据调查使用 `depth_m = raw × 0.001`、`kind: ray`，`0` 无返回、`4095` 截断无效，`1–4094` 对应 `0.001–4.094 m`。这来自数据方说明，不是从 RGB 的 H.264/yuv420p metadata 推断；本地尚未拿到服务器原始帧独立验证。
 
-`depth.path_pattern: null` 通过 Parquet Path/Timestamp 读取原生灰度视频，不经过 RGB；`0` 为无效，**qmax=4095 对应 depth_max，不自动屏蔽**。默认对数编码下 q=1024 约为 1.416 m，并非 1.024 m。参考 TFDS 为 PNG 四舍五入到毫米；这里缓存浮点米制，不额外舍入。
+**更正此前 log 默认值**：本次 `info.json.features` 只有 RGB，没有 `observation.depth.*` 或量化参数。参考 `_depth_video_spec()` 缺字段时返回 log 默认值，但这不能证明导出端采用了 log 编码。示例 raw=897 按数据方说明为 **0.897 m**，此前 log 默认值会解成约 **1.215 m**，可造成跨相机表面变形/重影；不能靠修改外参旋转补偿，也不能据此断定所有错位已解决。
 
-`depth.kind: ray` 暂沿用数据方描述，也支持显式 `z`。提供的 `dataset.py` 将实际反投影交给未提供的 `pointcloud_transforms.py`，因此本轮没有声称已与它验证 ray/Z 等价；gray12le 或量化公式本身不能决定深度类型。
+仍支持已确认的其他 linear/log 量化导出：`encoding: quantized`，设 `n=q/qmax`，log 逆变换为 `exp(n*(log(max+shift)-log(min+shift))+log(min+shift))-shift`，linear 为 `n*(max-min)+min`。`metadata: true` 必须从**每个相机**的 `features.observation.depth.<camera>.info` 读到完整 `depth_min/depth_max/shift/use_log/qmax/pix_fmt`（`video.*` 或普通 key），缺失即报错，不混入默认值。若实际 writer 参数已独立核实，可 `metadata: false` 显式填写；不要对当前 RGB-only metadata 自动启用 log。量化 writer 的 qmax 可以表示有效 far plane，是否屏蔽由其契约决定，不能与当前毫米导出混用。
+
+`depth.path_pattern: null` 通过 Parquet 引用读取原生灰度视频，不经过 RGB；按下文 `video_alignment` 配对帧。`depth.kind: ray` 来自数据方说明，也支持显式 `z`。参考 `dataset.py` 将实际反投影交给未提供的 `pointcloud_transforms.py`，未声称已与该模块验证等价。
 
 仓库配置更新不会修改此前复制的 `dataset-calibrated.yaml`。构建始终读取 `--config` 指定的文件；请同步所需字段，保留本地已有的正确值。
 
@@ -93,19 +95,18 @@ point_cloud_filter:
 
 ~~~yaml
 depth:
-  encoding: quantized
+  encoding: scaled_integer
   pixel_format: gray12le
-  metadata: true
-  depth_min: 0.01
-  depth_max: 10.0
-  shift: 3.5
-  use_log: true
-  qmax: 4095
+  metadata: false
+  scale: 0.001
+  offset: 0.0
   kind: ray
-  invalid_values: [0]
+  invalid_values: [0, 4095]
   path_pattern: null
-  limits: [0.001, 10.0]
+  limits: [0.001, 4.094]
 ~~~
+
+外部 `dataset-calibrated.yaml` 请替换**整个 depth 块**，不要保留旧 `metadata: true` 或 per-camera `depth` 覆盖。旧 buffer 的 XYZ 已经解码并保存，改 YAML 或重画预览不会修复它；先以新配置核对少量帧，再在新目录重建受影响缓存。raw/audit 不变，不删除正确数据。
 
 读取器检查实际像素格式，保留 12-bit 数值及视频 PTS；旧 PyAV 的 gray12le 数组兼容路径直接读取含行 padding 的 uint16 平面。仍兼容浮点 NPY（metric）、整数 PNG/TIFF（scaled_integer）和显式指定通道/scale/offset 的旧 linear_channel 编码。普通可视化视频不能据此当作米制深度。
 
@@ -356,7 +357,7 @@ python -m pytest -q tests/test_oht_camera_alignment.py tests/test_oht_point_filt
 
 覆盖 12 个合成 episode → 60 条 transitions、五相机、视频 PTS、米制 depth、划分检查、教师/预测缓存、无 GT 推理隔离、真实 Agent 梯度累积与零碰撞损失、HTTP 协议、闭环失败计数和续训采样。backbone/render 使用 CPU 小替身，未验证完整 PaliGemma/point-renderer GPU 前向。另运行现有角色预测、跨尺度继承、辅助损失、前向与优化器回归测试。
 
-2026-10-09：206 项 OHT 测试分批通过（NumPy 1.26.4 / PyArrow 19.0.1）。覆盖跨相机旋转平面对齐（两种四元数顺序/外参方向/相机坐标系/ray-Z）、错一帧导致旋转重影的复现与修正、整段视频帧数不符拒绝、诊断相机颜色/缓存隔离，以及经验 ROI、手工 XYZ 保留/排除框、训练/在线/预览一致性及 RGB/GT 不变、gripper-only 关键帧、无人工终帧/尾段、无事件跳过/空缓存拒绝、BridgeVLA 事件/原版同等停稳信号对照、实际 dt 与纯旋转、旧几何模式、严格未来目标、metadata K/逐相机量化/端点与 hash、EE 顺序、实测夹爪因果处理、raw action 七维扰动不影响 replay、v1 拒绝、原生 gray12 视频→replay→teacher 预览。先前合跑出现视频库内存分配失败，本轮限制数值库线程并分批验证。
+2026-10-09：220 项 OHT 测试分批通过（NumPy 1.26.4 / PyArrow 19.0.1）。新增 RGB-only info + 内嵌 K、完整/缺失量化 metadata、raw=897 毫米解码、两类原生 gray12 视频→replay→teacher 预览，以及错误 log 解码造成跨相机表面朝向分歧的合成复现。保留跨相机旋转平面对齐（两种四元数顺序/外参方向/相机坐标系/ray-Z）、错帧重影、整段视频长度、诊断缓存隔离、ROI/标签不变、gripper-only 关键帧、无事件处理、metadata hash、动作监督与推理隔离等回归。限制数值库线程并分批验证，不代表服务器真实数据已经对齐。
 
 另直接抽取参考转换器的纯相机函数，对照 1,600 组随机位姿、wxyz/xyzw、c2w/w2c 与 OpenGL/optical 输入；最终 optical→world 矩阵最大绝对差约 `2.8e-7`。这证明约定处理与提供代码相符，不证明服务器原始 pose 与图像已同步。
 
