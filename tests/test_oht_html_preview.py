@@ -259,6 +259,15 @@ def test_browser_edits_bounds_and_exports_matching_yaml_offline(cloud,tmp_path):
         page.wait_for_timeout(100)
         assert page.locator("#cloud").evaluate("canvas => canvas.getContext('2d').getImageData(0,0,canvas.width,canvas.height).data.some(v => v !== 0)"), errors
         page.screenshot(path=str(tmp_path/"roi-dense-dark-320.png"),full_page=True)
+        unknown = dict(id="observations/task/000000/000010.npz",
+                       diagnostic_note="仅诊断：未检查整批完成状态；TCP/goal 未知。")
+        path = save_point_cloud_html(tmp_path/"unindexed.html",dense,cloud[1],unknown)
+        page.goto(path.resolve().as_uri(),wait_until="domcontentloaded")
+        page.wait_for_selector('#oht-roi[data-ready="true"]')
+        assert "frame 未知 → 未知" in page.locator("#sample-label").inner_text()
+        assert page.locator("#diagnostic-note").inner_text() == unknown["diagnostic_note"]
+        assert not page.locator("#coverage").inner_text()
+        page.screenshot(path=str(tmp_path/"roi-unindexed-320.png"),full_page=True)
         assert not errors and not network
         print("ROI browser previews:",tmp_path)
         context.close()

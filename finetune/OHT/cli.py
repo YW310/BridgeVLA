@@ -9,7 +9,6 @@ from .data.replay import build, load_contract
 from .data.dataset import OHTDataset
 from .data.role_cache import create_cache
 from .data.role_teacher import build_teacher
-from .data.source_config import sample_data_config
 from .data.visualization import CAMERA_COLORS, save_preview
 from .runtime.predicted_wrapper import load_predictor, PredictedObjectWrapper
 
@@ -43,7 +42,12 @@ def main(argv=None):
     p.add_argument("--point-count", type=int, default=512)
     p = sub.add_parser("diagnose-geometry", help="Export one cached frame per camera and camera-colored fusion; no cache edits")
     p.add_argument("--replay", required=True)
-    p.add_argument("--sample-id", required=True, help="task/episode/frame, as recorded in samples.jsonl")
+    selection = p.add_mutually_exclusive_group(required=True)
+    selection.add_argument("--sample-id", help="task/episode/frame, as recorded in samples.jsonl")
+    selection.add_argument("--observation", help="Direct NPZ path within replay; requires --allow-incomplete")
+    p.add_argument("--allow-incomplete", action="store_true",
+                   help="Diagnostic only: do not require/read complete.json; never enables incomplete training")
+    p.add_argument("--data-profile", help="Direct NPZ source key from contract.json; required with multiple profiles")
     p.add_argument("--output", required=True, help="New diagnostic directory; never overwrites existing files")
     p.add_argument("--html", action="store_true", help="Also export an offline interactive world-XYZ ROI editor")
     p.add_argument("--max-points", type=int, default=40000, help="HTML display point budget, 1-60000; never changes cached XYZ")
@@ -83,18 +87,10 @@ def main(argv=None):
         output = Path(args.output)
         if output.exists():
             raise FileExistsError(f"Use a new diagnostic directory: {output}")
-        contract = load_contract(args.replay)
-        with (Path(args.replay) / "samples.jsonl").open(encoding="utf-8") as stream:
-            rows = (json.loads(line) for line in stream if line.strip())
-            row = next((row for row in rows if row["id"] == args.sample_id), None)
-        if row is None:
-            raise ValueError(f"Unknown sample ID: {args.sample_id}")
-        path = inside(args.replay, row["observation"])
-        if file_digest(path) != row["observation_sha256"]:
-            raise ValueError("Observation changed")
-        with np.load(path, allow_pickle=False) as source:
-            observation = {key: source[key] for key in source.files}
-        config = sample_data_config(contract, row)
+        from .data.geometry_diagnostic import load_geometry_diagnostic
+        contract, config, row, observation, validation = load_geometry_diagnostic(
+            args.replay, sample_id=args.sample_id, observation_path=args.observation,
+            data_profile=args.data_profile, allow_incomplete=args.allow_incomplete)
         # Validate the HTML payload before creating any output on invalid data.
         if args.html:
             from .data.html_preview import point_cloud_payload
@@ -112,6 +108,7 @@ def main(argv=None):
                          current_tcp=row.get("current_tcp"), color_by_camera=True)
         write_json(output / "geometry.json", dict(
             sample_id=row["id"], contract_sha256=contract["sha256"], data_config=config,
+            validation=validation,
             video_alignment=config.get("video_alignment", "timestamp"),
             camera_extrinsic_direction=config.get("camera_extrinsic_direction", "camera_to_world"),
             note="Cached geometry only; colors identify cameras, not roles. No registration or auto-correction.",

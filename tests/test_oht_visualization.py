@@ -163,6 +163,26 @@ def _minimal_preview(points, center):
     return observation, config, sample
 
 
+def test_preview_without_labels_omits_local_views_and_marks_unknown(monkeypatch, tmp_path):
+    observation, config, _ = _minimal_preview(np.array([[.5, .5, .5]]), [.5, .5, .5])
+    texts, calls = [], []
+    original_text, original_view = ImageDraw.ImageDraw.text, preview_module._orthographic
+    def text(self, xy, value, *args, **kwargs):
+        texts.append(value)
+        return original_text(self, xy, value, *args, **kwargs)
+    def view(points, colors, bounds, *args, **kwargs):
+        calls.append(kwargs.get("region_bounds"))
+        return original_view(points, colors, bounds, *args, **kwargs)
+    monkeypatch.setattr(ImageDraw.ImageDraw, "text", text)
+    monkeypatch.setattr(preview_module, "_orthographic", view)
+    preview_module.save_preview(tmp_path / "no-labels.png", observation, config,
+                                dict(id="observations/frame.npz", diagnostic_note="diagnostic only"))
+    assert len(calls) == 3 and calls == [None, None, None]
+    assert any("frame unknown -> unknown" in item for item in texts)
+    assert any("GT goal unavailable" in item for item in texts)
+    assert not any("GT-centered refine diagnostic (NOT model stage2)" in item for item in texts)
+
+
 @pytest.mark.parametrize("center", [[.5, .5, .5], [.98, .5, .5]])
 def test_local_views_select_before_global_sampling_and_keep_gt_center(monkeypatch, tmp_path, center):
     center = np.array(center)

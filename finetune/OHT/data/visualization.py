@@ -174,7 +174,8 @@ def save_preview(path, observation, config, sample, current_tcp=None, role_specs
                  role_masks=None, role_points=None, role_valid=None, color_by_camera=False):
     """Save sampled diagnostics without changing cached tensors or labels."""
     cameras = list(config["cameras"])
-    action_tcp = np.asarray(sample["labels"]["gripper_pose"])
+    goal_pose = sample.get("labels", {}).get("gripper_pose")
+    action_tcp = None if goal_pose is None else np.asarray(goal_pose)
     bounds = np.asarray(config["scene_bounds"])
     filter_options = point_filter_options(config.get("point_cloud_filter"))
     chunks, rgb_chunks = [], []
@@ -190,19 +191,25 @@ def save_preview(path, observation, config, sample, current_tcp=None, role_specs
     points, colors = np.concatenate(chunks), np.concatenate(rgb_chunks)
     # Select the local ROI before global display sampling so small objects do
     # not disappear merely because distant scene points exhausted the budget.
-    local_bounds = np.r_[action_tcp[:3] - LOCAL_HALF_EXTENT, action_tcp[:3] + LOCAL_HALF_EXTENT]
-    local_mask = (points >= local_bounds[:3]).all(axis=1) & (points < local_bounds[3:]).all(axis=1)
+    local_bounds = None if action_tcp is None else np.r_[action_tcp[:3] - LOCAL_HALF_EXTENT, action_tcp[:3] + LOCAL_HALF_EXTENT]
+    local_mask = np.zeros(len(points), dtype=bool) if local_bounds is None else (
+        (points >= local_bounds[:3]).all(axis=1) & (points < local_bounds[3:]).all(axis=1))
     local_count, global_count = int(local_mask.sum()), len(points)
     local_points, local_colors = _sample_preview_cloud(points[local_mask], colors[local_mask])
     points, colors = _sample_preview_cloud(points, colors)
     row_height, top = PANEL_H + 44, 96
     ortho_top = top + ((len(cameras) + 1) // 2) * row_height
-    canvas = Image.new("RGB", (1024, ortho_top + 686), (24, 24, 24))
+    footer_top = ortho_top + (638 if action_tcp is not None else 318)
+    canvas = Image.new("RGB", (1024, footer_top + 48), (24, 24, 24))
     draw = ImageDraw.Draw(canvas)
-    draw.text((8, 6), f"OHT {sample['id']} | {sample['split']} | frame {sample['frame']} -> {sample['target_frame']}", fill="white")
-    draw.text((8, 24), f"time {sample['timestamp']:.3f} s | {sample['goal']}", fill="white")
+    frame = "unknown" if sample.get("frame") is None else sample["frame"]
+    target_frame = "unknown" if sample.get("target_frame") is None else sample["target_frame"]
+    timestamp = "unknown" if sample.get("timestamp") is None else f"{sample['timestamp']:.3f} s"
+    draw.text((8, 6), f"OHT {sample['id']} | {sample.get('split', 'unknown')} | frame {frame} -> {target_frame}", fill="white")
+    draw.text((8, 24), f"time {timestamp} | {sample.get('goal', 'instruction unavailable')}", fill="white")
     current = "not cached" if current_tcp is None else np.array2string(np.asarray(current_tcp)[:3], precision=3)
-    draw.text((8, 42), f"World TCP {current} -> {np.array2string(action_tcp[:3], precision=3)} m", fill="white")
+    goal = "not cached" if action_tcp is None else np.array2string(action_tcp[:3], precision=3)
+    draw.text((8, 42), f"World TCP {current} -> {goal} m", fill="white")
     legend = ("Cyan=current TCP; magenta=future action; orthographic colors=physical camera (NOT roles)"
               if color_by_camera else
               "Cyan=current TCP; magenta=future action; green=Target; blue=Reference; yellow=overlap")
@@ -211,6 +218,8 @@ def save_preview(path, observation, config, sample, current_tcp=None, role_specs
         status = " | ".join(f"{role}: {spec['source']} present={spec['present']} known={spec['known']} geometry={bool(role_valid[i])}"
                             for i, (role, spec) in enumerate((('target', role_specs['target']), ('reference', role_specs['reference']))))
         draw.text((8, 78), status, fill="white")
+    elif sample.get("diagnostic_note"):
+        draw.text((8, 78), "Diagnostic only: replay completeness not checked; direct NPZ may have no TCP/goal metadata.", fill=ACTION)
     for index, camera in enumerate(cameras):
         x, y = (index % 2) * 512, top + (index // 2) * row_height
         masks = {role: values[camera] for role, values in (role_masks or {}).items()}
@@ -237,29 +246,32 @@ def save_preview(path, observation, config, sample, current_tcp=None, role_specs
     draw.text((8, ortho_top + 2),
               f"Global workspace | in-bounds points {global_count} -> shown {len(points)} | 1px points" + filter_status, fill="white")
     local_top = ortho_top + 318
-    draw.text((8, local_top + 2),
-              f"GT-centered refine diagnostic (NOT model stage2) | +/-{LOCAL_HALF_EXTENT:.2f} m | points {local_count} -> {len(local_points)}",
-              fill="white")
-    for row_top, cloud, rgb, view_bounds, roi in (
-        (ortho_top, points, colors, bounds, local_bounds),
-        (local_top, local_points, local_colors, local_bounds, None),
-    ):
+    views = [(ortho_top, points, colors, bounds, local_bounds)]
+    if action_tcp is not None:
+        draw.text((8, local_top + 2),
+                  f"GT-centered refine diagnostic (NOT model stage2) | +/-{LOCAL_HALF_EXTENT:.2f} m | points {local_count} -> {len(local_points)}",
+                  fill="white")
+        views.append((local_top, local_points, local_colors, local_bounds, None))
+    for row_top, cloud, rgb, view_bounds, roi in views:
         for index, axes in enumerate(((0, 1), (0, 2), (1, 2))):
             x = index * 341
             draw.text((x + 4, row_top + 20), "".join("XYZ"[axis] for axis in axes) + " world point cloud", fill="white")
             canvas.paste(_orthographic(cloud, rgb, view_bounds, axes, current_tcp, action_tcp,
                                        role_points, role_valid, region_bounds=roi), (x, row_top + 38))
-    draw.text((8, ortho_top + 300), "Magenta box: local cube footprint. Local views select observed points before global sampling.", fill="white")
-    if not local_count:
-        draw.text((8, local_top + 300), "No observed points in local cube; the GT keypoint does not create geometry.", fill="white")
+    if action_tcp is None:
+        draw.text((8, ortho_top + 300), "GT goal unavailable: no goal marker, local cube or GT-centered refine views are generated.", fill=ACTION)
     else:
-        draw.text((8, local_top + 300), "Local cube is fixed at the GT keypoint; it is not a coarse prediction or the model's noisy training crop.", fill="white")
-    draw.text((8, ortho_top + 638), "CPU diagnostics, not BridgeVLA renderer outputs. 1px points; stored XYZ unchanged. Black depth = invalid.", fill="white")
+        draw.text((8, ortho_top + 300), "Magenta box: local cube footprint. Local views select observed points before global sampling.", fill="white")
+        if not local_count:
+            draw.text((8, local_top + 300), "No observed points in local cube; the GT keypoint does not create geometry.", fill="white")
+        else:
+            draw.text((8, local_top + 300), "Local cube is fixed at the GT keypoint; it is not a coarse prediction or the model's noisy training crop.", fill="white")
+    draw.text((8, footer_top), "CPU diagnostics, not BridgeVLA renderer outputs. 1px points; stored XYZ unchanged. Black depth = invalid.", fill="white")
     if color_by_camera:
         for index, camera in enumerate(cameras):
-            draw.text((8 + index * 204, ortho_top + 656), camera, fill=CAMERA_COLORS[camera])
+            draw.text((8 + index * 204, footer_top + 18), camera, fill=CAMERA_COLORS[camera])
     else:
-        draw.text((8, ortho_top + 656), "Role masks: 30% RGB + 70% color. Site outlines are projected region points; visibility is not verified.", fill="white")
+        draw.text((8, footer_top + 18), "Role masks: 30% RGB + 70% color. Site outlines are projected region points; visibility is not verified.", fill="white")
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("xb") as stream:

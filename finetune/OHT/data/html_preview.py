@@ -76,13 +76,14 @@ def point_cloud_payload(observation, config, sample, max_points=40_000, *, sourc
     def marker(value):
         return None if value is None else array(value, name="TCP/goal").reshape(-1)[:3].tolist()
 
-    return dict(sample_id=str(sample["id"]), frame=int(sample["frame"]),
-                target_frame=int(sample["target_frame"]), scene_bounds=bounds.tolist(),
+    return dict(sample_id=str(sample["id"]), frame=None if sample.get("frame") is None else int(sample["frame"]),
+                target_frame=None if sample.get("target_frame") is None else int(sample["target_frame"]),
+                diagnostic_note=sample.get("diagnostic_note", ""), scene_bounds=bounds.tolist(),
                 point_cloud_filter=options, cameras=cameras, total_points=total, displayed_points=len(points),
                 xyz=encoded(points, "<f4"), rgb=encoded(colors, "u1"), camera_ids=encoded(camera_ids, "u1"),
                 geometry_source="cached_xyz" if source == "xyz" else "cached_metric_depth_backprojection",
                 current_tcp=marker(sample.get("current_tcp")),
-                goal=marker(sample["labels"]["gripper_pose"]),
+                goal=marker(sample.get("labels", {}).get("gripper_pose")),
                 source_note=("Cached world XYZ only. Previously filtered/invalid points cannot be recovered. " if source == "xyz" else
                              "Display-only backprojection of cached metric depth/K/optical extrinsics, without ROI masking. "
                              "Can restore ROI-masked XYZ where cached depth is still valid, not unobserved surfaces. "

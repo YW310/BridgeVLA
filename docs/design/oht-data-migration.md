@@ -570,6 +570,8 @@ IsaacLab client（现有环境）
 
 构建 buffer/teacher 时可用 `--visualize-every N`，默认关闭，`1` 覆盖每个生成样本；可指定 `--visualize-output-dir`。PNG 与缓存数据分开：全局三视图保留最多 20 万点，全局/局部点云均以单像素绘制，不扩张邻域，并标出 GT 局部范围；局部三视图围绕下一 GT keypoint 各轴 ±0.20 m，明确标注 **GT-centered refine diagnostic**，不是模型真实二阶段输出。均为 CPU 诊断投影，不修改缓存 XYZ；site 点投影不代表可见性已验证。`diagnose_oht_geometry.py --html` 可额外导出离线可旋转点云，编辑世界工作区/保留框/排除框并下载 YAML；默认读取缓存 XYZ，`--html-source depth` 可仅为显示重建米制深度中仍有效、但被旧 ROI 删掉的点。不写回 buffer，不补造不可见表面，也不修复原始深度/相机参数错误。参数、限制和命令统一见 [OHT 运行说明](../../finetune/OHT/README.md#生成时可视化)。
 
+仅诊断可用 `--allow-incomplete` 跳过 `complete.json`；尚无 `samples.jsonl` 时用 `--observation` 直接打开已写完的 NPZ，多数据源需指定 `--data-profile`。缺失的 TCP/goal 不猜测，不生成 GT 局部视图；contract/所选 NPZ 仍检查，诊断结果不证明 buffer 可用于训练。命令见 [OHT 运行说明](../../finetune/OHT/README.md#构建未完成时)。
+
 尚未完成且需要现场信息的工作：
 
 1. 真实 v423 全量读取、跨相机几何及工作区覆盖检查；无需重新标定。按实际 writer 核实 gray12le 毫米/linear/log 编码，读取 metadata K/夹爪端点、显式 camera/EE 顺序；TCP 不重复偏移。公共 `pointcloud_transforms.py` 已补充，默认 Z-depth 已同步；仍需在服务器复核 frame 965 腕部参考投影 `(313.0,378.6)` 及多帧几何。

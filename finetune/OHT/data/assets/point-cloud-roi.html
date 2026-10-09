@@ -27,6 +27,7 @@
 </style>
 <div id="oht-roi">
   <div class="viz-row"><output id="sample-label"></output><output id="point-count" aria-live="polite"></output></div>
+  <output id="diagnostic-note" class="text-destructive"></output>
   <div class="viz-controls" id="camera-controls" aria-label="显示相机"></div>
   <div class="viz-controls">
     <label class="form-label">点颜色<select id="color-mode" class="form-select"><option value="rgb">原始 RGB</option><option value="camera">来源相机</option></select></label>
@@ -221,7 +222,8 @@
     catch{el("copy-status").textContent="请在已选中的 YAML 文本上按 Ctrl/Cmd+C";}});
   el("download-yaml").addEventListener("click",()=>{const url=URL.createObjectURL(new Blob([el("yaml").value],{type:"text/yaml;charset=utf-8"}));
     const link=document.createElement("a");link.href=url;link.download="oht-point-cloud-roi.yaml";root.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);});
-  el("sample-label").textContent=data.sample_id+" · frame "+data.frame+" → "+data.target_frame+" · world metres";
+  el("sample-label").textContent=data.sample_id+" · frame "+(data.frame??"未知")+" → "+(data.target_frame??"未知")+" · world metres";
+  el("diagnostic-note").textContent=data.diagnostic_note||"";
   el("geometry-source").textContent=data.geometry_source==="cached_xyz" ?
     "来源：缓存 XYZ。已被旧 ROI 过滤成 NaN 的点不在此图中；扩大范围可改用 --html-source depth。" :
     "来源：缓存米制 depth + K/外参，仅为显示重新反投影，未套旧 ROI。仍受观测、深度范围、缓存分辨率及原参数正确性限制。";
