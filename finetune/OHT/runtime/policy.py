@@ -3,6 +3,7 @@ import numpy as np
 from ..data.dataset import to_device
 from .predicted_wrapper import policy_observation
 from ..data.observation import validate_observation
+from ..data.point_filter import filter_observation_points
 
 
 class Policy:
@@ -22,6 +23,7 @@ class Policy:
     def act(self, observation, goal, step):
         import torch
         current = policy_observation(observation, self.contract["data_config"]["cameras"])
+        current = filter_observation_points(current, self.contract["data_config"])
         validate_observation(current, self.contract["data_config"])
         if self.wrapper:
             current.update(self.wrapper.predict(current, goal))

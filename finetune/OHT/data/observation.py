@@ -1,6 +1,7 @@
 """Create the same camera tensor layout for training and online inference."""
 import numpy as np
 from .geometry import array, pose_matrix, transform_matrix, backproject
+from .point_filter import point_filter_options, point_cloud_mask, filter_world_points
 
 
 def _camera_quaternion_order(config):
@@ -20,6 +21,7 @@ def validate_data_config(config, *, resolved=False):
     if bounds is None:
         raise ValueError("Set scene_bounds to the world-space OHT policy workspace")
     check_bounds(np.asarray(bounds[:3]) + (np.asarray(bounds[3:]) - bounds[:3]) / 2, bounds)
+    point_filter_options(config.get("point_cloud_filter"))
     transform_matrix(config.get("link_to_tcp"), "link_to_tcp")
     _camera_quaternion_order(config)
     if config.get("ee_quaternion_order") not in ("wxyz", "xyzw"):
@@ -99,6 +101,9 @@ def camera_observation(camera, rgb, depth, sensor_pose, config):
     K[1] /= sy
     if not np.isfinite(points).all(axis=-1).any():
         raise ValueError(f"{camera}: no valid metric depth")
+    # Exclude background before either rendering scale, without blackening RGB
+    # or changing raw depth/action labels. An individual camera may become empty.
+    points = filter_world_points(points, config.get("point_cloud_filter"))
     return {
         f"{camera}_rgb": rgb.transpose(2, 0, 1),
         f"{camera}_depth": depth[None].astype(np.float32),
@@ -130,11 +135,11 @@ def validate_observation(observation, config):
         array(observation[f"{camera}_camera_intrinsics"], (3, 3), "intrinsics")
         transform_matrix(observation[f"{camera}_camera_extrinsics"])
         cloud = points.reshape(3, -1).T
-        valid = np.isfinite(cloud).all(axis=1)
+        valid = point_cloud_mask(cloud, config.get("point_cloud_filter"))
         supported |= bool((valid & (cloud >= bounds[:3]).all(axis=1) &
                            (cloud < bounds[3:]).all(axis=1)).any())
     if set(observation) != expected:
         raise ValueError("Unexpected cached observation fields; keep teachers and labels separate")
     if not supported:
-        raise ValueError("No finite scene points inside configured scene_bounds")
+        raise ValueError("No finite scene points inside configured scene_bounds after point-cloud filtering")
     return observation

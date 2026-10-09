@@ -80,7 +80,7 @@ def build(root, manifest_path, config, output, sample_stride=10, *,
                 finite = np.isfinite(clouds).all(axis=1)
                 in_bounds = finite & (clouds >= bounds[:3]).all(axis=1) & (clouds < bounds[3:]).all(axis=1)
                 if not in_bounds.any():
-                    raise ValueError(f"{sample_id}: no scene points within scene_bounds")
+                    raise ValueError(f"{sample_id}: no scene points within scene_bounds after point-cloud filtering")
                 relative = f"observations/{sample_id}.npz"
                 path = output / relative
                 path.parent.mkdir(parents=True, exist_ok=True)

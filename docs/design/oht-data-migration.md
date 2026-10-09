@@ -115,6 +115,8 @@ NVIDIA 相机 API 区分 distance_to_image_plane 和 distance_to_camera，不能
 
 首版保留当前 organized RGB/point_cloud batch 接口，图像尺寸改为配置项；先在原始分辨率验证几何，再选择下采样。深度/点坐标使用一致像素采样并更新 K，不对跨物体边缘的深度做普通 RGB 双线性插值。
 
+已实现可选手工背景过滤 `point_cloud_filter`（默认关闭）：世界坐标保留框减去排除框并集，独立于 `scene_bounds` 和动作标签。共享 `data/point_filter.py`，缓存构建、训练输入、在线 predictor/agent 及全局/局部预览一致；排除 XYZ 记 NaN，原始 RGB/depth 与像素布局不改。单相机可空，全场过滤为空则拒绝执行/完成缓存。参数纳入 data profile/契约，更改后在新目录重建 replay/角色缓存；原始数据/audit 可复用。示例与安全边界见 [OHT 运行说明](../../finetune/OHT/README.md#3-仿真数据契约与构建共用缓存)，不预设实际墙壁坐标，也不删除所有平面或按未来 GT goal 筛点。
+
 约 150 万原始点/帧无需全部进 renderer。缓存抽取帧/共享观测，按空间与颜色一致性采样或保留局部细节。不要把 60 万帧的五路 float32 RGB-D/XYZ 全部复制为多个 replay transition；先估算磁盘、点数、加载吞吐和显存。
 
 world bounds 由训练观测和动作工作区确定并留显式余量；先统计原 RLBench bounds 的越界率。不得把越界 GT 标签静默夹到边界。

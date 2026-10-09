@@ -6,6 +6,7 @@ import re
 import numpy as np
 from .common import inside, file_digest
 from .actions import keypoint_options
+from .point_filter import point_filter_options
 from .observation import validate_data_config
 from .video import validate_quantization
 
@@ -113,9 +114,10 @@ def resolve_dataset_config(dataset, config):
             if spec.get("pixel_format") != "gray12le":
                 raise ValueError(f"{camera}: quantized depth requires native gray12le")
             calibration["depth"] = spec
-    # Persist the exact extraction mode/defaults, including legacy geometric
-    # mode, so a future config change cannot reinterpret buffer provenance.
+    # Persist extraction and XYZ-filter defaults so future YAML changes cannot
+    # reinterpret buffer provenance. Legacy geometric extraction stays explicit.
     result["keypoints"] = keypoint_options(result.get("keypoints"))
+    result["point_cloud_filter"] = point_filter_options(result.get("point_cloud_filter"))
     validate_data_config(result, resolved=True)
     return result, sources
 

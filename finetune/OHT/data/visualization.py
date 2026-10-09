@@ -3,6 +3,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw
 from .common import inside
+from .point_filter import point_cloud_mask, point_filter_options
 
 
 TARGET = np.array([35, 220, 75], dtype=np.uint8)
@@ -186,11 +187,12 @@ def save_preview(path, observation, config, sample, current_tcp=None, role_specs
     cameras = list(config["cameras"])
     action_tcp = np.asarray(sample["labels"]["gripper_pose"])
     bounds = np.asarray(config["scene_bounds"])
+    filter_options = point_filter_options(config.get("point_cloud_filter"))
     chunks, rgb_chunks = [], []
     for camera in cameras:
         cloud = observation[f"{camera}_point_cloud"].reshape(3, -1).T
         colors = observation[f"{camera}_rgb"].reshape(3, -1).T
-        valid = np.isfinite(cloud).all(axis=1) & (cloud >= bounds[:3]).all(axis=1)
+        valid = point_cloud_mask(cloud, filter_options) & (cloud >= bounds[:3]).all(axis=1)
         valid &= (cloud < bounds[3:]).all(axis=1)
         chunks.append(cloud[valid])
         rgb_chunks.append(colors[valid])
@@ -237,8 +239,9 @@ def save_preview(path, observation, config, sample, current_tcp=None, role_specs
         else:
             text = f"Blue near {limits[0]:.3f} m / red far {limits[1]:.3f} m"
         draw.text((x + PANEL_W + 4, y + 214), text, fill="white")
+    filter_status = " | manual XYZ filter ON" if filter_options["enabled"] else ""
     draw.text((8, ortho_top + 2),
-              f"Global workspace | in-bounds points {global_count} -> shown {len(points)} | 3x3 pixel splats", fill="white")
+              f"Global workspace | in-bounds points {global_count} -> shown {len(points)} | 3x3 pixel splats" + filter_status, fill="white")
     local_top = ortho_top + 318
     draw.text((8, local_top + 2),
               f"GT-centered refine diagnostic (NOT model stage2) | +/-{LOCAL_HALF_EXTENT:.2f} m | points {local_count} -> {len(local_points)}",

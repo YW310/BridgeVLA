@@ -5,6 +5,15 @@
 # World metres: [xmin,ymin,zmin,xmax,ymax,zmax]. Not full-dataset measured bounds.
 # Check all action targets and relevant object coverage before training; never clip GT.
 scene_bounds: [-0.5, -1.0, 0.3, 1.5, 1.0, 2.0]
+# Optional manual background removal BEFORE global/refine projection.
+# World metres; each box: [xmin,ymin,zmin,xmax,ymax,zmax], lower <= XYZ < upper.
+# Does not change scene_bounds, action GT, original RGB or measured depth.
+# Choose boxes from actual scene geometry; do not exclude objects/fixtures.
+point_cloud_filter:
+  enabled: false
+  keep_bounds: null   # null: no extra ROI; otherwise keep only points in this box
+  exclude_boxes: []  # remove points inside ANY listed box (e.g. walls)
+# Changing this block requires a new replay/teacher; raw data and audit are reusable.
 # observation.ee_pos_world already includes the controller's gripper->TCP offset.
 # Predict that recorded TCP directly; never add the offset a second time.
 link_to_tcp:
