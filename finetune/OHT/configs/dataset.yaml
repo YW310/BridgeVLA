@@ -47,14 +47,16 @@ video_timestamp_tolerance: 0.0084333333
 depth:
   # Read native uint16 words, preserving 12-bit values (never convert to RGB).
   # Dataset-specific numeric encoding from the supplied depth investigation:
-  # raw=897 -> 0.897 m ray distance. gray12le alone does not imply this scale.
+  # raw=897 -> 0.897 m. gray12le alone does not imply this scale.
   encoding: scaled_integer
   pixel_format: gray12le
   # This export's info.json describes RGB only; never apply converter log defaults.
   metadata: false
   scale: 0.001
   offset: 0.0
-  kind: ray           # supplied exporter description; not implied by gray12le
+  # Match reference pointcloud_transforms.py: Z=depth, X=(u-cx)*Z/fx,
+  # Y=(v-cy)*Z/fy. Do not normalize rays for this Z-depth contract.
+  kind: z
   invalid_values: [0, 4095]  # no return / saturated range for this export
   path_pattern: null   # null: use Parquet depth Path/Timestamp; sidecars: root-relative pattern
   limits: [0.001, 4.094]

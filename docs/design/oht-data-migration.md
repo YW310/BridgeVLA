@@ -43,11 +43,11 @@ Baseline 和 assistance 共用观测、相机、动作定义、控制器、训�
 
 ### 3.1 深度视频契约（2026-10-09 补充调查）
 
-深度为 **无损 HEVC gray12le**，数值编码不能从像素格式推断。用户本次提供的 `info.json` 仅列 RGB，无深度量化参数；参考转换器的 log fallback 不是 writer 契约。仓库默认更正为数据方此前调查给出的 `raw × 0.001 m` 射线距离，0/4095 无效：raw=897 应为 0.897 m，此前 log 默认值误解为约 1.215 m。仍支持独立核实的 quantized writer；若启用 metadata，必须具备每相机完整量化字段，缺失报错。配置、区别和迁移见 [OHT 运行说明](../../finetune/OHT/README.md#3-仿真数据契约与构建共用缓存)。
+深度为 **无损 HEVC gray12le**，数值编码不能从像素格式推断。用户本次提供的 `info.json` 仅列 RGB，无深度量化参数；参考转换器的 log fallback 不是 writer 契约。仓库保留此前调查的 `raw × 0.001 m` 解码，0/4095 无效；反投影按补充参考代码改为 Z-depth。raw=897 在毫米设置下为 0.897 m，参考 log 默认值解为约 1.215 m；实际原始编码仍须按 writer 核实。仍支持独立核实的 quantized writer；若启用 metadata，必须具备每相机完整量化字段，缺失报错。配置、区别和迁移见 [OHT 运行说明](../../finetune/OHT/README.md#3-仿真数据契约与构建共用缓存)。
 
 不需要 raw sidecar 或重新采集。读取器原生读取灰度平面并检查像素格式；仓库配置按原始帧序号配对，独立时间戳流可显式选择 PTS。禁止将数值深度转换成 RGB 再解码。相机世界姿态为 USD/OpenGL，使用 `T_world_optical = T_world_usd @ diag(1,-1,-1,1)`。
 
-内参优先读取 `meta/camera_intrinsics.json`，文件不存在时读 `meta/info.json.camera_intrinsics`；夹爪端点来自 dataset-global stats/info，解析结果与源文件 hash 绑定 contract。`depth.kind=ray` 来自数据方说明；参考 `dataset.py` 将反投影委托给未提供的 `pointcloud_transforms.py`，本轮不把 ray/Z 的一致性当作已验证。错误解码可造成跨相机变形，不证明所有旋转错位都源于此；须检查有效配置及真实单帧，多相机外参/同步仍需复核。旧 XYZ 不能靠改 contract 修复，原始数据/audit 可复用。
+内参优先读取 `meta/camera_intrinsics.json`，文件不存在时读 `meta/info.json.camera_intrinsics`；夹爪端点来自 dataset-global stats/info，解析结果与源文件 hash 绑定 contract。补充的 `pointcloud_transforms.py` 明确使用 `Z=depth_m`、`X=(u-cx)*Z/fx`、`Y=(v-cy)*Z/fy`，默认改为 `depth.kind=z`，不归一化射线。旧 ray 设置会把 Z-depth 表面随像素位置拉近；显式 ray 仅适用于独立确认的欧氏距离导出。错误解码也可造成跨相机变形；须检查有效配置及真实单帧，多相机外参/同步仍需复核。修改实际 YAML 时同时检查 per-camera depth 覆盖，在新目录重建 replay 及依赖缓存；旧 XYZ 不能靠改 contract 修复，原始数据/audit 可复用。
 
 ### 3.2 四元数与相机坐标约定
 
@@ -65,7 +65,7 @@ Baseline 和 assistance 共用观测、相机、动作定义、控制器、训�
 | `_canonicalize_new_gripper_to_legacy_physical()` / `binarize_gripper_hysteresis_with_diff()` | 使用原始 motor 端点直接归一化 open01，移植因果滞回+差分；不绕经旧 TFDS 的物理开度区间 |
 | `proprio_absolute` / `proprio_relative` | 复用“观测重建标签”，未来 GT keypoint 的 pose 与 gripper 均来自实测；raw action 全部仅诊断 |
 | `_filter_indices_by_ee()` / 左右 camera aliases | 不删除纯旋转/夹爪变化；五个物理相机独立命名和取外参，不把 left/right 当同一相机 |
-| `dataset.py → pointcloud_transforms` | 下游公共反投影模块未提供，保留显式 ray/Z，不能宣称完整端到端等价 |
+| `dataset.py → pointcloud_transforms` | 已补充公共模块，默认 Z-depth 针孔反投影与参考一致；BridgeVLA 融合到 world，参考融合到 View0 optical；仍须核实实际原始 depth 编码及真实对齐 |
 
 NVIDIA 相机 API 区分 distance_to_image_plane 和 distance_to_camera，不能对两者直接使用同一 Z-depth 公式。
 
@@ -109,7 +109,7 @@ NVIDIA 相机 API 区分 distance_to_image_plane 和 distance_to_camera，不能
     p_optical = Z * inverse(K) * [u, v, 1]^T
     p_world   = T_world_optical * [p_optical, 1]^T
 
-若记录为 ray distance，按单位射线恢复三维。先屏蔽无效深度，再融合；腕部相机每帧使用对应外参。v423 仓库默认 `video_alignment: frame_index`，遵循已运行参考转换器：原始 RGB/depth 解码帧 i 与 Parquet pose i 配对，严格核对整段帧数，不用 FPS 计算索引。独立时间戳流显式用 `timestamp` 最近 PTS 模式，旧配置缺字段保持该行为。此修正防止引用时间偏移带来的旋转错配，不证明导出 pose 已正确同步；ray/Z 仍需公共反投影模块核对。用 `tools/diagnose_oht_geometry.py` 导出单帧逐相机与来源着色融合图及实际参数，不重建已有缓存、不自动配准；命令见 OHT README。
+OHT 默认按参考模块使用 Z-depth，不归一化射线；若独立确认记录为 ray distance，显式设 `kind: ray` 并按单位射线恢复三维。先屏蔽无效深度，再融合；腕部相机每帧使用对应外参。v423 仓库默认 `video_alignment: frame_index`，遵循已运行参考转换器：原始 RGB/depth 解码帧 i 与 Parquet pose i 配对，严格核对整段帧数，不用 FPS 计算索引。独立时间戳流显式用 `timestamp` 最近 PTS 模式，旧配置缺字段保持该行为。此修正防止引用时间偏移带来的旋转错配，不证明导出 pose 已正确同步。用 `tools/diagnose_oht_geometry.py` 导出单帧逐相机与来源着色融合图及实际参数，不重建已有缓存、不自动配准；命令见 OHT README。
 
 五路传感器融合后仍渲染现有三虚拟视角；不需要把 VLM 改为五路物理相机直接输入。物理相机数与 MVT num_img 不是同一个参数。
 
@@ -572,7 +572,7 @@ IsaacLab client（现有环境）
 
 尚未完成且需要现场信息的工作：
 
-1. 真实 v423 全量读取、跨相机几何及工作区覆盖检查；无需重新标定。按提供代码解析 gray12le linear/log 量化、metadata K/夹爪端点、显式 camera/EE 顺序；TCP 不重复偏移。需补公共 `pointcloud_transforms.py` 核对 ray/Z，并在服务器复核 frame 965 腕部参考投影 `(313.0,378.6)` 及多帧几何。
+1. 真实 v423 全量读取、跨相机几何及工作区覆盖检查；无需重新标定。按实际 writer 核实 gray12le 毫米/linear/log 编码，读取 metadata K/夹爪端点、显式 camera/EE 顺序；TCP 不重复偏移。公共 `pointcloud_transforms.py` 已补充，默认 Z-depth 已同步；仍需在服务器复核 frame 965 腕部参考投影 `(313.0,378.6)` 及多帧几何。
 2. 从仿真或标注工具批量导出语义角色 masks/site；首版消费显式标注，未自动实现数据集角色路由和 mesh 重建。
 3. 完整 CUDA/PaliGemma/point-renderer smoke 与三 seed 训练，没有新 OHT 成功率。
 4. 核查 H-VLA/IsaacLab 脚本及 Task1/2 映射、真实采集和控制 API、EEF/IK/hybrid 执行器、专家目标回放和配对闭环。

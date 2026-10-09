@@ -64,6 +64,11 @@ def tcp_pose(position, orientation, link_to_tcp):
 
 
 def backproject(depth, intrinsics, world_from_optical, kind="z", limits=(0.001, 10.0)):
+    """Unproject metric depth; Z-depth keeps K^-1[u,v,1] unnormalized.
+
+    The OHT reference pointcloud transform uses Z=depth. Normalize the ray
+    only for an explicitly configured Euclidean camera-to-point distance.
+    """
     depth = np.asarray(depth, dtype=np.float64)
     if depth.ndim != 2:
         raise ValueError("Metric depth must be HxW")

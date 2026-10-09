@@ -86,6 +86,7 @@ def test_default_depth_contract_and_missing_definitions(dataset_config):
     assert dataset_config["depth"]["encoding"] == "scaled_integer"
     assert dataset_config["depth"]["metadata"] is False
     assert dataset_config["depth"]["scale"] == .001
+    assert dataset_config["depth"]["kind"] == "z"
     assert dataset_config["depth"]["invalid_values"] == [0, 4095]
     assert dataset_config["depth"]["limits"] == [.001, 4.094]
     assert dataset_config["intrinsics_source"] == "metadata"
@@ -108,7 +109,7 @@ def test_documented_raw_depth_897_uses_mm_not_converter_log_default(dataset_conf
 
 
 @pytest.mark.parametrize("camera", ["global_left", "global_right", "local_left", "local_right", "wrist"])
-def test_usd_camera_frame_preserves_ray_distance(dataset_config, camera):
+def test_default_usd_camera_frame_preserves_z_depth(dataset_config, camera):
     # Synthetic camera at (1,2,3) lies outside the provisional OHT task ROI.
     dataset_config["point_cloud_filter"]["enabled"] = False
     dataset_config["image_size"] = [2, 2]
@@ -119,9 +120,10 @@ def test_usd_camera_frame_preserves_ray_distance(dataset_config, camera):
     )
     cloud = obs[f"{camera}_point_cloud"]
     np.testing.assert_allclose(cloud[:, 0, 0], [1, 2, 2])
-    d = 1 / np.sqrt(3)
-    np.testing.assert_allclose(cloud[:, 1, 1], [1+d, 2-d, 3-d])
-    np.testing.assert_allclose(np.linalg.norm(cloud - np.array([1, 2, 3])[:, None, None], axis=0), 1)
+    # Reference pinhole formula at off-axis pixel (1,1): optical XYZ=(1,1,1).
+    np.testing.assert_allclose(cloud[:, 1, 1], [2, 1, 2])
+    np.testing.assert_allclose(cloud[2], 2)  # World Z=3-depth after the USD axis flip.
+    np.testing.assert_allclose(np.linalg.norm(cloud[:, 1, 1] - [1, 2, 3]), np.sqrt(3))
 
 
 @pytest.mark.parametrize("order", [None, "unknown", ""])
@@ -157,9 +159,9 @@ def test_raw_camera_order_to_world_xyz_and_provider_projection(dataset_config, o
     expected_transform[:3, :3] = rotation.as_matrix() @ np.diag([1, -1, -1])
     expected_transform[:3, 3] = position
     np.testing.assert_allclose(obs["wrist_camera_extrinsics"], expected_transform, atol=1e-6)
-    # Pixel (6,5), ray length 2m, independently transformed into the world.
+    # Pixel (6,5), Z-depth 2m, independently transformed into the world.
     ray = np.array([.5, .25, 1.])
-    optical = ray / np.linalg.norm(ray) * 2
+    optical = ray * 2
     world = rotation.apply(optical * [1, -1, -1]) + position
     np.testing.assert_allclose(obs["wrist_point_cloud"][:, 5, 6], world, atol=1e-6)
     # Reference formula supplied by the data provider, in column-vector form.

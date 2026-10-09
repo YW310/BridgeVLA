@@ -75,13 +75,15 @@ point_cloud_filter:
 
 原始相机外参默认为 camera→world、USD/OpenGL 轴，按显式顺序转换到内部 xyzw。`camera_pose_matrix()` 与参考转换器一致：先解析 `camera_quaternion_order`，若 `camera_extrinsic_direction: world_to_camera` 则对完整 4×4 求逆，再右乘 `optical_to_sensor`。默认方向 `camera_to_world`，五个相机的光学变换均为 `diag(1,-1,-1,1)`：`T_world_optical = T_world_usd @ optical_to_sensor`。不要将翻轴矩阵左乘到世界坐标，也不要只转置 R 而忘记平移。若来源已经是 optical camera→world，显式使用 identity，禁止再翻轴。缓存外参始终是 4×4 optical→world；投影使用 `(P_world - t) @ R_world_optical`，不再次转置或翻轴。camera 与 EE 的四元数配置独立，不能靠改动作旋转修复点云。
 
-深度为无损 HEVC `gray12le`；**像素格式不能决定数值编码**。仓库配置按用户提供的该批数据调查使用 `depth_m = raw × 0.001`、`kind: ray`，`0` 无返回、`4095` 截断无效，`1–4094` 对应 `0.001–4.094 m`。这来自数据方说明，不是从 RGB 的 H.264/yuv420p metadata 推断；本地尚未拿到服务器原始帧独立验证。
+深度为无损 HEVC `gray12le`；**像素格式不能决定数值编码**。仓库配置保留此前数据调查的 `depth_m = raw × 0.001`，反投影改为与补充参考代码一致的 `kind: z`；`0` 无返回、`4095` 截断无效，`1–4094` 对应 `0.001–4.094 m`。毫米解码设置不是从 RGB 的 H.264/yuv420p metadata 推断；本地尚未拿到服务器原始帧独立验证，参考转换器的 linear/log 反量化与当前设置的差异仍须按实际 writer 核实。
 
 **更正此前 log 默认值**：本次 `info.json.features` 只有 RGB，没有 `observation.depth.*` 或量化参数。参考 `_depth_video_spec()` 缺字段时返回 log 默认值，但这不能证明导出端采用了 log 编码。示例 raw=897 按数据方说明为 **0.897 m**，此前 log 默认值会解成约 **1.215 m**，可造成跨相机表面变形/重影；不能靠修改外参旋转补偿，也不能据此断定所有错位已解决。
 
 仍支持已确认的其他 linear/log 量化导出：`encoding: quantized`，设 `n=q/qmax`，log 逆变换为 `exp(n*(log(max+shift)-log(min+shift))+log(min+shift))-shift`，linear 为 `n*(max-min)+min`。`metadata: true` 必须从**每个相机**的 `features.observation.depth.<camera>.info` 读到完整 `depth_min/depth_max/shift/use_log/qmax/pix_fmt`（`video.*` 或普通 key），缺失即报错，不混入默认值。若实际 writer 参数已独立核实，可 `metadata: false` 显式填写；不要对当前 RGB-only metadata 自动启用 log。量化 writer 的 qmax 可以表示有效 far plane，是否屏蔽由其契约决定，不能与当前毫米导出混用。
 
-`depth.path_pattern: null` 通过 Parquet 引用读取原生灰度视频，不经过 RGB；按下文 `video_alignment` 配对帧。`depth.kind: ray` 来自数据方说明，也支持显式 `z`。参考 `dataset.py` 将实际反投影交给未提供的 `pointcloud_transforms.py`，未声称已与该模块验证等价。
+`depth.path_pattern: null` 通过 Parquet 引用读取原生灰度视频，不经过 RGB；按下文 `video_alignment` 配对帧。补充的 `pointcloud_transforms.py` 明确使用 `Z=depth_m`、`X=(u-cx)*Z/fx`、`Y=(v-cy)*Z/fy`，因此默认 `depth.kind: z`，不归一化射线。将 Z-depth 按此前的 `ray` 处理会随像素离主点的距离拉近表面，造成跨相机融合变形。只有独立确认来源为相机到点的欧氏距离时才显式使用 `ray`。
+
+从旧 `kind: ray` 配置迁移时，将实际 `--config` 文件中的 `depth.kind` 改为 `z`，同时检查 `cameras.<name>.depth.kind` 的覆盖值。旧 replay/checkpoint 中记录的 kind 和已保存 XYZ 不随仓库默认值改变；在新目录重建 replay，再重建依赖的 teacher/预测缓存并训练匹配的 checkpoint。不要手改旧 contract 或把旧米制 depth/XYZ 仅重画成预览就当作修复。
 
 仓库配置更新不会修改此前复制的 `dataset-calibrated.yaml`。构建始终读取 `--config` 指定的文件；请同步所需字段，保留本地已有的正确值。
 
@@ -100,7 +102,7 @@ depth:
   metadata: false
   scale: 0.001
   offset: 0.0
-  kind: ray
+  kind: z
   invalid_values: [0, 4095]
   path_pattern: null
   limits: [0.001, 4.094]
@@ -162,7 +164,7 @@ python tools/diagnose_oht_geometry.py \
   --output /data/oht/previews/geometry-frame0
 ~~~
 
-使用 `samples.jsonl` 中真实存在的 sample ID。工具不重建/修改缓存，输出各物理相机单独的三视图、`fused_rgb.png`、按来源相机着色的 `fused_camera_colors.png` 与 `geometry.json`（实际缓存 K、optical→world 外参、有效点数、契约配置）。相机颜色不是 T/R 角色；相机 RGB 面板仍保持原图。输出目录必须是新目录。先看静止桌面/夹具是否重合，再看转动腕部；若静止帧仍明显旋转错位，继续核对导出参数与 `depth.kind`，不要宣称帧序号修正已解决所有几何问题。`pointcloud_transforms.py` 未提供，ray/Z 仍不能从这三份参考代码确定。
+使用 `samples.jsonl` 中真实存在的 sample ID。工具不重建/修改缓存，输出各物理相机单独的三视图、`fused_rgb.png`、按来源相机着色的 `fused_camera_colors.png` 与 `geometry.json`（实际缓存 K、optical→world 外参、有效点数、契约配置）。相机颜色不是 T/R 角色；相机 RGB 面板仍保持原图。输出目录必须是新目录。先看静止桌面/夹具是否重合，再看转动腕部；若静止帧仍明显旋转错位，继续核对实际缓存的 depth 编码、`kind: z` 与相机参数，不以帧序号修正或合成测试代替真实几何验证。
 
 #### 交互确定点云范围
 
@@ -385,4 +387,6 @@ HTML 测试覆盖抽样/RGB/相机对齐、旧 ROI 点的显示重建、无缓�
 
 另已直接抽取提供转换器的纯数值函数，对照 linear/log 各 4096 个深度码值；最大差约 0.504 mm（参考 PNG 毫米舍入及浮点差异），相机变换/K 缩放和原始夹爪端点归一化通过对照。该对照不表示参考链路二次归一化后的夹爪标签或完整点云流程完全一致。
 
-均为本地合成数据/纯函数验证，未读取服务器 v423 全量数据，也未验证完整 CUDA/VLM/真实闭环。缺少公共反投影模块，ray/Z 尚需核对；audit 的服务器实际提速尚未测量。
+补充的公共反投影模块已确认使用 Z-depth，仓库默认配置已同步为 `kind: z`。回归覆盖默认 Z-depth 在五个不同姿态相机和步长下采样后的同平面对齐，以及误按 ray 处理时的表面偏移；显式 ray 支持仍保留。
+
+均为本地合成数据/纯函数验证，未读取服务器 v423 全量数据，也未验证完整 CUDA/VLM/真实闭环。原始 depth 数值编码与真实跨相机对齐仍需核实；audit 的服务器实际提速尚未测量。

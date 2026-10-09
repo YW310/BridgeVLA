@@ -127,7 +127,7 @@ def resolve_dataset_config(dataset, config):
                     "converter log defaults are not evidence of the writer contract. "
                     "For the confirmed millimetre export, replace the entire depth "
                     "block with encoding=scaled_integer, scale=0.001, offset=0, "
-                    "kind=ray, invalid_values=[0,4095], metadata=false. For an "
+                    "kind=z (reference pinhole projection), invalid_values=[0,4095], metadata=false. For an "
                     "independently verified quantized writer, set metadata=false "
                     "and supply all quantization parameters explicitly. Update "
                     "the file passed to --config, not an existing replay contract.")

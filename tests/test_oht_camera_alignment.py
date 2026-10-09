@@ -71,12 +71,52 @@ def test_reference_axis_flip_is_on_the_right_and_inverse_includes_translation():
     assert not np.allclose(actual[:3, 3], source[:3, 3])
 
 
+def test_default_z_depth_matches_reference_plane_after_downsampling():
+    # Independent pinhole/plane intersection, matching the supplied reference
+    # Z=depth formula. Off-axis pixels expose accidental unit-ray normalization.
+    config = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
+    config["point_cloud_filter"]["enabled"] = False
+    config["image_size"] = [15, 20]
+    K = np.array([[45., 0, 20.], [0, 45., 15.], [0, 0, 1.]])
+    v, u = np.indices((30, 40))
+    rays = np.stack(((u - 20) / 45., (v - 15) / 45., np.ones_like(u)), axis=-1)
+    normal = np.array([.25, -.15, 1.])
+    normal /= np.linalg.norm(normal)
+    for index, camera in enumerate(config["cameras"]):
+        optical = np.eye(4)
+        optical[:3, :3] = Rotation.from_euler(
+            "xyz", [171 + index * 3, -13 + index * 5, 19 + index * 11], degrees=True).as_matrix()
+        optical[:3, 3] = [.1 + index * .07, -.2 + index * .04, 1.6]
+        source = optical @ np.diag([1., -1., -1., 1.])
+        raw_pose = np.r_[source[:3, 3], Rotation.from_matrix(source[:3, :3]).as_quat()[[3, 0, 1, 2]]]
+        z = (.4 - optical[:3, 3] @ normal) / ((rays @ optical[:3, :3].T) @ normal)
+        raw = np.rint(z * 1000).astype(np.uint16)
+        assert ((raw > 0) & (raw < 4095)).all()
+        depth = decode_depth(raw, config["depth"])
+        reference_world = (rays * depth[..., None]) @ optical[:3, :3].T + optical[:3, 3]
+        config["cameras"][camera]["intrinsics"] = K.tolist()
+        rgb = np.zeros((30, 40, 3), np.uint8)
+        observation = camera_observation(camera, rgb, depth, raw_pose, config)
+        cloud = observation[f"{camera}_point_cloud"].transpose(1, 2, 0)
+        np.testing.assert_allclose(cloud, reference_world[::2, ::2], atol=2e-7)
+        np.testing.assert_allclose(cloud @ normal, .4, atol=.0006)
+        np.testing.assert_allclose(observation[f"{camera}_camera_intrinsics"],
+                                   np.diag([.5, .5, 1.]) @ K)
+        wrong = deepcopy(config)
+        wrong["depth"]["kind"] = "ray"
+        wrong_cloud = camera_observation(camera, rgb, depth, raw_pose, wrong)[f"{camera}_point_cloud"]
+        assert np.max(np.abs(wrong_cloud.reshape(3, -1).T @ normal - .4)) > .05
+
+
 def test_log_decoding_mm_rays_creates_cross_camera_surface_misalignment():
     # A depth decoder mismatch can look like a rotation error despite correct
     # extrinsics. This synthetic repro does not establish the server's encoding.
     config = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
     config["point_cloud_filter"]["enabled"] = False
     config["image_size"] = [11, 13]
+    # This separate synthetic ray-distance export explicitly opts into ray;
+    # the default OHT reference contract uses Z-depth.
+    config["depth"]["kind"] = "ray"
     K = np.array([[14., 0, 6], [0, 15., 5], [0, 0, 1.]])
     normal = np.array([.25, -.15, 1.])
     normal /= np.linalg.norm(normal)
