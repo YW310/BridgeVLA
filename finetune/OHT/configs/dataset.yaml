@@ -1,20 +1,33 @@
-# Fill these three unknown calibration values from the actual exporter.
-# Data audit works before calibration; replay construction refuses unknown values.
-scene_bounds: null
-link_to_tcp: null       # 4x4 data EE link -> chosen policy TCP; explicit identity if equal
+# OHT v423 simulation contract: world coordinates in metres, quaternions xyzw.
+# Intrinsics below come from the v423 data description (info.json).
+# No physical recalibration is required. Remaining nulls are unresolved format
+# definitions or workspace choices, not a request to recollect valid data.
+scene_bounds: null     # [xmin,ymin,zmin,xmax,ymax,zmax]; choose from training EE/object coverage + margin
+# Predict the recorded observation.ee_pos_world / ee_quat_world reference point.
+# Online execution must use that same EE reference point, not an offset grasp centre.
+link_to_tcp:
+  - [1, 0, 0, 0]
+  - [0, 1, 0, 0]
+  - [0, 0, 1, 0]
+  - [0, 0, 0, 1]
 image_size: [120, 160]  # exact stride 4 from 480x640
 rotation_classes: 72
 video_timestamp_tolerance: 0.0084333333
 depth:
+  # v423 documents H.264/yuv420p MP4, but not the conversion to metric depth.
+  # Do not apply the older OSC_HDF5 uint16/mm assumption to these MP4 frames.
   encoding: null       # metric / scaled_integer sidecars, or documented linear_channel MP4
-  kind: null           # z / ray
-  path_pattern: null   # relative to dataset root; supports task,episode,camera,frame
+  kind: null           # z / ray, according to the v423 export definition
+  path_pattern: null   # null: use Parquet depth Path/Timestamp; sidecars: root-relative pattern
   limits: [0.001, 10.0]
 keypoints:
   max_translation: 0.04
   max_rotation_degrees: 8
   max_frames: 30
 cameras:
+  # The v423 description supplies world camera poses but not their optical axes.
+  # optical_to_sensor is identity ONLY if those poses already use optical axes
+  # (+X right, +Y down, +Z forward); xyzw alone does not establish this.
   global_left:
     intrinsics: [[320, 0, 320], [0, 320, 240], [0, 0, 1]]
     optical_to_sensor: null

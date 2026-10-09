@@ -565,7 +565,7 @@ IsaacLab client（现有环境）
 
 尚未完成且需要现场信息的工作：
 
-1. 真实 v423 读取和质量统计、depth writer 的可逆编码确认、optical/TCP/bounds 标定；配置保留 null，工具拒绝猜测。
+1. 真实 v423 读取和质量统计、深度编码及相机姿态轴约定确认、训练集工作区范围设置；无需重新标定。配置采用文档内参和记录 EE 参考点（`link_to_tcp` 为单位阵），未明确的深度/相机轴及工作区继续保留 null。
 2. 从仿真或标注工具批量导出语义角色 masks/site；首版消费显式标注，未自动实现数据集角色路由和 mesh 重建。
 3. 完整 CUDA/PaliGemma/point-renderer smoke 与三 seed 训练，没有新 OHT 成功率。
 4. 核查 H-VLA/IsaacLab 脚本及 Task1/2 映射、真实采集和控制 API、EEF/IK/hybrid 执行器、专家目标回放和配对闭环。

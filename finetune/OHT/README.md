@@ -43,14 +43,17 @@ python tools/audit_oht_dataset.py \
 
 这里只是映射格式示例，不能推断真实场景对应关系。没有显式场景映射时，只能检测所用状态/EE 轨迹完全相同的重复，不能保证不同轨迹的同场景已隔离。audit 检查视频引用和时间戳格式；实际视频 PTS 对齐在缓存构建时检查。
 
-## 3. 标定与构建共用缓存
+## 3. 仿真数据契约与构建共用缓存
 
-复制 [dataset.yaml](configs/dataset.yaml) 为新的本地配置，填写：
+以 v423 数据说明为契约，无需重新标定或重新采集。复制 [dataset.yaml](configs/dataset.yaml) 为本地配置：相机内参采用说明中的数值，位姿沿用世界坐标、米制、xyzw；`link_to_tcp` 已设为单位阵，策略预测数据记录的 EE 参考点，执行端必须使用同一参考点。
 
-- scene_bounds：现场验证的世界系边界，顺序 xmin,ymin,zmin,xmax,ymax,zmax。
-- link_to_tcp：数据 EE link 到策略 TCP 的 4×4 刚体变换；若参考点相同，显式填写单位阵。
-- 每相机 optical_to_sensor：将 optical 坐标点变换到数据相机 pose 所指 sensor 坐标系，不能因为数据四元数是 xyzw 就假设单位阵。
-- depth.encoding、depth.kind：分别填写实际编码和 z-depth/ray-distance 类型。
+仍需明确的配置：
+
+- `scene_bounds`：根据训练集 EE/物体覆盖与动作工作区留余量设置，顺序 xmin,ymin,zmin,xmax,ymax,zmax。这是策略工作区选择，不是重新标定；audit 的 EE 范围仅是参考，不能替代完整物体范围。
+- 每相机 `optical_to_sensor`：采用 v423 导出姿态的轴约定；若已是 optical frame，则填单位阵。当前说明未明确该约定，不能仅由 xyzw 推定。
+- `depth.encoding`、`depth.kind`：采用 v423 的米制恢复公式及 z-depth/ray-distance 定义。当前说明仅列出 H.264/yuv420p MP4；旧 OSC_HDF5 的 uint16/mm 推测不自动适用于 v423。
+
+这些未明确项继续保留 `null`，构建工具不会猜测其值。已有原始数据与 audit 可以保留；仅在明确更换动作参考点时修改 `link_to_tcp`。
 
 默认 image_size=[120,160] 对原始 480×640 做严格 4 倍步长采样，K 同步缩放。这是输入 RGB-D 尺寸，模型的虚拟渲染图像仍用现有 MVT 配置。
 
