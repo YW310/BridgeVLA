@@ -7,7 +7,7 @@ def validate_data_config(config):
     bounds = config.get("scene_bounds")
     from .geometry import check_bounds
     if bounds is None:
-        raise ValueError("Set scene_bounds from the calibrated OHT workspace")
+        raise ValueError("Set scene_bounds to the world-space OHT policy workspace")
     check_bounds(np.asarray(bounds[:3]) + (np.asarray(bounds[3:]) - bounds[:3]) / 2, bounds)
     transform_matrix(config.get("link_to_tcp"), "link_to_tcp")
     cameras = config.get("cameras", {})
@@ -15,6 +15,14 @@ def validate_data_config(config):
         raise ValueError("Camera calibration is required")
     for name, camera in cameras.items():
         array(camera.get("intrinsics"), (3, 3), f"{name} intrinsics")
+        if camera.get("optical_to_sensor") is None:
+            raise ValueError(
+                f"{name} optical_to_sensor is missing: set an explicit 4x4 transform. "
+                "Use identity only when the recorded camera pose already uses OpenCV "
+                "optical axes (+X right, +Y down, +Z forward). "
+                "Update the YAML passed to --config; repository defaults do not "
+                "automatically update an existing local config."
+            )
         transform_matrix(camera.get("optical_to_sensor"), f"{name} optical_to_sensor")
     if config.get("depth", {}).get("encoding") not in ("metric", "scaled_integer", "linear_channel"):
         raise ValueError("Configure metric depth encoding explicitly")

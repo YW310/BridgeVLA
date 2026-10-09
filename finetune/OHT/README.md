@@ -49,12 +49,13 @@ python tools/audit_oht_dataset.py \
 
 `scene_bounds` 默认设为 `[-0.5, -1.0, 0.3, 1.5, 1.0, 2.0]`，顺序 xmin,ymin,zmin,xmax,ymax,zmax，单位米；覆盖 v423 说明中的物体与路点示例并留余量。这是初始策略工作区，不是全量统计结果；训练前检查实际 EE/物体覆盖与动作越界，越界时调整配置，不静默裁剪 GT。audit 的 EE 范围仅是参考，不能替代完整物体范围。
 
-仍需明确的格式定义：
+五个相机的 `optical_to_sensor` 默认均为单位矩阵，显式假设保存的世界相机姿态已采用 OpenCV 光学轴（X 右、Y 下、Z 前）。v423 说明未独立确认这一点；若导出姿态采用其他相机 frame，应修改矩阵。无需重新标定，但不能把 xyzw 格式当作光学轴依据。
 
-- 每相机 `optical_to_sensor`：采用 v423 导出姿态的轴约定；若已是 optical frame，则填单位阵。当前说明未明确该约定，不能仅由 xyzw 推定。
-- `depth.encoding`、`depth.kind`：采用 v423 的米制恢复公式及 z-depth/ray-distance 定义。当前说明仅列出 H.264/yuv420p MP4；旧 OSC_HDF5 的 uint16/mm 推测不自动适用于 v423。
+仍需明确 `depth.encoding`、`depth.kind`：采用 v423 的米制恢复公式及 z-depth/ray-distance 定义。当前说明仅列出 H.264/yuv420p MP4；旧 OSC_HDF5 的 uint16/mm 推测不自动适用于 v423。
 
-这些未明确项继续保留 `null`，构建工具不会猜测其值。已有原始数据与 audit 可以保留；仅在明确更换动作参考点时修改 `link_to_tcp`。
+深度未明确项继续保留 `null`，构建工具不会猜测其值，因此默认配置尚不能直接生成完整缓存。`depth.path_pattern: null` 则是有效配置：通过 Parquet 的 Path/Timestamp 读取视频。已有原始数据与 audit 可以保留；仅在明确更换动作参考点时修改 `link_to_tcp`。
+
+仓库配置更新不会修改此前复制的 `dataset-calibrated.yaml`。构建始终读取 `--config` 指定的文件；请同步所需字段，保留本地已有的正确值。
 
 默认 image_size=[120,160] 对原始 480×640 做严格 4 倍步长采样，K 同步缩放。这是输入 RGB-D 尺寸，模型的虚拟渲染图像仍用现有 MVT 配置。
 

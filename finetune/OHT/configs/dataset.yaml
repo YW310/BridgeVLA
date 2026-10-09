@@ -28,21 +28,22 @@ keypoints:
   max_rotation_degrees: 8
   max_frames: 30
 cameras:
-  # The v423 description supplies world camera poses but not their optical axes.
-  # optical_to_sensor is identity ONLY if those poses already use optical axes
-  # (+X right, +Y down, +Z forward); xyzw alone does not establish this.
+  # Explicit default assumption: recorded poses already use OpenCV optical axes
+  # (+X right, +Y down, +Z forward), so optical_to_sensor is identity.
+  # Not independently verified by the v423 description; override for a different
+  # exporter camera frame. Quaternion order xyzw does not establish optical axes.
   global_left:
     intrinsics: [[320, 0, 320], [0, 320, 240], [0, 0, 1]]
-    optical_to_sensor: null
+    optical_to_sensor: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]
   global_right:
     intrinsics: [[320, 0, 320], [0, 320, 240], [0, 0, 1]]
-    optical_to_sensor: null
+    optical_to_sensor: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]
   local_left:
     intrinsics: [[337.197, 0, 320], [0, 337.197, 240], [0, 0, 1]]
-    optical_to_sensor: null
+    optical_to_sensor: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]
   local_right:
     intrinsics: [[337.197, 0, 320], [0, 337.197, 240], [0, 0, 1]]
-    optical_to_sensor: null
+    optical_to_sensor: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]
   wrist:
     intrinsics: [[337.197, 0, 320], [0, 337.197, 240], [0, 0, 1]]
-    optical_to_sensor: null
+    optical_to_sensor: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]
