@@ -164,6 +164,26 @@ python tools/diagnose_oht_geometry.py \
 
 使用 `samples.jsonl` 中真实存在的 sample ID。工具不重建/修改缓存，输出各物理相机单独的三视图、`fused_rgb.png`、按来源相机着色的 `fused_camera_colors.png` 与 `geometry.json`（实际缓存 K、optical→world 外参、有效点数、契约配置）。相机颜色不是 T/R 角色；相机 RGB 面板仍保持原图。输出目录必须是新目录。先看静止桌面/夹具是否重合，再看转动腕部；若静止帧仍明显旋转错位，继续核对导出参数与 `depth.kind`，不要宣称帧序号修正已解决所有几何问题。`pointcloud_transforms.py` 未提供，ray/Z 仍不能从这三份参考代码确定。
 
+#### 交互确定点云范围
+
+在同一诊断命令增加 `--html`：
+
+~~~bash
+python tools/diagnose_oht_geometry.py \
+  --replay /data/oht/replay-source-v2 \
+  --sample-id assemble_left/000000/000000 \
+  --output /data/oht/roi-first-frame \
+  --html --html-source depth --max-points 40000
+~~~
+
+将输出的 `point-cloud-roi.html` 下载到本机，用现代浏览器直接打开；完全离线，不需要服务端、CDN 或额外 Python 依赖。左键旋转、右键/Shift 拖动平移、滚轮缩放；提供 XY/XZ/YZ 视角、相机显示开关、RGB/相机着色、单像素点（可调 1–4 px）与点选世界坐标。
+
+选择并修改 `scene_bounds`、`keep_bounds` 或排除框的六个世界坐标，实时查看保留点及框；可添加/删除排除框，复制或下载 YAML 片段，再人工合并进实际 `--config` 文件。上下界与 `point_cloud_filter` 一致：下界包含、上界不包含；非法框不更新且禁止导出。`scene_bounds` 是策略工作区，不只是显示裁剪；它影响动作归一化及数据/checkpoint 契约，不能随意覆盖已有模型的配置。相机开关、点大小和显示抽样不写入训练配置。
+
+`--html-source depth` 推荐用于确定范围：直接将缓存的**米制 depth + K + optical→world 外参**重新反投影，仅用于显示，不再解码深度、不套旧 ROI，也不写回缓存。它能查看被旧 ROI 删除但深度仍有效的点；PNG/geometry.json 仍描述原缓存 XYZ。默认 `--html-source xyz` 则只显示缓存剩余有限 XYZ，不额外裁剪，也无法恢复其 NaN 点。页面明确标出来源。
+
+**限制**：两种来源都受缓存分辨率、有效深度范围和原始内外参/同步正确性限制，不能补造未观测表面，不能修复历史错误深度编码。扩大范围不必为了预览先重建 buffer；确定新过滤/工作区配置后，再重建受影响的训练缓存，不能只改旧 contract。默认最多显示 40,000 点，可调至 60,000；保留计数仅对应显示抽样，不是全量覆盖证明。工具不配准点云、不修改 buffer；TCP/未来 GT goal 仅作诊断，并提示超出当前框。至少检查四任务、多时刻、最高抬升与操作夹具，再确定统一范围。
+
 ## 4. Baseline 训练
 
 先做 CPU 数据预检：
@@ -352,8 +372,10 @@ case JSONL 每行含唯一 id、task、seed；id 每次运行需使用新 episod
 ## 9. 本地验证
 
 ~~~bash
-python -m pytest -q tests/test_oht_camera_alignment.py tests/test_oht_point_filter.py tests/test_oht_keypoints.py tests/test_oht_audit.py tests/test_oht_dataset_config.py tests/test_oht_depth_video.py tests/test_oht_migration.py tests/test_oht_visualization.py tests/test_oht_source_config.py
+python -m pytest -q tests/test_oht_camera_alignment.py tests/test_oht_point_filter.py tests/test_oht_keypoints.py tests/test_oht_audit.py tests/test_oht_dataset_config.py tests/test_oht_depth_video.py tests/test_oht_migration.py tests/test_oht_visualization.py tests/test_oht_html_preview.py tests/test_oht_source_config.py
 ~~~
+
+HTML 测试覆盖抽样/RGB/相机对齐、旧 ROI 点的显示重建、无缓存改写、离线导出及非法范围。可选浏览器 smoke test 需安装 Playwright，并设置 `OHT_BROWSER_EXECUTABLE` 为本机 Chromium/Chrome/Edge 可执行文件；使用独立测试 profile，不复用用户浏览器数据。未设置时仅跳过这一项浏览器测试，不影响 HTML 导出使用。
 
 覆盖 12 个合成 episode → 60 条 transitions、五相机、视频 PTS、米制 depth、划分检查、教师/预测缓存、无 GT 推理隔离、真实 Agent 梯度累积与零碰撞损失、HTTP 协议、闭环失败计数和续训采样。backbone/render 使用 CPU 小替身，未验证完整 PaliGemma/point-renderer GPU 前向。另运行现有角色预测、跨尺度继承、辅助损失、前向与优化器回归测试。
 

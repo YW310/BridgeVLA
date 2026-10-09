@@ -45,6 +45,10 @@ def main(argv=None):
     p.add_argument("--replay", required=True)
     p.add_argument("--sample-id", required=True, help="task/episode/frame, as recorded in samples.jsonl")
     p.add_argument("--output", required=True, help="New diagnostic directory; never overwrites existing files")
+    p.add_argument("--html", action="store_true", help="Also export an offline interactive world-XYZ ROI editor")
+    p.add_argument("--max-points", type=int, default=40000, help="HTML display point budget, 1-60000; never changes cached XYZ")
+    p.add_argument("--html-source", choices=("xyz", "depth"), default="xyz",
+                   help="xyz: remaining cached points; depth: display-only backprojection before old ROI masking")
     p = sub.add_parser("teacher")
     for key in ("replay", "annotations", "output"):
         p.add_argument("--" + key, required=True)
@@ -73,6 +77,9 @@ def main(argv=None):
             counts[split] = data.validate_all()
         print(json.dumps(dict(valid=True, samples=counts, contract=contract["sha256"])))
     elif args.command == "diagnose-geometry":
+        if args.html:
+            from .data.html_preview import html_point_limit, save_point_cloud_html
+            html_point_limit(args.max_points)
         output = Path(args.output)
         if output.exists():
             raise FileExistsError(f"Use a new diagnostic directory: {output}")
@@ -88,7 +95,14 @@ def main(argv=None):
         with np.load(path, allow_pickle=False) as source:
             observation = {key: source[key] for key in source.files}
         config = sample_data_config(contract, row)
+        # Validate the HTML payload before creating any output on invalid data.
+        if args.html:
+            from .data.html_preview import point_cloud_payload
+            point_cloud_payload(observation, config, row, args.max_points, source=args.html_source)
         output.mkdir(parents=True)
+        if args.html:
+            save_point_cloud_html(output / "point-cloud-roi.html", observation, config, row, args.max_points,
+                                  source=args.html_source)
         save_preview(output / "fused_rgb.png", observation, config, row, current_tcp=row.get("current_tcp"))
         save_preview(output / "fused_camera_colors.png", observation, config, row,
                      current_tcp=row.get("current_tcp"), color_by_camera=True)

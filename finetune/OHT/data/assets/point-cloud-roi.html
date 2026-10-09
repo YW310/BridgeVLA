@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; object-src 'none'; base-uri 'none'">
+<title>OHT point cloud ROI</title>
+<style>
+  :root { color-scheme: light dark; --background: Canvas; --foreground: CanvasText; --muted-foreground: GrayText;
+    --viz-series-1: light-dark(#285da8,#86b8ff); --viz-series-2: light-dark(#26723a,#7bdc93);
+    --viz-series-3: light-dark(#a54a00,#ffbb76); --viz-series-4: light-dark(#007e8a,#67e5f4);
+    --viz-series-5: light-dark(#a12c85,#ff91e4); --destructive: light-dark(#a4262c,#ffb4b4); }
+  body { margin: 0; padding: 16px; background: var(--background); color: var(--foreground); font-family: system-ui,sans-serif; }
+  #oht-roi { max-width: 1200px; margin: auto; }
+  #oht-roi .viewer { position: relative; width: 100%; aspect-ratio: 16/9; min-height: 240px; }
+  #oht-roi canvas { position: absolute; inset: 0; display: block; width: 100%; height: 100%; touch-action: none; }
+  #oht-roi .viz-row, #oht-roi .viz-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 10px 0; }
+  #oht-roi .bounds { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 10px; margin: 10px 0; }
+  #oht-roi .form-label { display: grid; gap: 4px; min-width: 0; }
+  #oht-roi .form-control, #oht-roi .form-select { box-sizing: border-box; min-width: 0; max-width: 100%; font: inherit; }
+  #oht-roi .btn { font: inherit; cursor: pointer; }
+  #oht-roi .form-check { display: inline-flex; align-items: center; gap: 4px; }
+  #oht-roi .text-muted { color: var(--muted-foreground); }
+  #oht-roi .text-destructive { color: var(--destructive); }
+  #oht-roi textarea { width: 100%; resize: vertical; }
+  #oht-roi output { overflow-wrap: anywhere; }
+  @media (max-width: 420px) { #oht-roi .bounds { grid-template-columns: repeat(2,minmax(0,1fr)); } }
+</style>
+<div id="oht-roi">
+  <div class="viz-row"><output id="sample-label"></output><output id="point-count" aria-live="polite"></output></div>
+  <div class="viz-controls" id="camera-controls" aria-label="显示相机"></div>
+  <div class="viz-controls">
+    <label class="form-label">点颜色<select id="color-mode" class="form-select"><option value="rgb">原始 RGB</option><option value="camera">来源相机</option></select></label>
+    <label class="form-label">点大小（px）<input id="point-size" class="form-control" type="number" min="1" max="4" value="1" step="1"></label>
+    <label class="form-check"><input id="show-removed" class="form-check-input" type="checkbox" checked>显示被当前框排除的点</label>
+    <button class="btn" type="button" data-view="3d">3D</button><button class="btn" type="button" data-view="xy">XY</button>
+    <button class="btn" type="button" data-view="xz">XZ</button><button class="btn" type="button" data-view="yz">YZ</button>
+    <button class="btn" type="button" id="fit-box">缩放到当前框</button>
+  </div>
+  <div class="viewer"><canvas id="cloud" role="img" aria-label="世界坐标点云、工作区与过滤框。左键旋转，右键平移，滚轮缩放；点击点显示世界坐标。"></canvas></div>
+  <div class="viz-row"><output id="picked">点击点查看世界坐标（米）</output></div>
+  <div class="viz-row text-muted">左键旋转 · 右键平移 · 滚轮缩放 · 点选坐标。</div>
+  <output id="geometry-source" class="text-muted"></output>
+  <div class="viz-controls">
+    <label class="form-label">编辑框<select id="box-select" class="form-select" aria-label="编辑框"></select></label>
+    <label class="form-check"><input id="filter-enabled" class="form-check-input" type="checkbox">启用点云过滤</label>
+    <label class="form-check"><input id="keep-enabled" class="form-check-input" type="checkbox">使用保留框</label>
+    <button class="btn" type="button" id="add-exclude">添加排除框</button><button class="btn" type="button" id="remove-exclude">删除当前排除框</button>
+  </div>
+  <div class="bounds" id="bounds-controls"></div>
+  <output id="error" class="text-destructive" role="alert"></output>
+  <output id="coverage" class="text-destructive" aria-live="polite"></output>
+  <div class="viz-row text-muted">蓝色：scene_bounds · 绿色：保留框 · 橙色：排除框 · 青色：当前 TCP · 品红：未来 GT goal（仅诊断）</div>
+  <div class="viz-row"><button class="btn" type="button" id="copy-yaml">复制 YAML</button><button class="btn" type="button" id="download-yaml">下载 YAML 片段</button><output id="copy-status" aria-live="polite"></output></div>
+  <label class="form-label">世界坐标米制 [xmin, ymin, zmin, xmax, ymax, zmax]<textarea id="yaml" class="form-control" rows="8" readonly spellcheck="false"></textarea></label>
+  <div class="viz-row text-muted">仅导出配置片段，不修改 buffer。请检查多任务、多时刻以及 TCP/goal 覆盖；不能补造未观测表面或修复错误的深度/相机参数。</div>
+</div>
+<script id="oht-cloud-data" type="application/json">__OHT_POINT_CLOUD_DATA__</script>
+<script>
+(() => {
+  "use strict";
+  const root = document.getElementById("oht-roi");
+  const el = id => root.querySelector("#" + id);
+  const data = JSON.parse(document.getElementById("oht-cloud-data").textContent);
+  const bytes = encoded => Uint8Array.from(atob(encoded), c => c.charCodeAt(0));
+  const xyzBytes = bytes(data.xyz), xyzView = new DataView(xyzBytes.buffer);
+  const xyz = Float32Array.from({length: xyzBytes.length / 4}, (_, i) => xyzView.getFloat32(i * 4, true));
+  const rgb = bytes(data.rgb), cameraIds = bytes(data.camera_ids);
+  const canvas = el("cloud"), ctx = canvas.getContext("2d");
+  const state = { scene: data.scene_bounds.slice(), keep: (data.point_cloud_filter.keep_bounds || data.scene_bounds).slice(),
+    excludes: data.point_cloud_filter.exclude_boxes.map(b => b.slice()), enabled: data.point_cloud_filter.enabled,
+    useKeep: data.point_cloud_filter.keep_bounds !== null, cameras: data.cameras.map(() => true),
+    yaw: -0.9, pitch: 0.65, center: [0,0,0], zoom: 1, pan: [0,0], selected: "scene" };
+  let pending = false, frame = null, drag = null;
+  const inside = (x,y,z,b) => x >= b[0] && y >= b[1] && z >= b[2] && x < b[3] && y < b[4] && z < b[5];
+  const kept = (x,y,z) => inside(x,y,z,state.scene) && (!state.enabled ||
+    ((!state.useKeep || inside(x,y,z,state.keep)) && !state.excludes.some(b => inside(x,y,z,b))));
+  const currentBox = () => state.selected === "scene" ? state.scene : state.selected === "keep" ? state.keep : state.excludes[Number(state.selected)];
+  const color = name => {
+    const probe = document.createElement("span"); probe.style.color = "var(" + name + ")"; root.append(probe);
+    const value = getComputedStyle(probe).color; probe.remove(); return value;
+  };
+  const palette = () => ["--viz-series-1","--viz-series-2","--viz-series-3","--viz-series-4","--viz-series-5","--foreground"].map(color);
+  const fmt = value => Number(value.toFixed(6)).toString();
+  // Preserve bound precision in both controls and YAML; rounding can collapse
+  // narrow valid boxes or make exported filtering differ from the preview.
+  const boxText = b => "[" + b.map(String).join(", ") + "]";
+  function yaml() {
+    const lines = ["scene_bounds: " + boxText(state.scene), "point_cloud_filter:", "  enabled: " + state.enabled,
+      "  keep_bounds: " + (state.useKeep ? boxText(state.keep) : "null")];
+    if (!state.excludes.length) lines.push("  exclude_boxes: []");
+    else { lines.push("  exclude_boxes:"); state.excludes.forEach(b => lines.push("    - " + boxText(b))); }
+    el("yaml").value = lines.join("\n") + "\n";
+  }
+  function options() {
+    el("box-select").replaceChildren();
+    [["scene", "scene_bounds（工作区）"], ["keep", "keep_bounds（保留框）"], ...state.excludes.map((_,i) => [String(i), "排除框 " + (i+1)])].forEach(([value,label]) => {
+      const option = document.createElement("option"); option.value = value; option.textContent = label; el("box-select").append(option);
+    });
+    el("box-select").value = state.selected;
+    refreshInputs();
+  }
+  function refreshInputs() {
+    const box = currentBox();
+    root.querySelectorAll("[data-bound]").forEach(input => input.value = String(box[Number(input.dataset.bound)]));
+    el("remove-exclude").disabled = state.selected === "scene" || state.selected === "keep";
+    el("error").textContent = "";
+    el("copy-yaml").disabled = false; el("download-yaml").disabled = false;
+  }
+  ["xmin","ymin","zmin","xmax","ymax","zmax"].forEach((name,i) => {
+    const label = document.createElement("label"); label.className = "form-label"; label.textContent = name + " (m)";
+    const input = document.createElement("input"); input.className = "form-control"; input.type = "number";
+    input.step = "0.01"; input.dataset.bound = String(i); input.setAttribute("aria-label", name);
+    input.addEventListener("change", () => {
+      const candidate = currentBox().slice(); candidate[i] = input.value === "" ? NaN : Number(input.value);
+      if (!candidate.every(Number.isFinite) || [0,1,2].some(a => candidate[a] >= candidate[a+3])) {
+        el("error").textContent = "框未更新：坐标必须为有限数，且各轴 min < max。";
+        el("copy-yaml").disabled = true; el("download-yaml").disabled = true; return;
+      }
+      currentBox().splice(0,6,...candidate); refreshInputs(); yaml(); schedule();
+    });
+    label.append(input); el("bounds-controls").append(label);
+  });
+  data.cameras.forEach((camera,i) => {
+    const label = document.createElement("label"); label.className = "form-check";
+    const input = document.createElement("input"); input.type = "checkbox"; input.className = "form-check-input"; input.checked = true;
+    input.setAttribute("aria-label", camera.name); input.addEventListener("change", () => { state.cameras[i] = input.checked; schedule(); });
+    const name = document.createElement("span"); name.textContent = camera.name;
+    label.append(input,name); el("camera-controls").append(label);
+  });
+  function fit(box) {
+    state.center = box.slice(0,3).map((v,i) => (v + box[i+3])/2);
+    state.zoom = 0.85 / Math.max(Math.hypot(...box.slice(0,3).map((v,i) => box[i+3]-v)), 0.001);
+    state.pan = [0,0]; schedule();
+  }
+  function schedule() { if (!pending) { pending = true; requestAnimationFrame(() => { pending = false; draw(); }); } }
+  function draw() {
+    const width = Math.max(1,Math.round(canvas.clientWidth)), height = Math.max(1,Math.round(canvas.clientHeight));
+    if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height; }
+    const cy = Math.cos(state.yaw), sy = Math.sin(state.yaw), cp = Math.cos(state.pitch), sp = Math.sin(state.pitch);
+    const right = [-sy,cy,0], up = [-cy*sp,-sy*sp,cp], normal = [cy*cp,sy*cp,sp];
+    const scale = Math.min(width,height)*state.zoom;
+    const project = point => {
+      const d = point.map((v,i) => v-state.center[i]);
+      return [width/2 + state.pan[0] + (d[0]*right[0]+d[1]*right[1]+d[2]*right[2])*scale,
+        height/2 + state.pan[1] - (d[0]*up[0]+d[1]*up[1]+d[2]*up[2])*scale,
+        d[0]*normal[0]+d[1]*normal[1]+d[2]*normal[2]];
+    };
+    const image = ctx.createImageData(width,height), depth = new Float32Array(width*height).fill(-Infinity);
+    const hits = new Int32Array(width*height).fill(-1), size = Math.max(1,Math.min(4,Math.round(Number(el("point-size").value)||1)));
+    const showRemoved = el("show-removed").checked, cameraColor = el("color-mode").value === "camera";
+    let visible = 0, retained = 0;
+    for (let i=0;i<cameraIds.length;i++) {
+      const camera = cameraIds[i]; if (!state.cameras[camera]) continue;
+      visible++; const x=xyz[3*i],y=xyz[3*i+1],z=xyz[3*i+2], keep=kept(x,y,z); if (keep) retained++;
+      if (!keep && !showRemoved) continue;
+      const p=project([x,y,z]), px=Math.floor(p[0]),py=Math.floor(p[1]);
+      const c = cameraColor ? data.cameras[camera].color : rgb.subarray(3*i,3*i+3);
+      for(let dy=0;dy<size;dy++) for(let dx=0;dx<size;dx++) {
+        const xx=px+dx,yy=py+dy; if(xx<0||xx>=width||yy<0||yy>=height) continue;
+        const pixel=yy*width+xx; if(p[2]<=depth[pixel]) continue;
+        depth[pixel]=p[2]; hits[pixel]=i; image.data.set([c[0],c[1],c[2],keep?255:45],pixel*4);
+      }
+    }
+    ctx.putImageData(image,0,0); const colors=palette(); ctx.lineWidth=1; ctx.font=getComputedStyle(root).font;
+    function box(bounds,stroke) {
+      const vertices=Array.from({length:8},(_,i) => project([0,1,2].map(a => bounds[a+((i>>a)&1)*3])));
+      ctx.strokeStyle=stroke; ctx.beginPath(); vertices.forEach((p,i) => [0,1,2].forEach(a => {
+        const j=i^(1<<a); if(i<j) {ctx.moveTo(p[0],p[1]);ctx.lineTo(vertices[j][0],vertices[j][1]);}
+      })); ctx.stroke();
+    }
+    box(state.scene,colors[0]);
+    if(state.enabled) { if(state.useKeep) box(state.keep,colors[1]); state.excludes.forEach(b=>box(b,colors[2])); }
+    if(state.selected==="keep" && (!state.enabled||!state.useKeep)) {ctx.setLineDash([4,4]);box(state.keep,colors[1]);ctx.setLineDash([]);}
+    if(!state.enabled && !["scene","keep"].includes(state.selected)) {ctx.setLineDash([4,4]);box(currentBox(),colors[2]);ctx.setLineDash([]);}
+    function marker(point,label,stroke) {if(!point)return; const p=project(point);ctx.strokeStyle=stroke;ctx.fillStyle=stroke;
+      ctx.beginPath();ctx.moveTo(p[0]-6,p[1]);ctx.lineTo(p[0]+6,p[1]);ctx.moveTo(p[0],p[1]-6);ctx.lineTo(p[0],p[1]+6);ctx.stroke();ctx.fillText(label,p[0]+8,p[1]-8);}
+    marker(data.current_tcp,"TCP",colors[3]);marker(data.goal,"GT goal",colors[4]);
+    const axisStart = project(state.center), axisLength = 0.16/state.zoom;
+    ctx.strokeStyle=colors[5];ctx.fillStyle=colors[5];
+    ["X","Y","Z"].forEach((label,a) => { const end=project(state.center.map((v,i)=>v+(i===a?axisLength:0)));
+      ctx.beginPath();ctx.moveTo(axisStart[0],axisStart[1]);ctx.lineTo(end[0],end[1]);ctx.stroke();ctx.fillText(label+" (m)",end[0]+4,end[1]-4);});
+    el("point-count").textContent="当前框保留 " + retained.toLocaleString() + " / " + visible.toLocaleString() + " 个显示点" +
+      (data.total_points>data.displayed_points ? "（抽样自 " + data.total_points.toLocaleString() + " 点）" : "");
+    el("point-count").dataset.retained=String(retained);el("point-count").dataset.visible=String(visible);
+    const warnings=[];
+    if(data.current_tcp&&!kept(...data.current_tcp))warnings.push("TCP 在当前工作区/过滤框之外");
+    if(data.goal&&!kept(...data.goal))warnings.push("GT goal 在当前工作区/过滤框之外");
+    el("coverage").textContent=warnings.join("；");
+    canvas.setAttribute("aria-label","世界坐标点云，保留 "+retained+" / "+visible+" 个显示点。"+warnings.join("；"));
+    frame={width,height,hits};root.dataset.renderWidth=String(width);root.dataset.renderHeight=String(height);root.dataset.ready="true";
+  }
+  el("box-select").addEventListener("change",()=>{state.selected=el("box-select").value;refreshInputs();schedule();});
+  el("filter-enabled").checked=state.enabled;el("keep-enabled").checked=state.useKeep;
+  el("filter-enabled").addEventListener("change",()=>{state.enabled=el("filter-enabled").checked;yaml();schedule();});
+  el("keep-enabled").addEventListener("change",()=>{state.useKeep=el("keep-enabled").checked;yaml();schedule();});
+  el("add-exclude").addEventListener("click",()=>{const b=currentBox().slice();const c=b.slice(0,3).map((v,i)=>(v+b[i+3])/2);
+    state.excludes.push([...c.map((v,i)=>v-(b[i+3]-b[i])/10),...c.map((v,i)=>v+(b[i+3]-b[i])/10)]);
+    state.selected=String(state.excludes.length-1);options();yaml();schedule();});
+  el("remove-exclude").addEventListener("click",()=>{if(["scene","keep"].includes(state.selected))return;
+    state.excludes.splice(Number(state.selected),1);state.selected="scene";options();yaml();schedule();});
+  ["color-mode","point-size","show-removed"].forEach(id=>el(id).addEventListener("change",schedule));
+  root.querySelectorAll("[data-view]").forEach(button=>button.addEventListener("click",()=>{
+    const views={"3d":[-0.9,0.65],xy:[-Math.PI/2,Math.PI/2],xz:[-Math.PI/2,0],yz:[0,0]};
+    [state.yaw,state.pitch]=views[button.dataset.view];schedule();}));
+  el("fit-box").addEventListener("click",()=>fit(currentBox()));
+  canvas.addEventListener("contextmenu",e=>e.preventDefault());
+  canvas.addEventListener("pointerdown",e=>{canvas.setPointerCapture(e.pointerId);drag={x:e.clientX,y:e.clientY,travel:0,button:e.button};});
+  canvas.addEventListener("pointermove",e=>{if(!drag)return;const dx=e.clientX-drag.x,dy=e.clientY-drag.y;drag.travel+=Math.abs(dx)+Math.abs(dy);
+    if(drag.button===2||e.shiftKey){state.pan[0]+=dx;state.pan[1]+=dy;}else{state.yaw-=dx*0.008;state.pitch=Math.max(-Math.PI/2,Math.min(Math.PI/2,state.pitch+dy*0.008));}
+    drag.x=e.clientX;drag.y=e.clientY;schedule();});
+  canvas.addEventListener("pointerup",e=>{if(drag&&drag.travel<4&&drag.button===0&&frame){const rect=canvas.getBoundingClientRect();
+    const x=Math.floor(e.clientX-rect.left),y=Math.floor(e.clientY-rect.top);let best=-1,distance=Infinity;
+    for(let dy=-6;dy<=6;dy++)for(let dx=-6;dx<=6;dx++){const xx=x+dx,yy=y+dy;if(xx<0||xx>=frame.width||yy<0||yy>=frame.height)continue;
+      const hit=frame.hits[yy*frame.width+xx];if(hit>=0&&dx*dx+dy*dy<distance){best=hit;distance=dx*dx+dy*dy;}}
+    el("picked").textContent=best<0?"此处没有显示点":data.cameras[cameraIds[best]].name+" · world XYZ ["+Array.from(xyz.subarray(best*3,best*3+3),fmt).join(", ")+"] m";
+    }drag=null;});
+  canvas.addEventListener("pointercancel",()=>drag=null);
+  canvas.addEventListener("wheel",e=>{e.preventDefault();state.zoom=Math.max(0.001,Math.min(10000,state.zoom*Math.exp(-e.deltaY*0.001)));schedule();},{passive:false});
+  el("copy-yaml").addEventListener("click",async()=>{const field=el("yaml");field.select();
+    try{if(navigator.clipboard)await navigator.clipboard.writeText(field.value);else if(!document.execCommand("copy"))throw Error();el("copy-status").textContent="已复制";}
+    catch{el("copy-status").textContent="请在已选中的 YAML 文本上按 Ctrl/Cmd+C";}});
+  el("download-yaml").addEventListener("click",()=>{const url=URL.createObjectURL(new Blob([el("yaml").value],{type:"text/yaml;charset=utf-8"}));
+    const link=document.createElement("a");link.href=url;link.download="oht-point-cloud-roi.yaml";root.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);});
+  el("sample-label").textContent=data.sample_id+" · frame "+data.frame+" → "+data.target_frame+" · world metres";
+  el("geometry-source").textContent=data.geometry_source==="cached_xyz" ?
+    "来源：缓存 XYZ。已被旧 ROI 过滤成 NaN 的点不在此图中；扩大范围可改用 --html-source depth。" :
+    "来源：缓存米制 depth + K/外参，仅为显示重新反投影，未套旧 ROI。仍受观测、深度范围、缓存分辨率及原参数正确性限制。";
+  options();yaml();
+  const bounds=[Infinity,Infinity,Infinity,-Infinity,-Infinity,-Infinity];
+  for(let i=0;i<xyz.length;i+=3)for(let a=0;a<3;a++){bounds[a]=Math.min(bounds[a],xyz[i+a],state.scene[a]);bounds[a+3]=Math.max(bounds[a+3],xyz[i+a],state.scene[a+3]);}
+  fit(bounds);new ResizeObserver(schedule).observe(canvas);window.addEventListener("resize",schedule);
+  document.addEventListener("visibilitychange",()=>{if(!document.hidden)schedule();});
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change",schedule);
+})();
+</script>
+</html>

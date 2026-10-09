@@ -235,6 +235,7 @@ def test_geometry_cli_exports_each_physical_camera_without_changing_cache(replay
     output = tmp_path / "geometry"
     args = ["diagnose-geometry", "--replay", str(f.replay), "--sample-id", row["id"], "--output", str(output)]
     assert main(args) == 0
+    assert not (output / "point-cloud-roi.html").exists()  # HTML remains opt-in.
     assert {path.name for path in output.glob("*.png")} == {
         "fused_rgb.png", "fused_camera_colors.png", *(camera + ".png" for camera in f.config["cameras"])}
     summary = json.loads((output / "geometry.json").read_text(encoding="utf-8"))
