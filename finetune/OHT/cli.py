@@ -12,6 +12,13 @@ from .data.role_teacher import build_teacher
 from .runtime.predicted_wrapper import load_predictor, PredictedObjectWrapper
 
 
+def _visualization_arguments(parser):
+    parser.add_argument("--visualize-every", type=int, default=0,
+                        help="Save every N emitted samples per episode, including the first; 0 disables")
+    parser.add_argument("--visualize-output-dir",
+                        help="PNG directory (default: OUTPUT/visualizations); existing files are not overwritten")
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -25,6 +32,7 @@ def main(argv=None):
     for key in ("root", "manifest", "config", "output"):
         p.add_argument("--" + key, required=True)
     p.add_argument("--sample-stride", type=int, default=10)
+    _visualization_arguments(p)
     p = sub.add_parser("validate")
     p.add_argument("--replay", required=True)
     p.add_argument("--mode", choices=("baseline", "role_queries", "predicted_external"), default="baseline")
@@ -34,6 +42,7 @@ def main(argv=None):
     for key in ("replay", "annotations", "output"):
         p.add_argument("--" + key, required=True)
     p.add_argument("--point-count", type=int, default=512)
+    _visualization_arguments(p)
     p = sub.add_parser("predict")
     for key in ("replay", "predictor", "output", "provenance"):
         p.add_argument("--" + key, required=True)
@@ -45,7 +54,8 @@ def main(argv=None):
         print(json.dumps({k: result[k] for k in ("valid_episodes", "invalid_episodes", "split_counts", "missing_tasks")}))
         return 1 if result["invalid_episodes"] else 0
     if args.command == "build":
-        count = build(args.root, args.manifest, read_config(args.config), args.output, args.sample_stride)
+        count = build(args.root, args.manifest, read_config(args.config), args.output, args.sample_stride,
+                      visualize_every=args.visualize_every, visualize_output_dir=args.visualize_output_dir)
         print(f"Built {count} OHT transitions")
     elif args.command == "validate":
         contract = load_contract(args.replay)
@@ -56,7 +66,8 @@ def main(argv=None):
             counts[split] = data.validate_all()
         print(json.dumps(dict(valid=True, samples=counts, contract=contract["sha256"])))
     elif args.command == "teacher":
-        result = build_teacher(args.replay, args.annotations, args.output, args.point_count)
+        result = build_teacher(args.replay, args.annotations, args.output, args.point_count,
+                               visualize_every=args.visualize_every, visualize_output_dir=args.visualize_output_dir)
         print(f"Built {len(result['samples'])} teacher records")
     elif args.command == "predict":
         contract = load_contract(args.replay)

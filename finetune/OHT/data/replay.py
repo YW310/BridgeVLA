@@ -8,9 +8,11 @@ from .reader import read_episode, validate_episode
 from .actions import gripper_states, low_dim, world_tcp_poses, keypoints, target_labels
 from .observation import validate_data_config, camera_observation
 from .video import EpisodeVideos, metric_depth
+from .visualization import PreviewWriter
 
 
-def build(root, manifest_path, config, output, sample_stride=10):
+def build(root, manifest_path, config, output, sample_stride=10, *,
+          visualize_every=0, visualize_output_dir=None):
     validate_data_config(config)
     if sample_stride < 1:
         raise ValueError("sample_stride must be positive")
@@ -22,6 +24,7 @@ def build(root, manifest_path, config, output, sample_stride=10):
     if manifest.get("schema") != "oht_audit_v1" or not manifest.get("episodes"):
         raise ValueError("Audit must contain valid OHT episodes")
     output = Path(output)
+    preview = PreviewWriter(visualize_output_dir or output / "visualizations", visualize_every)
     if output.exists():
         raise FileExistsError(f"Use a new replay directory: {output}")
     output.mkdir(parents=True)
@@ -67,12 +70,14 @@ def build(root, manifest_path, config, output, sample_stride=10):
                 np.savez_compressed(path, **observation)
                 labels = target_labels(poses[target], int(desired[target]), config["scene_bounds"],
                                        int(config.get("rotation_classes", 72)))
-                rows.append(dict(id=sample_id, task=record["task"], split=record["split"],
+                sample = dict(id=sample_id, task=record["task"], split=record["split"],
                                  episode_index=record["episode_index"], frame=frame, target_frame=target,
                                  timestamp=float(columns["timestamp"][frame]), group=record["group"],
                                  observation=relative, observation_sha256=file_digest(path),
                                  goal=GOALS[record["task"]],
-                                 labels={key: value.tolist() for key, value in labels.items()}))
+                                 labels={key: value.tolist() for key, value in labels.items()})
+                rows.append(sample)
+                preview.write(observation, config, sample, current_tcp=poses[frame])
         finally:
             videos.close()
     (output / "samples.jsonl").write_text(

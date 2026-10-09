@@ -6,6 +6,7 @@ from .common import read_jsonl, inside, file_digest
 from .geometry import transform_matrix
 from .replay import load_contract
 from .role_cache import role_fields, create_cache
+from .visualization import PreviewWriter
 
 
 def sample_points(points, count, seed):
@@ -18,7 +19,8 @@ def sample_points(points, count, seed):
     return points[choice], True
 
 
-def build_teacher(replay, annotations_path, output, point_count=512):
+def build_teacher(replay, annotations_path, output, point_count=512, *,
+                  visualize_every=0, visualize_output_dir=None):
     replay = Path(replay)
     contract = load_contract(replay)
     samples = {row["id"]: row for row in read_jsonl(replay / "samples.jsonl")}
@@ -27,6 +29,7 @@ def build_teacher(replay, annotations_path, output, point_count=512):
         raise ValueError("Duplicate teacher annotation IDs")
     base = Path(annotations_path).resolve().parent
     source_hashes = {}
+    preview = PreviewWriter(visualize_output_dir or Path(output) / "visualizations", visualize_every)
     def rows():
         for annotation in annotations:
             sample = samples.get(annotation["id"])
@@ -37,6 +40,7 @@ def build_teacher(replay, annotations_path, output, point_count=512):
                 raise ValueError("Observation changed since replay construction")
             with np.load(observation_path, allow_pickle=False) as data:
                 points, valid, present, known = [], [], [], []
+                role_masks = {}
                 for index, role in enumerate(("target", "reference")):
                     spec = annotation[role]
                     if type(spec.get("present")) is not bool or type(spec.get("known")) is not bool:
@@ -49,6 +53,8 @@ def build_teacher(replay, annotations_path, output, point_count=512):
                         if not spec["present"] or not spec["known"]:
                             raise ValueError("Visible surface requires a known present role")
                         chunks = []
+                        if preview.every:
+                            role_masks[role] = {}
                         mask_path = inside(base, spec["mask_path"])
                         source_hashes[str(mask_path)] = file_digest(mask_path)
                         with np.load(mask_path, allow_pickle=False) as masks:
@@ -58,6 +64,8 @@ def build_teacher(replay, annotations_path, output, point_count=512):
                                 if mask.dtype != np.bool_ or mask.shape != cloud_camera.shape[:2]:
                                     raise ValueError("Masks must be bool at cached RGB-D resolution")
                                 chunks.append(cloud_camera[mask])
+                                if preview.every:
+                                    role_masks[role][camera] = mask
                         cloud = np.concatenate(chunks)
                     elif source == "site_region":
                         if not spec["present"] or not spec["known"]:
@@ -76,8 +84,13 @@ def build_teacher(replay, annotations_path, output, point_count=512):
                     sampled, usable = sample_points(cloud, point_count, index)
                     points.append(sampled)
                     valid.append(usable)
-                yield annotation["id"], role_fields("teacher", points, np.asarray(valid, bool),
-                                                     np.asarray(present, bool), np.asarray(known, bool))
+                fields = role_fields("teacher", points, np.asarray(valid, bool),
+                                     np.asarray(present, bool), np.asarray(known, bool))
+                if preview.every:
+                    preview.write(data, contract["data_config"], sample,
+                                  role_specs=annotation, role_masks=role_masks,
+                                  role_points=np.asarray(points), role_valid=np.asarray(valid, bool))
+                yield annotation["id"], fields
     # create_cache writes its manifest after consuming rows; this shared map then
     # contains every source checksum without holding all point clouds in memory.
     return create_cache(output, "teacher", contract["sha256"], point_count,
