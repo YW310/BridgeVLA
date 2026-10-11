@@ -169,6 +169,9 @@ def test_browser_edits_bounds_and_exports_matching_yaml_offline(cloud,tmp_path):
     executable = os.environ.get("OHT_BROWSER_EXECUTABLE")
     if not executable or not Path(executable).is_file():
         pytest.skip("Set OHT_BROWSER_EXECUTABLE for optional browser smoke test")
+    cloud[2]["diagnostic_objects"] = dict(frame=10,
+        positions=[[.25,.25,.25],[.5,.25,.25],[.5,.5,.25],[.25,.5,.25]],
+        quaternions=[[1,0,0,0],[0,0,0,1],[1,0,0,1],[0,0,1,1]])
     path = save_point_cloud_html(tmp_path/"roi.html",*cloud)
     with playwright.sync_playwright() as p:
         # Use a task-owned ordinary profile, not an incognito context (which
@@ -185,6 +188,35 @@ def test_browser_edits_bounds_and_exports_matching_yaml_offline(cloud,tmp_path):
         page.on("request",lambda request:network.append(request.url) if request.url.startswith(("http:","https:")) else None)
         page.goto(path.resolve().as_uri(),wait_until="domcontentloaded")
         page.wait_for_selector('#oht-roi[data-ready="true"]')
+        assert page.locator("#oht-roi").get_attribute("data-object-count") == "4"
+        assert page.locator("#object-order").input_value() == ""
+        yaml_before = page.locator("#yaml").input_value()
+        image_before = page.locator("#cloud").evaluate("canvas => canvas.toDataURL()")
+        page.locator("#object-order").select_option("wxyz")
+        page.wait_for_selector('#oht-roi[data-object-order="wxyz"]')
+        assert page.locator("#cloud").evaluate("canvas => canvas.toDataURL()") != image_before
+        page.get_by_role("textbox",name="对象 0 名称",exact=True).fill("待操作轮（自定义）")
+        for index in (1,2,3):
+            page.get_by_role("checkbox",name=f"显示 object_{index}",exact=True).uncheck()
+        page.wait_for_selector('#oht-roi[data-object-count="1"]')
+        page.locator("#fit-objects").click()
+        page.wait_for_timeout(100)
+        bounds = page.locator("#cloud").bounding_box()
+        page.mouse.click(bounds["x"]+bounds["width"]/2,bounds["y"]+bounds["height"]/2)
+        assert "待操作轮（自定义） (object_0)" in page.locator("#picked").inner_text()
+        assert "[0.25, 0.25, 0.25]" in page.locator("#picked").inner_text()
+        page.locator("#cloud-opacity").focus(); page.locator("#cloud-opacity").press("Home")
+        page.locator("#show-objects").uncheck()
+        page.wait_for_selector('#oht-roi[data-object-count="0"]')
+        page.mouse.click(bounds["x"]+bounds["width"]/2,bounds["y"]+bounds["height"]/2)
+        assert page.locator("#picked").inner_text() == "此处没有显示点"
+        page.locator("#cloud-opacity").focus(); page.locator("#cloud-opacity").press("End")
+        page.locator("#show-objects").check()
+        for index in (1,2,3):
+            page.get_by_role("checkbox",name=f"显示 object_{index}",exact=True).check()
+        page.wait_for_selector('#oht-roi[data-object-count="4"]')
+        page.locator("#fit-box").click()
+        assert page.locator("#yaml").input_value() == yaml_before
         count = page.locator("#point-count")
         assert count.get_attribute("data-retained") == "1"
         assert count.get_attribute("data-visible") == "3"
@@ -250,6 +282,8 @@ def test_browser_edits_bounds_and_exports_matching_yaml_offline(cloud,tmp_path):
         path = save_point_cloud_html(tmp_path/"dense.html",dense,cloud[1],cloud[2])
         page.goto(path.resolve().as_uri(),wait_until="domcontentloaded")
         page.wait_for_selector('#oht-roi[data-ready="true"]')
+        page.locator("#object-order").select_option("wxyz")
+        page.wait_for_selector('#oht-roi[data-object-order="wxyz"]')
         for width in (1000,320):
             page.set_viewport_size(dict(width=width,height=1100))
             page.wait_for_selector(f'#oht-roi[data-render-width="{width-32}"]')

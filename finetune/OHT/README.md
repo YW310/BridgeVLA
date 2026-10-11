@@ -192,6 +192,26 @@ python tools/diagnose_oht_geometry.py \
 
 **限制**：两种来源都受缓存分辨率、有效深度范围和原始内外参/同步正确性限制，不能补造未观测表面，不能修复历史错误深度编码。扩大范围不必为了预览先重建 buffer；确定新过滤/工作区配置后，再重建受影响的训练缓存，不能只改旧 contract。默认最多显示 40,000 点，可调至 60,000；保留计数仅对应显示抽样，不是全量覆盖证明。工具不配准点云、不修改 buffer；TCP/未来 GT goal 仅作诊断，并提示超出当前框。至少检查四任务、多时刻、最高抬升与操作夹具，再确定统一范围。
 
+#### 显示任务相关对象
+
+新构建的 replay 在 `samples.jsonl` 的 `diagnostic_objects` 中保存**当前观测帧**的四个对象中心与原始四元数及源 Parquet 路径/哈希，不增加 observation NPZ 或训练 batch 字段。HTML 默认显示 `object_0…3` 中心和名称；可逐个开关、修改显示名称、缩放到所选对象、调淡背景点，并点击中心查看 world XYZ 和原始四元数。中心在当前框外仍显示并提示。对象选择、名称和背景透明度只作用于页面，不改变点云保留计数、ROI YAML 或缓存；改名仅在当前页面有效。
+
+参考代码没有确认对象索引与语义名称的对应关系，也没有确认 `objects_quat` 的顺序，因此不自动猜测车轮/托盘或 Target/Reference。姿态轴默认隐藏；核实导出端约定后，在页面的“对象四元数顺序”中独立选择 `wxyz` 或 `xyzw`（不继承 camera/EE 设置）。轴为对象局部 x 红/y 绿/z 蓝，长度可调，坐标直接使用 world 位姿，不套相机 optical 翻轴。对象中心不是表面点或轴口 site；实例 mask 和角色点仍使用下文教师接口。
+
+旧 replay 没有该元数据时无需重建点云：在已有 HTML 诊断命令中增加原始数据根目录及**构建该 replay 所用的审计清单**：
+
+~~~bash
+python tools/diagnose_oht_geometry.py \
+  --replay /data/oht/replay-source-v2 \
+  --sample-id assemble_left/000000/000000 \
+  --output /data/oht/roi-objects-first-frame \
+  --html --html-source depth \
+  --object-root /common-data-32t/data/robot_data/oht_curobo_pd_v423 \
+  --object-manifest /data/oht/audit-seed0.json
+~~~
+
+两个对象来源参数必须一起提供并启用 `--html`。读取器核对 audit 与 replay contract 的绑定、所选 episode 的 Parquet 哈希，以及当前帧/episode/timestamp；不匹配则拒绝输出，不重写旧索引或缓存。没有元数据且未提供来源时，页面明确显示无对象位姿。直接 `--observation` 模式缺少可靠帧索引，不支持从原始数据推测对象帧。
+
 #### 构建未完成时
 
 `samples.jsonl` 在 buffer 完成时才写入。若尚无索引，直接查看已经写完的 NPZ：

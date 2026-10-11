@@ -8,6 +8,7 @@ import numpy as np
 from .geometry import array, check_bounds, backproject
 from .point_filter import point_filter_options
 from .visualization import CAMERA_COLORS
+from .object_preview import object_payload
 
 
 MAX_HTML_POINTS = 60_000
@@ -79,6 +80,7 @@ def point_cloud_payload(observation, config, sample, max_points=40_000, *, sourc
     return dict(sample_id=str(sample["id"]), frame=None if sample.get("frame") is None else int(sample["frame"]),
                 target_frame=None if sample.get("target_frame") is None else int(sample["target_frame"]),
                 diagnostic_note=sample.get("diagnostic_note", ""), scene_bounds=bounds.tolist(),
+                objects=object_payload(sample), object_source=sample.get("diagnostic_objects"),
                 point_cloud_filter=options, cameras=cameras, total_points=total, displayed_points=len(points),
                 xyz=encoded(points, "<f4"), rgb=encoded(colors, "u1"), camera_ids=encoded(camera_ids, "u1"),
                 geometry_source="cached_xyz" if source == "xyz" else "cached_metric_depth_backprojection",

@@ -53,6 +53,8 @@ def main(argv=None):
     p.add_argument("--max-points", type=int, default=40000, help="HTML display point budget, 1-60000; never changes cached XYZ")
     p.add_argument("--html-source", choices=("xyz", "depth"), default="xyz",
                    help="xyz: remaining cached points; depth: display-only backprojection before old ROI masking")
+    p.add_argument("--object-root", help="Original raw dataset root; recover current object poses for an indexed old replay")
+    p.add_argument("--object-manifest", help="Original audit manifest bound to replay; requires --object-root and --html")
     p = sub.add_parser("teacher")
     for key in ("replay", "annotations", "output"):
         p.add_argument("--" + key, required=True)
@@ -81,6 +83,8 @@ def main(argv=None):
             counts[split] = data.validate_all()
         print(json.dumps(dict(valid=True, samples=counts, contract=contract["sha256"])))
     elif args.command == "diagnose-geometry":
+        if bool(args.object_root) != bool(args.object_manifest) or (args.object_root and not args.html):
+            raise ValueError("Use --object-root and --object-manifest together with --html")
         if args.html:
             from .data.html_preview import html_point_limit, save_point_cloud_html
             html_point_limit(args.max_points)
@@ -91,6 +95,10 @@ def main(argv=None):
         contract, config, row, observation, validation = load_geometry_diagnostic(
             args.replay, sample_id=args.sample_id, observation_path=args.observation,
             data_profile=args.data_profile, allow_incomplete=args.allow_incomplete)
+        if args.object_root:
+            from .data.object_preview import load_source_objects
+            row = dict(row, diagnostic_objects=load_source_objects(
+                args.object_root, args.object_manifest, contract, row))
         # Validate the HTML payload before creating any output on invalid data.
         if args.html:
             from .data.html_preview import point_cloud_payload
@@ -109,6 +117,7 @@ def main(argv=None):
         write_json(output / "geometry.json", dict(
             sample_id=row["id"], contract_sha256=contract["sha256"], data_config=config,
             validation=validation,
+            diagnostic_objects=row.get("diagnostic_objects"),
             video_alignment=config.get("video_alignment", "timestamp"),
             camera_extrinsic_direction=config.get("camera_extrinsic_direction", "camera_to_world"),
             note="Cached geometry only; colors identify cameras, not roles. No registration or auto-correction.",

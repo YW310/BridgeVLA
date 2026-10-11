@@ -30,6 +30,15 @@
   <output id="diagnostic-note" class="text-destructive"></output>
   <div class="viz-controls" id="camera-controls" aria-label="显示相机"></div>
   <div class="viz-controls">
+    <label class="form-check"><input id="show-objects" type="checkbox" checked>显示对象中心与名称</label>
+    <label class="form-label">对象四元数顺序<select id="object-order" class="form-select"><option value="">未确认（不显示姿态轴）</option><option value="wxyz">wxyz</option><option value="xyzw">xyzw</option></select></label>
+    <label class="form-label">对象轴长（m）<input id="object-axis-length" class="form-control" type="number" min="0.001" max="1" step="0.01" value="0.06"></label>
+    <label class="form-label">背景点透明度<input id="cloud-opacity" class="form-control" type="range" min="0" max="100" value="100" aria-label="背景点透明度"></label>
+    <button class="btn" type="button" id="fit-objects">缩放到所选对象</button>
+  </div>
+  <div class="viz-controls" id="object-controls" aria-label="显示对象"></div>
+  <output id="object-status" class="text-muted" aria-live="polite"></output>
+  <div class="viz-controls">
     <label class="form-label">点颜色<select id="color-mode" class="form-select"><option value="rgb">原始 RGB</option><option value="camera">来源相机</option></select></label>
     <label class="form-label">点大小（px）<input id="point-size" class="form-control" type="number" min="1" max="4" value="1" step="1"></label>
     <label class="form-check"><input id="show-removed" class="form-check-input" type="checkbox" checked>显示被当前框排除的点</label>
@@ -66,6 +75,7 @@
   const xyzBytes = bytes(data.xyz), xyzView = new DataView(xyzBytes.buffer);
   const xyz = Float32Array.from({length: xyzBytes.length / 4}, (_, i) => xyzView.getFloat32(i * 4, true));
   const rgb = bytes(data.rgb), cameraIds = bytes(data.camera_ids);
+  const objects = (data.objects || []).map(object => ({...object, visible: true}));
   const canvas = el("cloud"), ctx = canvas.getContext("2d");
   const state = { scene: data.scene_bounds.slice(), keep: (data.point_cloud_filter.keep_bounds || data.scene_bounds).slice(),
     excludes: data.point_cloud_filter.exclude_boxes.map(b => b.slice()), enabled: data.point_cloud_filter.enabled,
@@ -128,6 +138,22 @@
     const name = document.createElement("span"); name.textContent = camera.name;
     label.append(input,name); el("camera-controls").append(label);
   });
+  objects.forEach(object => {
+    const row = document.createElement("div"); row.className = "viz-row";
+    const label = document.createElement("label"); label.className = "form-check";
+    const toggle = document.createElement("input"); toggle.type = "checkbox"; toggle.checked = true;
+    toggle.setAttribute("aria-label", "显示 object_" + object.index);
+    toggle.addEventListener("change", () => { object.visible = toggle.checked; schedule(); });
+    const index = document.createElement("span"); index.textContent = "object_" + object.index;
+    label.append(toggle,index);
+    const name = document.createElement("input"); name.className = "form-control"; name.value = object.name; name.maxLength = 40;
+    name.setAttribute("aria-label", "对象 " + object.index + " 名称");
+    name.addEventListener("input", () => { object.name = name.value.trim() || "object_" + object.index; schedule(); });
+    const position = document.createElement("span"); position.className = "text-muted";
+    position.textContent = "world [" + object.position.map(fmt).join(", ") + "] m";
+    row.append(label,name,position); el("object-controls").append(row);
+  });
+  ["show-objects","object-order","object-axis-length","fit-objects"].forEach(id => el(id).disabled = !objects.length);
   function fit(box) {
     state.center = box.slice(0,3).map((v,i) => (v + box[i+3])/2);
     state.zoom = 0.85 / Math.max(Math.hypot(...box.slice(0,3).map((v,i) => box[i+3]-v)), 0.001);
@@ -149,6 +175,7 @@
     const image = ctx.createImageData(width,height), depth = new Float32Array(width*height).fill(-Infinity);
     const hits = new Int32Array(width*height).fill(-1), size = Math.max(1,Math.min(4,Math.round(Number(el("point-size").value)||1)));
     const showRemoved = el("show-removed").checked, cameraColor = el("color-mode").value === "camera";
+    const opacity = Number(el("cloud-opacity").value) / 100;
     let visible = 0, retained = 0;
     for (let i=0;i<cameraIds.length;i++) {
       const camera = cameraIds[i]; if (!state.cameras[camera]) continue;
@@ -159,7 +186,7 @@
       for(let dy=0;dy<size;dy++) for(let dx=0;dx<size;dx++) {
         const xx=px+dx,yy=py+dy; if(xx<0||xx>=width||yy<0||yy>=height) continue;
         const pixel=yy*width+xx; if(p[2]<=depth[pixel]) continue;
-        depth[pixel]=p[2]; hits[pixel]=i; image.data.set([c[0],c[1],c[2],keep?255:45],pixel*4);
+        depth[pixel]=p[2]; hits[pixel]=opacity>0?i:-1; image.data.set([c[0],c[1],c[2],(keep?255:45)*opacity],pixel*4);
       }
     }
     ctx.putImageData(image,0,0); const colors=palette(); ctx.lineWidth=1; ctx.font=getComputedStyle(root).font;
@@ -176,6 +203,25 @@
     function marker(point,label,stroke) {if(!point)return; const p=project(point);ctx.strokeStyle=stroke;ctx.fillStyle=stroke;
       ctx.beginPath();ctx.moveTo(p[0]-6,p[1]);ctx.lineTo(p[0]+6,p[1]);ctx.moveTo(p[0],p[1]-6);ctx.lineTo(p[0],p[1]+6);ctx.stroke();ctx.fillText(label,p[0]+8,p[1]-8);}
     marker(data.current_tcp,"TCP",colors[3]);marker(data.goal,"GT goal",colors[4]);
+    const objectHits = [], order = el("object-order").value;
+    const axisLengthMetres = Math.max(0.001,Math.min(1,Number(el("object-axis-length").value)||0.06));
+    if(el("show-objects").checked) objects.filter(object => object.visible).forEach(object => {
+      const p = project(object.position); objectHits.push({object, x:p[0], y:p[1]});
+      ctx.save(); ctx.lineWidth=2;
+      if(order) object.axes[order].forEach((axis,a) => {
+        const end = project(object.position.map((v,i) => v + axisLengthMetres*axis[i]));
+        ctx.strokeStyle=["#e64949","#2ba84a","#488dff"][a]; ctx.fillStyle=ctx.strokeStyle;
+        ctx.beginPath();ctx.moveTo(p[0],p[1]);ctx.lineTo(end[0],end[1]);ctx.stroke();
+        ctx.fillText(["x","y","z"][a],end[0]+4,end[1]-4);
+      });
+      ctx.strokeStyle=colors[5];ctx.fillStyle=colors[5];ctx.beginPath();ctx.arc(p[0],p[1],5,0,2*Math.PI);ctx.stroke();
+      ctx.fillText(object.name,p[0]+8,p[1]-10);ctx.restore();
+    });
+    el("object-status").textContent = objects.length ?
+      "对象 " + objectHits.length + " / " + objects.length + " · 当前帧 world 位姿；名称可编辑，索引语义待核实。" +
+      (order ? "局部轴：x 红 / y 绿 / z 蓝（"+order+"）。" : "请选择对象四元数顺序以显示姿态轴。") :
+      "此样本没有对象位姿；旧缓存可用 --object-root / --object-manifest 补充索引帧。";
+    root.dataset.objectCount=String(objectHits.length);root.dataset.objectOrder=order;
     const axisStart = project(state.center), axisLength = 0.16/state.zoom;
     ctx.strokeStyle=colors[5];ctx.fillStyle=colors[5];
     ["X","Y","Z"].forEach((label,a) => { const end=project(state.center.map((v,i)=>v+(i===a?axisLength:0)));
@@ -186,9 +232,10 @@
     const warnings=[];
     if(data.current_tcp&&!kept(...data.current_tcp))warnings.push("TCP 在当前工作区/过滤框之外");
     if(data.goal&&!kept(...data.goal))warnings.push("GT goal 在当前工作区/过滤框之外");
+    objectHits.forEach(({object}) => {if(!kept(...object.position))warnings.push(object.name+" 中心在当前工作区/过滤框之外");});
     el("coverage").textContent=warnings.join("；");
     canvas.setAttribute("aria-label","世界坐标点云，保留 "+retained+" / "+visible+" 个显示点。"+warnings.join("；"));
-    frame={width,height,hits};root.dataset.renderWidth=String(width);root.dataset.renderHeight=String(height);root.dataset.ready="true";
+    frame={width,height,hits,objectHits};root.dataset.renderWidth=String(width);root.dataset.renderHeight=String(height);root.dataset.ready="true";
   }
   el("box-select").addEventListener("change",()=>{state.selected=el("box-select").value;refreshInputs();schedule();});
   el("filter-enabled").checked=state.enabled;el("keep-enabled").checked=state.useKeep;
@@ -199,7 +246,15 @@
     state.selected=String(state.excludes.length-1);options();yaml();schedule();});
   el("remove-exclude").addEventListener("click",()=>{if(["scene","keep"].includes(state.selected))return;
     state.excludes.splice(Number(state.selected),1);state.selected="scene";options();yaml();schedule();});
-  ["color-mode","point-size","show-removed"].forEach(id=>el(id).addEventListener("change",schedule));
+  ["color-mode","point-size","show-removed","show-objects","object-order","object-axis-length"].forEach(id=>el(id).addEventListener("change",schedule));
+  el("cloud-opacity").addEventListener("input",schedule);
+  el("fit-objects").addEventListener("click",()=>{
+    const selected=objects.filter(object=>object.visible);if(!selected.length)return;
+    const bounds=[Infinity,Infinity,Infinity,-Infinity,-Infinity,-Infinity];
+    const padding=Math.max(0.1,Math.min(1,Number(el("object-axis-length").value)||0.06));
+    selected.forEach(object=>object.position.forEach((v,a)=>{bounds[a]=Math.min(bounds[a],v-padding);bounds[a+3]=Math.max(bounds[a+3],v+padding);}));
+    fit(bounds);
+  });
   root.querySelectorAll("[data-view]").forEach(button=>button.addEventListener("click",()=>{
     const views={"3d":[-0.9,0.65],xy:[-Math.PI/2,Math.PI/2],xz:[-Math.PI/2,0],yz:[0,0]};
     [state.yaw,state.pitch]=views[button.dataset.view];schedule();}));
@@ -211,6 +266,9 @@
     drag.x=e.clientX;drag.y=e.clientY;schedule();});
   canvas.addEventListener("pointerup",e=>{if(drag&&drag.travel<4&&drag.button===0&&frame){const rect=canvas.getBoundingClientRect();
     const x=Math.floor(e.clientX-rect.left),y=Math.floor(e.clientY-rect.top);let best=-1,distance=Infinity;
+    const objectHit=frame.objectHits.find(hit=>Math.hypot(hit.x-x,hit.y-y)<=8);
+    if(objectHit){const object=objectHit.object;el("picked").textContent=object.name+" (object_"+object.index+") · world XYZ ["+
+      object.position.map(fmt).join(", ")+"] m · raw quaternion ["+object.quaternion.map(fmt).join(", ")+"] · "+(el("object-order").value||"顺序未确认");drag=null;return;}
     for(let dy=-6;dy<=6;dy++)for(let dx=-6;dx<=6;dx++){const xx=x+dx,yy=y+dy;if(xx<0||xx>=frame.width||yy<0||yy>=frame.height)continue;
       const hit=frame.hits[yy*frame.width+xx];if(hit>=0&&dx*dx+dy*dy<distance){best=hit;distance=dx*dx+dy*dy;}}
     el("picked").textContent=best<0?"此处没有显示点":data.cameras[cameraIds[best]].name+" · world XYZ ["+Array.from(xyz.subarray(best*3,best*3+3),fmt).join(", ")+"] m";

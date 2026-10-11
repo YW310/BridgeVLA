@@ -11,6 +11,7 @@ from .observation import validate_data_config, camera_observation
 from .video import EpisodeVideos, metric_depth
 from .visualization import PreviewWriter
 from .source_config import resolve_dataset_config, sample_data_config
+from .object_preview import capture_object_poses
 
 
 def build(root, manifest_path, config, output, sample_stride=10, *,
@@ -92,6 +93,7 @@ def build(root, manifest_path, config, output, sample_stride=10, *,
                                  episode_index=record["episode_index"], frame=frame, target_frame=target,
                                  timestamp=float(columns["timestamp"][frame]), group=record["group"],
                                  data_profile=record["dataset"], current_tcp=poses[frame].tolist(),
+                                 diagnostic_objects=capture_object_poses(columns, frame, record),
                                  observation=relative, observation_sha256=file_digest(path),
                                  goal=GOALS[record["task"]],
                                  labels={key: value.tolist() for key, value in labels.items()})
