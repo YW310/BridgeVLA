@@ -23,6 +23,7 @@
   #oht-roi .text-destructive { color: var(--destructive); }
   #oht-roi textarea { width: 100%; resize: vertical; }
   #oht-roi output { overflow-wrap: anywhere; }
+  #oht-roi #object-controls { max-height: 16rem; overflow-y: auto; }
   @media (max-width: 420px) { #oht-roi .bounds { grid-template-columns: repeat(2,minmax(0,1fr)); } }
 </style>
 <div id="oht-roi">
@@ -35,6 +36,8 @@
     <label class="form-label">对象轴长（m）<input id="object-axis-length" class="form-control" type="number" min="0.001" max="1" step="0.01" value="0.06"></label>
     <label class="form-label">背景点透明度<input id="cloud-opacity" class="form-control" type="range" min="0" max="100" value="100" aria-label="背景点透明度"></label>
     <button class="btn" type="button" id="fit-objects">缩放到所选对象</button>
+    <button class="btn" type="button" id="select-all-objects">全选对象</button>
+    <button class="btn" type="button" id="clear-objects">清空对象选择</button>
   </div>
   <div class="viz-controls" id="object-controls" aria-label="显示对象"></div>
   <output id="object-status" class="text-muted" aria-live="polite"></output>
@@ -153,7 +156,15 @@
     position.textContent = "world [" + object.position.map(fmt).join(", ") + "] m";
     row.append(label,name,position); el("object-controls").append(row);
   });
-  ["show-objects","object-order","object-axis-length","fit-objects"].forEach(id => el(id).disabled = !objects.length);
+  ["show-objects","object-order","object-axis-length","fit-objects","select-all-objects","clear-objects"].forEach(id => el(id).disabled = !objects.length);
+  function selectObjects(selected) {
+    objects.forEach(object => object.visible = selected);
+    el("object-controls").querySelectorAll('input[type="checkbox"]').forEach(toggle => toggle.checked = selected);
+    if(selected) el("show-objects").checked = true;
+    schedule();
+  }
+  el("select-all-objects").addEventListener("click", () => selectObjects(true));
+  el("clear-objects").addEventListener("click", () => selectObjects(false));
   function fit(box) {
     state.center = box.slice(0,3).map((v,i) => (v + box[i+3])/2);
     state.zoom = 0.85 / Math.max(Math.hypot(...box.slice(0,3).map((v,i) => box[i+3]-v)), 0.001);
@@ -222,6 +233,7 @@
       (order ? "局部轴：x 红 / y 绿 / z 蓝（"+order+"）。" : "请选择对象四元数顺序以显示姿态轴。") :
       "此样本没有对象位姿；旧缓存可用 --object-root / --object-manifest 补充索引帧。";
     root.dataset.objectCount=String(objectHits.length);root.dataset.objectOrder=order;
+    el("fit-objects").disabled = !objectHits.length;
     const axisStart = project(state.center), axisLength = 0.16/state.zoom;
     ctx.strokeStyle=colors[5];ctx.fillStyle=colors[5];
     ["X","Y","Z"].forEach((label,a) => { const end=project(state.center.map((v,i)=>v+(i===a?axisLength:0)));

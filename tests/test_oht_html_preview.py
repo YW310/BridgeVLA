@@ -170,8 +170,8 @@ def test_browser_edits_bounds_and_exports_matching_yaml_offline(cloud,tmp_path):
     if not executable or not Path(executable).is_file():
         pytest.skip("Set OHT_BROWSER_EXECUTABLE for optional browser smoke test")
     cloud[2]["diagnostic_objects"] = dict(frame=10,
-        positions=[[.25,.25,.25],[.5,.25,.25],[.5,.5,.25],[.25,.5,.25]],
-        quaternions=[[1,0,0,0],[0,0,0,1],[1,0,0,1],[0,0,1,1]])
+        positions=[[.25,.25,.25],[.5,.25,.25],[.5,.5,.25],[.25,.5,.25],[.7,.3,.25],[.3,.7,.25]],
+        quaternions=[[1,0,0,0],[0,0,0,1],[1,0,0,1],[0,0,1,1],[1,0,0,0],[1,0,0,0]])
     path = save_point_cloud_html(tmp_path/"roi.html",*cloud)
     with playwright.sync_playwright() as p:
         # Use a task-owned ordinary profile, not an incognito context (which
@@ -188,7 +188,18 @@ def test_browser_edits_bounds_and_exports_matching_yaml_offline(cloud,tmp_path):
         page.on("request",lambda request:network.append(request.url) if request.url.startswith(("http:","https:")) else None)
         page.goto(path.resolve().as_uri(),wait_until="domcontentloaded")
         page.wait_for_selector('#oht-roi[data-ready="true"]')
-        assert page.locator("#oht-roi").get_attribute("data-object-count") == "4"
+        assert page.locator("#oht-roi").get_attribute("data-object-count") == "6"
+        assert page.locator('#object-controls input[type="checkbox"]').count() == 6
+        page.locator("#clear-objects").click()
+        page.wait_for_selector('#oht-roi[data-object-count="0"]')
+        assert page.locator("#fit-objects").is_disabled()
+        assert page.locator('#object-controls input[type="checkbox"]:checked').count() == 0
+        page.get_by_role("checkbox",name="显示 object_5",exact=True).check()
+        page.wait_for_selector('#oht-roi[data-object-count="1"]')
+        assert not page.locator("#fit-objects").is_disabled()
+        page.locator("#select-all-objects").click()
+        page.wait_for_selector('#oht-roi[data-object-count="6"]')
+        assert page.locator('#object-controls input[type="checkbox"]:checked').count() == 6
         assert page.locator("#object-order").input_value() == ""
         yaml_before = page.locator("#yaml").input_value()
         image_before = page.locator("#cloud").evaluate("canvas => canvas.toDataURL()")
@@ -196,7 +207,7 @@ def test_browser_edits_bounds_and_exports_matching_yaml_offline(cloud,tmp_path):
         page.wait_for_selector('#oht-roi[data-object-order="wxyz"]')
         assert page.locator("#cloud").evaluate("canvas => canvas.toDataURL()") != image_before
         page.get_by_role("textbox",name="对象 0 名称",exact=True).fill("待操作轮（自定义）")
-        for index in (1,2,3):
+        for index in range(1,6):
             page.get_by_role("checkbox",name=f"显示 object_{index}",exact=True).uncheck()
         page.wait_for_selector('#oht-roi[data-object-count="1"]')
         page.locator("#fit-objects").click()
@@ -212,9 +223,9 @@ def test_browser_edits_bounds_and_exports_matching_yaml_offline(cloud,tmp_path):
         assert page.locator("#picked").inner_text() == "此处没有显示点"
         page.locator("#cloud-opacity").focus(); page.locator("#cloud-opacity").press("End")
         page.locator("#show-objects").check()
-        for index in (1,2,3):
+        for index in range(1,6):
             page.get_by_role("checkbox",name=f"显示 object_{index}",exact=True).check()
-        page.wait_for_selector('#oht-roi[data-object-count="4"]')
+        page.wait_for_selector('#oht-roi[data-object-count="6"]')
         page.locator("#fit-box").click()
         assert page.locator("#yaml").input_value() == yaml_before
         count = page.locator("#point-count")

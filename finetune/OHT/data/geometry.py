@@ -20,6 +20,22 @@ def quaternion(value):
     return value / norms
 
 
+def object_pose_arrays(positions, orientations):
+    """Validate flattened object poses for one frame or an entire episode."""
+    positions = array(positions, name="objects_pos")
+    orientations = array(orientations, name="objects_quat")
+    if positions.ndim not in (1, 2) or positions.shape[-1] % 3:
+        raise ValueError("objects_pos must have 3 values per object at each frame")
+    count = positions.shape[-1] // 3
+    leading = positions.shape[:-1]
+    if orientations.shape != (*leading, count * 4):
+        raise ValueError("objects_pos/objects_quat must describe the same objects and frames")
+    positions = positions.reshape(*leading, count, 3)
+    orientations = orientations.reshape(*leading, count, 4)
+    quaternion(orientations)  # Norm validation is independent of component order.
+    return positions, orientations
+
+
 def pose_matrix(position, orientation):
     result = np.eye(4)
     result[:3, :3] = Rotation.from_quat(quaternion(orientation)).as_matrix()

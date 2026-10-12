@@ -9,7 +9,8 @@ import pytest
 from finetune.OHT.cli import main
 from finetune.OHT.data.common import digest, file_digest, read_jsonl, write_json
 from finetune.OHT.data.dataset import OHTDataset
-from finetune.OHT.data.object_preview import load_source_objects, object_payload
+from finetune.OHT.data.object_preview import capture_object_poses, load_source_objects, object_payload
+from finetune.OHT.data.reader import read_episode, validate_episode
 from finetune.OHT.data.replay import load_contract
 from tests.test_oht_html_preview import payload_from_html
 from tests.test_oht_migration import replay_fixture
@@ -33,6 +34,41 @@ def test_object_axes_require_independent_order_and_preserve_world_centres():
     np.testing.assert_allclose(objects[2]["axes"]["wxyz"], [[0,1,0],[-1,0,0],[0,0,1]], atol=1e-15)
     assert sample == before
     assert object_payload(dict(frame=10)) == []  # Legacy cache has no invented objects.
+
+
+@pytest.mark.parametrize("count", [0, 1, 4, 7])
+def test_all_recorded_objects_survive_capture_and_html_payload(count):
+    positions = [[i*.1,.3,.4] for i in range(count)]
+    orientations = [[1,0,0,0] for _ in range(count)]
+    columns = {"observation.objects_pos": [np.asarray(positions).reshape(-1).tolist()],
+               "observation.objects_quat": [np.asarray(orientations).reshape(-1).tolist()]}
+    metadata = capture_object_poses(columns, 0, dict(path="episode.parquet", parquet_sha256="checksum"))
+    objects = object_payload(dict(frame=0, diagnostic_objects=metadata))
+    assert len(objects) == count
+    assert [o["position"] for o in objects] == positions
+    assert [o["name"] for o in objects] == [f"object_{i}" for i in range(count)]
+
+
+@pytest.mark.parametrize("positions,orientations", [([0,0],[1,0,0,0]),
+                                                  ([0]*6,[1,0,0,0]),
+                                                  ([0]*3,[0]*4)])
+def test_capture_rejects_incomplete_or_unpaired_objects(positions, orientations):
+    with pytest.raises(ValueError):
+        capture_object_poses({"observation.objects_pos": [positions], "observation.objects_quat": [orientations]},
+                             0, dict(path="episode.parquet", parquet_sha256="checksum"))
+
+
+def test_episode_validation_supports_all_objects_but_rejects_inconsistent_frames(replay_fixture):
+    f = replay_fixture
+    record = f.report["episodes"][0]
+    columns = read_episode(f.root, record)
+    n = len(columns["frame_index"])
+    columns["observation.objects_pos"] = [[i*.1,0,0]*7 for i in range(n)]
+    columns["observation.objects_quat"] = [[1,0,0,0]*7 for _ in range(n)]
+    assert validate_episode(columns, record)["frames"] == n
+    columns["observation.objects_quat"][0] = [1,0,0,0]*6
+    with pytest.raises(ValueError):
+        validate_episode(columns, record)
 
 
 @pytest.mark.parametrize("damage", ["frame", "positions", "quaternions", "zero", "nan"])

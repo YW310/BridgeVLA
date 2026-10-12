@@ -3,15 +3,14 @@ from pathlib import Path
 import json
 import numpy as np
 from .common import TASKS, inside, file_digest
-from .geometry import array, quaternion
+from .geometry import array, quaternion, object_pose_arrays
 
 SHAPES = {
     "action": 7, "observation.state": 7, "observation.gripper_joints": 2,
     "observation.ee_pos_world": 3, "observation.ee_quat_world": 4,
-    "observation.objects_pos": 12, "observation.objects_quat": 16,
 }
 REQUIRED = ("frame_index", "episode_index", "timestamp", "instruction_id", "instruction",
-            "next.done", "next.success", *SHAPES)
+            "next.done", "next.success", *SHAPES, "observation.objects_pos", "observation.objects_quat")
 
 
 def discover(root):
@@ -58,7 +57,7 @@ def validate_episode(columns, record):
     for name, width in SHAPES.items():
         array(columns[name], (n, width), name)
     quaternion(columns["observation.ee_quat_world"])
-    quaternion(np.asarray(columns["observation.objects_quat"]).reshape(n, 4, 4))
+    object_pose_arrays(columns["observation.objects_pos"], columns["observation.objects_quat"])
     commands = np.asarray(columns["action"])[:, 6]
     # Raw actions are audit-only: do not require a trusted gripper command
     # convention or use them to reconstruct measured opening/action labels.

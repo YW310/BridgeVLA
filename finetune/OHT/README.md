@@ -194,7 +194,7 @@ python tools/diagnose_oht_geometry.py \
 
 #### 显示任务相关对象
 
-新构建的 replay 在 `samples.jsonl` 的 `diagnostic_objects` 中保存**当前观测帧**的四个对象中心与原始四元数及源 Parquet 路径/哈希，不增加 observation NPZ 或训练 batch 字段。HTML 默认显示 `object_0…3` 中心和名称；可逐个开关、修改显示名称、缩放到所选对象、调淡背景点，并点击中心查看 world XYZ 和原始四元数。中心在当前框外仍显示并提示。对象选择、名称和背景透明度只作用于页面，不改变点云保留计数、ROI YAML 或缓存；改名仅在当前页面有效。
+新构建的 replay 在 `samples.jsonl` 的 `diagnostic_objects` 中保存**当前观测帧**记录的全部对象中心与原始四元数及源 Parquet 路径/哈希，不增加 observation NPZ 或训练 batch 字段。对象数量按 `objects_pos` 的每 3 个位置值与 `objects_quat` 的每 4 个四元数值匹配，不固定为四个；两者数量必须一致，同一 episode 内保持一致。HTML 默认勾选全部对象，按索引列出 `object_0…object_{N-1}`，提供“全选对象”“清空对象选择”和每项复选框；仅显示勾选对象的中心、名称及已启用的姿态轴。还可修改显示名称、缩放到所选对象、调淡背景点，并点击中心查看 world XYZ 和原始四元数。中心在当前框外仍显示并提示。清单只包含数据中记录了位姿的对象，不自动发现未记录的场景物体。对象选择、名称和背景透明度只作用于页面，不改变点云保留计数、ROI YAML 或缓存；改名仅在当前页面有效。
 
 参考代码没有确认对象索引与语义名称的对应关系，也没有确认 `objects_quat` 的顺序，因此不自动猜测车轮/托盘或 Target/Reference。姿态轴默认隐藏；核实导出端约定后，在页面的“对象四元数顺序”中独立选择 `wxyz` 或 `xyzw`（不继承 camera/EE 设置）。轴为对象局部 x 红/y 绿/z 蓝，长度可调，坐标直接使用 world 位姿，不套相机 optical 翻轴。对象中心不是表面点或轴口 site；实例 mask 和角色点仍使用下文教师接口。
 

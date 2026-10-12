@@ -5,13 +5,12 @@ from pathlib import Path
 import numpy as np
 
 from .common import digest, file_digest, inside
-from .geometry import array, pose_matrix, quaternion
+from .geometry import array, pose_matrix, quaternion, object_pose_arrays
 
 
 def capture_object_poses(columns, frame, record):
-    positions = array(columns["observation.objects_pos"][frame], (12,), "objects_pos").reshape(4, 3)
-    orientations = array(columns["observation.objects_quat"][frame], (16,), "objects_quat").reshape(4, 4)
-    quaternion(orientations)  # Validate norms without assuming a component order.
+    positions, orientations = object_pose_arrays(columns["observation.objects_pos"][frame],
+                                               columns["observation.objects_quat"][frame])
     return dict(frame=int(frame), positions=positions.tolist(), quaternions=orientations.tolist(),
                 source="raw_parquet", path=record["path"], parquet_sha256=record["parquet_sha256"])
 
@@ -53,8 +52,12 @@ def object_payload(sample):
         return []
     if metadata.get("frame") != sample.get("frame") or sample.get("frame") is None:
         raise ValueError("Diagnostic object poses must belong to the current sample frame")
-    positions = array(metadata["positions"], (4, 3), "diagnostic object positions")
-    orientations = array(metadata["quaternions"], (4, 4), "diagnostic object quaternions")
+    positions = array(metadata["positions"], name="diagnostic object positions")
+    orientations = array(metadata["quaternions"], name="diagnostic object quaternions")
+    if positions.shape == (0,) and orientations.shape == (0,):
+        return []
+    if positions.ndim != 2 or positions.shape[1] != 3 or orientations.shape != (len(positions), 4):
+        raise ValueError("Diagnostic objects require matching positions[N,3] and quaternions[N,4]")
     quaternion(orientations)
     objects = []
     for index, (position, orientation) in enumerate(zip(positions, orientations)):
