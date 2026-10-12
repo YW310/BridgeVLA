@@ -74,10 +74,10 @@
   <div class="bounds" id="bounds-controls"></div>
   <output id="error" class="text-destructive" role="alert"></output>
   <output id="coverage" class="text-destructive" aria-live="polite"></output>
-  <div class="viz-row text-muted">蓝色：scene_bounds · 绿色：保留框 · 橙色：排除框 · 青色：当前 TCP · 品红：未来 GT goal（仅诊断）</div>
+  <div class="viz-row text-muted">蓝色：scene_bounds · 绿色：保留框 · 橙色：排除框 · 青色：当前 <span id="current-position-label">TCP</span> · 品红：未来 GT goal（仅诊断）</div>
   <div class="viz-row"><button class="btn" type="button" id="copy-yaml">复制 YAML</button><button class="btn" type="button" id="download-yaml">下载 YAML 片段</button><output id="copy-status" aria-live="polite"></output></div>
   <label class="form-label">世界坐标米制 [xmin, ymin, zmin, xmax, ymax, zmax]<textarea id="yaml" class="form-control" rows="8" readonly spellcheck="false"></textarea></label>
-  <div class="viz-row text-muted">仅导出配置片段，不修改 buffer。请检查多任务、多时刻以及 TCP/goal 覆盖；不能补造未观测表面或修复错误的深度/相机参数。</div>
+  <div class="viz-row text-muted">仅导出配置片段，不修改 buffer。请检查多任务、多时刻以及当前末端位置/goal 覆盖；不能补造未观测表面或修复错误的深度/相机参数。</div>
 </div>
 <script id="oht-cloud-data" type="application/json">__OHT_POINT_CLOUD_DATA__</script>
 <script>
@@ -86,6 +86,8 @@
   const root = document.getElementById("oht-roi");
   const el = id => root.querySelector("#" + id);
   const data = JSON.parse(document.getElementById("oht-cloud-data").textContent);
+  const currentPositionLabel = data.current_position_label || "TCP";
+  el("current-position-label").textContent = currentPositionLabel;
   if(data.preview_image){el("interactive-heading").hidden=false;if(parent===window){el("frame-preview-section").hidden=false;el("frame-preview").src=data.preview_image;}}
   const bytes = encoded => Uint8Array.from(atob(encoded), c => c.charCodeAt(0));
   const xyzBytes = bytes(data.xyz), xyzView = new DataView(xyzBytes.buffer);
@@ -262,7 +264,7 @@
     if(el("show-object-boxes").checked){ctx.setLineDash([3,3]);crops.forEach(crop=>box(crop.bounds,objectMode?objectStroke(crop.object):colors[5]));ctx.setLineDash([]);}
     function marker(point,label,stroke) {if(!point)return; const p=project(point);ctx.strokeStyle=stroke;ctx.fillStyle=stroke;
       ctx.beginPath();ctx.moveTo(p[0]-6,p[1]);ctx.lineTo(p[0]+6,p[1]);ctx.moveTo(p[0],p[1]-6);ctx.lineTo(p[0],p[1]+6);ctx.stroke();ctx.fillText(label,p[0]+8,p[1]-8);}
-    marker(data.current_tcp,"TCP",colors[3]);marker(data.goal,"GT goal",colors[4]);
+    marker(data.current_tcp,currentPositionLabel,colors[3]);marker(data.goal,"GT goal",colors[4]);
     const objectHits = [], order = el("object-order").value;
     const axisLengthMetres = Math.max(0.001,Math.min(1,Number(el("object-axis-length").value)||0.06));
     if(el("show-objects").checked) objects.filter(object => object.visible).forEach(object => {
@@ -296,7 +298,7 @@
       (data.total_points>data.displayed_points ? "（抽样自 " + data.total_points.toLocaleString() + " 点）" : "");
     el("point-count").dataset.retained=String(retained);el("point-count").dataset.visible=String(visible);
     const warnings=[];
-    if(data.current_tcp&&!kept(...data.current_tcp))warnings.push("TCP 在当前工作区/过滤框之外");
+    if(data.current_tcp&&!kept(...data.current_tcp))warnings.push(currentPositionLabel+" 在当前工作区/过滤框之外");
     if(data.goal&&!kept(...data.goal))warnings.push("GT goal 在当前工作区/过滤框之外");
     objectHits.forEach(({object}) => {if(!kept(...object.position))warnings.push(object.name+" 中心在当前工作区/过滤框之外");});
     el("coverage").textContent=warnings.join("；");

@@ -23,6 +23,12 @@ OBJECT_COLORS = ((255, 145, 40), (80, 180, 255), (190, 240, 60), (195, 125, 250)
 OBJECT_OVERLAP = (255, 255, 255)
 
 
+def current_position_label(config):
+    """The cached TCP is the recorded EE position only with an identity offset."""
+    offset = config.get("link_to_tcp")
+    return "EE-pos" if offset is not None and np.array_equal(offset, np.eye(4)) else "TCP"
+
+
 def _object_tints(points, colors, boxes):
     colors = np.array(colors, dtype=np.uint8, copy=True)
     membership = np.zeros(len(points), dtype=np.int32)
@@ -116,7 +122,7 @@ def _mark(draw, xy, color, label=None):
     draw.line((x - 8, y, x + 8, y), fill=color, width=2)
     draw.line((x, y - 8, x, y + 8), fill=color, width=2)
     if label:
-        draw.text((x + 9, y - 16 if label == "TCP" else y + 6), label, fill=color)
+        draw.text((x + 9, y - 16 if label in ("TCP", "EE-pos") else y + 6), label, fill=color)
 
 
 def projection_status(pose, intrinsics, world_from_optical, image_shape):
@@ -135,7 +141,8 @@ def projection_status(pose, intrinsics, world_from_optical, image_shape):
     return f"{state} uv=({xy[0, 0]:.1f},{xy[0, 1]:.1f}) z={optical[2]:.3f}m"
 
 
-def _camera_rgb(observation, camera, current_tcp, action_tcp, masks, specs, role_points, role_valid):
+def _camera_rgb(observation, camera, current_tcp, action_tcp, masks, specs, role_points, role_valid,
+                current_label="TCP"):
     raw = observation[f"{camera}_rgb"].transpose(1, 2, 0)
     image = Image.fromarray(role_overlay(raw, masks)).resize((PANEL_W, PANEL_H), Image.Resampling.NEAREST)
     draw = ImageDraw.Draw(image)
@@ -150,7 +157,7 @@ def _camera_rgb(observation, camera, current_tcp, action_tcp, masks, specs, role
                 for point in xy[visible][::max(1, len(xy) // 128)]:
                     x, y = point * scale
                     draw.ellipse((x - 2, y - 2, x + 2, y + 2), outline=tuple(map(int, color)))
-    for pose, color, label in ((current_tcp, CURRENT, "TCP"), (action_tcp, ACTION, "goal")):
+    for pose, color, label in ((current_tcp, CURRENT, current_label), (action_tcp, ACTION, "goal")):
         if pose is not None:
             xy, visible = project_world(np.asarray(pose)[:3], K, transform, (height, width))
             if visible[0]:
@@ -159,7 +166,7 @@ def _camera_rgb(observation, camera, current_tcp, action_tcp, masks, specs, role
 
 
 def _orthographic(points, colors, bounds, axes, current_tcp, action_tcp, role_points, role_valid,
-                  region_bounds=None, object_overlay=None):
+                  region_bounds=None, object_overlay=None, current_label="TCP"):
     width, height = 340, 256
     image = np.zeros((height, width, 3), dtype=np.uint8)
     bounds = np.asarray(bounds)
@@ -225,7 +232,7 @@ def _orthographic(points, colors, bounds, axes, current_tcp, action_tcp, role_po
                 valid &= (cloud < bounds[3:]).all(axis=1)
                 for x, y in pixels(cloud[valid]):
                     draw.ellipse((x - 2, y - 2, x + 2, y + 2), outline=tuple(map(int, color)))
-    for pose, color, label in ((current_tcp, CURRENT, "TCP"), (action_tcp, ACTION, "goal")):
+    for pose, color, label in ((current_tcp, CURRENT, current_label), (action_tcp, ACTION, "goal")):
         if pose is not None:
             point = np.asarray(pose)[:3]
             if np.isfinite(point).all() and (point >= bounds[:3]).all() and (point < bounds[3:]).all():
@@ -246,6 +253,7 @@ def _sample_preview_cloud(points, colors):
 def save_preview(path, observation, config, sample, current_tcp=None, role_specs=None,
                  role_masks=None, role_points=None, role_valid=None, color_by_camera=False, object_boxes=None):
     """Save sampled diagnostics without changing cached tensors or labels."""
+    current_label = current_position_label(config)
     cameras = list(config["cameras"])
     goal_pose = sample.get("labels", {}).get("gripper_pose")
     action_tcp = None if goal_pose is None else np.asarray(goal_pose)
@@ -287,27 +295,27 @@ def save_preview(path, observation, config, sample, current_tcp=None, role_specs
     draw.text((8, 24), f"time {timestamp} | {sample.get('goal', 'instruction unavailable')}", fill="white")
     current = "not cached" if current_tcp is None else np.array2string(np.asarray(current_tcp)[:3], precision=3)
     goal = "not cached" if action_tcp is None else np.array2string(action_tcp[:3], precision=3)
-    draw.text((8, 42), f"World TCP {current} -> {goal} m", fill="white")
-    legend = ("Cyan=current TCP; magenta=future action; orthographic colors=physical camera (NOT roles)"
+    draw.text((8, 42), f"World {current_label} {current} -> GT goal {goal} m", fill="white")
+    legend = (f"Cyan=current {current_label}; magenta=future action; orthographic colors=physical camera (NOT roles)"
               if color_by_camera else
-              "Cyan=current TCP; magenta=future action; green=Target; blue=Reference; yellow=overlap")
+              f"Cyan=current {current_label}; magenta=future action; green=Target; blue=Reference; yellow=overlap")
     draw.text((8, 60), legend, fill="white")
     if role_specs is not None:
         status = " | ".join(f"{role}: {spec['source']} present={spec['present']} known={spec['known']} geometry={bool(role_valid[i])}"
                             for i, (role, spec) in enumerate((('target', role_specs['target']), ('reference', role_specs['reference']))))
         draw.text((8, 78), status, fill="white")
     elif sample.get("diagnostic_note"):
-        draw.text((8, 78), "Diagnostic only: replay completeness not checked; direct NPZ may have no TCP/goal metadata.", fill=ACTION)
+        draw.text((8, 78), f"Diagnostic only: replay completeness not checked; direct NPZ may have no {current_label}/goal metadata.", fill=ACTION)
     for index, camera in enumerate(cameras):
         x, y = (index % 2) * 512, top + (index // 2) * row_height
         masks = {role: values[camera] for role, values in (role_masks or {}).items()}
         draw.text((x + 4, y + 2), camera + (" RGB + roles" if role_specs is not None else " RGB"), fill="white")
         canvas.paste(_camera_rgb(observation, camera, current_tcp, action_tcp, masks,
-                                role_specs, role_points, role_valid), (x, y + 20))
+                                role_specs, role_points, role_valid, current_label=current_label), (x, y + 20))
         K = observation[f"{camera}_camera_intrinsics"]
         transform = observation[f"{camera}_camera_extrinsics"]
         image_shape = observation[f"{camera}_rgb"].shape[1:]
-        for offset, pose, color, label in ((214, current_tcp, CURRENT, "TCP"),
+        for offset, pose, color, label in ((214, current_tcp, CURRENT, current_label),
                                           (225, action_tcp, ACTION, "goal")):
             draw.text((x + 4, y + offset), label + ": " + projection_status(pose, K, transform, image_shape), fill=color)
         depth, limits = depth_colors(observation[f"{camera}_depth"][0], config["depth"].get("limits", [0.001, 10]))
@@ -335,7 +343,8 @@ def save_preview(path, observation, config, sample, current_tcp=None, role_specs
             x = index * 341
             draw.text((x + 4, row_top + 20), "".join("XYZ"[axis] for axis in axes) + " world point cloud", fill="white")
             canvas.paste(_orthographic(cloud, rgb, view_bounds, axes, current_tcp, action_tcp,
-                                       role_points, role_valid, region_bounds=roi), (x, row_top + 38))
+                                       role_points, role_valid, region_bounds=roi,
+                                       current_label=current_label), (x, row_top + 38))
     if action_tcp is None:
         draw.text((8, ortho_top + 300), "GT goal unavailable: no goal marker, local cube or GT-centered refine views are generated.", fill=ACTION)
     else:

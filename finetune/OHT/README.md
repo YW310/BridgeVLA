@@ -164,7 +164,7 @@ python tools/validate_oht_replay.py --replay /data/oht/replay-source-v3
 
 `--visualize-every N` 按每个 episode **生成的样本数**保存 PNG，包含第一个样本，随后每隔 N 个；不是按原始视频帧计数。`1` 显示每个生成样本，默认 `0` 关闭。可省略 `--visualize-output-dir`，此时保存到 `<output>/preview/<task>/<episode六位>/<frame六位>/preview.png`。预览文件存在时拒绝覆盖。
 
-每张图包含缓存分辨率的各相机 RGB、米制 depth，以及两排 XY/XZ/YZ 彩色点云：青色为当前 TCP，品红色为下一 GT 关键点。depth 蓝色近、红色远，标注当前有效范围（米），黑色表示无效；不同图的深度颜色范围可能不同。
+每张图包含缓存分辨率的各相机 RGB、米制 depth，以及两排 XY/XZ/YZ 彩色点云：青色为当前 `EE-pos`，品红色为下一 GT 关键点。当前 OHT 配置的 `link_to_tcp` 为单位阵，青色位置就是原始 `observation.ee_pos_world`；PNG/HTML 均显示 `EE-pos`，缓存字段仍为 `current_tcp`。若配置了额外 TCP 偏移，显示名称保留 `TCP`，不把偏移后的位置标成原始 EE。depth 蓝色近、红色远，标注当前有效范围（米），黑色表示无效；不同图的深度颜色范围可能不同。
 
 每个 RGB 面板下方显示 TCP/goal 的 `in view`、`outside image`、`behind camera` 或 `unavailable`，以及缓存像素坐标/光学 Z。画外点不强制移到边缘；`in view` 仅代表在视锥内，不代表没有被遮挡。
 

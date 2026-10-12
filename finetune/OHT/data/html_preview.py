@@ -9,7 +9,7 @@ import numpy as np
 from .geometry import array, check_bounds
 from .cloud_source import camera_cloud
 from .point_filter import point_filter_options
-from .visualization import CAMERA_COLORS, OBJECT_COLORS, OBJECT_OVERLAP
+from .visualization import CAMERA_COLORS, OBJECT_COLORS, OBJECT_OVERLAP, current_position_label
 from .object_preview import object_payload
 from .object_cloud import box_mask, resolve_object_boxes
 
@@ -101,6 +101,7 @@ def point_cloud_payload(observation, config, sample, max_points=40_000, *, sourc
                 xyz=encoded(points, "<f4"), rgb=encoded(colors, "u1"), camera_ids=encoded(camera_ids, "u1"),
                 geometry_source="cached_xyz" if source == "xyz" else "cached_metric_depth_backprojection",
                 current_tcp=marker(sample.get("current_tcp")),
+                current_position_label=current_position_label(config),
                 goal=marker(sample.get("labels", {}).get("gripper_pose")),
                 source_note=("Cached world XYZ only. Previously filtered/invalid points cannot be recovered. " if source == "xyz" else
                              "Display-only backprojection of cached metric depth/K/optical extrinsics, without ROI masking. "
