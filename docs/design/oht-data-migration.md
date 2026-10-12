@@ -228,6 +228,8 @@ OHT 只有四物体中心和姿态，未提供实例 mask、mesh 尺寸或轴 si
 
 2026-10-11：交互 HTML 已增加当前帧对象中心、可编辑名称和可选局部姿态轴；新 replay 仅在样本索引保存诊断位姿，旧 replay 可通过原始数据与绑定 audit 只读补充。对象索引语义和四元数顺序不自动推断，页面显式选择顺序后才显示轴；此图层不进入训练观测，不提供实例表面或自动 T/R 标签。使用方法见 [对象预览](../../finetune/OHT/README.md#显示任务相关对象)。
 
+2026-10-12：无实例标注时可用当前对象中心与显式 world XYZ 尺寸框近似截取点云。HTML 调框并导出绑定当前 sample/frame 的 JSON，`tools/extract_oht_object_clouds.py` 从全部有效缓存点或米制深度重建点导出逐对象 PLY/NPZ，记录近似来源、每相机点数及空几何。它不是实例分割或完整表面 GT，不自动产生 T/R 教师或进入动作前向。
+
 拟新增 roles.yaml、role_manifest.py、role_teacher.py、validate_roles.py。
 
 | 阶段 | Target | Reference 建议 | 必须核查 |

@@ -5,7 +5,8 @@ from pathlib import Path
 
 import numpy as np
 
-from .geometry import array, check_bounds, backproject
+from .geometry import array, check_bounds
+from .cloud_source import camera_cloud
 from .point_filter import point_filter_options
 from .visualization import CAMERA_COLORS
 from .object_preview import object_payload
@@ -38,26 +39,10 @@ def point_cloud_payload(observation, config, sample, max_points=40_000, *, sourc
     if not 1 <= len(config["cameras"]) <= 255:
         raise ValueError("HTML preview requires 1-255 cameras")
     for index, camera in enumerate(config["cameras"]):
-        cloud = np.asarray(observation[f"{camera}_point_cloud"])
-        rgb = np.asarray(observation[f"{camera}_rgb"])
-        if cloud.ndim != 3 or cloud.shape[0] != 3 or rgb.shape != cloud.shape or rgb.dtype != np.uint8:
-            raise ValueError(f"{camera}: expected aligned point_cloud/RGB[3,H,W] with uint8 RGB")
-        if source == "depth":
-            names = [f"{camera}_{suffix}" for suffix in ("depth", "camera_intrinsics", "camera_extrinsics")]
-            if any(name not in observation for name in names):
-                raise ValueError(f"{camera}: depth HTML requires cached metric depth/K/optical extrinsics; use source=xyz otherwise")
-            depth = np.asarray(observation[names[0]])
-            if depth.shape != (1, *rgb.shape[1:]) or not np.issubdtype(depth.dtype, np.floating):
-                raise ValueError(f"{camera}: HTML expects already-metric depth[1,H,W], never raw integer codes")
-            spec = config["cameras"][camera].get("depth", config.get("depth"))
-            if not spec or "kind" not in spec:
-                raise ValueError(f"{camera}: depth HTML requires the cached depth kind contract")
-            cloud = backproject(depth[0], observation[names[1]], observation[names[2]],
-                                spec["kind"], tuple(spec.get("limits", [.001, 10.]))).transpose(2, 0, 1)
-        xyz = cloud.reshape(3, -1).T
+        xyz, rgb = camera_cloud(observation, config, camera, source)
         finite = np.isfinite(xyz).all(axis=1)
         chunks.append(xyz[finite])
-        color_chunks.append(rgb.reshape(3, -1).T[finite])
+        color_chunks.append(rgb[finite])
         camera_chunks.append(np.full(int(finite.sum()), index, np.uint8))
         cameras.append(dict(name=camera, color=list(CAMERA_COLORS.get(camera, (160, 160, 160))),
                             valid_points=int(finite.sum()), invalid_points=int((~finite).sum())))
@@ -81,6 +66,8 @@ def point_cloud_payload(observation, config, sample, max_points=40_000, *, sourc
                 target_frame=None if sample.get("target_frame") is None else int(sample["target_frame"]),
                 diagnostic_note=sample.get("diagnostic_note", ""), scene_bounds=bounds.tolist(),
                 objects=object_payload(sample), object_source=sample.get("diagnostic_objects"),
+                observation_sha256=sample.get("observation_sha256"),
+                contract_sha256=sample.get("diagnostic_contract_sha256"),
                 point_cloud_filter=options, cameras=cameras, total_points=total, displayed_points=len(points),
                 xyz=encoded(points, "<f4"), rgb=encoded(colors, "u1"), camera_ids=encoded(camera_ids, "u1"),
                 geometry_source="cached_xyz" if source == "xyz" else "cached_metric_depth_backprojection",

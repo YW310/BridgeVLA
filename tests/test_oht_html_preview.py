@@ -212,6 +212,7 @@ def test_browser_edits_bounds_and_exports_matching_yaml_offline(cloud,tmp_path):
         page.wait_for_selector('#oht-roi[data-object-count="1"]')
         page.locator("#fit-objects").click()
         page.wait_for_timeout(100)
+        page.locator("#cloud").scroll_into_view_if_needed()
         bounds = page.locator("#cloud").bounding_box()
         page.mouse.click(bounds["x"]+bounds["width"]/2,bounds["y"]+bounds["height"]/2)
         assert "待操作轮（自定义） (object_0)" in page.locator("#picked").inner_text()
@@ -219,6 +220,8 @@ def test_browser_edits_bounds_and_exports_matching_yaml_offline(cloud,tmp_path):
         page.locator("#cloud-opacity").focus(); page.locator("#cloud-opacity").press("Home")
         page.locator("#show-objects").uncheck()
         page.wait_for_selector('#oht-roi[data-object-count="0"]')
+        page.locator("#cloud").scroll_into_view_if_needed()
+        bounds = page.locator("#cloud").bounding_box()
         page.mouse.click(bounds["x"]+bounds["width"]/2,bounds["y"]+bounds["height"]/2)
         assert page.locator("#picked").inner_text() == "此处没有显示点"
         page.locator("#cloud-opacity").focus(); page.locator("#cloud-opacity").press("End")
@@ -262,6 +265,7 @@ def test_browser_edits_bounds_and_exports_matching_yaml_offline(cloud,tmp_path):
         page.get_by_role("checkbox",name="wrist",exact=True).check()
         page.locator('[data-view="xz"]').click()
         old_image = page.locator("#cloud").evaluate("canvas => canvas.toDataURL()")
+        page.locator("#cloud").scroll_into_view_if_needed()
         bounds = page.locator("#cloud").bounding_box()
         page.mouse.move(bounds["x"]+bounds["width"]/2,bounds["y"]+bounds["height"]/2)
         page.mouse.down(); page.mouse.move(bounds["x"]+bounds["width"]/2+60,bounds["y"]+bounds["height"]/2+30,steps=3); page.mouse.up()
@@ -301,6 +305,8 @@ def test_browser_edits_bounds_and_exports_matching_yaml_offline(cloud,tmp_path):
             assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
             page.screenshot(path=str(tmp_path/f"roi-dense-{width}.png"),full_page=True)
         page.emulate_media(color_scheme="dark")
+        page.locator("#cloud").scroll_into_view_if_needed()
+        page.bring_to_front()
         page.wait_for_timeout(100)
         assert page.locator("#cloud").evaluate("canvas => canvas.getContext('2d').getImageData(0,0,canvas.width,canvas.height).data.some(v => v !== 0)"), errors
         page.screenshot(path=str(tmp_path/"roi-dense-dark-320.png"),full_page=True)

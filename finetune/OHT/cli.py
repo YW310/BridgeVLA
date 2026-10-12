@@ -55,6 +55,14 @@ def main(argv=None):
                    help="xyz: remaining cached points; depth: display-only backprojection before old ROI masking")
     p.add_argument("--object-root", help="Original raw dataset root; recover current object poses for an indexed old replay")
     p.add_argument("--object-manifest", help="Original audit manifest bound to replay; requires --object-root and --html")
+    p = sub.add_parser("extract-object-clouds", help="Export approximate per-object box crops as full cached-resolution PLY/NPZ")
+    p.add_argument("--replay", required=True)
+    p.add_argument("--sample-id", required=True)
+    p.add_argument("--boxes", required=True, help="oht_object_boxes_v1 JSON exported by the HTML viewer")
+    p.add_argument("--output", required=True, help="New object cloud directory")
+    p.add_argument("--allow-incomplete", action="store_true", help="Diagnostic-only incomplete replay inspection")
+    p.add_argument("--object-root", help="Original raw root for an old replay without object poses")
+    p.add_argument("--object-manifest", help="Original bound audit; requires --object-root")
     p = sub.add_parser("teacher")
     for key in ("replay", "annotations", "output"):
         p.add_argument("--" + key, required=True)
@@ -99,6 +107,7 @@ def main(argv=None):
             from .data.object_preview import load_source_objects
             row = dict(row, diagnostic_objects=load_source_objects(
                 args.object_root, args.object_manifest, contract, row))
+        row = dict(row, diagnostic_contract_sha256=contract["sha256"])
         # Validate the HTML payload before creating any output on invalid data.
         if args.html:
             from .data.html_preview import point_cloud_payload
@@ -128,6 +137,23 @@ def main(argv=None):
                 finite_points=int(np.isfinite(observation[f"{camera}_point_cloud"]).all(axis=0).sum()))
                 for camera in config["cameras"]}))
         print(f"Saved geometry diagnostics to {output}")
+    elif args.command == "extract-object-clouds":
+        if bool(args.object_root) != bool(args.object_manifest):
+            raise ValueError("Use --object-root and --object-manifest together")
+        from .data.geometry_diagnostic import load_geometry_diagnostic
+        from .data.object_cloud import export_object_clouds
+        output = Path(args.output)
+        if output.exists():
+            raise FileExistsError(f"Use a new object cloud directory: {output}")
+        specification = json.loads(Path(args.boxes).read_text(encoding="utf-8"))
+        contract, config, row, observation, validation = load_geometry_diagnostic(
+            args.replay, sample_id=args.sample_id, allow_incomplete=args.allow_incomplete)
+        if args.object_root:
+            from .data.object_preview import load_source_objects
+            row = dict(row, diagnostic_objects=load_source_objects(
+                args.object_root, args.object_manifest, contract, row))
+        report = export_object_clouds(output, observation, config, row, specification, contract["sha256"], validation)
+        print(f"Saved {len(report['objects'])} approximate object clouds to {output}")
     elif args.command == "teacher":
         result = build_teacher(args.replay, args.annotations, args.output, args.point_count,
                                visualize_every=args.visualize_every, visualize_output_dir=args.visualize_output_dir)

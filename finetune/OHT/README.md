@@ -212,6 +212,28 @@ python tools/diagnose_oht_geometry.py \
 
 两个对象来源参数必须一起提供并启用 `--html`。读取器核对 audit 与 replay contract 的绑定、所选 episode 的 Parquet 哈希，以及当前帧/episode/timestamp；不匹配则拒绝输出，不重写旧索引或缓存。没有元数据且未提供来源时，页面明确显示无对象位姿。直接 `--observation` 模式缺少可靠帧索引，不支持从原始数据推测对象帧。
 
+#### 没有实例 mask 时近似提取 object 点云
+
+HTML 支持以当前记录的对象中心为中心，设置 **world X/Y/Z 轴对齐框的全长（米）**。每轴初始 0.20 m 只是可调整的预览值，不代表实物尺寸；不依赖对象四元数，不随姿态轴顺序旋转。若记录原点不在几何中心，需要调整框尺寸以覆盖物体。此方法截取的是框内观测点，可能包含桌面/邻近物体，不能作为实例分割 GT；重叠框允许共享点，不自动将点分配给最近对象。
+
+1. 重新导出并打开 HTML，勾选所需对象，调整每项的 X/Y/Z 全长。
+2. 开启“显示近似截取框”和“仅显示勾选对象框内点云”，检查物体是否被完整覆盖；点击“适配勾选对象”可将整个截取框纳入视图。框边界为下界包含、上界不包含；点云仍受当前相机开关、工作区显示和背景透明度控制。
+3. 点击“下载对象截取配置 JSON”，将 `oht-object-boxes.json` 传回服务器，再运行下列命令。配置只保存所选对象索引/名称/尺寸及当前 sample/frame、点源和缓存校验值，不修改 replay 或 ROI YAML。
+
+~~~bash
+python tools/extract_oht_object_clouds.py \
+  --replay /data/oht/replay-source-v2 \
+  --sample-id assemble_left/000000/000000 \
+  --boxes /data/oht/oht-object-boxes.json \
+  --output /data/oht/object-clouds-frame0
+~~~
+
+旧 replay 缺少对象位姿时，在提取命令中同样增加 `--object-root` 和 `--object-manifest`，无需重建点云。仅诊断未完成 replay 可显式加 `--allow-incomplete`；训练完整性要求不变。对象配置绑定当前帧，不能直接用于另一帧或另一份缓存；重新预览相应样本后再导出。
+
+输出为每个选中对象的 `object_<index>.ply`（world XYZ + RGB）、`object_<index>.npz`（`xyz[N,3]`、`rgb[N,3]`、`camera_ids[N]`），以及 `object-clouds.json`（框范围、每相机点数、校验值和 `approximate: true`）。没有框内点时输出空点云并记录 `valid: false`，不补造物体。输出目录必须是新目录。
+
+**HTML 是显示抽样，导出命令读取缓存分辨率下的全部有效点**，不受 HTML 点数预算、相机开关或页面工作区显示过滤影响，也不做额外去重/降采样。JSON 的 `source: xyz` 使用已缓存点，无法恢复旧 ROI 的 NaN；`source: depth` 使用缓存米制深度/K/外参重建，可恢复旧 ROI 删掉但深度仍有效的点。全量导出不等于恢复原始分辨率或完整物体表面，不能修复深度/标定/同步错误。提取结果仅作近似对象诊断，不自动进入角色教师或策略输入。
+
 #### 构建未完成时
 
 `samples.jsonl` 在 buffer 完成时才写入。若尚无索引，直接查看已经写完的 NPZ：
