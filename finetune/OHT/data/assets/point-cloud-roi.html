@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; object-src 'none'; base-uri 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: 'self' file:; connect-src 'none'; object-src 'none'; base-uri 'none'">
 <title>OHT point cloud ROI</title>
 <style>
   :root { color-scheme: light dark; --background: Canvas; --foreground: CanvasText; --muted-foreground: GrayText;
@@ -25,11 +25,15 @@
   #oht-roi output { overflow-wrap: anywhere; }
   #oht-roi #object-controls { max-height: 16rem; overflow-y: auto; }
   #oht-roi .object-size { width: 80px; }
+  #oht-roi #frame-preview { display:block; width:100%; height:auto; }
+  #oht-roi h2 { font-size:1.1rem; margin:16px 0 10px; }
   @media (max-width: 420px) { #oht-roi .bounds { grid-template-columns: repeat(2,minmax(0,1fr)); } }
 </style>
 <div id="oht-roi">
   <div class="viz-row"><output id="sample-label"></output><output id="point-count" aria-live="polite"></output></div>
   <output id="diagnostic-note" class="text-destructive"></output>
+  <section id="frame-preview-section" hidden><h2>当前帧预览（底部包含对象点云）</h2><img id="frame-preview" alt="当前帧 RGB、深度、场景和下方逐对象点云预览"></section>
+  <h2 id="interactive-heading" hidden>下方对象点云交互区</h2>
   <div class="viz-controls" id="camera-controls" aria-label="显示相机"></div>
   <div class="viz-controls">
     <label class="form-label">点颜色<select id="color-mode" class="form-select"><option value="rgb">原始 RGB</option><option value="camera">来源相机</option><option value="object">对象框成员</option></select></label>
@@ -82,6 +86,7 @@
   const root = document.getElementById("oht-roi");
   const el = id => root.querySelector("#" + id);
   const data = JSON.parse(document.getElementById("oht-cloud-data").textContent);
+  if(data.preview_image){el("interactive-heading").hidden=false;if(parent===window){el("frame-preview-section").hidden=false;el("frame-preview").src=data.preview_image;}}
   const bytes = encoded => Uint8Array.from(atob(encoded), c => c.charCodeAt(0));
   const xyzBytes = bytes(data.xyz), xyzView = new DataView(xyzBytes.buffer);
   const xyz = Float32Array.from({length: xyzBytes.length / 4}, (_, i) => xyzView.getFloat32(i * 4, true));
@@ -425,10 +430,13 @@
       if(input.type==="checkbox"&&typeof value==="boolean")input.checked=value;
       else if(typeof value==="string"&&(input.tagName==="SELECT"?Array.from(input.options).some(option=>option.value===value):Number.isFinite(Number(value))))input.value=value;
     });
-    viewerApplied=true;schedule();
-    requestAnimationFrame(()=>{if(Number.isFinite(saved.scroll))window.scrollTo(0,Math.max(0,saved.scroll));publishViewerState();});
+    // Offscreen iframes can suspend RAF while the PNG above is in view.
+    // Restore and acknowledge synchronously so frame navigation stays usable.
+    viewerApplied=true;draw();
+    if(Number.isFinite(saved.scroll))window.scrollTo(0,Math.max(0,saved.scroll));publishViewerState();
   });
   window.addEventListener("scroll",publishViewerState,{passive:true});
+  if(parent!==window){viewerReady=true;parent.postMessage({type:"oht-preview-ready",sample_id:data.sample_id},"*");}
 })();
 </script>
 </html>

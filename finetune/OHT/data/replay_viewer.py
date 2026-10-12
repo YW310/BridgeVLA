@@ -22,6 +22,12 @@ def save_replay_viewer(path, frames, contract_sha256):
         entries.append(dict(sample_id=frame["sample_id"], episode=frame["sample_id"].rsplit("/",1)[0],
                             frame=frame["frame"], target_frame=frame.get("target_frame"),
                             timestamp=frame.get("timestamp"), html=quote(relative.as_posix(),safe="/")))
+        if frame.get("image") is not None:
+            image = Path(frame["image"]).resolve()
+            image_relative = image.relative_to(path.parent.resolve())
+            if image.suffix.lower() != ".png" or not image.is_file():
+                raise ValueError("Replay viewer requires existing PNG previews within its directory")
+            entries[-1]["image"] = quote(image_relative.as_posix(),safe="/")
     payload = dict(schema="oht_replay_viewer_v1",contract_sha256=contract_sha256,frames=entries)
     serialized = json.dumps(payload,ensure_ascii=True,allow_nan=False,separators=(",",":")).replace("<","\\u003c")
     template = Path(__file__).with_name("assets").joinpath("replay-viewer.html").read_text(encoding="utf-8")
@@ -35,7 +41,7 @@ def save_replay_viewer(path, frames, contract_sha256):
 
 def export_replay_viewer(replay, output, *, every=1, max_points=40_000, source=None,
                          object_cloud_config=None, object_root=None, object_manifest=None):
-    """Export a complete replay to separate HTML files without cache edits."""
+    """Export a complete replay to grouped PNG/HTML previews without cache edits."""
     import numpy as np
     from .common import inside, read_jsonl
     from .geometry_diagnostic import _validate_frame
@@ -44,6 +50,7 @@ def export_replay_viewer(replay, output, *, every=1, max_points=40_000, source=N
     from .object_preview import load_source_objects
     from .replay import load_contract
     from .source_config import sample_data_config
+    from .visualization import save_preview
     if type(every) is not int or every < 1:
         raise ValueError("Viewer every must be a positive integer")
     html_point_limit(max_points)
@@ -76,9 +83,12 @@ def export_replay_viewer(replay, output, *, every=1, max_points=40_000, source=N
         sample = dict(sample,diagnostic_contract_sha256=contract["sha256"])
         boxes = None if selector is None else dict(selector.specification(sample),source=selected_source,
                                                    contract_sha256=contract["sha256"])
-        path = inside(output,"frames/"+sample["id"]+".html")
-        save_point_cloud_html(path,observation,config,sample,max_points,source=selected_source,object_boxes=boxes)
+        path = inside(output,sample["id"]+"/point-cloud-roi.html")
+        image = save_preview(path.parent/"preview.png",observation,config,sample,current_tcp=sample.get("current_tcp"),
+                             object_boxes=boxes)
+        save_point_cloud_html(path,observation,config,sample,max_points,source=selected_source,object_boxes=boxes,
+                              preview_image=image)
         frames.append(dict(sample_id=sample["id"],frame=sample["frame"],target_frame=sample["target_frame"],
-                           timestamp=sample.get("timestamp"),html=path))
+                           timestamp=sample.get("timestamp"),html=path,image=image))
     save_replay_viewer(output/"index.html",frames,contract["sha256"])
     return len(frames)

@@ -463,7 +463,7 @@ def test_native_depth_to_replay_and_teacher_preview(exporter, replay_fixture, tm
         expected_K[:2] /= 8
         np.testing.assert_allclose(first[f"{camera}_camera_intrinsics"], expected_K)
     np.testing.assert_allclose(Rotation.from_quat(first["gripper_pose"][3:]).as_matrix(), rotation.as_matrix(), atol=1e-6)
-    assert len(list((output / "visualizations").rglob("*.png"))) == count
+    assert len(list((output / "preview").rglob("preview.png"))) == count
     row = read_jsonl(output / "samples.jsonl")[0]
     annotation = {"id": row["id"], "target": dict(present=False, known=True, source="none"),
                   "reference": dict(present=False, known=True, source="none")}

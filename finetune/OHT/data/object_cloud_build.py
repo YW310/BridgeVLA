@@ -49,8 +49,9 @@ def object_cloud_build_options(value):
 
 
 class BuildObjectCloudWriter:
-    def __init__(self, output, options):
+    def __init__(self, output, options, *, preview_output=None):
         self.output = Path(output)
+        self.preview_output = Path(preview_output) if preview_output is not None else self.output / "preview"
         self.options = object_cloud_build_options(options)
         self.reports = []
         self.html = []
@@ -65,9 +66,9 @@ class BuildObjectCloudWriter:
                     observation_sha256=sample["observation_sha256"], contract_sha256=None,
                     source=self.options["source"], objects=entries)
 
-    def write(self, observation, config, sample, *, visualize=False):
+    def write(self, observation, config, sample, *, visualize=False, preview_image=None):
         specification = self.specification(sample)
-        relative = "object_clouds/" + sample["id"] + "/object-clouds.json"
+        relative = "preview/" + sample["id"] + "/object-clouds.json"
         report_path = inside(self.output, relative)
         export_object_clouds(report_path.parent, observation, config, sample, specification, None,
                              dict(metadata_source="replay_build", completion_checked=False,
@@ -75,14 +76,14 @@ class BuildObjectCloudWriter:
                                   source_parquet_checksum_verified=True), allow_empty=True)
         self.reports.append(report_path)
         if visualize:
-            path = report_path.parent / "point-cloud-roi.html"
+            path = inside(self.preview_output, sample["id"] + "/point-cloud-roi.html")
             preview_sample = dict(sample, diagnostic_contract_sha256=None,
                                   diagnostic_note="随 replay 构建生成，仅诊断；整批完成状态请检查 complete.json。")
             save_point_cloud_html(path, observation, config, preview_sample, source=self.options["source"],
-                                  object_boxes=specification)
+                                  object_boxes=specification, preview_image=preview_image)
             self.html.append(path)
             self.frames.append(dict(sample_id=sample["id"],frame=sample["frame"],target_frame=sample.get("target_frame"),
-                                    timestamp=sample.get("timestamp"),html=path))
+                                    timestamp=sample.get("timestamp"),html=path,image=preview_image))
         return relative
 
     def bind_contract(self, checksum):
@@ -95,4 +96,4 @@ class BuildObjectCloudWriter:
         for path in self.html:
             bind_point_cloud_html_contract(path, checksum)
         if self.frames:
-            save_replay_viewer(self.output/"object_clouds/index.html",self.frames,checksum)
+            save_replay_viewer(self.preview_output/"index.html",self.frames,checksum)

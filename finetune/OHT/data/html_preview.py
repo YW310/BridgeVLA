@@ -2,6 +2,7 @@
 import base64
 import json
 from pathlib import Path
+from urllib.parse import quote
 
 import numpy as np
 
@@ -109,9 +110,16 @@ def point_cloud_payload(observation, config, sample, max_points=40_000, *, sourc
                             "Goal is future GT for diagnostics only; no policy conditioning or cache edits.")
 
 
-def save_point_cloud_html(path, observation, config, sample, max_points=40_000, *, source="xyz", object_boxes=None):
-    """Write one self-contained, offline HTML; refuse to overwrite any file."""
+def save_point_cloud_html(path, observation, config, sample, max_points=40_000, *, source="xyz", object_boxes=None,
+                          preview_image=None):
+    """Write offline HTML, optionally linking its local preview PNG; never overwrite."""
     payload = point_cloud_payload(observation, config, sample, max_points, source=source, object_boxes=object_boxes)
+    if preview_image is not None:
+        image_path = Path(preview_image).resolve()
+        if image_path.suffix.lower() != ".png" or not image_path.is_file():
+            raise ValueError("HTML preview image must be an existing PNG beside the HTML")
+        relative = image_path.relative_to(Path(path).parent.resolve())
+        payload["preview_image"] = quote(relative.as_posix(), safe="/")
     template = Path(__file__).with_name("assets").joinpath("point-cloud-roi.html").read_text(encoding="utf-8")
     if template.count(_PAYLOAD_MARKER) != 1:
         raise ValueError("Invalid HTML preview template")

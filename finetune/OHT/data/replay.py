@@ -20,7 +20,8 @@ def build(root, manifest_path, config, output, sample_stride=10, *,
     object_writer = None
     if object_cloud_config is not None:
         from .object_cloud_build import BuildObjectCloudWriter
-        object_writer = BuildObjectCloudWriter(output, object_cloud_config)
+        object_writer = BuildObjectCloudWriter(output, object_cloud_config,
+                                              preview_output=visualize_output_dir)
     if sample_stride < 1:
         raise ValueError("sample_stride must be positive")
     manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
@@ -31,7 +32,7 @@ def build(root, manifest_path, config, output, sample_stride=10, *,
     if manifest.get("schema") != "oht_audit_v1" or not manifest.get("episodes"):
         raise ValueError("Audit must contain valid OHT episodes")
     output = Path(output)
-    preview = PreviewWriter(visualize_output_dir or output / "visualizations", visualize_every)
+    preview = PreviewWriter(visualize_output_dir or output / "preview", visualize_every)
     if output.exists():
         raise FileExistsError(f"Use a new replay directory: {output}")
     profiles = {}
@@ -108,7 +109,8 @@ def build(root, manifest_path, config, output, sample_stride=10, *,
                 preview_path = preview.write(observation, config, sample, current_tcp=poses[frame], **preview_args)
                 if object_writer is not None:
                     sample["object_clouds"] = object_writer.write(observation, config, sample,
-                                                                  visualize=preview_path is not None)
+                                                                  visualize=preview_path is not None,
+                                                                  preview_image=preview_path)
             videos.validate_lengths()
         finally:
             videos.close()

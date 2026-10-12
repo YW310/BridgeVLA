@@ -273,10 +273,11 @@ def save_preview(path, observation, config, sample, current_tcp=None, role_specs
     local_points, local_colors = _sample_preview_cloud(points[local_mask], colors[local_mask])
     points, colors = _sample_preview_cloud(points, colors)
     row_height, top = PANEL_H + 44, 96
-    if object_overlay is not None:
-        top += 18 * (1 + (len(object_overlay["boxes"])+1)//2)
     ortho_top = top + ((len(cameras) + 1) // 2) * row_height
     footer_top = ortho_top + (638 if action_tcp is not None else 318)
+    object_top = footer_top
+    if object_overlay is not None:
+        footer_top += 24 + max(1, len(object_overlay["boxes"])) * 318
     canvas = Image.new("RGB", (1024, footer_top + 48), (24, 24, 24))
     draw = ImageDraw.Draw(canvas)
     frame = "unknown" if sample.get("frame") is None else sample["frame"]
@@ -290,8 +291,6 @@ def save_preview(path, observation, config, sample, current_tcp=None, role_specs
     legend = ("Cyan=current TCP; magenta=future action; orthographic colors=physical camera (NOT roles)"
               if color_by_camera else
               "Cyan=current TCP; magenta=future action; green=Target; blue=Reference; yellow=overlap")
-    if object_overlay is not None:
-        legend = "Cyan=current TCP; magenta=future action; object colors=box membership; white=overlapping boxes"
     draw.text((8, 60), legend, fill="white")
     if role_specs is not None:
         status = " | ".join(f"{role}: {spec['source']} present={spec['present']} known={spec['known']} geometry={bool(role_valid[i])}"
@@ -299,13 +298,6 @@ def save_preview(path, observation, config, sample, current_tcp=None, role_specs
         draw.text((8, 78), status, fill="white")
     elif sample.get("diagnostic_note"):
         draw.text((8, 78), "Diagnostic only: replay completeness not checked; direct NPZ may have no TCP/goal metadata.", fill=ACTION)
-    if object_overlay is not None:
-        draw.text((8, 96), f"Approximate object clouds | source={object_overlay['source']} | "
-                  f"selected={len(object_overlay['boxes'])} | clipped to each view; no instance masks", fill="white")
-        for index, box in enumerate(object_overlay["boxes"]):
-            draw.text((8 + (index % 2)*512, 114 + (index//2)*18),
-                      f"{_object_label(box)}: source={box['source_points']} world={box['world_points']} local={box['local_points']}",
-                      fill=box["color"])
     for index, camera in enumerate(cameras):
         x, y = (index % 2) * 512, top + (index // 2) * row_height
         masks = {role: values[camera] for role, values in (role_masks or {}).items()}
@@ -339,23 +331,36 @@ def save_preview(path, observation, config, sample, current_tcp=None, role_specs
                   fill="white")
         views.append((local_top, local_points, local_colors, local_bounds, None))
     for row_top, cloud, rgb, view_bounds, roi in views:
-        overlay_view = _object_view(object_overlay, view_bounds)
         for index, axes in enumerate(((0, 1), (0, 2), (1, 2))):
             x = index * 341
             draw.text((x + 4, row_top + 20), "".join("XYZ"[axis] for axis in axes) + " world point cloud", fill="white")
             canvas.paste(_orthographic(cloud, rgb, view_bounds, axes, current_tcp, action_tcp,
-                                       role_points, role_valid, region_bounds=roi, object_overlay=overlay_view), (x, row_top + 38))
+                                       role_points, role_valid, region_bounds=roi), (x, row_top + 38))
     if action_tcp is None:
         draw.text((8, ortho_top + 300), "GT goal unavailable: no goal marker, local cube or GT-centered refine views are generated.", fill=ACTION)
     else:
         draw.text((8, ortho_top + 300), "Magenta box: local cube footprint. Local views select observed points before global sampling.", fill="white")
         if not local_count:
-            message = ("No base scene points in local cube; object overlay may include ROI-masked depth points."
-                       if object_overlay is not None else
-                       "No observed points in local cube; the GT keypoint does not create geometry.")
-            draw.text((8, local_top + 300), message, fill="white")
+            draw.text((8, local_top + 300), "No observed points in local cube; the GT keypoint does not create geometry.", fill="white")
         else:
             draw.text((8, local_top + 300), "Local cube is fixed at the GT keypoint; it is not a coarse prediction or the model's noisy training crop.", fill="white")
+    if object_overlay is not None:
+        draw.text((8, object_top), f"Approximate object crops below | source={object_overlay['source']} | "
+                  f"selected={len(object_overlay['boxes'])} | white=overlapping boxes; no instance masks", fill="white")
+        if not object_overlay["boxes"]:
+            draw.text((8, object_top + 24), "No objects selected in this frame; no object surfaces are generated.", fill="white")
+        for index, box in enumerate(object_overlay["boxes"]):
+            row_top = object_top + 24 + index * 318
+            draw.text((8, row_top + 2), f"{_object_label(box)} | source={box['source_points']} "
+                      f"world={box['world_points']} local={box['local_points']} | full-size world-aligned crop", fill=box["color"])
+            overlay_view = _object_view(dict(object_overlay, boxes=[box]), box["bounds"])
+            for panel, axes in enumerate(((0, 1), (0, 2), (1, 2))):
+                x = panel * 341
+                draw.text((x + 4, row_top + 20), "".join("XYZ"[axis] for axis in axes) + " object cloud (world m)", fill="white")
+                canvas.paste(_orthographic(np.empty((0,3)), np.empty((0,3), dtype=np.uint8), box["bounds"],
+                                           axes, None, None, None, None, object_overlay=overlay_view), (x, row_top + 38))
+            if not box["source_points"]:
+                draw.text((8, row_top + 300), "Empty crop: no observed points; box and center do not create an object surface.", fill="white")
     draw.text((8, footer_top), "CPU diagnostics, not BridgeVLA renderer outputs. 1px points; stored XYZ unchanged. Black depth = invalid.", fill="white")
     if object_overlay is not None:
         draw.text((8, footer_top + 18), "Objects: approximate box crops, not instance/role labels. RGB/depth panels and saved observations unchanged.", fill="white")
@@ -387,4 +392,4 @@ class PreviewWriter:
         self.counts[episode] = index + 1
         if index % self.every:
             return None
-        return save_preview(inside(self.output, sample["id"] + ".png"), observation, config, sample, **kwargs)
+        return save_preview(inside(self.output, sample["id"] + "/preview.png"), observation, config, sample, **kwargs)

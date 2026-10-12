@@ -30,7 +30,7 @@ def build_teacher(replay, annotations_path, output, point_count=512, *,
         raise ValueError("Duplicate teacher annotation IDs")
     base = Path(annotations_path).resolve().parent
     source_hashes = {}
-    preview = PreviewWriter(visualize_output_dir or Path(output) / "visualizations", visualize_every)
+    preview = PreviewWriter(visualize_output_dir or Path(output) / "preview", visualize_every)
     def rows():
         for annotation in annotations:
             sample = samples.get(annotation["id"])

@@ -75,20 +75,27 @@ def test_object_surface_is_sampled_independently_from_scene_and_png_preserves_in
     calls = []
     original = preview._orthographic
     def record(points,colors,bounds,*args,**kwargs):
-        calls.append((points.copy(),kwargs["object_overlay"]))
+        calls.append((points.copy(),kwargs.get("object_overlay")))
         return original(points,colors,bounds,*args,**kwargs)
     monkeypatch.setattr(preview,"MAX_PREVIEW_POINTS",1)
     monkeypatch.setattr(preview,"_orthographic",record)
     path = preview.save_preview(tmp_path/"overlay.png",observation,config,sample,object_boxes=spec)
-    assert len(calls) == 6
+    assert len(calls) == 9
     for base,overlay in calls[:3]:
         np.testing.assert_array_equal(base,[[.9,.9,.9]])
-        np.testing.assert_array_equal(overlay["points"],[point])
-    for base,overlay in calls[3:]:
+        assert overlay is None
+    for base,overlay in calls[3:6]:
         np.testing.assert_array_equal(base,[point])
+        assert overlay is None
+    for base,overlay in calls[6:]:
+        assert not len(base)
         np.testing.assert_array_equal(overlay["points"],[point])
     with Image.open(path) as image:
-        assert image.size == (1024,1054)  # Original one-camera image plus two header lines.
+        assert image.size == (1024,1360)  # Original panels followed by a separate object row.
+        baseline = preview.save_preview(tmp_path/"base.png",observation,config,sample)
+        with Image.open(baseline) as original_image:
+            np.testing.assert_array_equal(np.asarray(image)[:original_image.height-48],
+                                          np.asarray(original_image)[:-48])
     for key in observation:
         np.testing.assert_array_equal(observation[key],before[0][key])
     assert config == before[1] and sample == before[2]

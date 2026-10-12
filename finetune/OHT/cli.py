@@ -17,7 +17,7 @@ def _visualization_arguments(parser):
     parser.add_argument("--visualize-every", type=int, default=0,
                         help="Save every N emitted samples per episode, including the first; 0 disables")
     parser.add_argument("--visualize-output-dir",
-                        help="PNG directory (default: OUTPUT/visualizations); existing files are not overwritten")
+                        help="Preview directory (default: OUTPUT/preview); PNG and build HTML share it")
 
 
 def main(argv=None):
@@ -64,7 +64,7 @@ def main(argv=None):
     p.add_argument("--allow-incomplete", action="store_true", help="Diagnostic-only incomplete replay inspection")
     p.add_argument("--object-root", help="Original raw root for an old replay without object poses")
     p.add_argument("--object-manifest", help="Original bound audit; requires --object-root")
-    p = sub.add_parser("export-viewer", help="Export an offline multi-frame HTML viewer from an existing complete replay")
+    p = sub.add_parser("export-viewer", help="Export grouped PNG/HTML previews and an offline frame viewer from a complete replay")
     p.add_argument("--replay", required=True)
     p.add_argument("--output", required=True, help="New HTML directory; no replay edits")
     p.add_argument("--every", type=int, default=1, help="Every N emitted samples per episode, including the first")

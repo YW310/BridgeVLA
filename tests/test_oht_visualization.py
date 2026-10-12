@@ -73,13 +73,15 @@ def test_buffer_cli_previews_do_not_change_contract_labels_or_observations(repla
     episodes = {(row["task"], row["episode_index"]) for row in rows}
     assert len(images) == len(episodes) == 12  # First emitted sample of every episode.
     for path in images:
-        assert path.name == "000000.png"
+        assert path.name == "preview.png" and path.parent.name == "000000"
         with Image.open(path) as image:
             assert image.format == "PNG" and image.size == (1024, 1490)
             image.verify()
     assert not (f.replay / "visualizations").exists()
     assert not (output / "visualizations").exists()
-    path = previews / (rows[0]["id"] + ".png")
+    assert not (f.replay / "preview").exists()
+    assert not (output / "preview").exists()  # Explicit preview destination was used.
+    path = previews / rows[0]["id"] / "preview.png"
     original = path.read_bytes()
     with np.load(output / rows[0]["observation"], allow_pickle=False) as observation:
         with pytest.raises(FileExistsError):
@@ -107,10 +109,10 @@ def test_teacher_previews_cover_unknown_site_null_without_changing_cache(replay_
     visualized = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
     assert visualized == baseline
     for row in annotations:
-        with Image.open(output / "visualizations" / (row["id"] + ".png")) as image:
+        with Image.open(output / "preview" / row["id"] / "preview.png") as image:
             assert image.size[0] == 1024
             image.verify()
-    assert not (tmp_path / "baseline" / "visualizations").exists()
+    assert not (tmp_path / "baseline" / "preview").exists()
 
 
 def test_preview_writer_is_disabled_by_default(tmp_path):

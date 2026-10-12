@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+from PIL import Image
 
 import pytest
 
@@ -26,19 +27,22 @@ def viewer_payload(path):
 def test_viewer_escapes_names_encodes_local_paths_and_refuses_overwrite(tmp_path):
     child = tmp_path/"frames"/"name #中文.html"
     child.parent.mkdir();child.write_text("preview",encoding="utf-8")
+    image = child.with_suffix(".png")
+    Image.new("RGB",(2,2),"orange").save(image)
     sample = "</script><script>injected=true</script>/000010"
-    entries = [dict(sample_id=sample,frame=10,target_frame=30,timestamp=1.2,html=child)]
+    entries = [dict(sample_id=sample,frame=10,target_frame=30,timestamp=1.2,html=child,image=image)]
     output = save_replay_viewer(tmp_path/"index.html",entries,"checksum")
     payload = viewer_payload(output)
     assert payload["contract_sha256"] == "checksum"
     assert payload["frames"][0]["sample_id"] == sample
     assert payload["frames"][0]["html"] == "frames/name%20%23%E4%B8%AD%E6%96%87.html"
+    assert payload["frames"][0]["image"] == "frames/name%20%23%E4%B8%AD%E6%96%87.png"
     assert "</script><script>injected=true" not in output.read_text(encoding="utf-8")
     with pytest.raises(FileExistsError):
         save_replay_viewer(output,entries,"checksum")
 
 
-@pytest.mark.parametrize("case",["empty","duplicate","noninteger","outside","missing"])
+@pytest.mark.parametrize("case",["empty","duplicate","noninteger","outside","missing","outside-image","missing-image"])
 def test_invalid_viewer_inputs_do_not_publish_index(tmp_path,case):
     child = tmp_path/"frames"/"frame.html"
     child.parent.mkdir();child.write_text("preview",encoding="utf-8")
@@ -49,6 +53,8 @@ def test_invalid_viewer_inputs_do_not_publish_index(tmp_path,case):
     elif case == "noninteger": entry["frame"]=True
     elif case == "outside": entry["html"]=tmp_path.parent/"outside.html"
     elif case == "missing": entry["html"]=tmp_path/"missing.html"
+    elif case == "outside-image": entry["image"]=tmp_path.parent/"outside.png"
+    elif case == "missing-image": entry["image"]=tmp_path/"missing.png"
     with pytest.raises(ValueError):
         save_replay_viewer(tmp_path/"index.html",entries,"checksum")
     assert not (tmp_path/"index.html").exists()
@@ -75,6 +81,8 @@ def test_export_viewer_selects_emitted_frames_per_episode_without_cache_changes(
         assert child["geometry_source"] == "cached_metric_depth_backprojection"
         assert child["contract_sha256"] == payload["contract_sha256"]
         assert child["objects"]  # Raw object metadata remains available without a preset.
+        assert child["preview_image"] == "preview.png"
+        assert (output/entry["html"]).with_name("preview.png").is_file()
     assert [file_digest(path) for path in inputs] == hashes
     with pytest.raises(FileExistsError):
         export_replay_viewer(f.replay,output)
@@ -129,9 +137,13 @@ def test_browser_navigates_offline_retains_view_and_uses_new_frame_object_center
         sample["diagnostic_objects"]["positions"][0]=[center,center,center]
         spec=dict(schema="oht_object_boxes_v1",sample_id=sample["id"],frame=number,source="xyz",
                   objects=[dict(index=0,name="wheel",size=[1,1,1]),dict(index=1,size=[1,1,1])])
-        path=save_point_cloud_html(tmp_path/"frames"/(sample["id"]+".html"),cloud[0],cloud[1],sample,object_boxes=spec)
-        frames.append(dict(sample_id=sample["id"],frame=number,target_frame=number+5,html=path))
-    index=save_replay_viewer(tmp_path/"index.html",frames,"final-checksum")
+        path=tmp_path/"preview"/sample["id"]/"point-cloud-roi.html"
+        path.parent.mkdir(parents=True)
+        image=path.parent/"preview.png"
+        Image.new("RGB",(64,96),"orange").save(image)
+        path=save_point_cloud_html(path,cloud[0],cloud[1],sample,object_boxes=spec,preview_image=image)
+        frames.append(dict(sample_id=sample["id"],frame=number,target_frame=number+5,html=path,image=image))
+    index=save_replay_viewer(tmp_path/"preview/index.html",frames,"final-checksum")
     with playwright.sync_playwright() as p:
         context=p.chromium.launch_persistent_context(str(tmp_path/"browser-profile"),headless=True,
             executable_path=executable,offline=True,viewport=dict(width=1000,height=1100),timeout=30_000)
@@ -142,6 +154,10 @@ def test_browser_navigates_offline_retains_view_and_uses_new_frame_object_center
             page.wait_for_selector(f'#oht-replay-viewer[data-ready="true"][data-current-sample="task/{episode:06d}/{number:06d}"]')
         ready(10)
         child=page.frame_locator("#preview")
+        assert page.locator("#frame-preview-section").is_visible()
+        assert page.locator("#frame-preview").evaluate("image => image.complete && image.naturalWidth === 64")
+        assert not child.locator("#frame-preview-section").is_visible()  # Parent shows PNG once, above sandboxed 3D.
+        assert page.locator("#frame-preview").bounding_box()["y"] < page.locator("#preview").bounding_box()["y"]
         assert page.locator("#previous").is_disabled()
         assert page.locator("#frame option").all_text_contents()==["10","30"]
         page.locator('[data-view="xy"]').click()
@@ -186,4 +202,9 @@ def test_browser_navigates_offline_retains_view_and_uses_new_frame_object_center
             child.locator('#oht-roi[data-view-pitch="0.65"]').wait_for()
             page.screenshot(path=str(tmp_path/f"replay-viewer-{width}.png"),full_page=True)
         assert not errors
+        standalone=context.new_page()
+        standalone.goto(frames[0]["html"].resolve().as_uri(),wait_until="load")
+        assert standalone.locator("#frame-preview-section").is_visible()
+        assert standalone.locator("#frame-preview").evaluate("image => image.complete && image.naturalWidth === 64")
+        assert standalone.locator("#frame-preview").bounding_box()["y"] < standalone.locator("#cloud").bounding_box()["y"]
         context.close()

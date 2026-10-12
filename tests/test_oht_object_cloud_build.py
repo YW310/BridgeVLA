@@ -78,23 +78,26 @@ def test_cli_build_generates_every_sample_and_binds_previews_without_changing_in
             assert data["xyz"].shape == (5*63,3)
             assert set(data["camera_ids"]) == set(range(5))
     episodes = {(row["task"],row["episode_index"]) for row in rows}
-    html = list((output/"object_clouds").rglob("point-cloud-roi.html"))
-    assert (output/"object_clouds/index.html").is_file()
+    html = list(previews.rglob("point-cloud-roi.html"))
+    assert (previews/"index.html").is_file()
     from tests.test_oht_replay_viewer import viewer_payload
-    viewer = viewer_payload(output/"object_clouds/index.html")
+    viewer = viewer_payload(previews/"index.html")
     assert viewer["contract_sha256"] == contract["sha256"]
     assert {entry["sample_id"] for entry in viewer["frames"]} == {row["id"] for row in rows if row["frame"]==0}
-    assert all((output/"object_clouds"/entry["html"]).is_file() for entry in viewer["frames"])
+    assert all((previews/entry["html"]).is_file() for entry in viewer["frames"])
     assert len(html) == len(episodes) == len(list(previews.rglob("*.png")))
     assert all(path.parent.name == "000000" for path in html)
-    # The existing PNG itself contains the object surface, not just centers or
-    # an extra HTML file. This pixel is an interior observed plane point in XY.
-    with Image.open(previews/(rows[0]["id"]+".png")) as image:
-        assert image.size == (1024,1526)
-        assert image.getpixel((105,1053)) == OBJECT_COLORS[0]
+    # Each original preview contains object surfaces in its appended section.
+    with Image.open(previews/rows[0]["id"]/"preview.png") as image:
+        assert image.size == (1024,2150)
+        pixels = np.asarray(image)
+        assert np.any(np.all(pixels[1442:] == OBJECT_COLORS[0], axis=-1))
+    assert not (output/"object_clouds").exists()
     for path in html:
         payload = payload_from_html(path)
         assert payload["contract_sha256"] == contract["sha256"]  # Not the provisional build hash.
+        assert payload["preview_image"] == "preview.png"
+        assert (path.parent/payload["preview_image"]).is_file()
         assert [entry["index"] for entry in payload["object_box_preset"]] == [0,1]
         assert payload["object_box_preset"][0]["name"] == "selected"
         assert payload["object_box_union_points"] == 5*63
@@ -121,7 +124,7 @@ def test_build_writer_follows_current_frame_centers_without_preview_or_mutation(
     second = json.loads((writer.output/relative).read_text(encoding="utf-8"))
     for report, point in ((first,[.25,.25,.25]),(second,[.75,.75,.75])):
         assert report["objects"][0]["center"] == point and report["objects"][0]["points"] == 1
-        with np.load(writer.output/"object_clouds"/report["sample_id"]/"object_0.npz") as data:
+        with np.load(writer.output/"preview"/report["sample_id"]/"object_0.npz") as data:
             np.testing.assert_array_equal(data["xyz"],[point])
     assert not list(writer.output.rglob("*.html"))
     for key in cloud[0]:

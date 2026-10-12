@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; frame-src 'self' file:; connect-src 'none'; object-src 'none'; base-uri 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' file:; frame-src 'self' file:; connect-src 'none'; object-src 'none'; base-uri 'none'">
 <title>OHT replay 帧查看器</title>
 <style>
   :root { color-scheme: light dark; }
@@ -17,6 +17,8 @@
   output,p { overflow-wrap:anywhere; }
   .muted { color:GrayText; }
   iframe { display:block; box-sizing:border-box; width:100%; height:82vh; min-height:640px; border:1px solid GrayText; }
+  #frame-preview { display:block; width:100%; height:auto; }
+  h2 { font-size:1.1rem; }
   @media(max-width:480px) { .selector { width:100%; } .selector select { flex:1; } body { padding:12px; } }
 </style>
 <main id="oht-replay-viewer">
@@ -33,10 +35,13 @@
     <button type="button" data-view="xz">XZ</button><button type="button" data-view="yz">YZ</button>
     <button type="button" id="reset-view">适配当前帧对象</button>
     <a id="open-frame" target="_blank" rel="noopener">单独打开当前帧</a>
+    <a href="#preview">查看下方交互点云</a>
   </div>
   <p><output id="frame-label"></output> · <output id="load-status" aria-live="polite"></output></p>
   <p><output id="camera-angle"></output></p>
   <p class="muted">只列出已生成 HTML 的样本帧；帧号可能不连续。每个 replay 样本均可查看：构建时 --visualize-every 1，或导出时 --every 1。切帧保留显示偏好和同一 episode 的对象选择/尺寸，位姿和 GT 随当前帧更新。</p>
+  <section id="frame-preview-section" hidden><h2>当前帧预览（底部包含对象点云）</h2><img id="frame-preview" alt="当前帧原有预览和底部逐对象点云"></section>
+  <h2>下方对象点云交互区</h2>
   <iframe id="preview" title="当前帧交互点云" sandbox="allow-scripts allow-downloads"></iframe>
 </main>
 <script id="oht-replay-data" type="application/json">__OHT_REPLAY_VIEWER_DATA__</script>
@@ -59,8 +64,10 @@
       (current.timestamp==null?"":" · "+current.timestamp.toFixed(3)+" s");
     el("open-frame").href=current.html;el("load-status").textContent="正在载入…";
     root.dataset.currentSample=current.sample_id;root.dataset.ready="false";
-    clearTimeout(timer);timer=setTimeout(()=>{el("load-status").textContent="尚未收到预览就绪消息；请确认已复制整个 object_clouds 目录，或单独打开当前帧。";},15000);
+    clearTimeout(timer);timer=setTimeout(()=>{el("load-status").textContent="尚未收到预览就绪消息；请确认已复制整个 preview 目录，或单独打开当前帧。";},15000);
     el("preview").src=current.html;
+    el("frame-preview-section").hidden=!current.image;
+    if(current.image)el("frame-preview").src=current.image;else el("frame-preview").removeAttribute("src");
   }
   function episode(){
     const frames=groups.get(el("episode").value);el("frame").replaceChildren();

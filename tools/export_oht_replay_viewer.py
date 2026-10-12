@@ -1,4 +1,4 @@
-"""Export an offline OHT episode/frame viewer without rebuilding replay."""
+"""Export grouped OHT PNG/HTML previews and a frame viewer without rebuilding replay."""
 import sys
 from pathlib import Path
 
