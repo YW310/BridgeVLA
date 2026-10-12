@@ -64,6 +64,15 @@ def main(argv=None):
     p.add_argument("--allow-incomplete", action="store_true", help="Diagnostic-only incomplete replay inspection")
     p.add_argument("--object-root", help="Original raw root for an old replay without object poses")
     p.add_argument("--object-manifest", help="Original bound audit; requires --object-root")
+    p = sub.add_parser("export-viewer", help="Export an offline multi-frame HTML viewer from an existing complete replay")
+    p.add_argument("--replay", required=True)
+    p.add_argument("--output", required=True, help="New HTML directory; no replay edits")
+    p.add_argument("--every", type=int, default=1, help="Every N emitted samples per episode, including the first")
+    p.add_argument("--max-points", type=int, default=40000)
+    p.add_argument("--source", choices=("xyz","depth"), help="Default: object's configured source, otherwise depth")
+    p.add_argument("--object-cloud-config", help="Optional object-cloud YAML; default: replay diagnostic_object_clouds")
+    p.add_argument("--object-root", help="Original raw root to recover legacy objects")
+    p.add_argument("--object-manifest", help="Original bound audit; requires --object-root")
     p = sub.add_parser("teacher")
     for key in ("replay", "annotations", "output"):
         p.add_argument("--" + key, required=True)
@@ -156,6 +165,12 @@ def main(argv=None):
                 args.object_root, args.object_manifest, contract, row))
         report = export_object_clouds(output, observation, config, row, specification, contract["sha256"], validation)
         print(f"Saved {len(report['objects'])} approximate object clouds to {output}")
+    elif args.command == "export-viewer":
+        from .data.replay_viewer import export_replay_viewer
+        count = export_replay_viewer(args.replay,args.output,every=args.every,max_points=args.max_points,source=args.source,
+                                    object_cloud_config=read_config(args.object_cloud_config) if args.object_cloud_config else None,
+                                    object_root=args.object_root,object_manifest=args.object_manifest)
+        print(f"Saved {count} HTML frames; open {Path(args.output)/'index.html'}")
     elif args.command == "teacher":
         result = build_teacher(args.replay, args.annotations, args.output, args.point_count,
                                visualize_every=args.visualize_every, visualize_output_dir=args.visualize_output_dir)

@@ -8,7 +8,7 @@ import numpy as np
 from .geometry import array, check_bounds
 from .cloud_source import camera_cloud
 from .point_filter import point_filter_options
-from .visualization import CAMERA_COLORS
+from .visualization import CAMERA_COLORS, OBJECT_COLORS, OBJECT_OVERLAP
 from .object_preview import object_payload
 from .object_cloud import box_mask, resolve_object_boxes
 
@@ -95,6 +95,7 @@ def point_cloud_payload(observation, config, sample, max_points=40_000, *, sourc
                 observation_sha256=sample.get("observation_sha256"),
                 contract_sha256=sample.get("diagnostic_contract_sha256"),
                 object_box_preset=preset, object_box_union_points=object_count,
+                object_colors=OBJECT_COLORS, object_overlap_color=OBJECT_OVERLAP,
                 point_cloud_filter=options, cameras=cameras, total_points=total, displayed_points=len(points),
                 xyz=encoded(points, "<f4"), rgb=encoded(colors, "u1"), camera_ids=encoded(camera_ids, "u1"),
                 geometry_source="cached_xyz" if source == "xyz" else "cached_metric_depth_backprojection",

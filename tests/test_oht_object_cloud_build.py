@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 
 import numpy as np
+from PIL import Image
 import pytest
 import yaml
 
@@ -16,6 +17,7 @@ from finetune.OHT.data.html_preview import point_cloud_payload
 from finetune.OHT.data.object_cloud import export_object_clouds
 from finetune.OHT.data.object_cloud_build import BuildObjectCloudWriter, object_cloud_build_options
 from finetune.OHT.data.replay import build, load_contract
+from finetune.OHT.data.visualization import OBJECT_COLORS
 from tests.test_oht_html_preview import cloud, payload_from_html
 from tests.test_oht_migration import replay_fixture
 
@@ -76,9 +78,20 @@ def test_cli_build_generates_every_sample_and_binds_previews_without_changing_in
             assert data["xyz"].shape == (5*63,3)
             assert set(data["camera_ids"]) == set(range(5))
     episodes = {(row["task"],row["episode_index"]) for row in rows}
-    html = list((output/"object_clouds").rglob("*.html"))
+    html = list((output/"object_clouds").rglob("point-cloud-roi.html"))
+    assert (output/"object_clouds/index.html").is_file()
+    from tests.test_oht_replay_viewer import viewer_payload
+    viewer = viewer_payload(output/"object_clouds/index.html")
+    assert viewer["contract_sha256"] == contract["sha256"]
+    assert {entry["sample_id"] for entry in viewer["frames"]} == {row["id"] for row in rows if row["frame"]==0}
+    assert all((output/"object_clouds"/entry["html"]).is_file() for entry in viewer["frames"])
     assert len(html) == len(episodes) == len(list(previews.rglob("*.png")))
     assert all(path.parent.name == "000000" for path in html)
+    # The existing PNG itself contains the object surface, not just centers or
+    # an extra HTML file. This pixel is an interior observed plane point in XY.
+    with Image.open(previews/(rows[0]["id"]+".png")) as image:
+        assert image.size == (1024,1526)
+        assert image.getpixel((105,1053)) == OBJECT_COLORS[0]
     for path in html:
         payload = payload_from_html(path)
         assert payload["contract_sha256"] == contract["sha256"]  # Not the provisional build hash.

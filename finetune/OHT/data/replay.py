@@ -104,7 +104,8 @@ def build(root, manifest_path, config, output, sample_stride=10, *,
                                  goal=GOALS[record["task"]],
                                  labels={key: value.tolist() for key, value in labels.items()})
                 rows.append(sample)
-                preview_path = preview.write(observation, config, sample, current_tcp=poses[frame])
+                preview_args = {} if object_writer is None else dict(object_boxes=object_writer.specification(sample))
+                preview_path = preview.write(observation, config, sample, current_tcp=poses[frame], **preview_args)
                 if object_writer is not None:
                     sample["object_clouds"] = object_writer.write(observation, config, sample,
                                                                   visualize=preview_path is not None)

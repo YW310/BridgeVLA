@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; frame-src 'self' file:; connect-src 'none'; object-src 'none'; base-uri 'none'">
+<title>OHT replay 帧查看器</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { margin:0; padding:16px; background:Canvas; color:CanvasText; font:16px system-ui,sans-serif; }
+  main { max-width:1400px; margin:auto; }
+  h1 { font-size:1.25rem; margin:0 0 12px; }
+  .controls { display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin:10px 0; }
+  label { display:flex; align-items:center; gap:6px; min-width:0; }
+  select,button,input { font:inherit; max-width:100%; min-width:0; }
+  select { max-width:32rem; }
+  #frame-slider { flex:1; min-width:100px; }
+  output,p { overflow-wrap:anywhere; }
+  .muted { color:GrayText; }
+  iframe { display:block; box-sizing:border-box; width:100%; height:82vh; min-height:640px; border:1px solid GrayText; }
+  @media(max-width:480px) { .selector { width:100%; } .selector select { flex:1; } body { padding:12px; } }
+</style>
+<main id="oht-replay-viewer">
+  <h1>OHT replay 帧查看器</h1>
+  <div class="controls">
+    <label class="selector">Episode <select id="episode" aria-label="选择 episode"></select></label>
+    <label class="selector">帧 <select id="frame" aria-label="选择帧"></select></label>
+    <button id="previous" type="button">上一帧</button><button id="next" type="button">下一帧</button>
+  </div>
+  <div class="controls">
+    <input id="frame-slider" type="range" min="0" step="1" aria-label="预览帧位置">
+    <label><input id="keep-view" type="checkbox" checked>切帧保持视角</label>
+    <button type="button" data-view="3d">3D</button><button type="button" data-view="xy">XY</button>
+    <button type="button" data-view="xz">XZ</button><button type="button" data-view="yz">YZ</button>
+    <button type="button" id="reset-view">适配当前帧对象</button>
+    <a id="open-frame" target="_blank" rel="noopener">单独打开当前帧</a>
+  </div>
+  <p><output id="frame-label"></output> · <output id="load-status" aria-live="polite"></output></p>
+  <p><output id="camera-angle"></output></p>
+  <p class="muted">只列出已生成 HTML 的样本帧；帧号可能不连续。每个 replay 样本均可查看：构建时 --visualize-every 1，或导出时 --every 1。切帧保留显示偏好和同一 episode 的对象选择/尺寸，位姿和 GT 随当前帧更新。</p>
+  <iframe id="preview" title="当前帧交互点云" sandbox="allow-scripts allow-downloads"></iframe>
+</main>
+<script id="oht-replay-data" type="application/json">__OHT_REPLAY_VIEWER_DATA__</script>
+<script>
+(() => {
+  "use strict";
+  const el=id=>document.getElementById(id), root=el("oht-replay-viewer");
+  const data=JSON.parse(el("oht-replay-data").textContent), groups=new Map();
+  data.frames.forEach(frame=>{if(!groups.has(frame.episode))groups.set(frame.episode,[]);groups.get(frame.episode).push(frame);});
+  groups.forEach(frames=>frames.sort((a,b)=>a.frame-b.frame));
+  groups.forEach((frames,episode)=>{const option=document.createElement("option");option.value=episode;option.textContent=episode+" · "+frames.length+" 帧";el("episode").append(option);});
+  const episodes=new Map();let current=null,view=null,display=null,cameras=null,scroll=0,timer=null,pendingState=null;
+  function send(message){if(current)el("preview").contentWindow.postMessage({...message,sample_id:current.sample_id},"*");}
+  function navigate(index){
+    const frames=groups.get(el("episode").value);index=Math.max(0,Math.min(frames.length-1,index));current=frames[index];
+    pendingState={...episodes.get(current.episode),display,cameras,scroll,view:el("keep-view").checked?view:null};
+    el("frame").value=String(index);el("frame-slider").value=String(index);
+    el("previous").disabled=index===0;el("next").disabled=index===frames.length-1;
+    el("frame-label").textContent=current.sample_id+" · frame "+current.frame+" → "+(current.target_frame??"未知")+
+      (current.timestamp==null?"":" · "+current.timestamp.toFixed(3)+" s");
+    el("open-frame").href=current.html;el("load-status").textContent="正在载入…";
+    root.dataset.currentSample=current.sample_id;root.dataset.ready="false";
+    clearTimeout(timer);timer=setTimeout(()=>{el("load-status").textContent="尚未收到预览就绪消息；请确认已复制整个 object_clouds 目录，或单独打开当前帧。";},15000);
+    el("preview").src=current.html;
+  }
+  function episode(){
+    const frames=groups.get(el("episode").value);el("frame").replaceChildren();
+    frames.forEach((frame,index)=>{const option=document.createElement("option");option.value=String(index);option.textContent=String(frame.frame);el("frame").append(option);});
+    el("frame-slider").max=String(frames.length-1);navigate(0);
+  }
+  el("episode").addEventListener("change",episode);
+  el("frame").addEventListener("change",()=>navigate(Number(el("frame").value)));
+  el("frame-slider").addEventListener("input",()=>navigate(Number(el("frame-slider").value)));
+  el("previous").addEventListener("click",()=>navigate(Number(el("frame").value)-1));
+  el("next").addEventListener("click",()=>navigate(Number(el("frame").value)+1));
+  document.querySelectorAll("[data-view]").forEach(button=>button.addEventListener("click",()=>send({type:"oht-preview-command",view:button.dataset.view})));
+  el("reset-view").addEventListener("click",()=>send({type:"oht-preview-command",view:"fit"}));
+  window.addEventListener("message",event=>{
+    const message=event.data;
+    if(event.source!==el("preview").contentWindow||!message||!current||message.sample_id!==current.sample_id)return;
+    if(message.type==="oht-preview-ready"){
+      send({type:"oht-preview-apply",state:pendingState});
+    }else if(message.type==="oht-preview-state"&&message.applied&&message.state){
+      const state=message.state;view=state.view;display=state.display;cameras=state.cameras;scroll=state.scroll;
+      el("camera-angle").textContent="水平 "+(view.yaw*180/Math.PI).toFixed(1)+"° · 俯仰 "+(view.pitch*180/Math.PI).toFixed(1)+"° · 缩放 "+view.zoom.toFixed(3);
+      episodes.set(current.episode,{objects:state.objects,roi:state.roi});
+      clearTimeout(timer);el("load-status").textContent="已载入";root.dataset.ready="true";
+    }
+  });
+  episode();
+})();
+</script>
+</html>

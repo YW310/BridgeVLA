@@ -10,6 +10,7 @@ from .geometry import array
 from .html_preview import bind_point_cloud_html_contract, save_point_cloud_html
 from .object_cloud import export_object_clouds
 from .object_preview import object_payload
+from .replay_viewer import save_replay_viewer
 
 
 def object_cloud_build_options(value):
@@ -53,15 +54,19 @@ class BuildObjectCloudWriter:
         self.options = object_cloud_build_options(options)
         self.reports = []
         self.html = []
+        self.frames = []
 
-    def write(self, observation, config, sample, *, visualize=False):
+    def specification(self, sample):
         entries = self.options["objects"]
         if entries is None:
             entries = [dict(index=obj["index"], size=self.options["default_size"])
                        for obj in object_payload(sample)]
-        specification = dict(schema="oht_object_boxes_v1", sample_id=sample["id"], frame=sample["frame"],
-                             observation_sha256=sample["observation_sha256"], contract_sha256=None,
-                             source=self.options["source"], objects=entries)
+        return dict(schema="oht_object_boxes_v1", sample_id=sample["id"], frame=sample["frame"],
+                    observation_sha256=sample["observation_sha256"], contract_sha256=None,
+                    source=self.options["source"], objects=entries)
+
+    def write(self, observation, config, sample, *, visualize=False):
+        specification = self.specification(sample)
         relative = "object_clouds/" + sample["id"] + "/object-clouds.json"
         report_path = inside(self.output, relative)
         export_object_clouds(report_path.parent, observation, config, sample, specification, None,
@@ -76,6 +81,8 @@ class BuildObjectCloudWriter:
             save_point_cloud_html(path, observation, config, preview_sample, source=self.options["source"],
                                   object_boxes=specification)
             self.html.append(path)
+            self.frames.append(dict(sample_id=sample["id"],frame=sample["frame"],target_frame=sample.get("target_frame"),
+                                    timestamp=sample.get("timestamp"),html=path))
         return relative
 
     def bind_contract(self, checksum):
@@ -87,3 +94,5 @@ class BuildObjectCloudWriter:
             write_json(path, report)
         for path in self.html:
             bind_point_cloud_html_contract(path, checksum)
+        if self.frames:
+            save_replay_viewer(self.output/"object_clouds/index.html",self.frames,checksum)

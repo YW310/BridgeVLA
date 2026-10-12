@@ -4,6 +4,8 @@ import numpy as np
 from PIL import Image, ImageDraw
 from .common import CAMERAS, inside
 from .point_filter import point_cloud_mask, point_filter_options
+from .cloud_source import camera_cloud
+from .object_cloud import box_mask, resolve_object_boxes
 
 
 TARGET = np.array([35, 220, 75], dtype=np.uint8)
@@ -16,6 +18,53 @@ MAX_PREVIEW_POINTS = 200_000
 LOCAL_HALF_EXTENT = 0.20  # metres; diagnostic cube, not the model's stage-two crop
 CAMERA_COLORS = dict(zip(CAMERAS, ((255, 85, 85), (85, 230, 130), (80, 150, 255),
                                   (255, 200, 65), (190, 100, 255))))
+OBJECT_COLORS = ((255, 145, 40), (80, 180, 255), (190, 240, 60), (195, 125, 250),
+                 (255, 105, 110), (80, 220, 170), (245, 220, 130), (180, 180, 255))
+OBJECT_OVERLAP = (255, 255, 255)
+
+
+def _object_tints(points, colors, boxes):
+    colors = np.array(colors, dtype=np.uint8, copy=True)
+    membership = np.zeros(len(points), dtype=np.int32)
+    for box in boxes:
+        keep = box_mask(points, box["bounds"])
+        colors[keep] = box["color"]
+        membership[keep] += 1
+    colors[membership > 1] = OBJECT_OVERLAP
+    return colors, membership > 0
+
+
+def _object_cloud_overlay(observation, config, sample, specification, local_bounds):
+    boxes, source = resolve_object_boxes(specification, sample, sample.get("diagnostic_contract_sha256"),
+                                          allow_empty=True)
+    chunks = []
+    for camera in config["cameras"]:
+        points, _ = camera_cloud(observation, config, camera, source)
+        chunks.append(points[np.isfinite(points).all(axis=1)])
+    points = np.concatenate(chunks)
+    world = box_mask(points, config["scene_bounds"])
+    local = np.zeros(len(points), dtype=bool) if local_bounds is None else box_mask(points, local_bounds)
+    for box in boxes:
+        keep = box_mask(points, box["bounds"])
+        box.update(color=OBJECT_COLORS[box["index"] % len(OBJECT_COLORS)], source_points=int(keep.sum()),
+                   world_points=int((keep & world).sum()), local_points=int((keep & local).sum()))
+    colors, keep = _object_tints(points, np.zeros((len(points), 3), dtype=np.uint8), boxes)
+    return dict(points=points[keep], colors=colors[keep], boxes=boxes, source=source)
+
+
+def _object_view(overlay, bounds):
+    if overlay is None:
+        return None
+    keep = box_mask(overlay["points"], bounds)
+    points, colors = _sample_preview_cloud(overlay["points"][keep], overlay["colors"][keep])
+    return dict(overlay, points=points, colors=colors)
+
+
+def _object_label(box):
+    label = f"object_{box['index']}"
+    if box["name"] != label:
+        label += " " + " ".join(box["name"].split())
+    return label if len(label) <= 28 else label[:25]+"..."
 
 
 def role_overlay(rgb, masks):
@@ -110,7 +159,7 @@ def _camera_rgb(observation, camera, current_tcp, action_tcp, masks, specs, role
 
 
 def _orthographic(points, colors, bounds, axes, current_tcp, action_tcp, role_points, role_valid,
-                  region_bounds=None):
+                  region_bounds=None, object_overlay=None):
     width, height = 340, 256
     image = np.zeros((height, width, 3), dtype=np.uint8)
     bounds = np.asarray(bounds)
@@ -123,6 +172,12 @@ def _orthographic(points, colors, bounds, axes, current_tcp, action_tcp, role_po
                          (1 - uv[:, vertical]) * (height - 1)), axis=-1)
 
     points, colors = np.asarray(points), np.asarray(colors)
+    if object_overlay is not None:
+        colors, _ = _object_tints(points, colors, object_overlay["boxes"])
+        # Combine both sources in one depth test. Box points behind a foreground
+        # surface must stay hidden; same-surface points retain the object tint.
+        points = np.concatenate((object_overlay["points"], points))
+        colors = np.concatenate((object_overlay["colors"], colors))
     valid = np.isfinite(points).all(axis=1) & (points >= bounds[:3]).all(axis=1)
     valid &= (points < bounds[3:]).all(axis=1)
     points, colors = points[valid], colors[valid]
@@ -144,6 +199,24 @@ def _orthographic(points, colors, bounds, axes, current_tcp, action_tcp, role_po
         if (intersection[3:] > intersection[:3]).all():
             corners = pixels(np.array([intersection[:3], intersection[3:]]))
             draw.rectangle((*corners.min(axis=0), *corners.max(axis=0)), outline=ACTION, width=1)
+    if object_overlay is not None:
+        for box in object_overlay["boxes"]:
+            extent = np.asarray(box["bounds"])
+            intersection = np.r_[np.maximum(bounds[:3], extent[:3]), np.minimum(bounds[3:], extent[3:])]
+            if (intersection[3:] > intersection[:3]).all():
+                corners = pixels(np.array([intersection[:3], intersection[3:]]))
+                draw.rectangle((*corners.min(axis=0), *corners.max(axis=0)), outline=box["color"], width=1)
+            center = np.asarray(box["center"])
+            if (center >= bounds[:3]).all() and (center < bounds[3:]).all():
+                label = _object_label(box) + (" (empty)" if not box["source_points"] else "")
+                xy = pixels(center[None])[0]
+                _mark(draw, xy, box["color"])
+                text_bounds = draw.textbbox((0, 0), label)
+                # Leave goal/TCP labels around the cross and keep names fully
+                # inside the panel when an object center approaches an edge.
+                position = (max(4, min(xy[0]+9, width-text_bounds[2]-4)),
+                            max(36, min(xy[1]+18, height-text_bounds[3]-4)))
+                draw.text(position, label, fill=box["color"])
     if role_points is not None:
         for index, color in enumerate((TARGET, REFERENCE)):
             if role_valid[index]:
@@ -171,7 +244,7 @@ def _sample_preview_cloud(points, colors):
 
 
 def save_preview(path, observation, config, sample, current_tcp=None, role_specs=None,
-                 role_masks=None, role_points=None, role_valid=None, color_by_camera=False):
+                 role_masks=None, role_points=None, role_valid=None, color_by_camera=False, object_boxes=None):
     """Save sampled diagnostics without changing cached tensors or labels."""
     cameras = list(config["cameras"])
     goal_pose = sample.get("labels", {}).get("gripper_pose")
@@ -192,12 +265,16 @@ def save_preview(path, observation, config, sample, current_tcp=None, role_specs
     # Select the local ROI before global display sampling so small objects do
     # not disappear merely because distant scene points exhausted the budget.
     local_bounds = None if action_tcp is None else np.r_[action_tcp[:3] - LOCAL_HALF_EXTENT, action_tcp[:3] + LOCAL_HALF_EXTENT]
+    object_overlay = None if object_boxes is None else _object_cloud_overlay(observation, config, sample,
+                                                                            object_boxes, local_bounds)
     local_mask = np.zeros(len(points), dtype=bool) if local_bounds is None else (
         (points >= local_bounds[:3]).all(axis=1) & (points < local_bounds[3:]).all(axis=1))
     local_count, global_count = int(local_mask.sum()), len(points)
     local_points, local_colors = _sample_preview_cloud(points[local_mask], colors[local_mask])
     points, colors = _sample_preview_cloud(points, colors)
     row_height, top = PANEL_H + 44, 96
+    if object_overlay is not None:
+        top += 18 * (1 + (len(object_overlay["boxes"])+1)//2)
     ortho_top = top + ((len(cameras) + 1) // 2) * row_height
     footer_top = ortho_top + (638 if action_tcp is not None else 318)
     canvas = Image.new("RGB", (1024, footer_top + 48), (24, 24, 24))
@@ -213,6 +290,8 @@ def save_preview(path, observation, config, sample, current_tcp=None, role_specs
     legend = ("Cyan=current TCP; magenta=future action; orthographic colors=physical camera (NOT roles)"
               if color_by_camera else
               "Cyan=current TCP; magenta=future action; green=Target; blue=Reference; yellow=overlap")
+    if object_overlay is not None:
+        legend = "Cyan=current TCP; magenta=future action; object colors=box membership; white=overlapping boxes"
     draw.text((8, 60), legend, fill="white")
     if role_specs is not None:
         status = " | ".join(f"{role}: {spec['source']} present={spec['present']} known={spec['known']} geometry={bool(role_valid[i])}"
@@ -220,6 +299,13 @@ def save_preview(path, observation, config, sample, current_tcp=None, role_specs
         draw.text((8, 78), status, fill="white")
     elif sample.get("diagnostic_note"):
         draw.text((8, 78), "Diagnostic only: replay completeness not checked; direct NPZ may have no TCP/goal metadata.", fill=ACTION)
+    if object_overlay is not None:
+        draw.text((8, 96), f"Approximate object clouds | source={object_overlay['source']} | "
+                  f"selected={len(object_overlay['boxes'])} | clipped to each view; no instance masks", fill="white")
+        for index, box in enumerate(object_overlay["boxes"]):
+            draw.text((8 + (index % 2)*512, 114 + (index//2)*18),
+                      f"{_object_label(box)}: source={box['source_points']} world={box['world_points']} local={box['local_points']}",
+                      fill=box["color"])
     for index, camera in enumerate(cameras):
         x, y = (index % 2) * 512, top + (index // 2) * row_height
         masks = {role: values[camera] for role, values in (role_masks or {}).items()}
@@ -253,21 +339,27 @@ def save_preview(path, observation, config, sample, current_tcp=None, role_specs
                   fill="white")
         views.append((local_top, local_points, local_colors, local_bounds, None))
     for row_top, cloud, rgb, view_bounds, roi in views:
+        overlay_view = _object_view(object_overlay, view_bounds)
         for index, axes in enumerate(((0, 1), (0, 2), (1, 2))):
             x = index * 341
             draw.text((x + 4, row_top + 20), "".join("XYZ"[axis] for axis in axes) + " world point cloud", fill="white")
             canvas.paste(_orthographic(cloud, rgb, view_bounds, axes, current_tcp, action_tcp,
-                                       role_points, role_valid, region_bounds=roi), (x, row_top + 38))
+                                       role_points, role_valid, region_bounds=roi, object_overlay=overlay_view), (x, row_top + 38))
     if action_tcp is None:
         draw.text((8, ortho_top + 300), "GT goal unavailable: no goal marker, local cube or GT-centered refine views are generated.", fill=ACTION)
     else:
         draw.text((8, ortho_top + 300), "Magenta box: local cube footprint. Local views select observed points before global sampling.", fill="white")
         if not local_count:
-            draw.text((8, local_top + 300), "No observed points in local cube; the GT keypoint does not create geometry.", fill="white")
+            message = ("No base scene points in local cube; object overlay may include ROI-masked depth points."
+                       if object_overlay is not None else
+                       "No observed points in local cube; the GT keypoint does not create geometry.")
+            draw.text((8, local_top + 300), message, fill="white")
         else:
             draw.text((8, local_top + 300), "Local cube is fixed at the GT keypoint; it is not a coarse prediction or the model's noisy training crop.", fill="white")
     draw.text((8, footer_top), "CPU diagnostics, not BridgeVLA renderer outputs. 1px points; stored XYZ unchanged. Black depth = invalid.", fill="white")
-    if color_by_camera:
+    if object_overlay is not None:
+        draw.text((8, footer_top + 18), "Objects: approximate box crops, not instance/role labels. RGB/depth panels and saved observations unchanged.", fill="white")
+    elif color_by_camera:
         for index, camera in enumerate(cameras):
             draw.text((8 + index * 204, footer_top + 18), camera, fill=CAMERA_COLORS[camera])
     else:

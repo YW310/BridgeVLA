@@ -192,9 +192,30 @@ objects:
 
 `--visualize-every N` 同时控制原有 PNG 和对象交互 HTML 的频率，按每个 episode 的生成样本数计数、包含首个样本。`1` 为每个样本生成预览，`0` 只保存对象点云、不生成预览。HTML 位于上述对象目录的 `point-cloud-roi.html`，打开后自动勾选配置对象、恢复名称/尺寸、显示框内点云并适配截取框；可继续勾选其他对象和调整尺寸。页面优先将框内点纳入显示抽样，报告/PLY/NPZ 保留缓存分辨率下的全部有效框内点。`--visualize-output-dir` 仅改变原有 PNG 的位置；对象文件和 HTML 始终随 replay 保存。
 
-对象文件在构建过程中逐帧写出，可复制已写完的 HTML 在本机查看；整批结束后报告/HTML 绑定最终 contract 哈希，再写 `complete.json`。若在构建途中打开过页面，结束后重新复制/打开最终 HTML 再下载绑定配置。构建失败不生成完成标记。
+**对象点云也直接叠加在原本的一张 PNG 中**，无需另开 HTML 才能看到。原有全局和 GT 局部 XY/XZ/YZ 面板保留场景背景、TCP/goal，增加按对象索引区分的点云颜色、中心、名称和轴对齐框；重叠框成员用白色显示。图例记录每个对象的全量 `source` 点数、工作区内 `world` 点数和 GT 局部框内 `local` 点数，零点不补造表面；颜色为近似框成员关系，不是实例或 T/R 标签。对象层单独选择/限制显示点数，再与场景一起做深度遮挡，避免全局抽样漏掉小物体；仍裁剪到对应视图范围。`source: depth` 的对象层可显示旧 ROI 之外的有效深度点，即使背景 XYZ 已被过滤；相机 RGB/depth 面板和保存的观测保持原样。PNG 继续保存到原 `visualizations` 目录或 `--visualize-output-dir`，图头增加对象图例。
+
+对象文件在构建过程中逐帧写出，可复制已写完的 HTML 在本机查看；整批结束后报告/HTML 绑定最终 contract 哈希，生成统一入口 `<replay>/object_clouds/index.html`，再写 `complete.json`。若在构建途中打开过页面，结束后重新复制/打开最终 HTML 再下载绑定配置。构建失败不生成完成标记。
 
 启用后会增加逐帧 PLY/NPZ 存储，`--visualize-every` 仅减少预览数量，不减少对象点云导出。配置和对象报告路径纳入 contract/索引校验，启用前后的 contract 哈希会不同；原 observation NPZ、动作标签和策略输入保持一致。近似对象点云只作诊断，不自动进入教师或训练前向。
+
+#### HTML 统一查看、角度与帧选择
+
+构建时启用 `--object-cloud-config` 和非零 `--visualize-every` 后，打开 `<replay>/object_clouds/index.html`，即可在同一页面选择 episode、实际帧号，或用上一帧/下一帧、滑条切换。列表只包含已生成 HTML 的样本；`--visualize-every 1` 覆盖每个 replay 样本，不能显示未采样进 replay 的原视频帧。复制到本机时保留整个 `object_clouds` 目录及其相对路径，可离线双击入口，无需服务。
+
+顶部提供 3D/XY/XZ/YZ 和适配当前帧按钮；点云支持左键旋转、右键平移、滚轮缩放，并显示水平/俯仰角度。默认切帧保留旋转、缩放、平移和相机/显示开关；取消“切帧保留视角”后使用新帧默认视图。同一 episode 内保留对象勾选、名称、尺寸框以及 ROI 编辑，跨 episode 独立保存对象/ROI 设置。对象中心、姿态、TCP、GT 和下载配置的帧/校验值始终取当前帧，切帧不会套用旧帧位姿。设置只保留在当前打开页面中，刷新重置；要留存尺寸/ROI，可下载对应 JSON/YAML。
+
+HTML 中对象与场景共用一张点云画布，“对象框成员”颜色按索引区分，重叠框为白色；可切回 RGB/相机颜色、调整背景透明度或只显示对象框内点。对象列表可勾选全部记录对象的中心、名称和姿态轴；轴需选择正确四元数顺序。
+
+已有**完整 replay** 无需重新构建，可以单独导出可导航 HTML：
+
+~~~bash
+python tools/export_oht_replay_viewer.py \
+  --replay /data/oht/replay-with-object-clouds \
+  --output /data/oht/html-viewer \
+  --every 1 --max-points 40000
+~~~
+
+打开 `/data/oht/html-viewer/index.html`，复制时保留整个 `html-viewer` 目录。`--every N` 按每个 episode 的生成样本数选帧，包含首个；浏览器每次仅加载一帧，导出磁盘量随帧数增加。默认复用 replay 中记录的对象配置，未记录时显示场景和原始对象位姿，可加 `--object-cloud-config finetune/OHT/configs/object_clouds.yaml` 自动选取对象框。默认源为缓存米制 depth/K/外参，可用 `--source xyz` 改为缓存 XYZ；HTML 抽样限制独立于全分辨率对象文件。旧缓存缺对象位姿时可同时指定 `--object-root`/`--object-manifest` 补充当前索引帧。导出要求新目录、校验已完成 replay 和观测 NPZ，不改写缓存，也不额外导出 PLY/NPZ。
 
 多相机旋转重影先检查单帧，不用 ICP 自动配准来掩盖相机参数或同步错误：
 

@@ -232,6 +232,10 @@ OHT 只有四物体中心和姿态，未提供实例 mask、mesh 尺寸或轴 si
 
 同日：replay build 可通过独立 `--object-cloud-config` 为每个生成样本同步提取当前帧对象点云，保存逐对象 PLY/NPZ/报告；对象 HTML 按 `--visualize-every` 的 episode 内频率生成，自动恢复所选索引和尺寸，优先抽样框内点。对象配置/报告路径纳入 contract/索引，最终哈希在完成标记前绑定到报告和 HTML；默认关闭，开启也不改变原观测 NPZ、动作标签或策略输入。
 
+同日：构建结束额外生成 `object_clouds/index.html` 统一离线入口，通过本地 iframe/postMessage 导航已生成的 episode/实际帧号，单次仅加载一帧。切帧保留视角及相机/显示开关，同 episode 保留对象选择/名称/尺寸和 ROI；当前位姿与校验值始终来自新帧，跨 episode 隔离对象/ROI 偏好，不写回缓存。`export_oht_replay_viewer.py` 可校验完整 replay 后独立导出 HTML 查看目录（每 episode 首帧加每 N 样本），复用 contract 对象配置或显式配置；支持全部 replay 样本，无需重建观测。HTML 与 PNG 使用同一对象索引调色板和白色重叠框成员色。
+
+生成时的对象层同时叠加到原 PNG 的全局/GT 局部三视图：对象点按索引着色，重叠框成员为白色，标出中心/名称/截取框及各范围实际点数。对象点独立抽样后与背景共同做深度测试；PNG、HTML 和导出器共享当前帧截取配置，不新增实例 mask 或训练观测字段。
+
 拟新增 roles.yaml、role_manifest.py、role_teacher.py、validate_roles.py。
 
 | 阶段 | Target | Reference 建议 | 必须核查 |
