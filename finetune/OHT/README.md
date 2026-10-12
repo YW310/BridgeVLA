@@ -2,7 +2,9 @@
 
 本目录提供 OHT 数据审计、观测/动作缓存、baseline、内部 T/R role queries、可选外部 predicted objects、训练、推理服务和评估入口。命令均从 **BridgeVLA 仓库根目录** 执行。设计背景见 [迁移方案](../../docs/design/oht-data-migration.md)。
 
-已用合成 OHT 数据完成 CPU 集成验证，包括真实 Parquet、MP4 解码、深度点云、真实 Agent 更新及 HTTP 请求。真实 v423 数据、完整 CUDA 模型和 IsaacLab 闭环尚未运行；提供的远程服务器 SSH 连接超时。以下是已实现入口的使用方式，不能据此视为已有 OHT 成功率。
+完整重建 replay 和对象预览见[完整重新生成 replay](#完整重新生成-replay)。原始数据未变时可复用已有 audit，直接从构建步骤开始。
+
+已用合成 OHT 数据完成 CPU 集成验证，包括真实 Parquet、MP4 解码、深度点云、真实 Agent 更新及 HTTP 请求。真实 v423 数据、完整 CUDA 模型和 IsaacLab 闭环尚未验证。
 
 ## 1. 环境
 
@@ -87,7 +89,7 @@ point_cloud_filter:
 
 仓库配置更新不会修改此前复制的 `dataset-calibrated.yaml`。构建始终读取 `--config` 指定的文件；请同步所需字段，保留本地已有的正确值。
 
-**旧缓存迁移**：本轮 schema 为 `oht_bridgevla_v2`；v1 replay/checkpoint 不作为已修复数据使用。用新配置在新目录（如 `replay-source-v2`）重建 replay，再重建 teacher/预测缓存。原始视频、Parquet 和已有 audit 可复用，不删除旧数据、不重采集；修改旧 contract 或只重画 PNG 无法修复旧 XYZ/rotation/gripper 标签，也不能沿用旧 optimizer resume。
+当前 schema 为 `oht_bridgevla_v2`；下文的 `replay-source-v3` 只是新的输出目录名，不代表 schema 升级。旧缓存的几何或标签修复后，需要重建依赖的 teacher/预测缓存并重新训练，不能沿用旧 optimizer resume。
 
 数据方提供的 frame 965 腕部投影参考值为原图 `(313.0, 378.6)`，在默认 4 倍步长缓存中应约为 `(78.25, 94.65)`。本地没有该原始样本，仍需在服务器复核多帧、多相机，不以“落在图内”代替几何对齐验证。
 
@@ -112,21 +114,35 @@ depth:
   limits: [0.001, 3.0]
 ~~~
 
-外部 `dataset-calibrated.yaml` 请替换**整个 depth 块**，不要保留旧 `encoding: scaled_integer`、`metadata: false/true` 或 per-camera `depth` 覆盖来替代上面的参考模式。旧 buffer 的 XYZ 已经解码并保存，改 YAML 或重画预览不会修复它；先以新配置核对少量帧，再在新目录（例如 `replay-reference-v2`）重建受影响缓存。raw/audit 不变，不删除正确数据。
-
 读取器检查实际像素格式，保留 12-bit 数值及视频 PTS；旧 PyAV 的 gray12le 数组兼容路径直接读取含行 padding 的 uint16 平面。仍兼容浮点 NPY（metric）、整数 PNG/TIFF（scaled_integer）和显式指定通道/scale/offset 的旧 linear_channel 编码。普通可视化视频不能据此当作米制深度。
+
+### 完整重新生成 replay
+
+使用当前仓库配置，从原始 RGB-D 重新生成 replay、近似对象点云和预览。已有有效的 `/data/oht/audit-seed0.json` 可直接复用；输出目录 `/data/oht/replay-source-v3` 必须尚不存在。再次重建时更换新目录名，保留旧结果用于对照。
 
 ~~~bash
 python tools/build_oht_replay.py \
   --root /common-data-32t/data/robot_data/oht_curobo_pd_v423 \
   --manifest /data/oht/audit-seed0.json \
   --config finetune/OHT/configs/dataset.yaml \
-  --output /data/oht/replay-source-v2 --sample-stride 10 \
-  --visualize-every 100 \
-  --visualize-output-dir /data/oht/previews/replay-source-v2
+  --output /data/oht/replay-source-v3 \
+  --sample-stride 10 \
+  --object-cloud-config finetune/OHT/configs/object_clouds.yaml \
+  --visualize-every 1
 
-python tools/validate_oht_replay.py --replay /data/oht/replay-source-v2
+python tools/validate_oht_replay.py --replay /data/oht/replay-source-v3
 ~~~
+
+构建结束并通过校验后，打开 **`/data/oht/replay-source-v3/preview/index.html`**。PNG 保留原有场景面板，底部增加各对象点云区域；HTML 上方显示 PNG，下方提供点云交互、视角和帧选择。
+
+- `--sample-stride 10` 控制哪些原始帧进入 replay；完整重建仍沿用该采样策略，如需更密的 replay 可减小步长。
+- `--visualize-every 1` 为每个生成的 replay 样本输出 PNG/HTML；改为 `100` 可减少预览数量和开销，对象 PLY/NPZ 仍逐样本生成。
+- `--object-cloud-config` 启用对象截取和对象预览。只传 `--visualize-every` 会生成基础场景 PNG，没有对象区域和 HTML 统一入口。
+- 示例省略 `--visualize-output-dir`，所有诊断文件统一放在 replay 下的 `preview`；显式指定该参数会将 PNG/HTML/入口输出到指定的新目录，对象数据仍保存在 replay 下。
+
+旧 PNG/HTML 不会随代码更新自动变化。请打开本次新目录；复制到本机时保留整个 `preview` 目录及相对路径。
+
+若旧版本在首帧报 `FileExistsError: Use a new object cloud directory: .../preview/...`，是 PNG 先建目录与对象导出冲突。更新到包含写入顺序修复的代码后，用新的 replay 输出目录重新构建；失败目录没有 `complete.json`，不能用于训练。无需重新审计原始数据。
 
 实现行为：
 
@@ -161,17 +177,7 @@ PNG 单独输出，不新增 observation/label 字段，也不改变 buffer cont
 
 #### 生成 replay 时同步提取并预览对象点云
 
-构建时增加 `--object-cloud-config`，即可对**每个生成的 replay 样本**按当前帧对象中心同步导出近似点云；不是按未来 goal 帧截取，也不处理未进入 replay 的所有原始视频帧。未提供此参数时保持原有构建行为。
-
-~~~bash
-python tools/build_oht_replay.py \
-  --root /common-data-32t/data/robot_data/oht_curobo_pd_v423 \
-  --manifest /data/oht/audit-seed0.json \
-  --config finetune/OHT/configs/dataset.yaml \
-  --output /data/oht/replay-with-object-clouds --sample-stride 10 \
-  --object-cloud-config finetune/OHT/configs/object_clouds.yaml \
-  --visualize-every 100
-~~~
+上面的完整重建命令已启用 `--object-cloud-config`，对**每个生成的 replay 样本**按当前帧对象中心同步导出近似点云，不按未来 goal 帧截取。
 
 对象配置与相机/训练配置分开，示例见 [`configs/object_clouds.yaml`](configs/object_clouds.yaml)。`objects: null` 表示全部记录对象；初始 `default_size: [0.20, 0.20, 0.20]` 为 world XYZ 全长（米）的可调整猜测，不是物体尺寸 GT。需要不同尺寸或只提取部分对象时，复制该 YAML 并改为例如：
 
@@ -221,43 +227,39 @@ HTML 中对象与场景共用一张点云画布，“对象框成员”颜色按
 
 上方 PNG 是生成时配置对应的静态预览；下方勾选对象和调整尺寸仅更新交互点云，不重写 PNG。顶部“查看下方交互点云”可直接跳到交互区。
 
-已有**完整 replay** 无需重新构建，可以单独导出可导航 HTML：
+如果修改代码后看起来没变化，先检查生成命令是否带 `--object-cloud-config`，以及打开的是否为本次新输出。旧 PNG/HTML 不会随代码更新自动改变；旧 replay 未记录对象配置时，下面的独立导出命令需显式增加对象 YAML。
+
+仅更新可视化、无需重算 replay 时，可为已有**完整 replay** 导出新的 PNG/HTML。已执行上面的完整重建则不需要再运行此命令：
 
 ~~~bash
 python tools/export_oht_replay_viewer.py \
-  --replay /data/oht/replay-with-object-clouds \
-  --output /data/oht/preview \
+  --replay /data/oht/replay-source-v3 \
+  --output /data/oht/replay-source-v3/preview/refresh \
+  --object-cloud-config finetune/OHT/configs/object_clouds.yaml \
   --every 1 --max-points 40000
 ~~~
 
-打开 `/data/oht/preview/index.html`，复制时保留整个 `preview` 目录。每帧 PNG 和 HTML 保存到 `<output>/<task>/<episode>/<frame>/`。`--every N` 按每个 episode 的生成样本数选帧，包含首个；浏览器每次仅加载一帧，导出磁盘量随帧数增加。默认复用 replay 中记录的对象配置，未记录时显示场景和原始对象位姿，可加 `--object-cloud-config finetune/OHT/configs/object_clouds.yaml` 自动选取对象框。默认源为缓存米制 depth/K/外参，可用 `--source xyz` 改为缓存 XYZ；HTML 抽样限制独立于全分辨率对象文件。旧缓存缺对象位姿时可同时指定 `--object-root`/`--object-manifest` 补充当前索引帧。导出要求新目录、校验已完成 replay 和观测 NPZ，不改写缓存，也不额外导出 PLY/NPZ。
+打开 `/data/oht/replay-source-v3/preview/refresh/index.html`。输出目录必须尚不存在，每帧 PNG/HTML 保存到 `<output>/<task>/<episode>/<frame>/`。`--every N` 按各 episode 的 replay 样本数选帧，包含首个；浏览器每次仅加载一帧。默认源为缓存米制 depth/K/外参，可用 `--source xyz` 改为缓存 XYZ。导出校验已完成 replay 和观测 NPZ，不改写缓存，也不额外导出 PLY/NPZ。
 
-多相机旋转重影先检查单帧，不用 ICP 自动配准来掩盖相机参数或同步错误：
+#### 单帧几何排错（可选）
+
+需要检查多相机融合参数时，使用 `samples.jsonl` 中真实存在的 sample ID。以下命令同时输出几何诊断和离线点云 HTML，目录必须尚不存在：
 
 ~~~bash
 python tools/diagnose_oht_geometry.py \
-  --replay /data/oht/replay-source-v2 \
+  --replay /data/oht/replay-source-v3 \
   --sample-id assemble_left/000000/000000 \
-  --output /data/oht/previews/geometry-frame0
+  --output /data/oht/replay-source-v3/preview/geometry-frame0 \
+  --html --html-source depth --max-points 40000
 ~~~
 
-使用 `samples.jsonl` 中真实存在的 sample ID。工具不重建/修改缓存，输出各物理相机单独的三视图、`fused_rgb.png`、按来源相机着色的 `fused_camera_colors.png` 与 `geometry.json`（实际缓存 K、optical→world 外参、有效点数、契约配置）。相机颜色不是 T/R 角色；相机 RGB 面板仍保持原图。输出目录必须是新目录。先看静止桌面/夹具是否重合，再看转动腕部；若静止帧仍明显旋转错位，继续核对实际缓存的 depth 编码、`kind: z` 与相机参数，不以帧序号修正或合成测试代替真实几何验证。
+工具不修改缓存，输出各物理相机三视图、`fused_rgb.png`、按来源相机着色的 `fused_camera_colors.png`、`geometry.json`（实际缓存 K、optical→world 外参、有效点数、契约配置）和 `point-cloud-roi.html`。先检查静止桌面/夹具是否重合，再看运动部分；偏移时核对深度编码、`kind: z`、相机参数和同步，不用 ICP 掩盖参数错误。该单帧工具不生成统一入口，也不替代上面的对象预览构建命令。
 
 默认要求完整 buffer。**仅诊断时**可加 `--allow-incomplete`，不读取/要求 `complete.json`；仍检查 contract 自身哈希、配置、已绑定的索引哈希，以及所选样本的 NPZ 哈希。训练、教师生成和正式评估不支持此开关，完整性要求不变。
 
 #### 交互确定点云范围
 
-在同一诊断命令增加 `--html`：
-
-~~~bash
-python tools/diagnose_oht_geometry.py \
-  --replay /data/oht/replay-source-v2 \
-  --sample-id assemble_left/000000/000000 \
-  --output /data/oht/roi-first-frame \
-  --html --html-source depth --max-points 40000
-~~~
-
-将输出的 `point-cloud-roi.html` 下载到本机，用现代浏览器直接打开；完全离线，不需要服务端、CDN 或额外 Python 依赖。左键旋转、右键/Shift 拖动平移、滚轮缩放；提供 XY/XZ/YZ 视角、相机显示开关、RGB/相机着色、单像素点（可调 1–4 px）与点选世界坐标。
+构建生成的 HTML 或上述单帧 `point-cloud-roi.html` 均可用于选择范围。左键旋转、右键/Shift 拖动平移、滚轮缩放；支持 XY/XZ/YZ、相机开关、RGB/相机着色、点大小及点选世界坐标，离线使用无需启动服务。
 
 选择并修改 `scene_bounds`、`keep_bounds` 或排除框的六个世界坐标，实时查看保留点及框；可添加/删除排除框，复制或下载 YAML 片段，再人工合并进实际 `--config` 文件。上下界与 `point_cloud_filter` 一致：下界包含、上界不包含；非法框不更新且禁止导出。`scene_bounds` 是策略工作区，不只是显示裁剪；它影响动作归一化及数据/checkpoint 契约，不能随意覆盖已有模型的配置。相机开关、点大小和显示抽样不写入训练配置。
 
@@ -271,34 +273,22 @@ python tools/diagnose_oht_geometry.py \
 
 参考代码没有确认对象索引与语义名称的对应关系，也没有确认 `objects_quat` 的顺序，因此不自动猜测车轮/托盘或 Target/Reference。姿态轴默认隐藏；核实导出端约定后，在页面的“对象四元数顺序”中独立选择 `wxyz` 或 `xyzw`（不继承 camera/EE 设置）。轴为对象局部 x 红/y 绿/z 蓝，长度可调，坐标直接使用 world 位姿，不套相机 optical 翻轴。对象中心不是表面点或轴口 site；实例 mask 和角色点仍使用下文教师接口。
 
-旧 replay 没有该元数据时无需重建点云：在已有 HTML 诊断命令中增加原始数据根目录及**构建该 replay 所用的审计清单**：
-
-~~~bash
-python tools/diagnose_oht_geometry.py \
-  --replay /data/oht/replay-source-v2 \
-  --sample-id assemble_left/000000/000000 \
-  --output /data/oht/roi-objects-first-frame \
-  --html --html-source depth \
-  --object-root /common-data-32t/data/robot_data/oht_curobo_pd_v423 \
-  --object-manifest /data/oht/audit-seed0.json
-~~~
-
-两个对象来源参数必须一起提供并启用 `--html`。读取器核对 audit 与 replay contract 的绑定、所选 episode 的 Parquet 哈希，以及当前帧/episode/timestamp；不匹配则拒绝输出，不重写旧索引或缓存。没有元数据且未提供来源时，页面明确显示无对象位姿。直接 `--observation` 模式缺少可靠帧索引，不支持从原始数据推测对象帧。
+仅旧 replay 缺少对象元数据时，导出工具可同时增加 `--object-root /common-data-32t/data/robot_data/oht_curobo_pd_v423` 和 `--object-manifest /data/oht/audit-seed0.json`，清单必须是构建该 replay 时使用的 audit。单帧诊断还需启用 `--html`。读取器核对 audit、Parquet 哈希及当前帧，绑定不符则拒绝输出；不改写缓存，也不猜测缺失位姿。新重建流程无需这些补充参数。
 
 #### 没有实例 mask 时近似提取 object 点云
 
 HTML 支持以当前记录的对象中心为中心，设置 **world X/Y/Z 轴对齐框的全长（米）**。每轴初始 0.20 m 只是可调整的预览值，不代表实物尺寸；不依赖对象四元数，不随姿态轴顺序旋转。若记录原点不在几何中心，需要调整框尺寸以覆盖物体。此方法截取的是框内观测点，可能包含桌面/邻近物体，不能作为实例分割 GT；重叠框允许共享点，不自动将点分配给最近对象。
 
-1. 重新导出并打开 HTML，勾选所需对象，调整每项的 X/Y/Z 全长。
+1. 打开当前帧 HTML，勾选所需对象，调整每项的 X/Y/Z 全长。
 2. 开启“显示近似截取框”和“仅显示勾选对象框内点云”，检查物体是否被完整覆盖；点击“缩放到所选对象”可将整个截取框纳入视图。框边界为下界包含、上界不包含；点云仍受当前相机开关、工作区显示和背景透明度控制。
-3. 点击“下载对象截取配置 JSON”，将 `oht-object-boxes.json` 传回服务器，再运行下列命令。配置只保存所选对象索引/名称/尺寸及当前 sample/frame、点源和缓存校验值，不修改 replay 或 ROI YAML。
+3. 若要按页面调整后的尺寸重新导出该帧对象文件，点击“下载对象截取配置 JSON”，将 `oht-object-boxes.json` 传回服务器，再运行下列命令。构建时已生成默认对象文件，无需重复提取；JSON 绑定当前 sample/frame、点源和缓存校验值，不修改 replay 或 ROI YAML。
 
 ~~~bash
 python tools/extract_oht_object_clouds.py \
-  --replay /data/oht/replay-source-v2 \
+  --replay /data/oht/replay-source-v3 \
   --sample-id assemble_left/000000/000000 \
   --boxes /data/oht/oht-object-boxes.json \
-  --output /data/oht/object-clouds-frame0
+  --output /data/oht/replay-source-v3/preview/object-clouds-frame0
 ~~~
 
 旧 replay 缺少对象位姿时，在提取命令中同样增加 `--object-root` 和 `--object-manifest`，无需重建点云。仅诊断未完成 replay 可显式加 `--allow-incomplete`；训练完整性要求不变。对象配置绑定当前帧，不能直接用于另一帧或另一份缓存；重新预览相应样本后再导出。
@@ -313,11 +303,11 @@ python tools/extract_oht_object_clouds.py \
 
 ~~~bash
 python tools/diagnose_oht_geometry.py \
-  --replay /data/oht/replay-source-v2 \
+  --replay /data/oht/replay-source-v3 \
   --observation observations/assemble_left/000000/000000.npz \
   --data-profile assemble_left/lerobot_dataset \
   --allow-incomplete --html --html-source depth \
-  --output /data/oht/roi-building-frame
+  --output /data/oht/replay-source-v3/preview/geometry-building-frame
 ~~~
 
 NPZ 路径相对于 replay，不能越出该目录；`--data-profile` 必须替换成 `contract.json.source_data_configs` 中对应数据源的键，多源时必须显式提供，单源可省略。`--observation` 与 `--sample-id` 二选一；它只依赖已有 contract 和 NPZ，不依赖索引或完成标记，也不读取原始视频。
@@ -331,7 +321,7 @@ NPZ 路径相对于 replay，不能越出该目录；`--data-profile` 必须替�
 ~~~bash
 python -m finetune.OHT.train \
   --config finetune/OHT/configs/baseline.yaml \
-  --replay /data/oht/replay-source-v2 --output /data/oht/check-only \
+  --replay /data/oht/replay-source-v3 --output /data/oht/check-only \
   --validate-only
 ~~~
 
@@ -340,12 +330,12 @@ python -m finetune.OHT.train \
 ~~~bash
 python -m finetune.OHT.train \
   --config finetune/OHT/configs/smoke.yaml \
-  --replay /data/oht/replay-source-v2 --output /data/oht/runs/smoke \
+  --replay /data/oht/replay-source-v3 --output /data/oht/runs/smoke \
   --pretrain-path /path/to/bridgevla-heatmap-pretrain
 
 python -m finetune.OHT.train \
   --config finetune/OHT/configs/baseline.yaml \
-  --replay /data/oht/replay-source-v2 --output /data/oht/runs/baseline-s0 \
+  --replay /data/oht/replay-source-v3 --output /data/oht/runs/baseline-s0 \
   --pretrain-path /path/to/bridgevla-heatmap-pretrain
 ~~~
 
@@ -379,17 +369,17 @@ Reference=NULL **仅示范格式**，实际任务必须逐阶段定义正确角�
 
 ~~~bash
 python tools/build_oht_role_teacher.py \
-  --replay /data/oht/replay-source-v2 --annotations /data/oht/annotations.jsonl \
+  --replay /data/oht/replay-source-v3 --annotations /data/oht/annotations.jsonl \
   --output /data/oht/teachers-v1 --point-count 512 \
   --visualize-every 100
 
 python tools/validate_oht_replay.py \
-  --replay /data/oht/replay-source-v2 --mode role_queries \
+  --replay /data/oht/replay-source-v3 --mode role_queries \
   --role-cache /data/oht/teachers-v1
 
 python -m finetune.OHT.train \
   --config finetune/OHT/configs/role_queries.yaml \
-  --replay /data/oht/replay-source-v2 --role-cache /data/oht/teachers-v1 \
+  --replay /data/oht/replay-source-v3 --role-cache /data/oht/teachers-v1 \
   --output /data/oht/runs/role-queries-s0 \
   --init-checkpoint /data/oht/runs/baseline-s0/model_last.pth
 ~~~
@@ -421,13 +411,13 @@ provenance YAML 至少含 model_sha256（真实感知权重 SHA256）和 trainin
 
 ~~~bash
 python tools/predict_oht_objects.py \
-  --replay /data/oht/replay-source-v2 --predictor my_oht_predictor:create \
+  --replay /data/oht/replay-source-v3 --predictor my_oht_predictor:create \
   --provenance /data/oht/predictor-provenance.yaml \
   --output /data/oht/predictions-v1
 
 python -m finetune.OHT.train \
   --config finetune/OHT/configs/predicted_external.yaml \
-  --replay /data/oht/replay-source-v2 --role-cache /data/oht/predictions-v1 \
+  --replay /data/oht/replay-source-v3 --role-cache /data/oht/predictions-v1 \
   --output /data/oht/runs/predicted-external-s0 \
   --init-checkpoint /data/oht/runs/baseline-s0/model_last.pth
 ~~~
@@ -483,7 +473,7 @@ absolute_target = client.act(observation, goal, episode_id, control_step, simula
 ~~~bash
 python -m finetune.OHT.eval open-loop \
   --checkpoint /data/oht/runs/baseline-s0/model_last.pth \
-  --replay /data/oht/replay-source-v2 --split val \
+  --replay /data/oht/replay-source-v3 --split val \
   --output /data/oht/eval/baseline-val.json
 ~~~
 
@@ -499,7 +489,7 @@ python -m finetune.OHT.eval open-loop \
 
 ~~~bash
 python -m finetune.OHT.eval closed-loop \
-  --server http://127.0.0.1:8010 --replay /data/oht/replay-source-v2 \
+  --server http://127.0.0.1:8010 --replay /data/oht/replay-source-v3 \
   --environment my_isaac_oht:create --cases /data/oht/eval-cases.jsonl \
   --executor-id verified-eef-executor-v1 --max-steps 500 \
   --output /data/oht/eval/baseline-eef-s0.json
@@ -511,20 +501,17 @@ case JSONL 每行含唯一 id、task、seed；id 每次运行需使用新 episod
 
 ## 9. 本地验证
 
+数据迁移、构建时对象导出与 HTML 帧导航的快速回归：
+
 ~~~bash
-python -m pytest -q tests/test_oht_camera_alignment.py tests/test_oht_point_filter.py tests/test_oht_keypoints.py tests/test_oht_audit.py tests/test_oht_dataset_config.py tests/test_oht_depth_video.py tests/test_oht_migration.py tests/test_oht_visualization.py tests/test_oht_html_preview.py tests/test_oht_geometry_diagnostic.py tests/test_oht_source_config.py
+python -m pytest -q \
+  tests/test_oht_migration.py \
+  tests/test_oht_object_cloud_build.py \
+  tests/test_oht_replay_viewer.py
 ~~~
 
 HTML/诊断测试覆盖抽样/RGB/相机对齐、旧 ROI 点的显示重建、无缓存改写、离线导出、非法范围，以及未完成 buffer 的显式隔离、直接 NPZ、缺失标签、多源选择和损坏文件拒绝。可选浏览器 smoke test 需安装 Playwright，并设置 `OHT_BROWSER_EXECUTABLE` 为本机 Chromium/Chrome/Edge 可执行文件；使用独立测试 profile，不复用用户浏览器数据。未设置时仅跳过这一项浏览器测试，不影响 HTML 导出使用。
 
 覆盖 12 个合成 episode → 60 条 transitions、五相机、视频 PTS、米制 depth、划分检查、教师/预测缓存、无 GT 推理隔离、真实 Agent 梯度累积与零碰撞损失、HTTP 协议、闭环失败计数和续训采样。backbone/render 使用 CPU 小替身，未验证完整 PaliGemma/point-renderer GPU 前向。另运行现有角色预测、跨尺度继承、辅助损失、前向与优化器回归测试。
 
-2026-10-09：220 项 OHT 测试分批通过（NumPy 1.26.4 / PyArrow 19.0.1）。新增 RGB-only info + 内嵌 K、完整/缺失量化 metadata、raw=897 毫米解码、两类原生 gray12 视频→replay→teacher 预览，以及错误 log 解码造成跨相机表面朝向分歧的合成复现。保留跨相机旋转平面对齐（两种四元数顺序/外参方向/相机坐标系/ray-Z）、错帧重影、整段视频长度、诊断缓存隔离、ROI/标签不变、gripper-only 关键帧、无事件处理、metadata hash、动作监督与推理隔离等回归。限制数值库线程并分批验证，不代表服务器真实数据已经对齐。
-
-另直接抽取参考转换器的纯相机函数，对照 1,600 组随机位姿、wxyz/xyzw、c2w/w2c 与 OpenGL/optical 输入；最终 optical→world 矩阵最大绝对差约 `2.8e-7`。这证明约定处理与提供代码相符，不证明服务器原始 pose 与图像已同步。
-
-深度解码现已包含参考 float32 运算和毫米 PNG 舍入。回归使用直接执行参考 `_dequantize_depth_mm()` 得到的黄金校验值，覆盖 linear/log 各 4096 个码值；另覆盖每相机 metadata/缺字段 fallback、qmax 保留及独立的 3 m 点云过滤，并复现将量化码误当毫米时的纯 XY 分离。此前未舍入配置约 0.504 mm 的码值差不再作为当前参考模式的容差。该对照不表示参考链路二次归一化后的夹爪标签或完整模型点云采样完全一致。
-
-补充的公共反投影模块已确认使用 Z-depth，仓库默认配置已同步为 `kind: z`。回归覆盖默认 Z-depth 在五个不同姿态相机和步长下采样后的同平面对齐，以及误按 ray 处理时的表面偏移；显式 ray 支持仍保留。
-
-均为本地合成数据/纯函数验证，未读取服务器 v423 全量数据，也未验证完整 CUDA/VLM/真实闭环。当前以用户提供的参考代码为深度契约，真实跨相机对齐仍需用重建后的缓存复核；audit 的服务器实际提速尚未测量。
+其余 `tests/test_oht_*.py` 按修改范围运行，覆盖相机约定、参考 float32 反量化/毫米舍入、默认 Z-depth、跨相机表面偏移、ROI、标签、训练和诊断隔离等。上述验证基于本地合成数据与纯函数，真实跨相机对齐仍需用服务器重建后的缓存复核。

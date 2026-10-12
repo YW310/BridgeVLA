@@ -105,12 +105,14 @@ def build(root, manifest_path, config, output, sample_stride=10, *,
                                  goal=GOALS[record["task"]],
                                  labels={key: value.tolist() for key, value in labels.items()})
                 rows.append(sample)
+                # Object export owns creation of the frame directory. PNG and
+                # HTML share it by default, so they must be written afterwards.
+                if object_writer is not None:
+                    sample["object_clouds"] = object_writer.write(observation, config, sample)
                 preview_args = {} if object_writer is None else dict(object_boxes=object_writer.specification(sample))
                 preview_path = preview.write(observation, config, sample, current_tcp=poses[frame], **preview_args)
-                if object_writer is not None:
-                    sample["object_clouds"] = object_writer.write(observation, config, sample,
-                                                                  visualize=preview_path is not None,
-                                                                  preview_image=preview_path)
+                if object_writer is not None and preview_path is not None:
+                    object_writer.write_preview(observation, config, sample, preview_image=preview_path)
             videos.validate_lengths()
         finally:
             videos.close()

@@ -49,16 +49,22 @@ def test_build_options_are_normalized_without_mutating_input():
     assert config == before
 
 
-def test_cli_build_generates_every_sample_and_binds_previews_without_changing_inputs(replay_fixture,tmp_path):
+@pytest.mark.parametrize("preview_location,visualize_every", [
+    ("default",100), ("default",1), ("shared",100), ("external",100),
+])
+def test_cli_build_generates_every_sample_and_binds_previews_without_changing_inputs(
+        replay_fixture,tmp_path,preview_location,visualize_every):
     f = replay_fixture
     data_config, object_config = tmp_path/"dataset.yaml",tmp_path/"objects.yaml"
     data_config.write_text(yaml.safe_dump(f.config),encoding="utf-8")
     options = dict(default_size=[10,10,10],objects=[dict(index=0,name="selected"),dict(index=1,size=[.1,.1,.1])])
     object_config.write_text(yaml.safe_dump(options),encoding="utf-8")
-    output, previews = tmp_path/"replay",tmp_path/"previews"
+    output = tmp_path/"replay"
+    previews = tmp_path/"previews" if preview_location == "external" else output/"preview"
+    preview_args = [] if preview_location == "default" else ["--visualize-output-dir",str(previews)]
     assert main(["build","--root",str(f.root),"--manifest",str(f.manifest),"--config",str(data_config),
                  "--output",str(output),"--sample-stride","2","--object-cloud-config",str(object_config),
-                 "--visualize-every","100","--visualize-output-dir",str(previews)]) == 0
+                 "--visualize-every",str(visualize_every),*preview_args]) == 0
     contract = load_contract(output)
     assert contract["diagnostic_object_clouds"] == object_cloud_build_options(options)
     rows, baseline = read_jsonl(output/"samples.jsonl"),read_jsonl(f.replay/"samples.jsonl")
@@ -83,10 +89,13 @@ def test_cli_build_generates_every_sample_and_binds_previews_without_changing_in
     from tests.test_oht_replay_viewer import viewer_payload
     viewer = viewer_payload(previews/"index.html")
     assert viewer["contract_sha256"] == contract["sha256"]
-    assert {entry["sample_id"] for entry in viewer["frames"]} == {row["id"] for row in rows if row["frame"]==0}
+    preview_rows = rows if visualize_every == 1 else [row for row in rows if row["frame"]==0]
+    assert {entry["sample_id"] for entry in viewer["frames"]} == {row["id"] for row in preview_rows}
     assert all((previews/entry["html"]).is_file() for entry in viewer["frames"])
-    assert len(html) == len(episodes) == len(list(previews.rglob("*.png")))
-    assert all(path.parent.name == "000000" for path in html)
+    assert len(html) == len(preview_rows) == len(list(previews.rglob("*.png")))
+    if visualize_every != 1:
+        assert len(html) == len(episodes)
+        assert all(path.parent.name == "000000" for path in html)
     # Each original preview contains object surfaces in its appended section.
     with Image.open(previews/rows[0]["id"]/"preview.png") as image:
         assert image.size == (1024,2150)

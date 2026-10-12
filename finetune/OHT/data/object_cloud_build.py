@@ -76,15 +76,19 @@ class BuildObjectCloudWriter:
                                   source_parquet_checksum_verified=True), allow_empty=True)
         self.reports.append(report_path)
         if visualize:
-            path = inside(self.preview_output, sample["id"] + "/point-cloud-roi.html")
-            preview_sample = dict(sample, diagnostic_contract_sha256=None,
-                                  diagnostic_note="随 replay 构建生成，仅诊断；整批完成状态请检查 complete.json。")
-            save_point_cloud_html(path, observation, config, preview_sample, source=self.options["source"],
-                                  object_boxes=specification, preview_image=preview_image)
-            self.html.append(path)
-            self.frames.append(dict(sample_id=sample["id"],frame=sample["frame"],target_frame=sample.get("target_frame"),
-                                    timestamp=sample.get("timestamp"),html=path,image=preview_image))
+            self.write_preview(observation, config, sample, preview_image=preview_image)
         return relative
+
+    def write_preview(self, observation, config, sample, *, preview_image=None):
+        """Write HTML after object export and the optional linked PNG exist."""
+        path = inside(self.preview_output, sample["id"] + "/point-cloud-roi.html")
+        preview_sample = dict(sample, diagnostic_contract_sha256=None,
+                              diagnostic_note="随 replay 构建生成，仅诊断；整批完成状态请检查 complete.json。")
+        save_point_cloud_html(path, observation, config, preview_sample, source=self.options["source"],
+                              object_boxes=self.specification(sample), preview_image=preview_image)
+        self.html.append(path)
+        self.frames.append(dict(sample_id=sample["id"],frame=sample["frame"],target_frame=sample.get("target_frame"),
+                                timestamp=sample.get("timestamp"),html=path,image=preview_image))
 
     def bind_contract(self, checksum):
         # The final index changes the contract hash. Bind sidecars only after
