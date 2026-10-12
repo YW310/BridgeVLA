@@ -15,8 +15,12 @@ from .object_preview import capture_object_poses
 
 
 def build(root, manifest_path, config, output, sample_stride=10, *,
-          visualize_every=0, visualize_output_dir=None):
+          visualize_every=0, visualize_output_dir=None, object_cloud_config=None):
     validate_data_config(config)
+    object_writer = None
+    if object_cloud_config is not None:
+        from .object_cloud_build import BuildObjectCloudWriter
+        object_writer = BuildObjectCloudWriter(output, object_cloud_config)
     if sample_stride < 1:
         raise ValueError("sample_stride must be positive")
     manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
@@ -42,6 +46,8 @@ def build(root, manifest_path, config, output, sample_stride=10, *,
                     policy_frame="world", quaternion_order="xyzw", target="future_absolute_tcp",
                     language="task_goal", rotation_classes=int(config.get("rotation_classes", 72)),
                     sample_stride=sample_stride)
+    if object_writer is not None:
+        contract["diagnostic_object_clouds"] = object_writer.options
     contract["sha256"] = digest(contract)
     write_json(output / "contract.json", contract)
     rows, skipped_episodes = [], []
@@ -98,7 +104,10 @@ def build(root, manifest_path, config, output, sample_stride=10, *,
                                  goal=GOALS[record["task"]],
                                  labels={key: value.tolist() for key, value in labels.items()})
                 rows.append(sample)
-                preview.write(observation, config, sample, current_tcp=poses[frame])
+                preview_path = preview.write(observation, config, sample, current_tcp=poses[frame])
+                if object_writer is not None:
+                    sample["object_clouds"] = object_writer.write(observation, config, sample,
+                                                                  visualize=preview_path is not None)
             videos.validate_lengths()
         finally:
             videos.close()
@@ -113,6 +122,8 @@ def build(root, manifest_path, config, output, sample_stride=10, *,
     contract.pop("sha256")
     contract["sha256"] = digest(contract)
     write_json(output / "contract.json", contract)
+    if object_writer is not None:
+        object_writer.bind_contract(contract["sha256"])
     write_json(output / "complete.json", dict(contract_sha256=contract["sha256"], samples=len(rows),
                                                index_sha256=contract["index_sha256"],
                                                skipped_episodes=skipped_episodes))

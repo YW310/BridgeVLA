@@ -86,7 +86,13 @@
   const xyzBytes = bytes(data.xyz), xyzView = new DataView(xyzBytes.buffer);
   const xyz = Float32Array.from({length: xyzBytes.length / 4}, (_, i) => xyzView.getFloat32(i * 4, true));
   const rgb = bytes(data.rgb), cameraIds = bytes(data.camera_ids);
-  const objects = (data.objects || []).map(object => ({...object, visible: true, size: [0.2,0.2,0.2], validSize:true}));
+  const presets = data.object_box_preset == null ? null : new Map(data.object_box_preset.map(box=>[box.index,box]));
+  const objects = (data.objects || []).map(object => {
+    const preset=presets?.get(object.index);
+    return {...object, name:preset?.name||object.name, visible:presets===null||Boolean(preset),
+      size:preset?preset.size.slice():[0.2,0.2,0.2], validSize:true};
+  });
+  if(presets!==null){el("show-object-boxes").checked=true;el("only-object-clouds").checked=true;el("show-removed").checked=true;}
   const objectBounds = object => [...object.position.map((v,a)=>v-object.size[a]/2), ...object.position.map((v,a)=>v+object.size[a]/2)];
   const canvas = el("cloud"), ctx = canvas.getContext("2d");
   const state = { scene: data.scene_bounds.slice(), keep: (data.point_cloud_filter.keep_bounds || data.scene_bounds).slice(),
@@ -153,7 +159,7 @@
   objects.forEach(object => {
     const row = document.createElement("div"); row.className = "viz-row";
     const label = document.createElement("label"); label.className = "form-check";
-    const toggle = document.createElement("input"); toggle.type = "checkbox"; toggle.checked = true;
+    const toggle = document.createElement("input"); toggle.type = "checkbox"; toggle.checked = object.visible;
     toggle.setAttribute("aria-label", "显示 object_" + object.index);
     toggle.addEventListener("change", () => { object.visible = toggle.checked; schedule(); });
     const index = document.createElement("span"); index.textContent = "object_" + object.index;
@@ -347,14 +353,16 @@
     setTimeout(()=>URL.revokeObjectURL(url),1000);
   });
   el("sample-label").textContent=data.sample_id+" · frame "+(data.frame??"未知")+" → "+(data.target_frame??"未知")+" · world metres";
-  el("diagnostic-note").textContent=data.diagnostic_note||"";
+  el("diagnostic-note").textContent=(data.diagnostic_note||"")+(presets===null?"":
+    " 对象框内全量点（重叠框按并集计数）："+data.object_box_union_points+"；HTML 优先抽样这些点。框外/工作区外点可由显示开关控制。");
   el("geometry-source").textContent=data.geometry_source==="cached_xyz" ?
     "来源：缓存 XYZ。已被旧 ROI 过滤成 NaN 的点不在此图中；扩大范围可改用 --html-source depth。" :
     "来源：缓存米制 depth + K/外参，仅为显示重新反投影，未套旧 ROI。仍受观测、深度范围、缓存分辨率及原参数正确性限制。";
   options();yaml();
   const bounds=[Infinity,Infinity,Infinity,-Infinity,-Infinity,-Infinity];
   for(let i=0;i<xyz.length;i+=3)for(let a=0;a<3;a++){bounds[a]=Math.min(bounds[a],xyz[i+a],state.scene[a]);bounds[a+3]=Math.max(bounds[a+3],xyz[i+a],state.scene[a+3]);}
-  fit(bounds);new ResizeObserver(schedule).observe(canvas);window.addEventListener("resize",schedule);
+  fit(bounds);if(presets!==null)el("fit-objects").click();
+  new ResizeObserver(schedule).observe(canvas);window.addEventListener("resize",schedule);
   document.addEventListener("visibilitychange",()=>{if(!document.hidden)schedule();});
   matchMedia("(prefers-color-scheme: dark)").addEventListener("change",schedule);
 })();

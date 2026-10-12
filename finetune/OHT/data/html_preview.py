@@ -10,6 +10,7 @@ from .cloud_source import camera_cloud
 from .point_filter import point_filter_options
 from .visualization import CAMERA_COLORS
 from .object_preview import object_payload
+from .object_cloud import box_mask, resolve_object_boxes
 
 
 MAX_HTML_POINTS = 60_000
@@ -22,7 +23,7 @@ def html_point_limit(value):
     return int(value)
 
 
-def point_cloud_payload(observation, config, sample, max_points=40_000, *, source="xyz"):
+def point_cloud_payload(observation, config, sample, max_points=40_000, *, source="xyz", object_boxes=None):
     """Include finite cached points BEFORE any additional ROI/workspace masking.
 
     XYZ mode cannot recover cached NaNs. Depth mode can reconstruct ROI-masked
@@ -32,6 +33,12 @@ def point_cloud_payload(observation, config, sample, max_points=40_000, *, sourc
     max_points = html_point_limit(max_points)
     if source not in ("xyz", "depth"):
         raise ValueError("HTML source must be xyz or depth")
+    preset = None
+    if object_boxes is not None:
+        preset, box_source = resolve_object_boxes(object_boxes, sample, sample.get("diagnostic_contract_sha256"),
+                                                  allow_empty=True)
+        if box_source != source:
+            raise ValueError("HTML object boxes and point cloud must use the same source")
     bounds = array(config["scene_bounds"], (6,), "scene_bounds")
     check_bounds((bounds[:3] + bounds[3:]) / 2, bounds)
     options = point_filter_options(config.get("point_cloud_filter"))
@@ -52,8 +59,27 @@ def point_cloud_payload(observation, config, sample, max_points=40_000, *, sourc
         if source == "xyz":
             raise ValueError("No finite cached XYZ to inspect; try source=depth if cached metric depth is valid")
         raise ValueError("No valid cached metric depth to backproject; HTML cannot invent geometry")
+    object_count = None
+    if preset is not None:
+        union = np.zeros(total, dtype=bool)
+        for box in preset:
+            union |= box_mask(points, box["bounds"])
+        object_count = int(union.sum())
     if total > max_points:
-        selected = np.linspace(0, total - 1, max_points, dtype=int)
+        if preset is None:
+            selected = np.linspace(0, total - 1, max_points, dtype=int)
+        else:
+            # Preserve small object crops before spending the HTML budget on
+            # background; exported clouds still keep every cached source point.
+            groups = (np.flatnonzero(union), np.flatnonzero(~union))
+            selected = []
+            remaining = max_points
+            for indices in groups:
+                count = min(remaining, len(indices))
+                if count:
+                    selected.extend(indices[np.linspace(0, len(indices)-1, count, dtype=int)])
+                remaining -= count
+            selected = np.asarray(selected, dtype=int)
         points, colors, camera_ids = points[selected], colors[selected], camera_ids[selected]
 
     def encoded(values, dtype):
@@ -68,6 +94,7 @@ def point_cloud_payload(observation, config, sample, max_points=40_000, *, sourc
                 objects=object_payload(sample), object_source=sample.get("diagnostic_objects"),
                 observation_sha256=sample.get("observation_sha256"),
                 contract_sha256=sample.get("diagnostic_contract_sha256"),
+                object_box_preset=preset, object_box_union_points=object_count,
                 point_cloud_filter=options, cameras=cameras, total_points=total, displayed_points=len(points),
                 xyz=encoded(points, "<f4"), rgb=encoded(colors, "u1"), camera_ids=encoded(camera_ids, "u1"),
                 geometry_source="cached_xyz" if source == "xyz" else "cached_metric_depth_backprojection",
@@ -81,9 +108,9 @@ def point_cloud_payload(observation, config, sample, max_points=40_000, *, sourc
                             "Goal is future GT for diagnostics only; no policy conditioning or cache edits.")
 
 
-def save_point_cloud_html(path, observation, config, sample, max_points=40_000, *, source="xyz"):
+def save_point_cloud_html(path, observation, config, sample, max_points=40_000, *, source="xyz", object_boxes=None):
     """Write one self-contained, offline HTML; refuse to overwrite any file."""
-    payload = point_cloud_payload(observation, config, sample, max_points, source=source)
+    payload = point_cloud_payload(observation, config, sample, max_points, source=source, object_boxes=object_boxes)
     template = Path(__file__).with_name("assets").joinpath("point-cloud-roi.html").read_text(encoding="utf-8")
     if template.count(_PAYLOAD_MARKER) != 1:
         raise ValueError("Invalid HTML preview template")
@@ -98,3 +125,15 @@ def save_point_cloud_html(path, observation, config, sample, max_points=40_000, 
     with path.open("x", encoding="utf-8") as stream:
         stream.write(document)
     return path
+
+
+def bind_point_cloud_html_contract(path, checksum):
+    """Atomically bind an owned build preview to the finished replay contract."""
+    path = Path(path)
+    document = path.read_text(encoding="utf-8")
+    marker = '"contract_sha256":null'
+    if document.count(marker) != 1:
+        raise ValueError("Build HTML must have exactly one unbound contract hash")
+    temporary = path.with_suffix(".html.tmp")
+    temporary.write_text(document.replace(marker, '"contract_sha256":'+json.dumps(checksum)), encoding="utf-8")
+    temporary.replace(path)

@@ -34,6 +34,7 @@ def main(argv=None):
     for key in ("root", "manifest", "config", "output"):
         p.add_argument("--" + key, required=True)
     p.add_argument("--sample-stride", type=int, default=10)
+    p.add_argument("--object-cloud-config", help="Optional build-time object-cloud YAML (source/default_size/objects)")
     _visualization_arguments(p)
     p = sub.add_parser("validate")
     p.add_argument("--replay", required=True)
@@ -80,7 +81,8 @@ def main(argv=None):
         return 1 if result["invalid_episodes"] else 0
     if args.command == "build":
         count = build(args.root, args.manifest, read_config(args.config), args.output, args.sample_stride,
-                      visualize_every=args.visualize_every, visualize_output_dir=args.visualize_output_dir)
+                      visualize_every=args.visualize_every, visualize_output_dir=args.visualize_output_dir,
+                      object_cloud_config=read_config(args.object_cloud_config) if args.object_cloud_config else None)
         print(f"Built {count} OHT transitions")
     elif args.command == "validate":
         contract = load_contract(args.replay)

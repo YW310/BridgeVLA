@@ -1,0 +1,11 @@
+# Optional diagnostics for tools/build_oht_replay.py --object-cloud-config.
+# Boxes follow each CURRENT frame's recorded object centers, world-axis aligned.
+# These full XYZ lengths (metres) are adjustable guesses, not object size GT.
+source: depth  # cached metric depth before ROI masking; xyz uses cached filtered XYZ
+default_size: [0.20, 0.20, 0.20]
+objects: null  # null: all recorded objects; otherwise select indices explicitly
+# objects:
+#   - index: 0
+#     name: object_0  # replace only after checking the index meaning
+#     size: [0.30, 0.20, 0.20]
+#   - index: 1        # omitted size uses default_size

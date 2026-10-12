@@ -9,7 +9,7 @@ from .geometry import array
 from .object_preview import object_payload
 
 
-def resolve_object_boxes(specification, sample, contract_sha256):
+def resolve_object_boxes(specification, sample, contract_sha256, *, allow_empty=False):
     if not isinstance(specification, dict):
         raise ValueError("Object boxes configuration must be a JSON object")
     if (specification.get("schema") != "oht_object_boxes_v1" or
@@ -25,7 +25,7 @@ def resolve_object_boxes(specification, sample, contract_sha256):
         raise ValueError("Object boxes source must be xyz or depth")
     objects = object_payload(sample)
     entries = specification.get("objects")
-    if not isinstance(entries, list) or not entries:
+    if not isinstance(entries, list) or (not entries and not allow_empty):
         raise ValueError("Select at least one object box")
     result, seen = [], set()
     for entry in entries:
@@ -64,11 +64,12 @@ def _write_ply(path, points, colors):
             stream.write(" ".join([*(format(float(v), ".17g") for v in point), *(str(int(v)) for v in color)])+"\n")
 
 
-def export_object_clouds(output, observation, config, sample, specification, contract_sha256, validation):
+def export_object_clouds(output, observation, config, sample, specification, contract_sha256, validation,
+                         *, allow_empty=False):
     output = Path(output)
     if output.exists():
         raise FileExistsError(f"Use a new object cloud directory: {output}")
-    boxes, source = resolve_object_boxes(specification, sample, contract_sha256)
+    boxes, source = resolve_object_boxes(specification, sample, contract_sha256, allow_empty=allow_empty)
     # Keep every finite point from each camera, before HTML display sampling.
     chunks, color_chunks, ids = [], [], []
     cameras = list(config["cameras"])

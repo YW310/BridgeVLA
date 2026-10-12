@@ -159,6 +159,43 @@ python tools/validate_oht_replay.py --replay /data/oht/replay-source-v2
 
 PNG 单独输出，不新增 observation/label 字段，也不改变 buffer contract 或训练样本。无需模型、CUDA 或图形桌面；仅使用数据环境已有的 NumPy/Pillow。基础 buffer 没有 T/R 标注，角色预览在下一节的 teacher 构建时生成。
 
+#### 生成 replay 时同步提取并预览对象点云
+
+构建时增加 `--object-cloud-config`，即可对**每个生成的 replay 样本**按当前帧对象中心同步导出近似点云；不是按未来 goal 帧截取，也不处理未进入 replay 的所有原始视频帧。未提供此参数时保持原有构建行为。
+
+~~~bash
+python tools/build_oht_replay.py \
+  --root /common-data-32t/data/robot_data/oht_curobo_pd_v423 \
+  --manifest /data/oht/audit-seed0.json \
+  --config finetune/OHT/configs/dataset.yaml \
+  --output /data/oht/replay-with-object-clouds --sample-stride 10 \
+  --object-cloud-config finetune/OHT/configs/object_clouds.yaml \
+  --visualize-every 100
+~~~
+
+对象配置与相机/训练配置分开，示例见 [`configs/object_clouds.yaml`](configs/object_clouds.yaml)。`objects: null` 表示全部记录对象；初始 `default_size: [0.20, 0.20, 0.20]` 为 world XYZ 全长（米）的可调整猜测，不是物体尺寸 GT。需要不同尺寸或只提取部分对象时，复制该 YAML 并改为例如：
+
+~~~yaml
+source: depth
+default_size: [0.20, 0.20, 0.20]
+objects:
+  - index: 0
+    name: object_0
+    size: [0.30, 0.20, 0.20]
+  - index: 1
+    size: [0.15, 0.15, 0.25]
+~~~
+
+配置按对象索引应用到每个样本，名称语义需先核实；指定索引在当前帧不存在时构建失败，不猜测替代对象。`source: depth` 用已缓存米制 depth/K/外参重建 ROI 前点云，`xyz` 则只截取缓存中仍有效的 XYZ。框随当前中心平移，保持 world 轴对齐，不随四元数旋转；没有实例 mask，框内仍可能混入背景或邻近物体。
+
+每个样本保存至 `<replay>/object_clouds/<task>/<episode>/<frame>/`：逐对象 `object_<index>.ply`、`object_<index>.npz` 和 `object-clouds.json`；索引行的 `object_clouds` 字段指向报告。空框保留零点文件及 `valid: false`；当前帧没有任何对象且选择全部时，保存空对象列表。
+
+`--visualize-every N` 同时控制原有 PNG 和对象交互 HTML 的频率，按每个 episode 的生成样本数计数、包含首个样本。`1` 为每个样本生成预览，`0` 只保存对象点云、不生成预览。HTML 位于上述对象目录的 `point-cloud-roi.html`，打开后自动勾选配置对象、恢复名称/尺寸、显示框内点云并适配截取框；可继续勾选其他对象和调整尺寸。页面优先将框内点纳入显示抽样，报告/PLY/NPZ 保留缓存分辨率下的全部有效框内点。`--visualize-output-dir` 仅改变原有 PNG 的位置；对象文件和 HTML 始终随 replay 保存。
+
+对象文件在构建过程中逐帧写出，可复制已写完的 HTML 在本机查看；整批结束后报告/HTML 绑定最终 contract 哈希，再写 `complete.json`。若在构建途中打开过页面，结束后重新复制/打开最终 HTML 再下载绑定配置。构建失败不生成完成标记。
+
+启用后会增加逐帧 PLY/NPZ 存储，`--visualize-every` 仅减少预览数量，不减少对象点云导出。配置和对象报告路径纳入 contract/索引校验，启用前后的 contract 哈希会不同；原 observation NPZ、动作标签和策略输入保持一致。近似对象点云只作诊断，不自动进入教师或训练前向。
+
 多相机旋转重影先检查单帧，不用 ICP 自动配准来掩盖相机参数或同步错误：
 
 ~~~bash
@@ -217,7 +254,7 @@ python tools/diagnose_oht_geometry.py \
 HTML 支持以当前记录的对象中心为中心，设置 **world X/Y/Z 轴对齐框的全长（米）**。每轴初始 0.20 m 只是可调整的预览值，不代表实物尺寸；不依赖对象四元数，不随姿态轴顺序旋转。若记录原点不在几何中心，需要调整框尺寸以覆盖物体。此方法截取的是框内观测点，可能包含桌面/邻近物体，不能作为实例分割 GT；重叠框允许共享点，不自动将点分配给最近对象。
 
 1. 重新导出并打开 HTML，勾选所需对象，调整每项的 X/Y/Z 全长。
-2. 开启“显示近似截取框”和“仅显示勾选对象框内点云”，检查物体是否被完整覆盖；点击“适配勾选对象”可将整个截取框纳入视图。框边界为下界包含、上界不包含；点云仍受当前相机开关、工作区显示和背景透明度控制。
+2. 开启“显示近似截取框”和“仅显示勾选对象框内点云”，检查物体是否被完整覆盖；点击“缩放到所选对象”可将整个截取框纳入视图。框边界为下界包含、上界不包含；点云仍受当前相机开关、工作区显示和背景透明度控制。
 3. 点击“下载对象截取配置 JSON”，将 `oht-object-boxes.json` 传回服务器，再运行下列命令。配置只保存所选对象索引/名称/尺寸及当前 sample/frame、点源和缓存校验值，不修改 replay 或 ROI YAML。
 
 ~~~bash

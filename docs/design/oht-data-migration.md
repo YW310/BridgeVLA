@@ -230,6 +230,8 @@ OHT 只有四物体中心和姿态，未提供实例 mask、mesh 尺寸或轴 si
 
 2026-10-12：无实例标注时可用当前对象中心与显式 world XYZ 尺寸框近似截取点云。HTML 调框并导出绑定当前 sample/frame 的 JSON，`tools/extract_oht_object_clouds.py` 从全部有效缓存点或米制深度重建点导出逐对象 PLY/NPZ，记录近似来源、每相机点数及空几何。它不是实例分割或完整表面 GT，不自动产生 T/R 教师或进入动作前向。
 
+同日：replay build 可通过独立 `--object-cloud-config` 为每个生成样本同步提取当前帧对象点云，保存逐对象 PLY/NPZ/报告；对象 HTML 按 `--visualize-every` 的 episode 内频率生成，自动恢复所选索引和尺寸，优先抽样框内点。对象配置/报告路径纳入 contract/索引，最终哈希在完成标记前绑定到报告和 HTML；默认关闭，开启也不改变原观测 NPZ、动作标签或策略输入。
+
 拟新增 roles.yaml、role_manifest.py、role_teacher.py、validate_roles.py。
 
 | 阶段 | Target | Reference 建议 | 必须核查 |
