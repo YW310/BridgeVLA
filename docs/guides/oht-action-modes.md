@@ -119,6 +119,8 @@ action:
 
 checkpoint 保存完整动作配置。严格加载/续训拒绝模式或动作设置不一致。显式 --init-checkpoint 可迁移共享骨干；动作设置改变时重新初始化回归头，必须重新训练。不能把一个已经训练好的 EEF checkpoint 仅改 config 就当作 joint 模型。
 
+`--resume` 还要求解析继承后的其余训练配置一致，仅允许变更 `optimizer_steps`、`checkpoint_interval` 和 `num_workers`；学习率、batch size、梯度累积、冻结设置和 seed 等不能变更。replay 契约、role cache 和卡数也必须一致。已达到总步数时需增加 `optimizer_steps`；GPU RNG 尚未恢复，不承诺逐位复现。
+
 ## 推理与执行
 
 服务自动使用训练 checkpoint 内的动作模式，不在启动时覆盖头语义：
@@ -137,7 +139,7 @@ from finetune.OHT.action_modes import resolve_action
 from finetune.OHT.runtime.transport import Client
 from finetune.OHT.runtime.executor import execution_target
 
-options = resolve_action(load("finetune/OHT/configs/relative_joint.yaml"))
+options = resolve_action(load("finetune/OHT/configs/joint.yaml"))
 client = Client(
     "http://127.0.0.1:8010", contract["sha256"], action_config=options
 )
@@ -150,21 +152,23 @@ absolute_joint_target = execution_target(
 
 相对 EEF 可用 execution_target(..., current_tcp=observation["tcp_pose"]) 得到绝对 TCP 目标；绝对模式直接返回原命令。仿真也可以直接消费相匹配的原生模式。
 
+上面的 server 与 client 均为 `joint`。切换到 `relative_joint` 时，必须同时使用该模式训练的 checkpoint 和对应训练配置；相对关节命令调用同一个 `execution_target(..., current_joints=...)` 解码，不能仅替换客户端 YAML。
+
 相对命令以对应请求的当前测量为参考，应转换一次并跟踪该目标；不能在跟踪同一目标时重复累加旧 delta。实际 PD/OSC 的归一化、控制周期、夹爪映射和轨迹跟踪仍由 IsaacLab adapter 实现。此改动没有假设现有 H-VLA client 与新协议兼容。
 
 ## 评估
 
 open-loop 自动使用 checkpoint 动作模式。EEF 类报告位置/旋转误差；relative_eef 先恢复对应绝对姿态再计算 SO(3) 误差。关节类报告 rad 单位 MAE/RMSE，所有模式报告夹爪准确率。
 
-closed-loop 显式提供对应训练 config：
+closed-loop 显式提供对应训练 config，下面与上面的 `joint` server 匹配：
 
 ~~~bash
 python -m finetune.OHT.eval closed-loop \
-  --config finetune/OHT/configs/relative_joint.yaml \
+  --config finetune/OHT/configs/joint.yaml \
   --server http://127.0.0.1:8010 --replay /data/oht/replay-v3 \
   --environment my_isaac_oht:create --cases /data/oht/eval-cases.jsonl \
-  --executor-id verified-relative-joint-v1 \
-  --output /data/oht/eval/relative-joint.json
+  --executor-id verified-joint-v1 \
+  --output /data/oht/eval/joint.json
 ~~~
 
 environment factory 收到的 contract 包含 action_spec，adapter 必须按该模式解释 step(action)。省略 --config 保持旧 EEF 行为。报告记录 action_spec，失败/超时继续计入分母。

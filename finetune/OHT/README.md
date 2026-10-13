@@ -384,7 +384,9 @@ python -m finetune.OHT.train \
 
 输出 `config.json`、`contract.json`、`metrics.jsonl`、`model_last.pth` 及最终步 checkpoint。默认每 250 个优化步更新 `model_last.pth`，完成 2,000 步后另存 `model_step_2000.pth`。
 
-`--resume` 恢复严格匹配的模型/优化器和采样位置，允许增加总步数；必须保持 replay、动作配置、role cache 和卡数一致。已达到总步数时需先增加 `optimizer_steps`。GPU RNG 尚未恢复，不承诺逐位复现。`--init-checkpoint` 仅迁移权重；动作配置变化时重新初始化回归头，需重新训练，其他兼容性限制见动作模式指南。
+`--resume` 恢复严格匹配的模型、优化器和采样位置。续训指纹检查解析继承后的训练配置，仅允许变更 `optimizer_steps`、`checkpoint_interval` 和 `num_workers`；学习率、batch size、梯度累积、冻结设置、seed、物体辅助模式和动作设置等其余配置必须一致，replay 契约、role cache 和卡数也必须一致。已达到总步数时需先增加 `optimizer_steps`。GPU RNG 尚未恢复，不承诺逐位复现。
+
+`--init-checkpoint` 仅迁移权重，不恢复优化器或采样位置；动作配置变化时重新初始化回归头，需重新训练，其他兼容性限制见 [动作模式指南](../../docs/guides/oht-action-modes.md)。
 
 ## 5. 内部 predicted assistance：首选路线
 
@@ -473,18 +475,35 @@ python -m finetune.OHT.server \
   --host 127.0.0.1 --port 8010
 ~~~
 
-role queries 使用同一命令。external checkpoint 额外提供 --predictor、--predictor-provenance。GET /health 返回 ready 和 contract hash。
+上例启动默认 `eef` baseline。其他动作模式使用各自训练的 checkpoint；服务从 checkpoint 自动读取动作设置，不能在启动时将已有 EEF 模型改为 joint。role queries 使用同一命令；external checkpoint 额外提供 `--predictor`、`--predictor-provenance`。`GET /health` 返回 `ready`、contract hash 和 `action_spec`。
 
-服务协议为 bridgevla_oht_absolute_tcp_v1，与 H-VLA 现有协议不同。请求含 episode、step、测量时间戳、固定 goal、contract hash、typed tensors；输出 [x,y,z,qx,qy,qz,qw,gripper_open]，**world/TCP/xyzw**。同一 episode 从 step0 开始严格递增，时间戳递增；新 episode 清除策略和感知状态。超时不自动重试同一控制请求。一个 server 顺序服务一个 client。
+`eef` 使用 `bridgevla_oht_absolute_tcp_v1`；其他三种模式使用 `bridgevla_oht_action_v2`，请求携带 `action_spec`。客户端的动作设置必须与 checkpoint 一致，包括坐标系、关节顺序等；不匹配会被拒绝。两种协议均与 H-VLA 现有协议不同。
 
-仿真适配器通过现有函数构造与训练一致的观测：
+| 动作模式 | 服务返回的命令 | 额外的当前测量输入 |
+| --- | --- | --- |
+| `eef` | `[x,y,z,qx,qy,qz,qw,gripper_open]`，world/TCP/xyzw | 无 |
+| `relative_eef` | `[dx,dy,dz,rx,ry,rz,gripper_open]`，位移 m、旋转向量 rad，坐标系由配置决定 | `tcp_pose`: float32 `[7]`，world/TCP/xyzw |
+| `joint` | `[q1,…,q6,gripper_open]`，关节位置 rad | `joint_positions`: float32 `[6]` |
+| `relative_joint` | `[dq1,…,dq6,gripper_open]`，关节增量 rad | `joint_positions`: float32 `[6]` |
+
+夹爪为 `[0,1]` 开度。请求含 episode、step、测量时间戳、固定 goal、contract hash、typed tensors。同一 episode 从 step 0 开始严格递增，时间戳递增；新 episode 清除策略和感知状态。超时不自动重试同一控制请求。一个 server 顺序服务一个 client。
+
+仿真适配器通过现有函数构造与训练一致的观测。下面默认配置与上面的 EEF server 匹配；使用其他模式时，配置必须与所启动 checkpoint 的训练动作设置一致（自定义设置也需保留）：
 
 ~~~python
 import numpy as np
+from finetune.OHT.config import load
+from finetune.OHT.action_modes import resolve_action
 from finetune.OHT.data.actions import low_dim, gripper_step
 from finetune.OHT.data.observation import camera_observation
+from finetune.OHT.runtime.executor import execution_target
 from finetune.OHT.runtime.transport import Client
 
+# Initialize once, using the training config matching the server checkpoint.
+options = resolve_action(load("finetune/OHT/configs/baseline.yaml"))
+client = Client(
+    "http://127.0.0.1:8010", contract["sha256"], action_config=options
+)
 # Select the source_data_configs profile matching the online task/dataset.
 data_config = contract["source_data_configs"][source_profile]["data_config"]
 # episode reset: previous_fraction = previous_binary = None
@@ -497,15 +516,27 @@ for name in data_config["cameras"]:
     observation.update(camera_observation(
         name, rgb[name], metric_depth[name], sensor_pose_world_wxyz[name], data_config
     ))
-client = Client("http://127.0.0.1:8010", contract["sha256"])
-absolute_target = client.act(observation, goal, episode_id, control_step, simulation_timestamp)
+if options["mode"] in ("joint", "relative_joint"):
+    # Measured radians in the same six-joint order as training.
+    observation["joint_positions"] = np.asarray(measured_joint_positions, dtype=np.float32)
+elif options["mode"] == "relative_eef":
+    # Already transformed to the training TCP reference point; world/xyzw.
+    observation["tcp_pose"] = np.asarray(measured_tcp_world_xyzw, dtype=np.float32)
+command = client.act(observation, goal, episode_id, control_step, simulation_timestamp)
+absolute_target = execution_target(
+    command, options,
+    current_tcp=observation.get("tcp_pose"),
+    current_joints=observation.get("joint_positions"),
+)
 ~~~
 
-上例的 pose 是与 Parquet 相同的 USD camera→world 原始 wxyz 格式，需匹配 checkpoint 的 `data_config.camera_quaternion_order`。若在线 SDK 返回 xyzw，应在调用前显式重排为 wxyz；已生成的 optical→world 缓存矩阵不能再次做这一步。
+上例的 `sensor_pose_world_wxyz` 是与 Parquet 相同的 USD camera→world 原始 wxyz 格式，需匹配 checkpoint 的 `data_config.camera_quaternion_order`。若在线 SDK 返回 xyzw，应在调用 `camera_observation()` 前显式重排为 wxyz；已生成的 optical→world 缓存矩阵不能再次做这一步。该相机四元数约定与 `tcp_pose` 的 xyzw 约定不同。
 
 使用 contract 中已解析的 K/端点，不直接把含 null 的原始 YAML 交给 `camera_observation()`。`metric_depth[name]` 必须已按同一深度契约解码成米，不能再次解量化。low_dim 的两个开度特征为 `open01 × 0.04` 的兼容量，不是已标定的真实两指米制距离；逐帧二值夹爪采用与训练相同的因果规则，并在 episode reset 清空状态。
 
-返回绝对目标交给共同执行器。runtime/executor.py 中 relative_eef 提供 world→base/body 位移与旋转向量误差，并要求显式位移/旋转限幅。真实 client 的尺度、积分周期、axis-angle/Euler 约定、夹爪转换、目标到达策略和在线 IK 必须由 IsaacLab 端核对实现；该函数不是完整控制器。
+`tcp_pose` 必须是训练使用的 TCP 位姿，不能把未经 `link_to_tcp` 转换的 EE link 位姿直接填入，也不能重复应用该偏移。关节测量必须匹配训练的六关节顺序。所有输入均来自当前观测，不包含未来动作、教师或仿真 GT 对象状态。
+
+`execution_target()` 将相对命令按本次请求的测量值转换一次，得到绝对 TCP 目标（8 维）或绝对关节目标（7 维）；绝对模式原样返回。执行器跟踪该目标时不能重复累加旧 delta。适配器也可直接消费对应模式的原生命令。`runtime/executor.py` 中另一个函数 `relative_eef()` 用于将绝对 TCP 目标转换为有显式限幅的 base/body 控制误差，与模型的相对动作解码用途不同。真实 client 的尺度、积分周期、axis-angle/Euler 约定、夹爪转换、目标到达策略和在线 IK 必须由 IsaacLab 端核对实现；这些函数不是完整控制器。
 
 没有复制 H-VLA server、猜测两个端口的模型分工或修改远端脚本。保留用户提供的 Task1/2 脚本名，尤其 Task1 的 client 名中仍含 task2；真实映射和 joint+relative_eef 路由待远程核查。
 
@@ -518,25 +549,30 @@ python -m finetune.OHT.eval open-loop \
   --output /data/oht/eval/baseline-val.json
 ~~~
 
-离线报告逐任务位置误差、旋转误差、夹爪准确率和模型耗时；这些不能代替闭环成功率。内部角色模式没有教师输入，即使 evaluation 数据行存在标签也会被策略白名单过滤。
+离线评估自动读取 checkpoint 的动作模式：EEF 类逐任务报告位置/旋转误差（相对 EEF 先还原绝对位姿），关节类报告 rad 单位 MAE/RMSE；所有模式报告夹爪准确率和模型耗时。这些不能代替闭环成功率。内部角色模式没有教师输入，即使 evaluation 数据行存在标签也会被策略白名单过滤。
 
-闭环工具通过 --environment module:factory 接入本机 IsaacLab 适配器。factory(contract) 返回：
+闭环工具通过 `--environment module:factory` 接入本机 IsaacLab 适配器。`factory(contract)` 收到的运行时契约包含 `action_spec`，返回：
 
 - reset(case) → {observation, goal, timestamp}，按固定 seed 重置并恢复执行器状态。
-- step(absolute_action8) → 下一 {observation, goal, timestamp, done, success}；终止时必须显式给出 bool success。
+- step(command) → 下一 {observation, goal, timestamp, done, success}；输入是上表对应模式的原生命令，EEF 为 8 维，其余为 7 维，工具不自动解码相对动作。终止时必须显式给出 bool success。
 - 可选 close() 释放环境。
 
-适配器拥有实际 EEF / joint+EEF 执行逻辑；GT 仅用于 reset 和 success 评分，不能放入策略/感知输入。先用专家重建目标完成执行器校验，再比较模型。
+适配器根据 `contract["action_spec"]` 解释命令；相对模式可调用 `execution_target()`，参考状态必须与该次请求中的测量一致。`reset` 和 `step` 返回的 observation 需包含上表要求的当前 TCP/关节字段。适配器拥有实际 EEF / joint 执行逻辑；GT 仅用于 reset 和 success 评分，不能放入策略/感知输入。先用专家重建目标完成执行器校验，再比较模型。
+
+下面与第 7 节的默认 EEF server 匹配，显式指定训练配置：
 
 ~~~bash
 python -m finetune.OHT.eval closed-loop \
+  --config finetune/OHT/configs/baseline.yaml \
   --server http://127.0.0.1:8010 --replay /data/oht/replay-source-v3 \
   --environment my_isaac_oht:create --cases /data/oht/eval-cases.jsonl \
   --executor-id verified-eef-executor-v1 --max-steps 500 \
   --output /data/oht/eval/baseline-eef-s0.json
 ~~~
 
-case JSONL 每行含唯一 id、task、seed；id 每次运行需使用新 episode 标识或重启 server。所有方法用同一份 cases、执行器版本和时间预算，分别报告 B-E/P-E，必要时 B-H/P-H。异常、超时和未完成 episode 均保留在成功率分母。报告记录 cases hash、契约和执行器 ID，便于检查对照条件。
+评估其他模式时，同步更换 server checkpoint、`--config`、已验证的执行器 ID 和输出路径；例如 joint 模式使用 `joint-s0/model_last.pth` 与 `configs/joint.yaml`，完整命令见 [动作模式指南](../../docs/guides/oht-action-modes.md)。省略 `--config` 会采用旧 EEF 默认值，不会自动从远端 server 选择模式。
+
+case JSONL 每行含唯一 id、task、seed；id 每次运行需使用新 episode 标识或重启 server。所有方法用同一份 cases、执行器版本和时间预算，分别报告 B-E/P-E，必要时 B-H/P-H。异常、超时和未完成 episode 均保留在成功率分母。报告记录 cases hash、契约、`action_spec` 和执行器 ID，便于检查对照条件。
 
 用户提供的 H-VLA 19/20 与 14/20 是历史参考；本实现尚无真实 OHT baseline 或 assistance 成绩。
 
