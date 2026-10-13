@@ -207,6 +207,17 @@ def test_browser_build_preview_restores_selected_boxes_and_downloads_final_contr
         assert not page.get_by_role("checkbox",name="显示 object_1",exact=True).is_checked()
         assert page.get_by_role("textbox",name="对象 0 名称",exact=True).input_value() == "wheel"
         assert page.get_by_role("spinbutton",name="对象 0 框 X 全长",exact=True).input_value() == "1"
+        roi_before = page.locator("#yaml").input_value()
+        page.locator("#restore-scene").click()
+        page.wait_for_selector('#point-count[data-visible="3"]')
+        assert not page.locator("#only-object-clouds").is_checked()
+        assert page.locator("#show-removed").is_checked()
+        assert page.locator("#cloud-opacity").input_value() == "100"
+        assert page.locator("#yaml").input_value() == roi_before
+        assert page.get_by_role("checkbox",name="显示 object_0",exact=True).is_checked()
+        assert not page.get_by_role("checkbox",name="显示 object_1",exact=True).is_checked()
+        page.locator("#only-object-clouds").check()
+        page.wait_for_selector('#point-count[data-visible="2"]')
         with page.expect_download() as download:
             page.locator("#download-object-boxes").click()
         spec = json.loads(Path(download.value.path()).read_text(encoding="utf-8"))

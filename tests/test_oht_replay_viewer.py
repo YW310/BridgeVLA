@@ -160,6 +160,11 @@ def test_browser_navigates_offline_retains_view_and_uses_new_frame_object_center
         assert page.locator("#frame-preview").bounding_box()["y"] < page.locator("#preview").bounding_box()["y"]
         assert page.locator("#previous").is_disabled()
         assert page.locator("#frame option").all_text_contents()==["10","30"]
+        page.locator('[data-view="scene"]').click()
+        child.locator('#point-count[data-visible="3"]').wait_for()
+        assert not child.locator("#only-object-clouds").is_checked()
+        child.locator("#only-object-clouds").check()
+        child.locator('#point-count[data-visible="2"]').wait_for()
         page.locator('[data-view="xy"]').click()
         child.locator('#oht-roi[data-view-pitch="1.5707963267948966"]').wait_for()
         assert "俯仰 90.0°" in page.locator("#camera-angle").inner_text()

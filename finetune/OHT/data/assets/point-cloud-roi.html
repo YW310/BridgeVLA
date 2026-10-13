@@ -60,6 +60,7 @@
   <div class="viz-controls">
     <label class="form-check"><input id="show-object-boxes" type="checkbox">显示近似截取框</label>
     <label class="form-check"><input id="only-object-clouds" type="checkbox">仅显示勾选对象框内点云</label>
+    <button class="btn" type="button" id="restore-scene">恢复完整场景</button>
     <button class="btn" type="button" id="download-object-boxes">下载对象截取配置 JSON</button>
   </div>
   <div class="viz-row text-muted">近似截取：以记录对象中心为框中心，尺寸为 world X/Y/Z 全长（米），初始各 0.20 m，请按物体调整。框内可能混入桌面或邻近物体；对象框成员色按索引区分，白色表示重叠框。预览计数仅针对显示抽样，完整缓存点请用导出命令读取。</div>
@@ -322,6 +323,13 @@
     state.excludes.splice(Number(state.selected),1);state.selected="scene";options();yaml();schedule();});
   ["color-mode","point-size","show-removed","show-objects","object-order","object-axis-length","show-object-boxes","only-object-clouds"].forEach(id=>el(id).addEventListener("change",schedule));
   el("cloud-opacity").addEventListener("input",schedule);
+  el("restore-scene").addEventListener("click",()=>{
+    el("only-object-clouds").checked=false;
+    el("show-removed").checked=true;
+    el("cloud-opacity").value="100";
+    cameraInputs.forEach((input,i)=>input.checked=state.cameras[i]=true);
+    fit(fullSceneBounds);
+  });
   el("fit-objects").addEventListener("click",()=>{
     const selected=objects.filter(object=>object.visible);if(!selected.length)return;
     const bounds=[Infinity,Infinity,Infinity,-Infinity,-Infinity,-Infinity];
@@ -378,9 +386,9 @@
     "来源：缓存 XYZ。已被旧 ROI 过滤成 NaN 的点不在此图中；扩大范围可改用 --html-source depth。" :
     "来源：缓存米制 depth + K/外参，仅为显示重新反投影，未套旧 ROI。仍受观测、深度范围、缓存分辨率及原参数正确性限制。";
   options();yaml();
-  const bounds=[Infinity,Infinity,Infinity,-Infinity,-Infinity,-Infinity];
-  for(let i=0;i<xyz.length;i+=3)for(let a=0;a<3;a++){bounds[a]=Math.min(bounds[a],xyz[i+a],state.scene[a]);bounds[a+3]=Math.max(bounds[a+3],xyz[i+a],state.scene[a+3]);}
-  fit(bounds);if(presets!==null)el("fit-objects").click();
+  const fullSceneBounds=[Infinity,Infinity,Infinity,-Infinity,-Infinity,-Infinity];
+  for(let i=0;i<xyz.length;i+=3)for(let a=0;a<3;a++){fullSceneBounds[a]=Math.min(fullSceneBounds[a],xyz[i+a],state.scene[a]);fullSceneBounds[a+3]=Math.max(fullSceneBounds[a+3],xyz[i+a],state.scene[a+3]);}
+  fit(fullSceneBounds);if(presets!==null)el("fit-objects").click();
   new ResizeObserver(schedule).observe(canvas);window.addEventListener("resize",schedule);
   document.addEventListener("visibilitychange",()=>{if(!document.hidden)schedule();});
   matchMedia("(prefers-color-scheme: dark)").addEventListener("change",schedule);
@@ -402,7 +410,13 @@
     if(parent===window||event.source!==parent||!message||message.sample_id!==data.sample_id)return;
     if(message.type==="oht-preview-command"){
       if(["3d","xy","xz","yz"].includes(message.view))root.querySelector('[data-view="'+message.view+'"]').click();
-      else if(message.view==="fit")el(el("fit-objects").disabled?"fit-box":"fit-objects").click();
+      else if(message.view==="scene")el("restore-scene").click();
+      else if(message.view==="fit"){
+        if(el("only-object-clouds").checked&&!el("fit-objects").disabled)el("fit-objects").click();
+        else fit(fullSceneBounds);
+      }
+      // Parent controls must work even while this iframe is below the PNG.
+      draw();
       canvas.scrollIntoView({block:"center"});
       return;
     }
