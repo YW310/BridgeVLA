@@ -320,34 +320,71 @@ NPZ 路径相对于 replay，不能越出该目录；`--data-profile` 必须替�
 
 ## 4. Baseline 训练
 
-先做 CPU 数据预检：
+这里训练的是 **BridgeVLA on OHT baseline**：`mode: baseline` 关闭物体辅助，默认 `action_mode: eef` 预测世界系绝对 TCP 位姿和夹爪。无需提供 teacher、外部预测器或 `--role-cache`。
+
+以下 Bash 命令从 **BridgeVLA 仓库根目录** 执行；正式训练需要第 1 节的 Linux/CUDA 模型环境，数据预检可在 CPU 环境执行。先设置实际路径：
+
+~~~bash
+OHT_REPLAY=/data/oht/replay-source-v3
+BRIDGEVLA_PRETRAIN=/path/to/bridgevla-heatmap-pretrain
+~~~
+
+`OHT_REPLAY` 指已经完整构建的 replay，目录中应有 `complete.json`、`contract.json` 和 `samples.jsonl`。`BRIDGEVLA_PRETRAIN` 必须替换为实际的 **BridgeVLA 热图预训练权重目录**，包含 `model.safetensors.index.json` 和对应分片；模型构造还需已缓存或可访问的 PaliGemma 基础权重，详见第 1 节。原始数据目录或单独的 preview 目录不能直接作为训练 replay。
+
+**第一步：CPU 数据预检。**
 
 ~~~bash
 python -m finetune.OHT.train \
   --config finetune/OHT/configs/baseline.yaml \
-  --replay /data/oht/replay-source-v3 --output /data/oht/check-only \
+  --replay "$OHT_REPLAY" \
+  --output /data/oht/check-only \
   --validate-only
 ~~~
 
-然后在 BridgeVLA GPU 环境做两步 smoke，再正式训练：
+输出 `valid: true` 后继续；`--validate-only` 不启动模型，也不创建训练输出目录。
+
+**第二步：两步 GPU 短测。**
 
 ~~~bash
 python -m finetune.OHT.train \
   --config finetune/OHT/configs/smoke.yaml \
-  --replay /data/oht/replay-source-v3 --output /data/oht/runs/smoke \
-  --pretrain-path /path/to/bridgevla-heatmap-pretrain
+  --replay "$OHT_REPLAY" \
+  --output /data/oht/runs/smoke \
+  --pretrain-path "$BRIDGEVLA_PRETRAIN"
+~~~
 
+短测使用 batch 1、累积 1、2 个优化步。确认 loss 有限且成功生成 `model_last.pth`，再进行正式训练。
+
+**第三步：单卡正式训练。**
+
+~~~bash
 python -m finetune.OHT.train \
   --config finetune/OHT/configs/baseline.yaml \
-  --replay /data/oht/replay-source-v3 --output /data/oht/runs/baseline-s0 \
-  --pretrain-path /path/to/bridgevla-heatmap-pretrain
+  --replay "$OHT_REPLAY" \
+  --output /data/oht/runs/baseline-s0 \
+  --pretrain-path "$BRIDGEVLA_PRETRAIN"
 ~~~
+
+正式训练和短测的输出目录均需尚不存在；重复实验时更换目录名，中断恢复使用 `--resume`。
 
 多卡将 python -m finetune.OHT.train 换成 torchrun --nproc_per_node=2 -m finetune.OHT.train，保留其余参数。
 
-默认每卡 batch 2、累积 8、2,000 个优化步，任务均匀采样；有效 batch = 每卡 batch × 累积次数 × 卡数。这是初始配置，尚未经真实 OHT 收敛或显存验证。比较方法保持相同预算、冻结设置、数据划分和 seeds。
+默认 seed 0、学习率 `4e-5`、每卡 batch 2、累积 8、2,000 个优化步，任务均匀采样；有效 batch = 每卡 batch × 累积次数 × 卡数，单卡为 **16**。这是初始配置，尚未经真实 OHT 收敛或显存验证。比较方法保持相同预算、冻结设置、数据划分和 seeds。
 
-输出 config.json、contract.json、metrics.jsonl、model_last.pth 及最终步 checkpoint。--resume 恢复严格匹配的模型/优化器和采样位置，允许增加总步数；必须保持 replay、role cache、配置和卡数一致。GPU RNG 尚未恢复，不承诺逐位复现。--init-checkpoint 仅初始化权重；只允许物体 adapter/predictor 的增删或尺寸变化，骨干不匹配时报错。
+**选择其他动作模式的 OHT baseline。** 替换上述命令的 `--config` 即可，这些配置均保持 `mode: baseline`：
+
+| 动作模式 | 配置 | 网络输出 |
+| --- | --- | --- |
+| `eef`（默认） | [configs/baseline.yaml](configs/baseline.yaml) | 世界系绝对 TCP 位姿 + 夹爪 |
+| `relative_eef` | [configs/relative_eef.yaml](configs/relative_eef.yaml) | 相对 TCP 位移/旋转向量 + 夹爪 |
+| `joint` | [configs/joint.yaml](configs/joint.yaml) | 六关节绝对位置 + 夹爪 |
+| `relative_joint` | [configs/relative_joint.yaml](configs/relative_joint.yaml) | 六关节增量 + 夹爪 |
+
+短测与正式训练需使用相同的 `action_mode`；现成 `smoke.yaml` 默认 EEF，其他模式短测需同步设置该字段并保留两步预算。新 replay 可用于四种模式；旧缓存若缺当前 TCP/关节状态或未来关节标签，预检会要求重建。相对坐标、单位和配置继承见 [四种动作模式指南](../../docs/guides/oht-action-modes.md)。
+
+输出 `config.json`、`contract.json`、`metrics.jsonl`、`model_last.pth` 及最终步 checkpoint。默认每 250 个优化步更新 `model_last.pth`，完成 2,000 步后另存 `model_step_2000.pth`。
+
+`--resume` 恢复严格匹配的模型/优化器和采样位置，允许增加总步数；必须保持 replay、动作配置、role cache 和卡数一致。已达到总步数时需先增加 `optimizer_steps`。GPU RNG 尚未恢复，不承诺逐位复现。`--init-checkpoint` 仅迁移权重；动作配置变化时重新初始化回归头，需重新训练，其他兼容性限制见动作模式指南。
 
 ## 5. 内部 predicted assistance：首选路线
 
