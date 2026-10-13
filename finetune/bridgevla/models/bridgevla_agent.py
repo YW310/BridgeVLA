@@ -661,6 +661,15 @@ class RVTAgent:
     def optimizer_step(self):
         self._optimizer.step()
 
+    def _network_extra_inputs(self, sample):
+        return {}
+
+    def _compute_policy_action_loss(self, output, sample, default_loss, translation_loss):
+        return default_loss, {}
+
+    def _format_policy_action(self, output, observation, default_action):
+        return default_action
+
     @property
     def oracle_prior_enabled(self):
         return self.oracle_prior_mode == 'o2_gt_instance'
@@ -1403,6 +1412,7 @@ class RVTAgent:
             wpt_local=wpt_local if self._network.training else None,
             rot_x_y=rot_x_y if self.rot_ver == 1 else None,
             oracle_compute_base=(backprop and self.oracle_log_base_loss),
+            **self._network_extra_inputs(replay_sample),
             **self._oracle_network_kwargs(
                 oracle_points, oracle_valid, relation_state,
             ),
@@ -1570,6 +1580,9 @@ class RVTAgent:
                 + grip_loss
                 + collision_loss
             )
+            action_total_loss, policy_action_metrics = self._compute_policy_action_loss(
+                out, replay_sample, action_total_loss, optimized_trans_loss,
+            )
             total_loss = action_total_loss
             object_slot_losses = self._object_slot_auxiliary_losses(
                 out, oracle_valid,
@@ -1635,6 +1648,7 @@ class RVTAgent:
                 "collision_loss": collision_loss.item(),
                 "lr": self._optimizer.param_groups[0]["lr"],
             }
+            loss_log.update(policy_action_metrics)
             if object_slot_losses:
                 loss_log['action_total_loss'] = action_total_loss.item()
                 loss_log.update({
@@ -2561,6 +2575,7 @@ class RVTAgent:
                 relation_state,
             ),
             language_goal=language_goal,
+            **self._network_extra_inputs(observation),
         )
         bridgevla_alignment_elements = {}
         if self.bridgevla_aligned_objects:
@@ -2583,6 +2598,7 @@ class RVTAgent:
                         aligned_points, aligned_valid, relation_state,
                     ),
                     language_goal=language_goal,
+                    **self._network_extra_inputs(observation),
                 )
         if visualize:
             aligned_target_used = (
@@ -2791,10 +2807,10 @@ class RVTAgent:
                         pred_grip[0].cpu().numpy(),
                     ], -1
                 )
-            return continuous_action
+            return self._format_policy_action(out, observation, continuous_action)
         else:
             return ActResult(
-                continuous_action,
+                self._format_policy_action(out, observation, continuous_action),
                 replay_elements=heatmap_action_anchor_elements,
             )
 

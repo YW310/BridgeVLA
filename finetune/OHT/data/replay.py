@@ -46,7 +46,7 @@ def build(root, manifest_path, config, output, sample_stride=10, *,
                     source_data_configs=profiles, audit_manifest_sha256=recorded_hash,
                     policy_frame="world", quaternion_order="xyzw", target="future_absolute_tcp",
                     language="task_goal", rotation_classes=int(config.get("rotation_classes", 72)),
-                    sample_stride=sample_stride)
+                    sample_stride=sample_stride, action_targets_version=1, joint_count=6)
     if object_writer is not None:
         contract["diagnostic_object_clouds"] = object_writer.options
     contract["sha256"] = digest(contract)
@@ -77,7 +77,9 @@ def build(root, manifest_path, config, output, sample_stride=10, *,
             for frame in frames:
                 target = keys[bisect.bisect_right(keys, frame)]
                 sample_id = f'{record["task"]}/{record["episode_index"]:06d}/{frame:06d}'
-                observation = {"low_dim_state": low_dim(measured[frame], binary_state=observed_gripper[frame])}
+                observation = {"low_dim_state": low_dim(measured[frame], binary_state=observed_gripper[frame]),
+                               "joint_positions": np.asarray(columns["observation.state"][frame][:6], dtype=np.float32),
+                               "tcp_pose": np.asarray(poses[frame], dtype=np.float32)}
                 for camera in config["cameras"]:
                     rgb = videos.read(columns[f"observation.images.{camera}"][frame], frame=frame)
                     depth_config = config["cameras"][camera].get("depth", config["depth"])
@@ -96,6 +98,8 @@ def build(root, manifest_path, config, output, sample_stride=10, *,
                 np.savez_compressed(path, **observation)
                 labels = target_labels(poses[target], int(observed_gripper[target]), config["scene_bounds"],
                                        int(config.get("rotation_classes", 72)))
+                labels["joint_action"] = np.r_[columns["observation.state"][target][:6],
+                                               observed_gripper[target]].astype(np.float32)
                 sample = dict(id=sample_id, task=record["task"], split=record["split"],
                                  episode_index=record["episode_index"], frame=frame, target_frame=target,
                                  timestamp=float(columns["timestamp"][frame]), group=record["group"],

@@ -4,16 +4,20 @@ from ..data.dataset import to_device
 from .predicted_wrapper import policy_observation
 from ..data.observation import validate_observation
 from ..data.point_filter import filter_observation_points
+from ..action_modes import action_options, validate_action
 
 
 class Policy:
-    def __init__(self, agent, contract, device, mode, wrapper=None):
+    def __init__(self, agent, contract, device, mode, wrapper=None, action_config=None):
         if mode == "predicted_external" and wrapper is None:
             raise ValueError("External prediction requires an online predictor")
         if mode != "predicted_external" and wrapper is not None:
             raise ValueError("Only external mode accepts a predictor wrapper")
         self.agent, self.contract, self.device = agent, contract, device
         self.mode, self.wrapper = mode, wrapper
+        self.action_config = action_options(action_config or getattr(agent, "oht_action_config", None))
+        if hasattr(agent, "oht_action_config") and self.action_config != action_options(agent.oht_action_config):
+            raise ValueError("Policy action configuration differs from the trained agent")
 
     def reset(self):
         self.agent.reset()
@@ -22,7 +26,7 @@ class Policy:
 
     def act(self, observation, goal, step):
         import torch
-        current = policy_observation(observation, self.contract["data_config"]["cameras"])
+        current = policy_observation(observation, self.contract["data_config"]["cameras"], self.action_config)
         current = filter_observation_points(current, self.contract["data_config"])
         validate_observation(current, self.contract["data_config"])
         if self.wrapper:
@@ -32,6 +36,6 @@ class Policy:
         batch = to_device(batch, self.device)
         batch["language_goal"] = [[[goal]]]
         with torch.no_grad():
-            # Returns the existing eight-value pose+gripper output; collision bit excluded.
+            # EEF has eight values; vector heads return six controls + gripper.
             action = self.agent.act(step, batch, deterministic=True, return_gembench_action=True)
-        return np.asarray(action, dtype=np.float32)
+        return validate_action(action, self.action_config)

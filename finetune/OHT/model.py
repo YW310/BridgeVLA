@@ -1,6 +1,7 @@
 """Construct the existing BridgeVLA architecture for OHT modes."""
 from . import bootstrap  # noqa: F401
 from .data.common import digest
+from .action_modes import resolve_action, action_options
 
 
 def build_agent(config, contract, device, pretrain_path=None, training=True, distributed=False):
@@ -34,8 +35,16 @@ def build_agent(config, contract, device, pretrain_path=None, training=True, dis
         object_slot_point_samples=object_config.get("point_samples", 128),
         object_slot_confidence_threshold=object_config.get("confidence_threshold", .25),
     )
-    backbone = MVT(renderer_device=str(device), load_pretrain=bool(pretrain_path),
-                   pretrain_path=pretrain_path, **kwargs, **dict(mvt))
+    action = resolve_action(config)
+    if action["mode"] != "eef" and config.get("agent", {}).get("transform_augmentation"):
+        raise ValueError("Vector actions require transform_augmentation=false")
+    network_class, action_kwargs = MVT, {}
+    if action["mode"] != "eef":
+        from .action_model import action_network_class
+        network_class = action_network_class(MVT)
+        action_kwargs["oht_action_config"] = action
+    backbone = network_class(renderer_device=str(device), load_pretrain=bool(pretrain_path),
+                   pretrain_path=pretrain_path, **kwargs, **dict(mvt), **action_kwargs)
     if config.get("efficient_paligemma_forward"):
         backbone.mvt1.enable_efficient_paligemma_forward()
     if training and config.get("gradient_checkpointing"):
@@ -56,9 +65,13 @@ def build_agent(config, contract, device, pretrain_path=None, training=True, dis
         if not assisted:
             raise ValueError("adapter_only requires object assistance")
         for name, parameter in backbone.named_parameters():
-            parameter.requires_grad = "oracle_prior_feature_adapter" in name or "object_slot_predictor" in name
+            parameter.requires_grad = any(part in name for part in ("oracle_prior_feature_adapter", "object_slot_predictor", "oht_action_head"))
         if not any(p.requires_grad for p in backbone.parameters()):
             raise ValueError("No object module parameters selected")
+    if action["mode"] != "eef":
+        for name, parameter in backbone.named_parameters():
+            if name.startswith("mvt1.feat_fc"):
+                parameter.requires_grad = False
     backbone = backbone.to(device)
     if distributed:
         backbone = torch.nn.parallel.DistributedDataParallel(
@@ -76,7 +89,12 @@ def build_agent(config, contract, device, pretrain_path=None, training=True, dis
                    object_slot_mask_loss_weight=role_loss.get("map", 1),
                    object_slot_null_loss_weight=role_loss.get("reference_null", .25),
                    object_slot_diversity_loss_weight=0)
-    agent = RVTAgent(network=backbone, **options)
+    agent_class, extra = RVTAgent, {}
+    if action["mode"] != "eef":
+        from .action_model import VectorActionAgent
+        agent_class, extra = VectorActionAgent, dict(oht_action_config=action)
+    agent = agent_class(network=backbone, **options, **extra)
+    agent.oht_action_config = action
     agent.build(training=training, device=device)
     backbone.train(training)
     return agent
@@ -92,11 +110,21 @@ def load_weights(agent, checkpoint, initialize=False):
         checkpoint = torch.load(checkpoint, map_location="cpu", weights_only=False)
     state = checkpoint["model_state"]
     state = {key.removeprefix("module."): value for key, value in state.items()}
+    current_action = action_options(getattr(agent, "oht_action_config", None))
+    saved_action = resolve_action(checkpoint.get("config", {}))
+    if not initialize and current_action != saved_action:
+        raise ValueError("Checkpoint action configuration mismatch; changing action_mode requires training a new head")
+    if initialize and current_action != saved_action:
+        state = {key: value for key, value in state.items() if "oht_action_head" not in key}
     if not initialize:
         agent._net_mod.load_state_dict(state, strict=True)
         return checkpoint
     current = agent._net_mod.state_dict()
-    allowed = ("oracle_prior_feature_adapter", "object_slot_predictor")
+    allowed = ("oracle_prior_feature_adapter", "object_slot_predictor", "oht_action_head")
+    if current_action["mode"] != "eef":
+        # Vector policies freeze these unused legacy classifiers. Allow their
+        # size to differ when initializing a corrected VLM-width configuration.
+        allowed += ("mvt1.feat_fc",)
     unexpected = [key for key in state if key not in current and not any(part in key for part in allowed)]
     missing = [key for key in current if key not in state and not any(part in key for part in allowed)]
     incompatible = [key for key in current if key in state and current[key].shape != state[key].shape
@@ -113,4 +141,12 @@ def resume_fingerprint(config, contract, cache_hash, world_size):
     # Budget increases and logging changes do not alter optimizer continuity.
     settings = {k: v for k, v in config.items() if k not in (
         "optimizer_steps", "checkpoint_interval", "num_workers")}
+    action = resolve_action(config)
+    if action == action_options():
+        # Preserve the pre-action-mode EEF resume signature when adding only
+        # explicit defaults. Nondefault action settings remain signature-bound.
+        settings.pop("action", None)
+        settings.pop("action_mode", None)
+    else:
+        settings["action_mode"], settings["action"] = action["mode"], action
     return digest(dict(config=settings, replay=contract["sha256"], cache=cache_hash, world_size=world_size))

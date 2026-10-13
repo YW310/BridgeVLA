@@ -2,6 +2,7 @@
 import numpy as np
 from scipy.spatial.transform import Rotation
 from ..data.geometry import array, pose_matrix, transform_matrix
+from ..action_modes import action_options, validate_action, apply_eef_delta
 
 
 def relative_eef(current_world_pose, target_world_pose, world_from_base,
@@ -30,3 +31,23 @@ def relative_eef(current_world_pose, target_world_pose, world_from_base,
         if norm > maximum:
             value *= maximum / norm
     return np.r_[delta, rotvec].astype(np.float32)
+
+
+def execution_target(action, options=None, *, current_tcp=None, current_joints=None):
+    """Resolve a configured command once to an absolute EEF or joint target.
+
+    A simulator may consume native commands directly instead. Relative values
+    refer to the current measurement used for that request, not a velocity.
+    """
+    options = action_options(options)
+    value = validate_action(action, options)
+    mode = options["mode"]
+    if mode in ("eef", "joint"):
+        return value
+    if mode == "relative_eef":
+        if current_tcp is None:
+            raise ValueError("Relative EEF execution requires measured current_tcp")
+        return np.r_[apply_eef_delta(current_tcp, value[:6], options), value[-1]].astype(np.float32)
+    if current_joints is None:
+        raise ValueError("Relative joint execution requires measured current_joints")
+    return np.r_[array(current_joints, (6,), "current joints") + value[:6], value[-1]].astype(np.float32)

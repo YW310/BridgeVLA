@@ -10,6 +10,7 @@ from .data.common import write_json
 from .data.dataset import OHTDataset, collate, to_device
 from .data.sampling import TaskBalancedSampler
 from .model import build_agent, load_weights, model_state, resume_fingerprint
+from .action_modes import resolve_action
 
 
 def main(argv=None):
@@ -25,7 +26,7 @@ def main(argv=None):
     parser.add_argument("--validate-only", action="store_true")
     args = parser.parse_args(argv)
     config = load(args.config)
-    dataset = OHTDataset(args.replay, "train", config["mode"], args.role_cache, config["point_count"])
+    dataset = OHTDataset(args.replay, "train", config["mode"], args.role_cache, config["point_count"], resolve_action(config))
     if args.validate_only:
         print(json.dumps(dict(valid=True, mode=config["mode"], samples=dataset.validate_all())))
         return 0

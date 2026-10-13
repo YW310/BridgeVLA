@@ -1,5 +1,7 @@
 # OHT v423 实施与运行
 
+动作模式可通过训练配置中的 action_mode 选择 eef / relative_eef / joint / relative_joint，并与三种物体辅助模式组合；标签、模型头、协议和运行步骤见 [四种动作模式配置](../../docs/guides/oht-action-modes.md)。省略该配置保持 EEF 兼容行为。
+
 本目录提供 OHT 数据审计、观测/动作缓存、baseline、内部 T/R role queries、可选外部 predicted objects、训练、推理服务和评估入口。命令均从 **BridgeVLA 仓库根目录** 执行。设计背景见 [迁移方案](../../docs/design/oht-data-migration.md)。
 
 完整重建 replay 和对象预览见[完整重新生成 replay](#完整重新生成-replay)。原始数据未变时可复用已有 audit，直接从构建步骤开始。

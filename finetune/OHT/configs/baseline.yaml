@@ -1,4 +1,5 @@
 mode: baseline
+action_mode: eef  # eef / relative_eef / joint / relative_joint
 seed: 0
 batch_size: 2
 accumulation_steps: 8
@@ -25,5 +26,6 @@ mvt:
   stage_two: true
   add_corr: true
   use_point_renderer: true
+  final_dim: 2048  # current VLM supplies 2048 channels for both global/local features
   num_rot: 72
   rot_ver: 0

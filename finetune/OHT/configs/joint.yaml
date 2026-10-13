@@ -1,0 +1,2 @@
+extends: baseline.yaml
+action_mode: joint

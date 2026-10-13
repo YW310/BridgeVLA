@@ -129,6 +129,13 @@ def validate_observation(observation, config):
     bounds = np.asarray(config["scene_bounds"])
     supported = False
     expected = {"low_dim_state"}
+    for name, state_width in (("joint_positions", 6), ("tcp_pose", 7)):
+        if name in observation:
+            state = array(observation[name], (state_width,), name)
+            if name == "tcp_pose":
+                from .geometry import quaternion
+                quaternion(state[3:])
+            expected.add(name)
     for camera in config["cameras"]:
         expected.update(f"{camera}_{suffix}" for suffix in (
             "rgb", "depth", "point_cloud", "camera_intrinsics", "camera_extrinsics"))

@@ -752,6 +752,10 @@ class MVT(nn.Module):
             out = self._forward_action_heads(
                 feat, rot_x_y, bs,
             )
+            if getattr(self, 'oht_return_action_features', False):
+                # Optional OHT regression heads reuse the same adapted global
+                # and waypoint-local features as the existing action heads.
+                out['oht_action_features'] = feat
             if base_action_out is not None:
                 out.update({
                     f'{name}_base': value.detach()

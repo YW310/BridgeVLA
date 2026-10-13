@@ -2,6 +2,7 @@
 import importlib
 import numpy as np
 from ..data.role_cache import validate_fields
+from ..action_modes import state_fields
 
 
 def load_predictor(spec):
@@ -14,8 +15,9 @@ def load_predictor(spec):
     return predictor
 
 
-def policy_observation(observation, cameras):
+def policy_observation(observation, cameras, action_config=None):
     allowed = {"low_dim_state"}
+    allowed.update(state_fields(action_config))
     for camera in cameras:
         allowed.update(f"{camera}_{suffix}" for suffix in (
             "rgb", "depth", "point_cloud", "camera_intrinsics", "camera_extrinsics"))

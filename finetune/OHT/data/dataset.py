@@ -6,15 +6,17 @@ from .replay import load_contract
 from .role_cache import RoleCache
 from .observation import validate_observation
 from .source_config import sample_data_config
+from ..action_modes import action_options, selected_target, state_fields
 
 MODES = ("baseline", "role_queries", "predicted_external")
 
 
 class OHTDataset:
-    def __init__(self, root, split="train", mode="baseline", role_cache=None, point_count=512):
+    def __init__(self, root, split="train", mode="baseline", role_cache=None, point_count=512, action_config=None):
         if mode not in MODES or split not in ("train", "val", "test"):
             raise ValueError("Unknown mode or split")
         self.root, self.mode = Path(root), mode
+        self.action_config = action_options(action_config)
         self.contract = load_contract(root)
         self.samples = [r for r in read_jsonl(self.root / "samples.jsonl") if r["split"] == split]
         if not self.samples:
@@ -42,9 +44,14 @@ class OHTDataset:
         with np.load(path, allow_pickle=False) as source:
             value = {name: source[name] for name in source.files}
         validate_observation(value, sample_data_config(self.contract, row))
+        for name in state_fields(self.action_config):
+            if name not in value:
+                raise ValueError(f"{self.action_config['mode']} requires {name}; rebuild replay")
+        action = selected_target(row["labels"], value, self.action_config)
         # Labels and observations are separate; no raw object/phase fields reach policy.
-        value.update({name: np.asarray(label, dtype=np.float32 if name in ("action", "gripper_pose") else np.int32)
+        value.update({name: np.asarray(label, dtype=np.float32 if name in ("action", "gripper_pose", "joint_action") else np.int32)
                       for name, label in row["labels"].items()})
+        value["action"] = action
         if self.role_cache is not None:
             value.update(self.role_cache.read(row["id"]))
         value.update(goal=row["goal"], task=row["task"], sample_id=row["id"])

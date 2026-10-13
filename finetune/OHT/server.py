@@ -3,7 +3,8 @@ import argparse
 import json
 import logging
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from .runtime.protocol import request_identity, action_response
+from .runtime.protocol import request_identity, action_response, request_action_options, protocol_schema
+from .action_modes import action_options, action_descriptor
 from .runtime.transport import unpack_observation, MAX_BYTES
 from .runtime.predicted_wrapper import policy_observation
 from .data.observation import validate_observation
@@ -18,6 +19,9 @@ class Session:
 
     def act(self, request):
         identity = request_identity(request)
+        options = action_options(getattr(self.policy, "action_config", None))
+        if action_descriptor(request_action_options(request)) != action_descriptor(options):
+            raise ValueError("Client/server action mode or coordinate contract mismatch")
         if request.get("contract_sha256") != self.policy.contract["sha256"]:
             raise ValueError("Client/server replay contract mismatch")
         goal = request.get("goal")
@@ -30,7 +34,7 @@ class Session:
         elif self.failed or identity["step"] != self.step or identity["timestamp"] <= self.timestamp or goal != self.goal:
             raise ValueError("Out-of-order/stale request or changed goal; failed episodes require a new ID")
         observation = unpack_observation(request["observation"])
-        observation = policy_observation(observation, self.policy.contract["data_config"]["cameras"])
+        observation = policy_observation(observation, self.policy.contract["data_config"]["cameras"], options)
         validate_observation(observation, self.policy.contract["data_config"])
         if new:
             self.policy.reset()
@@ -39,7 +43,7 @@ class Session:
             self.failed = False
         try:
             action = self.policy.act(observation, goal, identity["step"])
-            response = action_response(request, action)
+            response = action_response(request, action, options)
         except Exception:
             self.failed = True
             raise
@@ -54,7 +58,8 @@ def handler(session):
             if self.path != "/health":
                 self.send_error(404)
                 return
-            self.reply(200, dict(ready=True, schema="bridgevla_oht_absolute_tcp_v1",
+            options = action_options(getattr(session.policy, "action_config", None))
+            self.reply(200, dict(ready=True, schema=protocol_schema(options), action_spec=action_descriptor(options),
                                  contract_sha256=session.policy.contract["sha256"]))
 
         def reply(self, status, value):

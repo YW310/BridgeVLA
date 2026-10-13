@@ -3,7 +3,8 @@ import base64
 import json
 import urllib.request
 import numpy as np
-from .protocol import SCHEMA, request_identity, validate_response
+from .protocol import protocol_schema, request_identity, validate_response
+from ..action_modes import action_options, action_descriptor
 
 DTYPES = {"uint8": np.dtype("uint8"), "float32": np.dtype("<f4"), "float64": np.dtype("<f8")}
 MAX_BYTES = 32 * 1024 * 1024
@@ -49,17 +50,20 @@ def unpack_observation(packed):
 
 class Client:
     """One client per server; never retries a timed-out control action."""
-    def __init__(self, url, contract_sha256, timeout=30):
+    def __init__(self, url, contract_sha256, timeout=30, action_config=None):
         self.url = url.rstrip("/") + "/act"
         self.contract_sha256, self.timeout = contract_sha256, timeout
+        self.action_config = action_options(action_config)
         # Control traffic is a direct simulator/server connection. Corporate
         # HTTP proxy environment variables must not route local robot requests.
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
     def act(self, observation, goal, episode, step, timestamp):
-        request = dict(schema=SCHEMA, episode=episode, step=step, timestamp=float(timestamp),
+        request = dict(schema=protocol_schema(self.action_config), episode=episode, step=step, timestamp=float(timestamp),
                        contract_sha256=self.contract_sha256, goal=goal,
                        observation=pack_observation(observation))
+        if self.action_config["mode"] != "eef":
+            request["action_spec"] = action_descriptor(self.action_config)
         request_identity(request)
         body = json.dumps(request, allow_nan=False).encode("utf-8")
         if len(body) > MAX_BYTES:
