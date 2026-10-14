@@ -255,6 +255,34 @@ def test_http_action_negotiation_and_physical_payload(replay_fixture, mode):
         server.server_close()
 
 
+@pytest.mark.parametrize("include_spec", [False, True])
+def test_legacy_eef_protocol_accepts_optional_matching_action_spec(include_spec):
+    options = action_options()
+    request = dict(schema=SCHEMA, episode="eef", step=0, timestamp=0)
+    if include_spec:
+        request["action_spec"] = action_descriptor(options)
+    action = np.array([.1, .2, .3, 0, 0, 0, 1, 1], dtype=np.float32)
+    response = action_response(request, action, options)
+    assert response["frame"] == "world"
+    assert response["quaternion_order"] == "xyzw"
+    assert response["reference_point"] == "tcp"
+    np.testing.assert_allclose(validate_response(request, response), action)
+
+
+@pytest.mark.parametrize("spec", [
+    pytest.param(None, id="null"),
+    pytest.param({}, id="incomplete"),
+    pytest.param(action_descriptor({"mode": "joint"}), id="wrong-mode"),
+    pytest.param(dict(action_descriptor(None), frame="base"), id="wrong-frame"),
+    pytest.param(dict(action_descriptor(None), quaternion_order="wxyz"), id="wrong-quaternion-order"),
+    pytest.param(dict(action_descriptor(None), units="degrees"), id="wrong-units"),
+])
+def test_legacy_eef_protocol_rejects_incompatible_action_spec(spec):
+    request = dict(schema=SCHEMA, action_spec=spec, episode="eef", step=0, timestamp=0)
+    with pytest.raises(ValueError, match="Legacy EEF protocol"):
+        action_response(request, [0, 0, 0, 0, 0, 0, 1, 1])
+
+
 def test_protocol_rejects_wrong_vector_semantics():
     options = action_options({"mode": "relative_eef"})
     request = dict(schema=ACTION_SCHEMA, action_spec=action_descriptor(options), episode="x", step=0, timestamp=0)

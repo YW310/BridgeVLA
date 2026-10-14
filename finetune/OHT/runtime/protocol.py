@@ -12,7 +12,7 @@ def protocol_schema(options=None):
 
 def request_action_options(request):
     if request.get("schema") == SCHEMA:
-        if "action_spec" in request and request["action_spec"] != action_descriptor():
+        if "action_spec" in request and request["action_spec"] != action_descriptor(None):
             raise ValueError("Legacy EEF protocol cannot declare another action mode")
         return action_options()
     if request.get("schema") != ACTION_SCHEMA:
