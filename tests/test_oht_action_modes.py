@@ -415,6 +415,27 @@ def test_action_defaults_do_not_share_mutable_joint_configuration():
     assert action_options()["joint_wrap"] == []
 
 
+@pytest.mark.parametrize("preset", ["baseline", "smoke", "relative_eef", "joint", "relative_joint",
+                                    "role_queries", "predicted_external"])
+def test_oht_presets_load_pretrained_convex_upsampling_head(preset):
+    from bridgevla.mvt.raft_utils import ConvexUpSample
+    config = load(ROOT/f"finetune/OHT/configs/{preset}.yaml")["mvt"]
+    # Use production channel dimensions on meta to check the exact checkpoint
+    # layout without allocating the multi-gigabyte model or downloading weights.
+    with torch.device("meta"):
+        pretrained = ConvexUpSample(in_dim=2048, out_dim=1, up_ratio=14)
+        head = ConvexUpSample(in_dim=2048, out_dim=1, up_ratio=config.get("img_patch_size", 11))
+    result = head.load_state_dict(pretrained.state_dict(), strict=True)
+    assert not result.missing_keys and not result.unexpected_keys
+    assert head.net_mask[2].weight.shape == (1764, 4096, 1, 1)
+    # Also run the real upsampling operation at reduced channel width. The
+    # 16x16 PaliGemma image tokens must align with the configured rendered image.
+    small = ConvexUpSample(in_dim=2, out_dim=1, up_ratio=head.up_ratio)
+    with torch.no_grad():
+        output = small(torch.zeros(1, 2, 16, 16))
+    assert output.shape == (1, 1, config.get("img_size", 220), config.get("img_size", 220))
+
+
 def test_new_oht_config_matches_current_vlm_local_feature_width():
     from unittest import mock
     from tests.test_object_conditioning_forward import ObjectConditioningForwardTest

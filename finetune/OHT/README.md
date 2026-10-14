@@ -371,9 +371,23 @@ python -m finetune.OHT.train \
 
 正式训练和短测的输出目录均需尚不存在；重复实验时更换目录名，中断恢复使用 `--resume`。
 
-多卡将 python -m finetune.OHT.train 换成 torchrun --nproc_per_node=2 -m finetune.OHT.train，保留其余参数。
+**多卡正式训练。** [train_8x40.sh](train_8x40.sh) 参考 RLBench 同名脚本，默认单机 8 卡，使用 torchrun/DDP；它自动进入仓库根目录，完整透传 OHT 训练参数。沿用前面设置的 replay 和预训练路径：
+
+~~~bash
+bash finetune/OHT/train_8x40.sh \
+  --config finetune/OHT/configs/baseline.yaml \
+  --replay "$OHT_REPLAY" \
+  --pretrain-path "$BRIDGEVLA_PRETRAIN" \
+  --output /data/oht/runs/baseline-eef-8gpu-s0
+~~~
+
+用 `GPUS_PER_NODE=4 CUDA_VISIBLE_DEVICES=0,1,2,3 MASTER_PORT=29501` 作为上述 `bash` 命令的前缀即可改为四卡并指定通信端口；两卡设 `GPUS_PER_NODE=2` 并选择两个 GPU。脚本不覆盖 batch、动作模式、物体辅助或 checkpoint 设置，`--role-cache`、`--init-checkpoint`、`--resume` 均直接传给训练入口。相对参数路径按仓库根目录解析。`8x40` 沿用参考脚本的名称，不会自动检测显存或保证 40 GB 显存足够。
 
 默认 seed 0、学习率 `4e-5`、每卡 batch 2、累积 8、2,000 个优化步，任务均匀采样；有效 batch = 每卡 batch × 累积次数 × 卡数，单卡为 **16**。这是初始配置，尚未经真实 OHT 收敛或显存验证。比较方法保持相同预算、冻结设置、数据划分和 seeds。
+
+使用默认配置时，四卡有效 batch 为 **64**，八卡为 **128**；若要保持单卡的有效 batch **16**，在新训练配置中将四卡的 `accumulation_steps` 设为 **2**、八卡设为 **1**。不要在严格续训时更换卡数或累积设置。
+
+**预训练加载尺寸不匹配。** OHT 配置显式使用 `mvt.img_size: 224`、`mvt.img_patch_size: 14`，与 BridgeVLA 预训练和 PaliGemma 的 16×16 图像 token 网格一致。若日志出现 `ConvexUpSample net_mask.2` 的 `1764` 与 `1089` 不匹配，说明仍在使用旧的 `220/11` 渲染配置；更新 baseline 配置及自定义配置中的覆盖项后重新启动，保留严格权重加载。其他 OHT 预设继承 baseline，因此同步生效。这是模型渲染尺寸，不是缓存相机图像尺寸，已有有效 replay 无需重建或重复校验。初始化失败可能已经创建输出目录；本次失败没有可恢复的训练 checkpoint，重新运行时使用新的输出目录。
 
 **选择其他动作模式的 OHT baseline。** 替换上述命令的 `--config` 即可，这些配置均保持 `mode: baseline`：
 

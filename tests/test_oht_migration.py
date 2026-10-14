@@ -661,6 +661,8 @@ def test_model_factory_matches_existing_mvt_signature_and_real_agent(mode,replay
     agent=build_agent(config,load_contract(replay_fixture.replay),torch.device("cpu"))
     assert isinstance(agent,RVTAgent) and agent.collision_loss_weight==0
     assert captured["use_point_renderer"] is True
+    assert captured["img_size"] == 224
+    assert captured["img_patch_size"] == 14
     assert captured["object_slots_enabled"]==(mode=="role_queries")
     assert captured["oracle_prior_relation"]==(mode!="baseline")
     assert captured["object_conditioning_inherit_coarse_roles"]==(mode=="role_queries")

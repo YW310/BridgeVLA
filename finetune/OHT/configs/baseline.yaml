@@ -23,6 +23,8 @@ agent:
   optimizer_type: adam
   rot_x_y_aug: 0
 mvt:
+  img_size: 224       # rendered views must match PaliGemma's 16x16 image-token grid
+  img_patch_size: 14  # BridgeVLA pretrain up0: 9 * 14^2 = 1764 mask channels
   stage_two: true
   add_corr: true
   use_point_renderer: true
