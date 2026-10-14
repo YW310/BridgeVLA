@@ -132,8 +132,10 @@ python tools/build_oht_replay.py \
   --object-cloud-config finetune/OHT/configs/object_clouds.yaml \
   --visualize-every 1
 
-python tools/validate_oht_replay.py --replay /data/oht/replay-source-v3
+python tools/validate_oht_replay.py --replay /data/oht/replay-source-v3 --workers 4
 ~~~
+
+`validate` 会检查全部划分的全部样本，逐个计算观测 NPZ 哈希、解压并校验相机/状态/标签；它是 CPU/磁盘任务，不使用 GPU，不能仅按 400 个 episode 估算耗时。`--workers 4` 使用四个线程并行检查，默认仍为串行 `--workers 1`，校验范围相同。进度写到 stderr，显示当前划分的完成样本数、samples/s 和预计剩余秒数，约每 5 秒更新（开始/结束也输出）；最终 JSON 仍写 stdout。`--quiet` 仅关闭进度。机械盘、共享存储或内存紧张时可降为 `--workers 1` 或 `2`；更多线程不保证更快。预览图片、HTML 和对象诊断点云不参与此项训练 replay 校验。
 
 构建结束并通过校验后，打开 **`/data/oht/replay-source-v3/preview/index.html`**。PNG 保留原有场景面板，底部增加各对象点云区域；HTML 上方显示 PNG，下方提供点云交互、视角和帧选择。
 
@@ -342,6 +344,8 @@ python -m finetune.OHT.train \
 ~~~
 
 输出 `valid: true` 后继续；`--validate-only` 不启动模型，也不创建训练输出目录。
+
+若刚刚已对同一份未修改的 replay 成功运行 `validate_oht_replay.py --workers 4`，且本次使用默认 EEF baseline，可直接进行第二步，避免再次扫描训练集。其他动作设置或辅助模式仍需按对应配置/role cache 预检。
 
 **第二步：两步 GPU 短测。**
 

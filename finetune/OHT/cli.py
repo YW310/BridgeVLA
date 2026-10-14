@@ -1,6 +1,8 @@
 """Data commands run on CPU and do not import a simulator or model."""
 import argparse
 import json
+import sys
+from time import perf_counter
 from pathlib import Path
 import numpy as np
 from .data.common import CAMERAS, read_config, read_jsonl, inside, file_digest, write_json
@@ -18,6 +20,25 @@ def _visualization_arguments(parser):
                         help="Save every N emitted samples per episode, including the first; 0 disables")
     parser.add_argument("--visualize-output-dir",
                         help="Preview directory (default: OUTPUT/preview); PNG and build HTML share it")
+
+
+def _validation_progress(split):
+    started = last = perf_counter()
+
+    def report(completed, total):
+        nonlocal last
+        now = perf_counter()
+        if completed not in (0, total) and now - last < 5:
+            return
+        elapsed = now - started
+        rate = completed / elapsed if elapsed > 0 else 0.
+        eta = f"{(total - completed) / rate:.1f}" if rate > 0 else "unknown"
+        print(f"[OHT validate] split={split} {completed}/{total} "
+              f"elapsed_s={elapsed:.1f} samples_per_s={rate:.2f} eta_s={eta}",
+              file=sys.stderr, flush=True)
+        last = now
+
+    return report
 
 
 def main(argv=None):
@@ -41,6 +62,9 @@ def main(argv=None):
     p.add_argument("--mode", choices=("baseline", "role_queries", "predicted_external"), default="baseline")
     p.add_argument("--role-cache")
     p.add_argument("--point-count", type=int, default=512)
+    p.add_argument("--workers", type=int, default=1,
+                   help="Concurrent sample checks (default: 1); every sample still receives full validation")
+    p.add_argument("--quiet", action="store_true", help="Hide validation progress on stderr; keep the JSON summary")
     p = sub.add_parser("diagnose-geometry", help="Export one cached frame per camera and camera-colored fusion; no cache edits")
     p.add_argument("--replay", required=True)
     selection = p.add_mutually_exclusive_group(required=True)
@@ -94,12 +118,17 @@ def main(argv=None):
                       object_cloud_config=read_config(args.object_cloud_config) if args.object_cloud_config else None)
         print(f"Built {count} OHT transitions")
     elif args.command == "validate":
+        if args.workers < 1:
+            parser.error("--workers must be a positive integer")
+        if not args.quiet:
+            print("[OHT validate] loading replay contract and sample index", file=sys.stderr, flush=True)
         contract = load_contract(args.replay)
         counts = {}
         available = {row["split"] for row in read_jsonl(Path(args.replay) / "samples.jsonl")}
         for split in sorted(available):
             data = OHTDataset(args.replay, split, args.mode, args.role_cache, args.point_count)
-            counts[split] = data.validate_all()
+            counts[split] = data.validate_all(
+                workers=args.workers, progress=None if args.quiet else _validation_progress(split))
         print(json.dumps(dict(valid=True, samples=counts, contract=contract["sha256"])))
     elif args.command == "diagnose-geometry":
         if bool(args.object_root) != bool(args.object_manifest) or (args.object_root and not args.html):

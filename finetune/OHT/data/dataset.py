@@ -57,10 +57,40 @@ class OHTDataset:
         value.update(goal=row["goal"], task=row["task"], sample_id=row["id"])
         return value
 
-    def validate_all(self):
-        for i in range(len(self)):
-            self[i]
-        return len(self)
+    def validate_all(self, workers=1, progress=None):
+        """Check every sample, with bounded concurrency and no retained batches."""
+        if type(workers) is not int or workers < 1:
+            raise ValueError("Validation workers must be a positive integer")
+        total = len(self)
+        if progress is not None:
+            progress(0, total)
+        if workers == 1:
+            for index in range(total):
+                self[index]
+                if progress is not None:
+                    progress(index + 1, total)
+        elif total:
+            from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
+
+            def validate(index):
+                # Discard decoded tensors in the worker, not in a result queue.
+                self[index]
+
+            indices = iter(range(total))
+            with ThreadPoolExecutor(max_workers=min(workers, total)) as pool:
+                pending = {pool.submit(validate, next(indices)) for _ in range(min(workers, total))}
+                completed = 0
+                while pending:
+                    finished, pending = wait(pending, return_when=FIRST_COMPLETED)
+                    for future in finished:
+                        future.result()
+                        completed += 1
+                        if progress is not None:
+                            progress(completed, total)
+                        index = next(indices, None)
+                        if index is not None:
+                            pending.add(pool.submit(validate, index))
+        return total
 
 
 def collate(samples):
