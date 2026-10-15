@@ -369,7 +369,25 @@ python -m finetune.OHT.train \
   --pretrain-path "$BRIDGEVLA_PRETRAIN"
 ~~~
 
-正式训练和短测的输出目录均需尚不存在；重复实验时更换目录名，中断恢复使用 `--resume`。
+上述 `--output` 固定输出目录均需尚不存在；重复实验时更换目录名，中断恢复使用 `--resume`。需要与 RLBench 一样自动按时间分目录时，使用下面的 `--log-dir`。
+
+**实验名、备注和时间目录。** `--log-dir ROOT`（也接受 RLBench 风格的 `--log_dir`）将模型、配置、TensorBoard 和 PNG 保存在 `ROOT/train/<exp_id>/<exp_note>/MM_DD_HH_MM/`。默认实验名为配置中的 `exp_id` 或训练 YAML 文件名（去掉后缀），也可用 `--exp-id` / `--exp_id` 覆盖；备注使用 `--exp-note` / `--exp_note`，为空时省略该层。未指定 `--output` 或 `--log-dir` 时默认根目录为 `exp/OHT`。
+
+时间采用 Asia/Shanghai（UTC+08:00），目录命名与 RLBench 相同；同一分钟重复启动自动追加 `_01`、`_02` 等后缀，不覆盖已有 run。rank 0 创建目录并向全部 GPU 广播同一个路径。启动时打印 `Run directory: ...`，`run.json` 记录实际绝对路径、包含年份/秒/时区的创建时间、实验名、备注和启动参数。
+
+~~~text
+exp/OHT/train/oht_full_8x40/baseline_s0/10_15_14_30/
+├── run.json
+├── config.json
+├── contract.json
+├── training_plan.json
+├── metrics.jsonl
+├── tensorboard/
+├── train_visualizations/
+└── model_last.pth                 # 以及按 epoch/step 保存的 checkpoint
+~~~
+
+`--output DIR` 继续表示精确固定目录，与 `--log-dir` 互斥。`--resume /path/to/model_last.pth` 自动写回 checkpoint 所在目录，保留原始 `run.json` 的创建时间，不生成新时间目录；可省略输出参数，保留原命令中的 `--log-dir` 也会沿用原 run。若同时保留 `--output`，它必须指向 checkpoint 所在目录。`--validate-only` 不创建任何 run 目录。服务器出现 `/home/...` 与挂载真实路径不同的情况时，以打印的绝对保存路径为准。
 
 **多卡正式训练。** [train_8x40.sh](train_8x40.sh) 与 RLBench 同名脚本采用相同的 torchrun 启动参数和环境变量约定，默认单机 8 卡，使用 `--standalone`/DDP。OHT 使用 `-m finetune.OHT.train`，脚本自动进入仓库根目录，完整透传 OHT 训练参数。沿用前面设置的 replay 和预训练路径：
 
@@ -378,7 +396,7 @@ bash finetune/OHT/train_8x40.sh \
   --config finetune/OHT/configs/baseline.yaml \
   --replay "$OHT_REPLAY" \
   --pretrain-path "$BRIDGEVLA_PRETRAIN" \
-  --output /data/oht/runs/baseline-eef-8gpu-s0
+  --log-dir /data/oht/runs --exp-note baseline-eef-8gpu-s0
 ~~~
 
 用 `GPUS_PER_NODE=4 CUDA_VISIBLE_DEVICES=0,1,2,3` 作为上述 `bash` 命令的前缀即可改为四卡；两卡设 `GPUS_PER_NODE=2` 并选择两个 GPU。与 RLBench 脚本一致，`PYTHONWARNINGS` 默认 `ignore`（可用环境变量覆盖），`TRANSFORMERS_VERBOSITY` 设为 `error`，`MASTER_PORT` 默认 `29500` 并传给 torchrun；但 PyTorch 的 `--standalone` 会将 rendezvous endpoint 设为 `localhost:0`，实际端口自动分配，不能依赖 `MASTER_PORT` 固定该端口。脚本透传 batch/动作配置、`--role-cache`、`--init-checkpoint`、`--resume` 等训练参数，相对参数路径按仓库根目录解析。训练超参数仍由 OHT YAML 控制，启动脚本一致不代表训练配置已对齐 RLBench。`8x40` 沿用参考脚本的名称，不会自动检测显存或保证 40 GB 显存足够。
@@ -394,7 +412,7 @@ GPUS_PER_NODE=8 bash finetune/OHT/train_8x40.sh \
   --config finetune/OHT/configs/oht_full_8x40.yaml \
   --replay "$OHT_REPLAY" \
   --pretrain-path "$BRIDGEVLA_PRETRAIN" \
-  --output /data/oht/runs/oht-full-8x40-s0
+  --log-dir exp/OHT --exp-note baseline_s0
 ~~~
 
 | 设置 | full 8×40 预设 |
@@ -427,7 +445,7 @@ OHT 保留自己的相机/坐标/夹爪/语言和数据契约，collision loss �
 
 短测与正式训练需使用相同的 `action_mode`；现成 `smoke.yaml` 默认 EEF，其他模式短测需同步设置该字段并保留两步预算。新 replay 可用于四种模式；旧缓存若缺当前 TCP/关节状态或未来关节标签，预检会要求重建。相对坐标、单位和配置继承见 [四种动作模式指南](../../docs/guides/oht-action-modes.md)。
 
-输出 `config.json`、`contract.json`、`training_plan.json`、`metrics.jsonl`、`tensorboard/events.out.tfevents.*`、`model_last.pth` 及最终步 checkpoint。默认 baseline 每 250 个优化步更新 `model_last.pth`，完成 2,000 步后另存 `model_step_2000.pth`；full 的保存周期见上文。
+每个实际 run 目录输出 `run.json`、`config.json`、`contract.json`、`training_plan.json`、`metrics.jsonl`、`tensorboard/events.out.tfevents.*`、`model_last.pth` 及最终步 checkpoint。默认 baseline 每 250 个优化步更新 `model_last.pth`，完成 2,000 步后另存 `model_step_2000.pth`；full 的保存周期见上文。后续 `--init-checkpoint`、服务、评估或日志转换中的模型/run 路径应替换为实际打印的 run 目录；下文固定路径示例也可通过旧 `--output` 方式生成。
 
 **TensorBoard 训练曲线。** 训练默认启用 `--log-backend tensorboard`；训练环境需安装 `tensorboard`（`python -m pip install tensorboard`）。数据构建、校验和 `--validate-only` 不需要该依赖。模型和 checkpoint 初始化成功后创建 `<output>/tensorboard/`，并打印日志路径。每个优化步写入 `train/<指标名>`（包括 total/translation/rotation/gripper 等实际返回的 loss）及 `train/learning_rate`；有多个优化器参数组时额外记录各组学习率。loss 与 JSONL 一致，为梯度累积内的平均值；多卡仅 rank 0 写入，指标是 rank 0 的本地统计，没有跨卡平均。训练图像通过下面的配置启用；闭环成功率仍需单独评估。
 
@@ -451,10 +469,10 @@ PNG 同时保存为 `<output>/train_visualizations/step_00000001_mvt1.png`、`..
 默认每 10 秒刷新一次，可用 `--tensorboard-flush-secs 1` 缩短；保存 checkpoint 时也刷新，正常结束或 Python 异常退出时关闭 writer。用 `--log-backend none` 关闭 event 写入，仍保存 `metrics.jsonl`。这些命令行日志选项不改变训练配置/续训指纹。`--resume` 在同一日志目录从 checkpoint 的下一步继续写入，并隐藏旧日志中晚于该 checkpoint 的标量，避免回退后出现重复曲线。
 
 ~~~bash
-tensorboard --logdir /data/oht/runs --port 6006
+tensorboard --logdir exp/OHT/train --port 6006
 ~~~
 
-服务器运行 TensorBoard 时，在本机建立 SSH 端口转发后访问 `http://localhost:6006`；例如 `ssh -L 6006:127.0.0.1:6006 yiwei@serv92`。本节 `/data/oht/runs` 应替换为实际训练输出的父目录。
+服务器运行 TensorBoard 时，在本机建立 SSH 端口转发后访问 `http://localhost:6006`；例如 `ssh -L 6006:127.0.0.1:6006 yiwei@serv92`。`--logdir` 可指向日志根目录下的 `train/` 来聚合实验和时间目录，也可指向单次 run 的 `tensorboard/`；使用自定义 `--log-dir` 或旧固定输出时替换为对应路径。
 
 **旧训练只有 JSONL 时补导曲线。** 更新代码不会为已运行的旧进程自动补写 event；使用 [export_oht_tensorboard.py](../../tools/export_oht_tensorboard.py) 转换已有完整日志，无需重跑训练：
 

@@ -173,7 +173,7 @@ def test_ddp_accumulation_synchronizes_only_last_microbatch(replay_fixture, tmp_
         return agent
     monkeypatch.setattr(train, "build_agent", build)
     monkeypatch.setenv("WORLD_SIZE", "2")
-    for name in ("init_process_group", "barrier", "destroy_process_group"):
+    for name in ("init_process_group", "barrier", "destroy_process_group", "broadcast_object_list"):
         monkeypatch.setattr(dist, name, lambda *args, **kwargs: None)
     config = load(ROOT / "finetune/OHT/configs/smoke.yaml")
     config.update(global_batch_size=4, accumulation_steps=None)

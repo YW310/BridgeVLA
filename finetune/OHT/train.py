@@ -4,7 +4,6 @@ import json
 import os
 import random
 from contextlib import nullcontext
-from pathlib import Path
 import numpy as np
 from .config import load
 from .data.common import write_json
@@ -15,13 +14,18 @@ from .action_modes import resolve_action
 from .training_log import TensorBoardLogger, summary_writer_class
 from .training_plan import resolve_training_plan, epoch_metrics
 from .training_visualization import visualization_settings, capture_due, record_visualization
+from .run_directory import prepare_run_directory
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True)
     parser.add_argument("--replay", required=True)
-    parser.add_argument("--output", required=True)
+    location = parser.add_mutually_exclusive_group()
+    location.add_argument("--output", help="Exact run directory (legacy behavior)")
+    location.add_argument("--log-dir", "--log_dir", help="Timestamped run root (default: exp/OHT)")
+    parser.add_argument("--exp-id", "--exp_id", help="Experiment name; default: config exp_id or YAML filename")
+    parser.add_argument("--exp-note", "--exp_note", default="", help="Optional experiment subdirectory")
     parser.add_argument("--role-cache")
     parser.add_argument("--pretrain-path")
     group = parser.add_mutually_exclusive_group()
@@ -56,9 +60,6 @@ def main(argv=None):
         summary_writer_class()
     if not torch.cuda.is_available():
         raise RuntimeError("Full BridgeVLA training requires CUDA and the point-renderer extension; use --validate-only on CPU")
-    output = Path(args.output)
-    if output.exists() and not args.resume:
-        raise FileExistsError(f"Use a new training output directory: {output}")
     if world > 1:
         dist.init_process_group("nccl")
     device = torch.device("cuda", local_rank)
@@ -67,8 +68,10 @@ def main(argv=None):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
+    output = prepare_run_directory(args, config, rank=rank, world_size=world,
+                                   distributed=dist if world > 1 else None)
     if rank == 0:
-        output.mkdir(parents=True, exist_ok=True)
+        print(f"Run directory: {output}", flush=True)
     if world > 1:
         dist.barrier()
     remaining_draws = target_steps * accumulation * config["batch_size"]
