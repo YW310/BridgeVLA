@@ -387,6 +387,33 @@ bash finetune/OHT/train_8x40.sh \
 
 使用默认配置时，四卡有效 batch 为 **64**，八卡为 **128**；若要保持单卡的有效 batch **16**，在新训练配置中将四卡的 `accumulation_steps` 设为 **2**、八卡设为 **1**。不要在严格续训时更换卡数或累积设置。
 
+**对齐 RLBench full 8×40 的正式配置。** [configs/oht_full_8x40.yaml](configs/oht_full_8x40.yaml) 对齐本仓库 [RLBench full 8×40](../RLBench/configs/rlbench_full_8x40.yaml) 的训练配方和 [rvt2.yaml](../bridgevla/mvt/configs/rvt2.yaml) 的 MVT 开关。原有 `baseline.yaml` 保留按优化步训练的初始配置；选择 full 预设时显式指定：
+
+~~~bash
+GPUS_PER_NODE=8 bash finetune/OHT/train_8x40.sh \
+  --config finetune/OHT/configs/oht_full_8x40.yaml \
+  --replay "$OHT_REPLAY" \
+  --pretrain-path "$BRIDGEVLA_PRETRAIN" \
+  --output /data/oht/runs/oht-full-8x40-s0
+~~~
+
+| 设置 | full 8×40 预设 |
+| --- | --- |
+| 训练预算 | `epochs: 100`，`train_iter: 160000`，最多 83,300 优化步 |
+| batch | 每卡 4，全局有效 batch 固定 192；八卡自动累积 6 次，四卡 12 次，两卡 24 次 |
+| 优化器 | AdamW，学习率 `8e-5`，weight decay `1e-6`，固定学习率 |
+| 冻结 | 视觉塔、前 6 层 Gemma、multimodal projector、lm_head/embed_tokens |
+| 模型 | 224/14、三视图、两阶段、convex upsampling、`rot_ver: 1`，其余 MVT 开关跟随 rvt2 |
+| 增强 | 启用场景/EEF 联合变换，平移范围 `[0.125,0.125,0.125]`，绕 Z 旋转范围 45° |
+| 内存策略 | 高效 PaliGemma 前向开启；gradient checkpointing、GPU 图像预处理、FlashAttention 2 关闭 |
+| 日志和保存 | 保留每步 loss/学习率和 epoch 进度；首步及每 500 步记录 coarse/refine 图像；每 10 epochs 和训练结束保存 checkpoint |
+
+这里的 epoch 沿用 RLBench 的**采样预算**定义：每轮优化步数为 `floor(train_iter / global_batch_size)`，即 `floor(160000 / 192) = 833`，每轮实际采样 159,936 次。仍采用任务均衡、有放回采样，不表示每轮恰好遍历 replay 一次；即使训练集只有 40,634 条，full 预算也保持不变。若希望按 replay 样本数定义每轮预算，可在新的自定义配置中设 `train_iter: null`，此时改为 `floor(训练样本数 / 全局 batch)`。全局 batch 必须能被每卡 batch × 卡数整除；`accumulation_steps: null` 表示自动计算。
+
+启动时打印实际预算、冻结策略和可训练/冻结参数数量，并保存 `training_plan.json`。JSONL 每步包含 `epoch`、`epoch_step`、`epoch_progress` 和原有 loss；epoch 边界也打印到终端。full 预设保存 `model_epoch_10.pth`、`model_epoch_20.pth` 等周期快照、`model_last.pth`，结束时另存 `model_step_83300.pth`。checkpoint 包含已完成的优化步、完整 epoch 数和轮内位置。`--epochs N` 可覆盖 epoch 配置中的总目标轮数；`max_optimizer_steps` 仍为上限，要延长已达到上限的训练，应同时提高该上限或在配置中设为 `0`。日志横轴仍以优化步对齐，epoch_progress 是额外曲线。
+
+OHT 保留自己的相机/坐标/夹爪/语言和数据契约，collision loss 为 0；不能将本预设称为未经改动的 RLBench 实验。相对 EEF/关节模式仍要求关闭几何增强：自定义配置继承 full 后设置对应 `action_mode` 及 `agent.transform_augmentation: false`。辅助模式可在继承 full 的配置中设置 `mode` 和角色参数，并使用对应 role cache；沿用 full 训练预算进行公平对照。切换到 full 会改变冻结和动作头等设置，需要新的训练输出，从预训练权重初始化；不能严格 resume 旧 baseline 的 checkpoint。该预设仍需在实际 GPU 上确认显存和收敛。
+
 **预训练加载尺寸不匹配。** OHT 配置显式使用 `mvt.img_size: 224`、`mvt.img_patch_size: 14`，与 BridgeVLA 预训练和 PaliGemma 的 16×16 图像 token 网格一致。若日志出现 `ConvexUpSample net_mask.2` 的 `1764` 与 `1089` 不匹配，说明仍在使用旧的 `220/11` 渲染配置；更新 baseline 配置及自定义配置中的覆盖项后重新启动，保留严格权重加载。其他 OHT 预设继承 baseline，因此同步生效。这是模型渲染尺寸，不是缓存相机图像尺寸，已有有效 replay 无需重建或重复校验。初始化失败可能已经创建输出目录；本次失败没有可恢复的训练 checkpoint，重新运行时使用新的输出目录。
 
 **选择其他动作模式的 OHT baseline。** 替换上述命令的 `--config` 即可，这些配置均保持 `mode: baseline`：
@@ -400,9 +427,26 @@ bash finetune/OHT/train_8x40.sh \
 
 短测与正式训练需使用相同的 `action_mode`；现成 `smoke.yaml` 默认 EEF，其他模式短测需同步设置该字段并保留两步预算。新 replay 可用于四种模式；旧缓存若缺当前 TCP/关节状态或未来关节标签，预检会要求重建。相对坐标、单位和配置继承见 [四种动作模式指南](../../docs/guides/oht-action-modes.md)。
 
-输出 `config.json`、`contract.json`、`metrics.jsonl`、`tensorboard/events.out.tfevents.*`、`model_last.pth` 及最终步 checkpoint。默认每 250 个优化步更新 `model_last.pth`，完成 2,000 步后另存 `model_step_2000.pth`。
+输出 `config.json`、`contract.json`、`training_plan.json`、`metrics.jsonl`、`tensorboard/events.out.tfevents.*`、`model_last.pth` 及最终步 checkpoint。默认 baseline 每 250 个优化步更新 `model_last.pth`，完成 2,000 步后另存 `model_step_2000.pth`；full 的保存周期见上文。
 
-**TensorBoard 训练曲线。** 训练默认启用 `--log-backend tensorboard`；训练环境需安装 `tensorboard`（`python -m pip install tensorboard`）。数据构建、校验和 `--validate-only` 不需要该依赖。模型和 checkpoint 初始化成功后创建 `<output>/tensorboard/`，并打印日志路径。每个优化步写入 `train/<指标名>`（包括 total/translation/rotation/gripper 等实际返回的 loss）及 `train/learning_rate`；有多个优化器参数组时额外记录各组学习率。loss 与 JSONL 一致，为梯度累积内的平均值；多卡仅 rank 0 写入，指标是 rank 0 的本地统计，没有跨卡平均。本次记录标量，不自动写训练图像或闭环成功率。
+**TensorBoard 训练曲线。** 训练默认启用 `--log-backend tensorboard`；训练环境需安装 `tensorboard`（`python -m pip install tensorboard`）。数据构建、校验和 `--validate-only` 不需要该依赖。模型和 checkpoint 初始化成功后创建 `<output>/tensorboard/`，并打印日志路径。每个优化步写入 `train/<指标名>`（包括 total/translation/rotation/gripper 等实际返回的 loss）及 `train/learning_rate`；有多个优化器参数组时额外记录各组学习率。loss 与 JSONL 一致，为梯度累积内的平均值；多卡仅 rank 0 写入，指标是 rank 0 的本地统计，没有跨卡平均。训练图像通过下面的配置启用；闭环成功率仍需单独评估。
+
+**TensorBoard 中间图像。** `oht_full_8x40.yaml` 默认开启；兼容旧行为的 `baseline.yaml` 默认关闭。在训练 YAML 中配置：
+
+~~~yaml
+train_visualization:
+  enabled: true
+  interval: 500
+  save_png: true
+  tensorboard: true
+  output_dir: train_visualizations
+~~~
+
+启用后记录第 1 个优化步及每个 `interval` 的倍数步，在 TensorBoard 的 Images 中查看 `train_visualization/mvt1`（coarse）和 `train_visualization/mvt2`（refine）。图中包含该次训练实际渲染的输入 RGB、增强/投影后用于 loss 的 GT 定位热图、模型预测定位热图；模型返回角色监督、Target/Reference prior 或 relation anchor 时也显示对应面板。每次显示 rank 0 最后一个累积 microbatch 的首个样本，并记录 task 和 instruction。关节模式的定位热图来自辅助 EEF 头，不代表预测关节角或闭环轨迹。
+
+PNG 同时保存为 `<output>/train_visualizations/step_00000001_mvt1.png`、`..._mvt2.png` 等；相对 `output_dir` 按训练输出目录解析。`save_png: false` 可仅写 TensorBoard；只保存 PNG 时设置 `tensorboard: false`，可配合 `--log-backend none`。同时关闭两个输出需将 `enabled` 设为 false。只在采集步请求真实前向载荷，不额外运行模型，不为其余 rank/microbatch 复制图像；新增开销是 CPU 传输、拼图和图像写入，可增大 `interval` 控制。图像只用于训练诊断，含 GT 的诊断内容不会成为额外策略输入。
+
+已运行的旧进程不会自动新增图像；更新代码并从兼容 checkpoint 恢复后生效。`train_visualization` 仅控制诊断，可在续训时调整，不参与优化器连续性指纹；旧 JSONL 没有保存模型图像，历史标量转换工具无法补出这些中间结果。
 
 默认每 10 秒刷新一次，可用 `--tensorboard-flush-secs 1` 缩短；保存 checkpoint 时也刷新，正常结束或 Python 异常退出时关闭 writer。用 `--log-backend none` 关闭 event 写入，仍保存 `metrics.jsonl`。这些命令行日志选项不改变训练配置/续训指纹。`--resume` 在同一日志目录从 checkpoint 的下一步继续写入，并隐藏旧日志中晚于该 checkpoint 的标量，避免回退后出现重复曲线。
 
@@ -421,6 +465,10 @@ python tools/export_oht_tensorboard.py --run /data/oht/runs/baseline-eef-8gpu-s0
 默认写入 `<run>/tensorboard-from-jsonl/`，也可用 `--output` 指定新目录；拒绝覆盖已有导出，不修改源 JSONL、checkpoint 或原 TensorBoard 日志。按优化步恢复已有标量；遇到续训步数回退时剔除旧分支的后续记录。JSONL 没有保存的图像、学习率或真实历史时间不能凭空补出。若训练进程正在追加文件，使用完整 JSONL 快照或在其结束后转换，截断的末行会报错。
 
 `--resume` 恢复严格匹配的模型、优化器和采样位置。续训指纹检查解析继承后的训练配置，仅允许变更 `optimizer_steps`、`checkpoint_interval` 和 `num_workers`；学习率、batch size、梯度累积、冻结设置、seed、物体辅助模式和动作设置等其余配置必须一致，replay 契约、role cache 和卡数也必须一致。已达到总步数时需先增加 `optimizer_steps`。GPU RNG 尚未恢复，不承诺逐位复现。
+
+`train_visualization` 是独立的诊断设置，允许续训时调整。scalar 日志后端/刷新间隔仍由命令行控制。
+
+epoch 配置还允许变更 `epochs`、`max_optimizer_steps` 和 `checkpoint_every_epochs` 来延长预算或调整保存周期；`train_iter`、`global_batch_size`、模型/冻结/优化设置及卡数等必须保持一致。续训从 checkpoint 后的下一优化步继续，不重新开始整轮；若同时配置 epoch 与 step 预算会被拒绝，epoch 预设中的 `optimizer_steps` 和 `checkpoint_interval` 必须为 `null`。
 
 `--init-checkpoint` 仅迁移权重，不恢复优化器或采样位置；动作配置变化时重新初始化回归头，需重新训练，其他兼容性限制见 [动作模式指南](../../docs/guides/oht-action-modes.md)。
 

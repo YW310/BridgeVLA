@@ -1,0 +1,53 @@
+# Aligned with RLBench/configs/rlbench_full_8x40.yaml and mvt/configs/rvt2.yaml.
+extends: baseline.yaml
+mode: baseline
+action_mode: eef
+batch_size: 4
+num_workers: 3
+epochs: 100
+train_iter: 160000
+global_batch_size: 192
+max_optimizer_steps: 83300
+checkpoint_every_epochs: 10
+# Epoch/global-batch fields replace the legacy step budget and fixed accumulation.
+optimizer_steps: null
+accumulation_steps: null
+checkpoint_interval: null
+seed: 0
+sample_distribution_mode: task_uniform
+use_scheduler: false
+learning_rate: 0.00008
+gradient_checkpointing: false
+efficient_paligemma_forward: true
+gpu_paligemma_preprocessing: false
+flash_attention_2: false
+# Matches the documented RLBench full command, which passes --freeze_vision_tower.
+freeze_vision_tower: true
+freeze_gemma_prefix_layers: 6
+freeze_multimodal_projector: true
+train_visualization:
+  enabled: true
+agent:
+  optimizer_type: adamw
+  lambda_weight_l2: 0.000001
+  transform_augmentation: true
+  transform_augmentation_xyz: [0.125, 0.125, 0.125]
+  transform_augmentation_rpy: [0.0, 0.0, 45.0]
+  rot_x_y_aug: 2
+  collision_loss_weight: 0.0  # OHT has no collision supervision
+mvt:
+  stage_two: true
+  norm_corr: true
+  rend_three_views: true
+  use_point_renderer: true
+  inp_pre_pro: false
+  inp_pre_con: false
+  feat_ver: 1
+  img_size: 224
+  img_patch_size: 14
+  cvx_up: true
+  xops: true
+  rot_ver: 1
+  st_wpt_loc_inp_no_noise: true
+  wpt_img_aug: 0.0
+  img_aug_2: 0.05

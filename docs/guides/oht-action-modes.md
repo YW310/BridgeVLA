@@ -121,6 +121,10 @@ checkpoint 保存完整动作配置。严格加载/续训拒绝模式或动作�
 
 `--resume` 还要求解析继承后的其余训练配置一致，仅允许变更 `optimizer_steps`、`checkpoint_interval` 和 `num_workers`；学习率、batch size、梯度累积、冻结设置和 seed 等不能变更。replay 契约、role cache 和卡数也必须一致。已达到总步数时需增加 `optimizer_steps`；GPU RNG 尚未恢复，不承诺逐位复现。
 
+使用 [OHT full 8×40 epoch 配置](../../finetune/OHT/configs/oht_full_8x40.yaml) 时，可额外调整 `epochs`、`max_optimizer_steps` 和 `checkpoint_every_epochs`；`train_iter`、`global_batch_size` 和模型/动作设置仍须一致。关节/相对模式继承该配置时必须设置 `agent.transform_augmentation: false`。完整预算、冻结策略、loss/epoch 日志及保存方式见 [OHT README](../../finetune/OHT/README.md)。
+
+`train_visualization` 仅控制训练图像诊断，四种动作模式均支持，可在续训时调整；它不参与优化器连续性指纹。关节模式显示的预测定位热图属于辅助 EEF 头，不能当作关节预测图。
+
 ## 推理与执行
 
 服务自动使用训练 checkpoint 内的动作模式，不在启动时覆盖头语义：

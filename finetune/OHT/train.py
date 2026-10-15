@@ -3,6 +3,7 @@ import argparse
 import json
 import os
 import random
+from contextlib import nullcontext
 from pathlib import Path
 import numpy as np
 from .config import load
@@ -12,6 +13,8 @@ from .data.sampling import TaskBalancedSampler
 from .model import build_agent, load_weights, model_state, resume_fingerprint
 from .action_modes import resolve_action
 from .training_log import TensorBoardLogger, summary_writer_class
+from .training_plan import resolve_training_plan, epoch_metrics
+from .training_visualization import visualization_settings, capture_due, record_visualization
 
 
 def main(argv=None):
@@ -27,13 +30,23 @@ def main(argv=None):
     parser.add_argument("--validate-only", action="store_true")
     parser.add_argument("--log-backend", choices=("tensorboard", "none"), default="tensorboard")
     parser.add_argument("--tensorboard-flush-secs", type=int, default=10)
+    parser.add_argument("--epochs", type=int, help="Override total epochs in an epoch-budget config")
     args = parser.parse_args(argv)
     if args.tensorboard_flush_secs < 1:
         parser.error("--tensorboard-flush-secs must be a positive integer")
     config = load(args.config)
+    visualization = visualization_settings(config, None if args.validate_only else args.log_backend)
+    if args.epochs is not None:
+        if args.epochs < 1 or config.get("epochs") is None:
+            parser.error("--epochs requires an epoch-budget config and a positive total epoch count")
+        config["epochs"] = args.epochs
     dataset = OHTDataset(args.replay, "train", config["mode"], args.role_cache, config["point_count"], resolve_action(config))
+    rank, local_rank = int(os.environ.get("RANK", 0)), int(os.environ.get("LOCAL_RANK", 0))
+    world = int(os.environ.get("WORLD_SIZE", 1))
+    plan = resolve_training_plan(config, len(dataset), world)
+    target_steps, accumulation = plan["optimizer_steps"], plan["accumulation_steps"]
     if args.validate_only:
-        print(json.dumps(dict(valid=True, mode=config["mode"], samples=dataset.validate_all())))
+        print(json.dumps(dict(valid=True, mode=config["mode"], samples=dataset.validate_all(), training_plan=plan)))
         return 0
     import torch
     import torch.distributed as dist
@@ -43,8 +56,6 @@ def main(argv=None):
         summary_writer_class()
     if not torch.cuda.is_available():
         raise RuntimeError("Full BridgeVLA training requires CUDA and the point-renderer extension; use --validate-only on CPU")
-    rank, local_rank = int(os.environ.get("RANK", 0)), int(os.environ.get("LOCAL_RANK", 0))
-    world = int(os.environ.get("WORLD_SIZE", 1))
     output = Path(args.output)
     if output.exists() and not args.resume:
         raise FileExistsError(f"Use a new training output directory: {output}")
@@ -60,7 +71,7 @@ def main(argv=None):
         output.mkdir(parents=True, exist_ok=True)
     if world > 1:
         dist.barrier()
-    remaining_draws = config["optimizer_steps"] * config["accumulation_steps"] * config["batch_size"]
+    remaining_draws = target_steps * accumulation * config["batch_size"]
     sampler = TaskBalancedSampler(dataset.samples, remaining_draws, seed)
     loader = DataLoader(dataset, batch_size=config["batch_size"], sampler=sampler,
                         num_workers=config.get("num_workers", 0), collate_fn=collate,
@@ -82,15 +93,20 @@ def main(argv=None):
                 if torch.is_tensor(value):
                     state[key] = value.to(device)
         step = int(checkpoint["optimizer_step"])
-    if step >= config["optimizer_steps"]:
-        raise ValueError("Checkpoint already reached the requested optimizer_steps")
-    sampler.start = step * config["accumulation_steps"] * config["batch_size"]
+    if step >= target_steps:
+        raise ValueError("Checkpoint already reached the requested training budget; increase optimizer_steps or epochs/max_optimizer_steps")
+    sampler.start = step * accumulation * config["batch_size"]
     if rank == 0:
         write_json(output / "config.json", config)
         write_json(output / "contract.json", dataset.contract)
+        write_json(output / "training_plan.json", plan)
         print(json.dumps(dict(mode=config["mode"], samples=len(dataset),
-                              effective_batch=config["batch_size"] * config["accumulation_steps"] * world,
-                              resume_step=step)), flush=True)
+                              resume_step=step, **plan)), flush=True)
+        print(json.dumps(dict(freeze_vision_tower=config.get("freeze_vision_tower", False),
+                              freeze_gemma_prefix_layers=config.get("freeze_gemma_prefix_layers", 0),
+                              freeze_multimodal_projector=config.get("freeze_multimodal_projector", False),
+                              trainable_parameters=sum(p.numel() for p in agent._net_mod.parameters() if p.requires_grad),
+                              frozen_parameters=sum(p.numel() for p in agent._net_mod.parameters() if not p.requires_grad))), flush=True)
     try:
         with TensorBoardLogger(output / "tensorboard", rank=rank, backend=args.log_backend,
                                flush_secs=args.tensorboard_flush_secs,
@@ -98,35 +114,54 @@ def main(argv=None):
             if rank == 0 and args.log_backend == "tensorboard":
                 print(f"TensorBoard logs: {output / 'tensorboard'}", flush=True)
             iterator = iter(loader)
-            while step < config["optimizer_steps"]:
+            while step < target_steps:
                 losses = {}
-                for micro in range(config["accumulation_steps"]):
+                capture = capture_due(visualization, step + 1, rank)
+                image_payload = None
+                for micro in range(accumulation):
                     batch = to_device(next(iterator), device)
-                    result = agent.update(batch, loss_scale=1 / config["accumulation_steps"],
-                                          reset_gradients=micro == 0,
-                                          step_optimizer=micro == config["accumulation_steps"] - 1)
+                    synchronize = micro == accumulation - 1
+                    sync_context = (agent._network.no_sync() if world > 1 and not synchronize else nullcontext())
+                    with sync_context:
+                        image_options = {"return_visualization": True} if capture and synchronize else {}
+                        result = agent.update(batch, loss_scale=1 / accumulation,
+                                              reset_gradients=micro == 0,
+                                              step_optimizer=synchronize, **image_options)
+                    if capture and synchronize:
+                        image_payload = result.get("train_visualization")
                     for key, value in result.items():
                         if isinstance(value, (int, float)):
-                            losses[key] = losses.get(key, 0) + value / config["accumulation_steps"]
+                            losses[key] = losses.get(key, 0) + value / accumulation
                 step += 1
                 if rank == 0:
-                    row = dict(step=step, **losses)
+                    progress = epoch_metrics(step, plan)
+                    row = dict(step=step, **progress, **losses)
                     with (output / "metrics.jsonl").open("a", encoding="utf-8") as stream:
                         stream.write(json.dumps(row, allow_nan=False) + "\n")
-                    logger.log(step, losses, [group["lr"] for group in agent._optimizer.param_groups])
-                    if step == 1 or step % 10 == 0:
+                    logger.log(step, dict(losses, **progress), [group["lr"] for group in agent._optimizer.param_groups])
+                    if capture:
+                        record_visualization(image_payload, step=step, output=output,
+                                             settings=visualization, batch=batch, logger=logger)
+                    epoch_finished = bool(plan["steps_per_epoch"] and step % plan["steps_per_epoch"] == 0)
+                    if step == 1 or step % 10 == 0 or epoch_finished or step == target_steps:
                         print(json.dumps(row), flush=True)
-                    if step % config["checkpoint_interval"] == 0 or step == config["optimizer_steps"]:
+                    if step % plan["checkpoint_interval"] == 0 or step == target_steps:
                         checkpoint = dict(model_state=model_state(agent), optimizer_state=agent._optimizer.state_dict(),
                                           optimizer_step=step, config=config, oht_contract=dataset.contract,
                                           oht_resume_fingerprint=fingerprint, role_cache_sha256=cache_hash,
                                           role_cache_provenance=dataset.role_cache.manifest["provenance"] if dataset.role_cache else None,
                                           resume_rng_restored=False)
+                        checkpoint["oht_training_plan"] = plan
+                        if plan["steps_per_epoch"] is not None:
+                            checkpoint.update(epochs_completed=step // plan["steps_per_epoch"],
+                                              epoch_step=step % plan["steps_per_epoch"])
                         temporary = output / "model_last.pth.tmp"
                         torch.save(checkpoint, temporary)
                         temporary.replace(output / "model_last.pth")
                         logger.flush()
-                        if step == config["optimizer_steps"]:
+                        if epoch_finished:
+                            torch.save(checkpoint, output / f"model_epoch_{checkpoint['epochs_completed']}.pth")
+                        if step == target_steps:
                             torch.save(checkpoint, output / f"model_step_{step}.pth")
     finally:
         if world > 1:

@@ -13,6 +13,12 @@ freeze_multimodal_projector: false
 efficient_paligemma_forward: true
 gradient_checkpointing: true
 point_count: 512
+train_visualization:
+  enabled: false
+  interval: 500
+  save_png: true
+  tensorboard: true
+  output_dir: train_visualizations
 agent:
   add_rgc_loss: true
   collision_loss_weight: 0.0

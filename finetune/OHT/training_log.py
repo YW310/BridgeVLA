@@ -1,4 +1,4 @@
-"""Scalar TensorBoard logs, independent of model construction and replay data."""
+"""TensorBoard writer for training scalars and optional image diagnostics."""
 import math
 from numbers import Real
 from pathlib import Path

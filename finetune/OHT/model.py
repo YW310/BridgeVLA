@@ -43,10 +43,14 @@ def build_agent(config, contract, device, pretrain_path=None, training=True, dis
         from .action_model import action_network_class
         network_class = action_network_class(MVT)
         action_kwargs["oht_action_config"] = action
+    if "flash_attention_2" in config:
+        action_kwargs["flash_attention_2"] = config["flash_attention_2"]
     backbone = network_class(renderer_device=str(device), load_pretrain=bool(pretrain_path),
                    pretrain_path=pretrain_path, **kwargs, **dict(mvt), **action_kwargs)
     if config.get("efficient_paligemma_forward"):
         backbone.mvt1.enable_efficient_paligemma_forward()
+    if config.get("gpu_paligemma_preprocessing"):
+        backbone.mvt1.enable_gpu_paligemma_preprocessing()
     if training and config.get("gradient_checkpointing"):
         backbone.mvt1.enable_gradient_checkpointing()
     prefix_layers = config.get("freeze_gemma_prefix_layers", 0)
@@ -140,7 +144,12 @@ def load_weights(agent, checkpoint, initialize=False):
 def resume_fingerprint(config, contract, cache_hash, world_size):
     # Budget increases and logging changes do not alter optimizer continuity.
     settings = {k: v for k, v in config.items() if k not in (
-        "optimizer_steps", "checkpoint_interval", "num_workers")}
+        "optimizer_steps", "checkpoint_interval", "num_workers", "train_visualization")}
+    if config.get("epochs") is not None:
+        # Extending the epoch/cap budget and changing save cadence preserve the
+        # sample sequence. Keep the legacy step-mode signature unchanged.
+        for key in ("epochs", "max_optimizer_steps", "checkpoint_every_epochs"):
+            settings.pop(key, None)
     action = resolve_action(config)
     if action == action_options():
         # Preserve the pre-action-mode EEF resume signature when adding only

@@ -343,7 +343,7 @@ def test_default_eef_resume_signature_remains_compatible(replay_fixture):
     from finetune.OHT.model import resume_fingerprint
     from finetune.OHT.data.common import digest
     config = load(ROOT/"finetune/OHT/configs/baseline.yaml")
-    old = {key: value for key, value in config.items() if key not in ("action", "action_mode")}
+    old = {key: value for key, value in config.items() if key not in ("action", "action_mode", "train_visualization")}
     settings = {key: value for key, value in old.items() if key not in ("optimizer_steps", "checkpoint_interval", "num_workers")}
     contract = load_contract(replay_fixture.replay)
     expected = digest(dict(config=settings, replay=contract["sha256"], cache=None, world_size=1))
@@ -416,7 +416,7 @@ def test_action_defaults_do_not_share_mutable_joint_configuration():
 
 
 @pytest.mark.parametrize("preset", ["baseline", "smoke", "relative_eef", "joint", "relative_joint",
-                                    "role_queries", "predicted_external"])
+                                    "role_queries", "predicted_external", "oht_full_8x40"])
 def test_oht_presets_load_pretrained_convex_upsampling_head(preset):
     from bridgevla.mvt.raft_utils import ConvexUpSample
     config = load(ROOT/f"finetune/OHT/configs/{preset}.yaml")["mvt"]
