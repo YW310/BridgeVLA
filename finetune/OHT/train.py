@@ -11,6 +11,7 @@ from .data.dataset import OHTDataset, collate, to_device
 from .data.sampling import TaskBalancedSampler
 from .model import build_agent, load_weights, model_state, resume_fingerprint
 from .action_modes import resolve_action
+from .training_log import TensorBoardLogger, summary_writer_class
 
 
 def main(argv=None):
@@ -24,7 +25,11 @@ def main(argv=None):
     group.add_argument("--init-checkpoint")
     group.add_argument("--resume")
     parser.add_argument("--validate-only", action="store_true")
+    parser.add_argument("--log-backend", choices=("tensorboard", "none"), default="tensorboard")
+    parser.add_argument("--tensorboard-flush-secs", type=int, default=10)
     args = parser.parse_args(argv)
+    if args.tensorboard_flush_secs < 1:
+        parser.error("--tensorboard-flush-secs must be a positive integer")
     config = load(args.config)
     dataset = OHTDataset(args.replay, "train", config["mode"], args.role_cache, config["point_count"], resolve_action(config))
     if args.validate_only:
@@ -33,6 +38,9 @@ def main(argv=None):
     import torch
     import torch.distributed as dist
     from torch.utils.data import DataLoader
+    if args.log_backend == "tensorboard":
+        # Check on every rank before expensive model construction or collectives.
+        summary_writer_class()
     if not torch.cuda.is_available():
         raise RuntimeError("Full BridgeVLA training requires CUDA and the point-renderer extension; use --validate-only on CPU")
     rank, local_rank = int(os.environ.get("RANK", 0)), int(os.environ.get("LOCAL_RANK", 0))
@@ -83,37 +91,46 @@ def main(argv=None):
         print(json.dumps(dict(mode=config["mode"], samples=len(dataset),
                               effective_batch=config["batch_size"] * config["accumulation_steps"] * world,
                               resume_step=step)), flush=True)
-    iterator = iter(loader)
-    while step < config["optimizer_steps"]:
-        losses = {}
-        for micro in range(config["accumulation_steps"]):
-            batch = to_device(next(iterator), device)
-            result = agent.update(batch, loss_scale=1 / config["accumulation_steps"],
-                                  reset_gradients=micro == 0,
-                                  step_optimizer=micro == config["accumulation_steps"] - 1)
-            for key, value in result.items():
-                if isinstance(value, (int, float)):
-                    losses[key] = losses.get(key, 0) + value / config["accumulation_steps"]
-        step += 1
-        if rank == 0:
-            row = dict(step=step, **losses)
-            with (output / "metrics.jsonl").open("a", encoding="utf-8") as stream:
-                stream.write(json.dumps(row, allow_nan=False) + "\n")
-            if step == 1 or step % 10 == 0:
-                print(json.dumps(row), flush=True)
-            if step % config["checkpoint_interval"] == 0 or step == config["optimizer_steps"]:
-                checkpoint = dict(model_state=model_state(agent), optimizer_state=agent._optimizer.state_dict(),
-                                  optimizer_step=step, config=config, oht_contract=dataset.contract,
-                                  oht_resume_fingerprint=fingerprint, role_cache_sha256=cache_hash,
-                                  role_cache_provenance=dataset.role_cache.manifest["provenance"] if dataset.role_cache else None,
-                                  resume_rng_restored=False)
-                temporary = output / "model_last.pth.tmp"
-                torch.save(checkpoint, temporary)
-                temporary.replace(output / "model_last.pth")
-                if step == config["optimizer_steps"]:
-                    torch.save(checkpoint, output / f"model_step_{step}.pth")
-    if world > 1:
-        dist.destroy_process_group()
+    try:
+        with TensorBoardLogger(output / "tensorboard", rank=rank, backend=args.log_backend,
+                               flush_secs=args.tensorboard_flush_secs,
+                               resume_step=step if args.resume else None) as logger:
+            if rank == 0 and args.log_backend == "tensorboard":
+                print(f"TensorBoard logs: {output / 'tensorboard'}", flush=True)
+            iterator = iter(loader)
+            while step < config["optimizer_steps"]:
+                losses = {}
+                for micro in range(config["accumulation_steps"]):
+                    batch = to_device(next(iterator), device)
+                    result = agent.update(batch, loss_scale=1 / config["accumulation_steps"],
+                                          reset_gradients=micro == 0,
+                                          step_optimizer=micro == config["accumulation_steps"] - 1)
+                    for key, value in result.items():
+                        if isinstance(value, (int, float)):
+                            losses[key] = losses.get(key, 0) + value / config["accumulation_steps"]
+                step += 1
+                if rank == 0:
+                    row = dict(step=step, **losses)
+                    with (output / "metrics.jsonl").open("a", encoding="utf-8") as stream:
+                        stream.write(json.dumps(row, allow_nan=False) + "\n")
+                    logger.log(step, losses, [group["lr"] for group in agent._optimizer.param_groups])
+                    if step == 1 or step % 10 == 0:
+                        print(json.dumps(row), flush=True)
+                    if step % config["checkpoint_interval"] == 0 or step == config["optimizer_steps"]:
+                        checkpoint = dict(model_state=model_state(agent), optimizer_state=agent._optimizer.state_dict(),
+                                          optimizer_step=step, config=config, oht_contract=dataset.contract,
+                                          oht_resume_fingerprint=fingerprint, role_cache_sha256=cache_hash,
+                                          role_cache_provenance=dataset.role_cache.manifest["provenance"] if dataset.role_cache else None,
+                                          resume_rng_restored=False)
+                        temporary = output / "model_last.pth.tmp"
+                        torch.save(checkpoint, temporary)
+                        temporary.replace(output / "model_last.pth")
+                        logger.flush()
+                        if step == config["optimizer_steps"]:
+                            torch.save(checkpoint, output / f"model_step_{step}.pth")
+    finally:
+        if world > 1:
+            dist.destroy_process_group()
     return 0
 
 

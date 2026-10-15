@@ -400,7 +400,25 @@ bash finetune/OHT/train_8x40.sh \
 
 短测与正式训练需使用相同的 `action_mode`；现成 `smoke.yaml` 默认 EEF，其他模式短测需同步设置该字段并保留两步预算。新 replay 可用于四种模式；旧缓存若缺当前 TCP/关节状态或未来关节标签，预检会要求重建。相对坐标、单位和配置继承见 [四种动作模式指南](../../docs/guides/oht-action-modes.md)。
 
-输出 `config.json`、`contract.json`、`metrics.jsonl`、`model_last.pth` 及最终步 checkpoint。默认每 250 个优化步更新 `model_last.pth`，完成 2,000 步后另存 `model_step_2000.pth`。
+输出 `config.json`、`contract.json`、`metrics.jsonl`、`tensorboard/events.out.tfevents.*`、`model_last.pth` 及最终步 checkpoint。默认每 250 个优化步更新 `model_last.pth`，完成 2,000 步后另存 `model_step_2000.pth`。
+
+**TensorBoard 训练曲线。** 训练默认启用 `--log-backend tensorboard`；训练环境需安装 `tensorboard`（`python -m pip install tensorboard`）。数据构建、校验和 `--validate-only` 不需要该依赖。模型和 checkpoint 初始化成功后创建 `<output>/tensorboard/`，并打印日志路径。每个优化步写入 `train/<指标名>`（包括 total/translation/rotation/gripper 等实际返回的 loss）及 `train/learning_rate`；有多个优化器参数组时额外记录各组学习率。loss 与 JSONL 一致，为梯度累积内的平均值；多卡仅 rank 0 写入，指标是 rank 0 的本地统计，没有跨卡平均。本次记录标量，不自动写训练图像或闭环成功率。
+
+默认每 10 秒刷新一次，可用 `--tensorboard-flush-secs 1` 缩短；保存 checkpoint 时也刷新，正常结束或 Python 异常退出时关闭 writer。用 `--log-backend none` 关闭 event 写入，仍保存 `metrics.jsonl`。这些命令行日志选项不改变训练配置/续训指纹。`--resume` 在同一日志目录从 checkpoint 的下一步继续写入，并隐藏旧日志中晚于该 checkpoint 的标量，避免回退后出现重复曲线。
+
+~~~bash
+tensorboard --logdir /data/oht/runs --port 6006
+~~~
+
+服务器运行 TensorBoard 时，在本机建立 SSH 端口转发后访问 `http://localhost:6006`；例如 `ssh -L 6006:127.0.0.1:6006 yiwei@serv92`。本节 `/data/oht/runs` 应替换为实际训练输出的父目录。
+
+**旧训练只有 JSONL 时补导曲线。** 更新代码不会为已运行的旧进程自动补写 event；使用 [export_oht_tensorboard.py](../../tools/export_oht_tensorboard.py) 转换已有完整日志，无需重跑训练：
+
+~~~bash
+python tools/export_oht_tensorboard.py --run /data/oht/runs/baseline-eef-8gpu-s0
+~~~
+
+默认写入 `<run>/tensorboard-from-jsonl/`，也可用 `--output` 指定新目录；拒绝覆盖已有导出，不修改源 JSONL、checkpoint 或原 TensorBoard 日志。按优化步恢复已有标量；遇到续训步数回退时剔除旧分支的后续记录。JSONL 没有保存的图像、学习率或真实历史时间不能凭空补出。若训练进程正在追加文件，使用完整 JSONL 快照或在其结束后转换，截断的末行会报错。
 
 `--resume` 恢复严格匹配的模型、优化器和采样位置。续训指纹检查解析继承后的训练配置，仅允许变更 `optimizer_steps`、`checkpoint_interval` 和 `num_workers`；学习率、batch size、梯度累积、冻结设置、seed、物体辅助模式和动作设置等其余配置必须一致，replay 契约、role cache 和卡数也必须一致。已达到总步数时需先增加 `optimizer_steps`。GPU RNG 尚未恢复，不承诺逐位复现。
 
