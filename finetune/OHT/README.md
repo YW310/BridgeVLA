@@ -371,7 +371,7 @@ python -m finetune.OHT.train \
 
 正式训练和短测的输出目录均需尚不存在；重复实验时更换目录名，中断恢复使用 `--resume`。
 
-**多卡正式训练。** [train_8x40.sh](train_8x40.sh) 参考 RLBench 同名脚本，默认单机 8 卡，使用 torchrun/DDP；它自动进入仓库根目录，完整透传 OHT 训练参数。沿用前面设置的 replay 和预训练路径：
+**多卡正式训练。** [train_8x40.sh](train_8x40.sh) 与 RLBench 同名脚本采用相同的 torchrun 启动参数和环境变量约定，默认单机 8 卡，使用 `--standalone`/DDP。OHT 使用 `-m finetune.OHT.train`，脚本自动进入仓库根目录，完整透传 OHT 训练参数。沿用前面设置的 replay 和预训练路径：
 
 ~~~bash
 bash finetune/OHT/train_8x40.sh \
@@ -381,7 +381,7 @@ bash finetune/OHT/train_8x40.sh \
   --output /data/oht/runs/baseline-eef-8gpu-s0
 ~~~
 
-用 `GPUS_PER_NODE=4 CUDA_VISIBLE_DEVICES=0,1,2,3 MASTER_PORT=29501` 作为上述 `bash` 命令的前缀即可改为四卡并指定通信端口；两卡设 `GPUS_PER_NODE=2` 并选择两个 GPU。脚本不覆盖 batch、动作模式、物体辅助或 checkpoint 设置，`--role-cache`、`--init-checkpoint`、`--resume` 均直接传给训练入口。相对参数路径按仓库根目录解析。`8x40` 沿用参考脚本的名称，不会自动检测显存或保证 40 GB 显存足够。
+用 `GPUS_PER_NODE=4 CUDA_VISIBLE_DEVICES=0,1,2,3` 作为上述 `bash` 命令的前缀即可改为四卡；两卡设 `GPUS_PER_NODE=2` 并选择两个 GPU。与 RLBench 脚本一致，`PYTHONWARNINGS` 默认 `ignore`（可用环境变量覆盖），`TRANSFORMERS_VERBOSITY` 设为 `error`，`MASTER_PORT` 默认 `29500` 并传给 torchrun；但 PyTorch 的 `--standalone` 会将 rendezvous endpoint 设为 `localhost:0`，实际端口自动分配，不能依赖 `MASTER_PORT` 固定该端口。脚本透传 batch/动作配置、`--role-cache`、`--init-checkpoint`、`--resume` 等训练参数，相对参数路径按仓库根目录解析。训练超参数仍由 OHT YAML 控制，启动脚本一致不代表训练配置已对齐 RLBench。`8x40` 沿用参考脚本的名称，不会自动检测显存或保证 40 GB 显存足够。
 
 默认 seed 0、学习率 `4e-5`、每卡 batch 2、累积 8、2,000 个优化步，任务均匀采样；有效 batch = 每卡 batch × 累积次数 × 卡数，单卡为 **16**。这是初始配置，尚未经真实 OHT 收敛或显存验证。比较方法保持相同预算、冻结设置、数据划分和 seeds。
 
