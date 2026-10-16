@@ -47,6 +47,8 @@ flowchart LR
 
 ## 数据与角色契约
 
+各 YAML 对应哪个 replay 目录，见[RLBench config 与数据目录](training.md#rlbench-config-datasets)；路径通过 `--train_replay_storage_dir` 显式指定。
+
 | 模式 | 训练数据要求 | 动作前向能否读取 Oracle |
 | --- | --- | --- |
 | GT / anchor / GT joint | 全量验证的 `demo_events` semantic buffer | 可以，结果单报 Oracle 上界 |

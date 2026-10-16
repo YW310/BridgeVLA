@@ -47,6 +47,26 @@ GPUS_PER_NODE=2 bash train_8x40.sh --exp_cfg_path configs/rlbench_config.yaml \
               --pretrain_path PATH_TO_2D_HEATMAP_PRETRAINED_MODEL
 ```
 
+<a id="rlbench-config-datasets"></a>
+
+### RLBench config 与数据目录
+
+配置位于 `finetune/RLBench/configs/`，决定所需字段；实际 replay 根目录由 `--train_replay_storage_dir` 指定，不按配置名自动选择。O2 必须显式传入；baseline 也建议显式指定，避免使用旧服务器默认路径。
+
+| Config（省略 `rlbench_` 前缀及 `.yaml`） | 对应 replay 目录 |
+| --- | --- |
+| `config`、`config_small`、`full_8x40`、`trend_8x40` | `BridgeVLA_RLBench_TRAIN_Buffer`；调试可用 `BridgeVLA_RLBench_TINY_Buffer` |
+| `o2_gt_instance` | `BridgeVLA_RLBench_TRAIN_TASK_OBJECT_Buffer`；调试可用 `BridgeVLA_RLBench_TINY_TASK_OBJECT_Buffer`，T/R 为启发式角色 |
+| `o2_semantic_gt`、`o2_semantic_gt_joint`、`o2_semantic_gt_relation_anchor` | `BridgeVLA_RLBench_SEMANTIC_GT_MASK_VERIFIED_Buffer`，需通过语义契约验收 |
+| `o2_internal_slots` | 推荐同一 Semantic-GT buffer；旧配置未强制语义审计，也允许启发式物体 buffer，但监督质量不同 |
+| `o2_internal_slots_joint`、`o2_internal_slots_cross_scale`、`o2_role_queries` | 同一 Semantic-GT buffer，需通过语义契约验收；GT 仅用于辅助监督 |
+| `o2_predicted_objects` | 另行准备含 `predicted_*` 字段的外部预测 replay；不能直接以 Oracle 字段替代 |
+| `o2_semantic_roles` | 不是训练配置，是 T/R 角色定义与契约文件 |
+
+`config_small` 不自动绑定 TINY 数据。按用户提供的目录快照（2026-10-16），TINY buffers 仍有 18 个任务目录，实际 episode/transition 数需统计；`BridgeVLA_RLBench_TASK_OBJECT_Buffer` 只有 `close_jar`，仅用于对应单任务实验（设置 `tasks=close_jar`）。目录存在不代表已完整生成或验收通过。
+
+`BridgeVLA_RLBench_TRAIN_DATA/train` 是 raw → replay 的输入，`BridgeVLA_RLBench_EVAL_DATA` 用于闭环评估；`BridgeVLA/checkpoints` 用于初始化，`BridgeVLA/pretrain_data` 用于预训练，`semantic_role_visualizations` 不参与训练。生成与验收见 [标准 Replay](replay.md)、[启发式实例增强](oracle-replay.md)及 [Semantic-GT](semantic-gt.md)；训练／预测输入隔离见 [O2 指南](object-conditioning.md#数据与角色契约)。
+
 <a id=rlbench-8x40></a>
 
 ### RLBench fine-tuning on one 8 x 40 GB node
