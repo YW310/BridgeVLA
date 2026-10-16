@@ -59,6 +59,8 @@ flowchart LR
 
 严格模式继续要求每任务全量报告，以及匹配的 schema、phase source、点数和 role YAML 摘要；缺失或不匹配仍报错。开关不改变数据重写工具的独立严格验证，也不自动修改已有 buffer/checkpoint/保存的 `exp_cfg.yaml`。
 
+`rvt.oracle_prior_strict` 是独立的角色几何检查，不是来源契约。内部 slots/joint/cross-scale/role-query 默认 False：缺失或歧义的 teacher 角色独立标为几何无效，保留另一可用角色的监督，动作训练继续；不会据此伪造 NULL。Reference 允许不存在，也允许存在但几何不可用。旧命令可追加 `--exp_cfg_opts "seed 0 rvt.oracle_prior_strict False"`；旧保存配置不会自动更新。外部预测配置仍为 True，缺少 predictor 字段直接报错，不回退 Oracle。
+
 | 模式 | 训练数据要求 | 动作前向能否读取 Oracle |
 | --- | --- | --- |
 | GT / anchor / GT joint | 推荐 `demo_events` semantic buffer；全量报告仅在严格模式强制 | 可以，结果单报 Oracle 条件实验，来源验收状态另报 |

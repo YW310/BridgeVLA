@@ -76,6 +76,26 @@ class SemanticContractDefaultsTest(unittest.TestCase):
                 validate.assert_called_once_with('legacy-buffer-without-report',
                                                  config.oracle_semantic_contract, 512)
 
+    def test_internal_teacher_accepts_missing_geometry_independently_of_provenance(self):
+        for name in ('internal_slots', 'internal_slots_joint',
+                     'internal_slots_cross_scale', 'role_queries'):
+            with self.subTest(config=name):
+                config = self._config(name)
+                self.assertEqual(config.rvt.object_prior_mode, 'o2_internal_slots')
+                self.assertFalse(config.rvt.oracle_prior_strict)
+                self.assertTrue(config.use_oracle_objects)
+                self.assertGreater(config.rvt.object_slot_null_loss_weight, 0)
+                # Even strict provenance does not require visible T/R geometry.
+                config.merge_from_list(['oracle_semantic_audit', 'True',
+                                        'oracle_semantic_contract.enforce', 'True'])
+                self.assertFalse(config.rvt.oracle_prior_strict)
+
+    def test_external_prediction_still_requires_predictor_fields(self):
+        config = self._config('predicted_objects')
+        self.assertTrue(config.use_predicted_objects)
+        self.assertFalse(config.use_oracle_objects)
+        self.assertTrue(config.rvt.oracle_prior_strict)
+
     def test_strict_success_records_contract_only_after_validation(self):
         config = self._config('internal_slots_joint')
         config.merge_from_list(['oracle_semantic_audit', 'True',

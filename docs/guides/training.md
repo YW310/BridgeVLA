@@ -55,6 +55,8 @@ GPUS_PER_NODE=2 bash train_8x40.sh --exp_cfg_path configs/rlbench_config.yaml \
 
 语义配置默认 `oracle_semantic_audit: False`、`oracle_semantic_contract.enforce: False`，兼容缺少新审计字段或只有抽样报告的旧 buffer，不要求重新生成数据；这不等于数据已通过契约验收。[严格校验 opt-in](object-conditioning.md#数据与角色契约) 仍保留。
 
+内部对象预测配置另设 `rvt.oracle_prior_strict: False`，允许 T/R teacher 几何独立无效；Reference 缺失不阻止训练，也不等同于语义 NULL。外部预测配置的字段检查仍保持严格。
+
 | Config（省略 `rlbench_` 前缀及 `.yaml`） | 对应 replay 目录 |
 | --- | --- |
 | `config`、`config_small`、`full_8x40`、`trend_8x40` | `BridgeVLA_RLBench_TRAIN_Buffer`；调试可用 `BridgeVLA_RLBench_TINY_Buffer` |

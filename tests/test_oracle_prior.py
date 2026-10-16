@@ -92,7 +92,7 @@ class OraclePriorTest(unittest.TestCase):
             selected[:, :, 0, 0].tolist(), [[40.0, 20.0]]
         )
 
-    def test_relation_non_strict_missing_role_disables_pair(self):
+    def test_relation_non_strict_missing_role_keeps_available_role(self):
         selected, selected_valid, slots = select_relation_instance_points(
             torch.ones(1, 2, 3, 3),
             torch.ones(1, 2, dtype=torch.bool),
@@ -102,6 +102,33 @@ class OraclePriorTest(unittest.TestCase):
         self.assertEqual(selected_valid.tolist(), [[True, False]])
         self.assertEqual(slots.tolist(), [[0, -1]])
         self.assertEqual(selected[:, 1].count_nonzero().item(), 0)
+
+    def test_relation_non_strict_masks_each_role_without_guessing_slots(self):
+        points = torch.arange(6 * 3 * 4 * 3, dtype=torch.float32).reshape(6, 3, 4, 3)
+        roles = torch.tensor([[1, 0, 0], [1, 2, 0], [1, 2, 0],
+                              [1, 1, 2], [1, 2, 2], [0, 0, 0]])
+        valid = torch.tensor([[True, True, True], [True, False, True],
+                              [False, True, True], [True, True, True],
+                              [True, True, True], [False, False, False]])
+        selected, role_valid, slots = select_relation_instance_points(
+            points, valid, roles, strict=False)
+        self.assertEqual(role_valid.tolist(), [[True, False], [True, False], [False, True],
+                                              [False, True], [True, False], [False, False]])
+        self.assertEqual(slots.tolist(), [[0, -1], [0, -1], [-1, 1],
+                                         [-1, 2], [0, -1], [-1, -1]])
+        # A semantic absence and an existing-but-invalid Reference have the
+        # same geometry mask, but the selector does not invent NULL labels.
+        for batch, role in torch.nonzero(role_valid, as_tuple=False):
+            torch.testing.assert_close(selected[batch, role], points[batch, slots[batch, role]])
+        self.assertEqual(selected[~role_valid].count_nonzero().item(), 0)
+        self.assertEqual(roles.tolist(), [[1, 0, 0], [1, 2, 0], [1, 2, 0],
+                                         [1, 1, 2], [1, 2, 2], [0, 0, 0]])
+
+    def test_relation_strict_error_names_reference_instead_of_role_code(self):
+        with self.assertRaisesRegex(ValueError, r'role 1 \(Reference\): 0 candidates'):
+            select_relation_instance_points(
+                torch.ones(1, 2, 4, 3), torch.ones(1, 2, dtype=torch.bool),
+                torch.tensor([[1, 0]]), strict=True)
 
     def test_relation_adapter_is_identity_at_initialization(self):
         adapter = OraclePriorFeatureAdapter(

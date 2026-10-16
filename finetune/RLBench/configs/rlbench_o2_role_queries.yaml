@@ -62,7 +62,8 @@ rvt:
   object_slot_diversity_loss_weight: 0.0
   oracle_prior_sigma: 2.0
   oracle_prior_active_role: auto
-  oracle_prior_strict: True
+  # Teacher geometry can be unavailable independently for either role.
+  oracle_prior_strict: False
   oracle_prior_relation: True
   oracle_log_base_loss: False
   oracle_valid_only_loss: False

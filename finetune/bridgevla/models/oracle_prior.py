@@ -200,6 +200,11 @@ def select_relation_instance_points(
     *,
     strict: bool = True,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Select [Target, Reference]; non-strict validity is independent per role.
+
+    Invalid geometry does not determine semantic presence. NULL supervision
+    must use separate role-presence labels rather than this validity mask.
+    """
     if object_points.ndim != 4 or object_points.shape[-1] != 3:
         raise ValueError('oracle_object_points must have shape [B,O,P,3]')
     batch_size, num_objects, num_points, _ = object_points.shape
@@ -220,7 +225,8 @@ def select_relation_instance_points(
     if strict and torch.any(candidate_counts != 1):
         bad = torch.nonzero(candidate_counts != 1, as_tuple=False)
         details = ', '.join(
-            f'batch {int(batch)}, role {int(role)}: '
+            f'batch {int(batch)}, role {int(role)} '
+            f'({("Target", "Reference")[int(role)]}): '
             f'{int(candidate_counts[batch, role])} candidates'
             for batch, role in bad.detach().cpu()
         )
