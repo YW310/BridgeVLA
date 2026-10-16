@@ -16,11 +16,11 @@ baseline 的安装/预训练/其他 benchmark 命令仍见[训练](training.md)�
 | 配置（省略 `rlbench_o2_` 前缀与 `.yaml`） | Object 来源 | 动作特征 | 评估 provider |
 | --- | --- | --- | --- |
 | `gt_instance` | 启发式 T/R replay | 原 relation 路由 | `rlbench_gt`，启发式上界，不能混为严格 GT |
-| `semantic_gt` | 严格 Semantic-GT | 原 relation 路由 | `rlbench_gt` |
-| `semantic_gt_relation_anchor` | 严格 Semantic-GT | anchor 额外增强 translation，R/G/C 保留原 shared 路由 | `rlbench_gt` |
+| `semantic_gt` | Semantic-GT | 原 relation 路由 | `rlbench_gt` |
+| `semantic_gt_relation_anchor` | Semantic-GT | anchor 额外增强 translation，R/G/C 保留原 shared 路由 | `rlbench_gt` |
 | `predicted_objects` | 外部 predictor 的 T/R XYZ | 原 relation + anchor | `none`，须另接 predictor wrapper |
 | `internal_slots` | 2 个无序 slots | 原 relation + anchor，无 instruction context | `none` |
-| `semantic_gt_joint` | 严格 Semantic-GT | instruction + 完整动作共享 | `rlbench_gt` |
+| `semantic_gt_joint` | Semantic-GT | instruction + 完整动作共享 | `rlbench_gt` |
 | `internal_slots_joint` | 6 个无序 slots，128 dim | soft tokens/geometry + instruction + 完整动作共享 | `none` |
 | `internal_slots_cross_scale` | 同一 coarse 的 6 slots | joint + 混合 map 监督 + 本步继承 + token 保留 | `none` |
 | `role_queries` | 两个有序 T/R queries | joint + 直接角色图监督 + 本步继承 + token 保留 | `none` |
@@ -49,9 +49,19 @@ flowchart LR
 
 各 YAML 对应哪个 replay 目录，见[RLBench config 与数据目录](training.md#rlbench-config-datasets)；路径通过 `--train_replay_storage_dir` 显式指定。
 
+语义/slots/query 配置默认非严格：`oracle_semantic_audit: False`、`oracle_semantic_contract.enforce: False`。旧 buffer 缺少 role-config SHA256 或全量验证报告时不阻止启动；对象 teacher、模型结构和基本输入要求不变。非严格运行不记录已验证的 `semantic_contract`，不能据此宣称 train/eval 语义一致。
+
+需要严格启动审计时，在训练命令中显式开启两项（评估使用该训练保存的配置）：
+
+```bash
+--exp_cfg_opts "seed 0 oracle_semantic_audit True oracle_semantic_contract.enforce True"
+```
+
+严格模式继续要求每任务全量报告，以及匹配的 schema、phase source、点数和 role YAML 摘要；缺失或不匹配仍报错。开关不改变数据重写工具的独立严格验证，也不自动修改已有 buffer/checkpoint/保存的 `exp_cfg.yaml`。
+
 | 模式 | 训练数据要求 | 动作前向能否读取 Oracle |
 | --- | --- | --- |
-| GT / anchor / GT joint | 全量验证的 `demo_events` semantic buffer | 可以，结果单报 Oracle 上界 |
+| GT / anchor / GT joint | 推荐 `demo_events` semantic buffer；全量报告仅在严格模式强制 | 可以，结果单报 Oracle 条件实验，来源验收状态另报 |
 | Internal slots / role queries | 同一 buffer 提供 T/R teacher maps；旧 kind 只读派生 presence | 不可以，GT 仅进入辅助 loss |
 | 外部预测 | replay/在线 wrapper 提供 `predicted_*` 字段 | 不可以，不回退到 Oracle |
 

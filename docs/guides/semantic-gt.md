@@ -13,10 +13,12 @@
 以及 internal-slot 的角色 heatmap 监督使用。它不会生成完整场景 object slots，也不会补全
 被真实相机遮挡的物体表面。
 
-正式训练使用全量验证的 `phase_source=demo_events` buffer，不需要重新执行 simulator
+推荐使用全量验证的 `phase_source=demo_events` buffer，不需要重新执行 simulator
 expert action。闭环测试使用 live success-condition predicates 选择当前 T/R；两侧共享同一
 role YAML、角色语义、`[N,3]` 点集、点数及 NULL/presence 契约。这里追求动作输入尽量一致，
 不要求 phase 边界来源完全一致。
+
+训练配置默认非严格，兼容旧 buffer 缺少新审计字段或全量报告；不会因此自动补写来源摘要。严格审计需显式开启 `oracle_semantic_audit` 和 `oracle_semantic_contract.enforce`，见[O2 指南](object-conditioning.md#数据与角色契约)。本页的数据生成、handle 认证和独立全量验证规则不变。
 
 ```mermaid
 flowchart LR
@@ -510,15 +512,15 @@ semantic name、kind、几何来源、原始 handle 集合、`oracle_phase_sourc
 
 ## 3. 数据验收与训练交接
 
-`rlbench_o2_semantic_gt.yaml` 启用 semantic audit/contract；启发式 buffer 使用 `rlbench_o2_gt_instance.yaml`。
+`rlbench_o2_semantic_gt.yaml` 默认关闭启动 semantic audit/contract；启发式 buffer 使用 `rlbench_o2_gt_instance.yaml`。
 两类 buffer/checkpoint 不混在同一实验目录，GT 结果只解释为 Oracle 上界。
 
-训练启动要求每个 task 有全量 `semantic_role_validation.json`，核对 schema、`demo_events`、点数与 role YAML SHA-256，
+显式开启严格模式后，训练启动要求每个 task 有全量 `semantic_role_validation.json`，核对 schema、`demo_events`、点数与 role YAML SHA-256，
 以及 manifest 已转换为 stored handle namespace。训练契约不要求在线 provider 伪装成 stored-demo phase tracker。
-旧 buffer 缺 `oracle_role_config_sha256` 时按校验结果修复，使用新输出目录；`--resume` 不改已有文件。
+若要让旧 buffer 通过严格模式，缺少的 `oracle_role_config_sha256` 需按可核验的生成来源修复；默认非严格无需为启动而重写数据。`--resume` 不会补改已有文件。
 SHA-256 覆盖整个 role YAML 的原始字节，不是逐 task hash；注释/格式修改也使旧摘要不匹配。
 保持有效 buffer 与原 YAML 配套，不通过放宽 contract 或只更新摘要来宣称迁移完成。
 
 训练命令与各模式差异见 [O2 操作指南](object-conditioning.md#训练)；
 checkpoint 初始化、resume、既有 demo checkpoint 的评估兼容例外见[Loss与Checkpoint](object-conditioning.md#loss与checkpoint)。
-已有 contract 不匹配仍拒绝，兼容字段缺失不会关闭 replay 全量 validation、handle alignment 或 `source_alignment_validated`。
+严格模式仍拒绝不匹配的 contract；默认非严格不会要求或验证这些来源证据。checkpoint 结构兼容、数据重写工具的全量 validation、handle alignment 和 `source_alignment_validated` 检查不受此默认值影响。

@@ -32,18 +32,22 @@ class ObjectConditioningConfigTest(unittest.TestCase):
         self.assertIn('shared_action_features = False', defaults)
         self.assertIn('use_context = False', defaults)
 
-    def test_semantic_configs_require_demo_training_contract(self):
+    def test_semantic_configs_keep_demo_contract_opt_in(self):
         names = (
             'rlbench_o2_semantic_gt.yaml',
             'rlbench_o2_semantic_gt_relation_anchor.yaml',
             'rlbench_o2_internal_slots.yaml',
             'rlbench_o2_semantic_gt_joint.yaml',
             'rlbench_o2_internal_slots_joint.yaml',
+            'rlbench_o2_internal_slots_cross_scale.yaml',
+            'rlbench_o2_role_queries.yaml',
         )
         for name in names:
             source = (ROOT / 'finetune/RLBench/configs' / name).read_text(
                 encoding='utf-8')
             self.assertIn('oracle_semantic_contract:', source)
+            self.assertIn('oracle_semantic_audit: False', source)
+            self.assertIn('  enforce: False', source)
             self.assertIn('required_phase_source: demo_events', source)
             self.assertIn(
                 'role_config: configs/rlbench_o2_semantic_roles.yaml', source)
@@ -76,11 +80,12 @@ class ObjectConditioningConfigTest(unittest.TestCase):
             'enforce_oracle_contract and exp_cfg.oracle_semantic_audit',
             eval_source)
 
-    def test_training_requires_full_semantic_validation_report(self):
+    def test_strict_training_requires_full_semantic_validation_report(self):
         train_source = (ROOT / 'finetune/RLBench/train.py').read_text(
             encoding='utf-8')
         self.assertIn("directory / 'semantic_role_validation.json'", train_source)
         self.assertIn('validate_semantic_validation_report(', train_source)
+        self.assertIn('if exp_cfg.oracle_semantic_audit:', train_source)
         self.assertIn(
             'if not exp_cfg.oracle_semantic_contract.enforce:', train_source)
 

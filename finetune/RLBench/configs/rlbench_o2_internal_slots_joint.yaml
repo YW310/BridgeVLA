@@ -15,9 +15,10 @@ freeze_gemma_prefix_layers: 18
 freeze_multimodal_projector: False
 sample_distribution_mode: task_uniform
 use_oracle_objects: True
-oracle_semantic_audit: True
+# Non-strict startup by default; enable both audit/enforce for strict provenance.
+oracle_semantic_audit: False
 oracle_semantic_contract:
-  enforce: True
+  enforce: False
   required_phase_source: demo_events
   role_config: configs/rlbench_o2_semantic_roles.yaml
 oracle_max_objects: 32

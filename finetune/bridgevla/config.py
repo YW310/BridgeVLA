@@ -44,12 +44,15 @@ _C.use_oracle_objects = False
 # Consume Target/Reference point sets produced by an external object predictor.
 # This is mutually exclusive with use_oracle_objects.
 _C.use_predicted_objects = False
-# Require semantic-role provenance during training startup. The audit fields
+# Opt-in semantic-role provenance checks during training startup. Shipped
+# semantic profiles also default to non-strict; set both audit/enforce True to
+# require full validation reports and matching role-YAML provenance. The fields
 # remain in replay files for inspection and are intentionally excluded from
 # sampled network batches. Derived numeric presence labels reach losses only.
 _C.oracle_semantic_audit = False
 # Opt-in fail-closed contract for semantic-GT training and online Oracle eval.
-# train.py fills the digest from the exact role YAML and saves it with the run.
+# Only when enabled, train.py fills the verified role digest and saves it with
+# the checkpoint. Non-strict runs do not claim verified training provenance.
 _C.oracle_semantic_contract = CN()
 _C.oracle_semantic_contract.enforce = False
 _C.oracle_semantic_contract.required_phase_source = ''

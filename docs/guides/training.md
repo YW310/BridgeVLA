@@ -53,13 +53,15 @@ GPUS_PER_NODE=2 bash train_8x40.sh --exp_cfg_path configs/rlbench_config.yaml \
 
 配置位于 `finetune/RLBench/configs/`，决定所需字段；实际 replay 根目录由 `--train_replay_storage_dir` 指定，不按配置名自动选择。O2 必须显式传入；baseline 也建议显式指定，避免使用旧服务器默认路径。
 
+语义配置默认 `oracle_semantic_audit: False`、`oracle_semantic_contract.enforce: False`，兼容缺少新审计字段或只有抽样报告的旧 buffer，不要求重新生成数据；这不等于数据已通过契约验收。[严格校验 opt-in](object-conditioning.md#数据与角色契约) 仍保留。
+
 | Config（省略 `rlbench_` 前缀及 `.yaml`） | 对应 replay 目录 |
 | --- | --- |
 | `config`、`config_small`、`full_8x40`、`trend_8x40` | `BridgeVLA_RLBench_TRAIN_Buffer`；调试可用 `BridgeVLA_RLBench_TINY_Buffer` |
 | `o2_gt_instance` | `BridgeVLA_RLBench_TRAIN_TASK_OBJECT_Buffer`；调试可用 `BridgeVLA_RLBench_TINY_TASK_OBJECT_Buffer`，T/R 为启发式角色 |
-| `o2_semantic_gt`、`o2_semantic_gt_joint`、`o2_semantic_gt_relation_anchor` | `BridgeVLA_RLBench_SEMANTIC_GT_MASK_VERIFIED_Buffer`，需通过语义契约验收 |
+| `o2_semantic_gt`、`o2_semantic_gt_joint`、`o2_semantic_gt_relation_anchor` | `BridgeVLA_RLBench_SEMANTIC_GT_MASK_VERIFIED_Buffer`；默认非严格，严格模式要求全量验收 |
 | `o2_internal_slots` | 推荐同一 Semantic-GT buffer；旧配置未强制语义审计，也允许启发式物体 buffer，但监督质量不同 |
-| `o2_internal_slots_joint`、`o2_internal_slots_cross_scale`、`o2_role_queries` | 同一 Semantic-GT buffer，需通过语义契约验收；GT 仅用于辅助监督 |
+| `o2_internal_slots_joint`、`o2_internal_slots_cross_scale`、`o2_role_queries` | 同一 Semantic-GT buffer；默认非严格，GT 仅用于辅助监督 |
 | `o2_predicted_objects` | 另行准备含 `predicted_*` 字段的外部预测 replay；不能直接以 Oracle 字段替代 |
 | `o2_semantic_roles` | 不是训练配置，是 T/R 角色定义与契约文件 |
 
