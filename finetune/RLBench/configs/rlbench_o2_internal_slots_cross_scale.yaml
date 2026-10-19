@@ -3,7 +3,7 @@
 exp_id: rlbench_o2_internal_slots_cross_scale
 seed: 0
 tasks: all
-bs: 48
+bs: 16
 num_workers: 4
 epochs: 50
 train_iter: 38400
