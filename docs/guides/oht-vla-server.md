@@ -67,6 +67,30 @@ bash finetune/OHT/serve.sh \
 
 预热 replay 必须与 checkpoint 契约一致；只将观测和 instruction 传入模型，预热后 reset。模型加载、预热、推理、reset 均在同一条专用工作线程执行。Uvicorn 固定 `workers=1`，不使用 `torchrun`。多模型使用不同进程、端口和输出目录。
 
+## 分机部署：VLA server 与 IsaacLab client
+
+IsaacLab 可以在另一台服务器运行，模型权重和 BridgeVLA CUDA 环境只需放在 VLA server 上。默认 `127.0.0.1` 仅用于本机访问；分机部署时，在启动命令中显式绑定 VLA 服务器用于通信的 IP。
+
+例如 VLA 服务器 IP 为 `192.168.1.10`，在该服务器运行（替换为真实 IP 和模型路径）：
+
+```bash
+GPU_ID=1 \
+OHT_MODEL_PATH=/data/oht/runs/baseline-s0/model_last.pth \
+OHT_HOST=192.168.1.10 \
+OHT_PORT=8004 \
+bash finetune/OHT/vla_server.sh
+```
+
+`OHT_HOST` 必须是 VLA 服务器自身的地址；多网卡时选择 IsaacLab 服务器可路由到的地址。在 IsaacLab 所在服务器测试：
+
+```bash
+VLA_SERVER_URL=http://192.168.1.10:8004
+curl "${VLA_SERVER_URL}/health"
+curl "${VLA_SERVER_URL}/model_info"
+```
+
+IsaacLab client 向 `${VLA_SERVER_URL}/predict` 发送观测和 instruction，使用 `/reset` 开始新 episode。客户端填写服务端实际 IP，不填 `localhost` 或客户端自己的 IP。两台服务器需网络互通，且服务端 TCP `8004` 端口允许连接。分机部署使用相同的 prepared 请求契约，不要求共享模型文件；replay 烟测工具另需能读取匹配的 replay。
+
 ## 检查与 replay 烟测
 
 ```bash
