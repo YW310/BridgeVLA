@@ -34,4 +34,6 @@ def load_policy(path, device="cuda:0", pretrain_path=None, predictor=None, prove
     agent = build_agent(config, contract, torch.device(device), pretrain_path, training=False)
     load_weights(agent, checkpoint)
     del checkpoint
-    return Policy(agent, contract, device, config["mode"], wrapper)
+    policy = Policy(agent, contract, device, config["mode"], wrapper)
+    policy.training_config = config
+    return policy

@@ -571,6 +571,26 @@ python -m finetune.OHT.train \
 
 ## 7. 推理服务与 IsaacLab 接入
 
+**FastAPI VLA server。** 新入口提供 `/health`、`/model_info`、`/reset`、`/predict`，复用 checkpoint 绑定的 Policy，支持 prepared 观测、串行推理、请求日志和 replay 烟测：
+
+~~~bash
+python -m pip install -r finetune/OHT/requirements-server.txt
+bash finetune/OHT/serve.sh \
+  --model-path /data/oht/runs/baseline-s0 \
+  --host 0.0.0.0 --port 8010 \
+  --output-dir logs/oht_vla_server_8010
+
+python tools/smoke_oht_vla_server.py \
+  --server http://127.0.0.1:8010 \
+  --replay /data/oht/replay-source-v3 --split val --index 0
+~~~
+
+`--model-path` 可为 checkpoint 或含 `model_last.pth` 的 run 目录。`serve.sh` 调用 [vla_server.sh](vla_server.sh)，也支持参考 H-VLA2 shell 的环境变量方式：`GPU_ID=1 OHT_MODEL_PATH=/path/to/model_last.pth OHT_PORT=8004 bash finetune/OHT/vla_server.sh`。CLI 参数优先，默认不强制 HF 离线；基础模型/processor 资源仍需由 BridgeVLA 加载器读取。
+
+烟测工具仅请求模型，不执行动作；请在没有其他 client 使用时运行。该入口参考 H-VLA2 服务组织方式，但不逐字段兼容其 `json_numpy/proprio` 请求。完整环境变量、观测契约、reset、错误处理、预热和日志见 [VLA server 运行指南](../../docs/guides/oht-vla-server.md)，实现背景见 [设计文档](../../docs/design/oht-vla-server.md)。CPU/HTTP 集成已验证，真实 CUDA/IsaacLab 仍需服务器验收。
+
+**原有 `/act` 服务。** 以下入口和客户端保留原协议，与新 FastAPI 服务是独立进程；同时运行时使用不同端口：
+
 ~~~bash
 python -m finetune.OHT.server \
   --checkpoint /data/oht/runs/baseline-s0/model_last.pth \
