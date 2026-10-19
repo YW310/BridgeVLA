@@ -24,7 +24,8 @@ class Policy:
         if self.wrapper:
             self.wrapper.reset()
 
-    def act(self, observation, goal, step):
+    def act(self, observation, goal, step, *, visualization_callback=None):
+        """Optionally capture label-free CPU diagnostics from this same forward."""
         import torch
         current = policy_observation(observation, self.contract["data_config"]["cameras"], self.action_config)
         current = filter_observation_points(current, self.contract["data_config"])
@@ -37,5 +38,6 @@ class Policy:
         batch["language_goal"] = [[[goal]]]
         with torch.no_grad():
             # EEF has eight values; vector heads return six controls + gripper.
-            action = self.agent.act(step, batch, deterministic=True, return_gembench_action=True)
+            extra = {} if visualization_callback is None else {"visualization_callback": visualization_callback}
+            action = self.agent.act(step, batch, deterministic=True, return_gembench_action=True, **extra)
         return validate_action(action, self.action_config)

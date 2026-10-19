@@ -177,6 +177,8 @@ python tools/smoke_oht_vla_server.py \
 
 输出目录包含 `info.json` 和 `requests.jsonl`。info 记录模型、相机、配置、Asia/Shanghai 启动时间和依赖版本；逐请求日志记录标识、状态和耗时，不保存完整 RGB-D/点云。默认每份日志 10 MiB，保留 3 份轮转备份。
 
+离线 `python -m finetune.OHT.eval open-loop ...` 默认开启三视图、预测 heatmap 和 GT/TCP 投影可视化，每 50 个样本保存一次；`--visualize-every 1` 保存每个样本，`--visualize-every 0` 关闭。可选 `--visualize-output-dir` 指定新图片目录；默认是报告路径去掉扩展名再加 `_visualizations/`。评估结束后打开该目录的 `index.html`；完整命令及 PNG/NPZ 字段见 [OHT README 的离线评估说明](../../finetune/OHT/README.md#8-离线与闭环评估)。可视化开关属于离线评估，服务的 `/predict` 响应仍按上述动作协议返回。
+
 `timing_ms.decode` 是 JSON 解码，`prepare` 是张量解码/过滤/校验，`policy` 是模型调用及输出回传的墙钟耗时，首次调用还包含 episode reset；`total` 是服务端处理时间，不包含 client 网络往返和动作执行时间。
 
 ```bash

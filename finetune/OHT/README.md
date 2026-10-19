@@ -677,6 +677,25 @@ python -m finetune.OHT.eval open-loop \
 
 若长时间停在 `Cameras: [...]`，请查看其后 `[OHT eval]` 的 `stage`：`build_agent` 是模型构建，`apply_checkpoint` 是应用 OHT 权重，`prepare_replay` 是读取 replay 索引，`read_sample` 是校验/解压当前 NPZ，`predict` 是当前样本推理。首次 EEF 推理还会建立三维热图反投影缓存，可能比后续样本慢；日志中的心跳只表示评估进程仍可报告状态，不证明 GPU 运算正在推进。结合另一终端的 `nvidia-smi` 检查利用率、显存和其他进程。`Loading original paligemma model` 是构造基础网络时的提示，后续成功出现 `model_ready` 才表示 OHT checkpoint 已应用。`hash_checkpoint` 是结果写出前计算权重文件 SHA256，文件较大时也可能耗时。评估期间请保持 checkpoint 文件不变，训练仍在更新 `model_last.pth` 时应选用已保存的固定步数 checkpoint。
 
+**离线预测可视化。** CLI 默认开启，每 50 个样本导出一次（样本索引 `0,50,100,...`）；`--visualize-every N` 调整间隔，`--visualize-every 1` 导出每个样本，`--visualize-every 0` 关闭。不改变评估样本数量。先检查 8 个样本时可用：
+
+~~~bash
+python -u -m finetune.OHT.eval open-loop \
+  --checkpoint finetune/OHT/runs/baseline-eef-8gpu-s0/model_last.pth \
+  --replay /data/oht/replay-source-v3 --split val --limit 8 \
+  --visualize-every 1 \
+  --visualize-output-dir /data/oht/eval/baseline-val-images \
+  --output /data/oht/eval/baseline-val-with-images.json
+~~~
+
+报告和图片目录均要求使用新路径。不指定图片目录时，默认保存到报告路径去掉扩展名再加 `_visualizations/`。完整验证可去掉 `--limit`，省略 `--visualize-every` 使用默认间隔 50；固定间隔不保证覆盖每个子任务。评估结束后打开图片目录的 `index.html`，各 `sample_000000/` 子目录包含：
+
+- `mvt1.png` / `mvt2.png`：同一次实际推理的 coarse/refine 三视图 RGB、GT 点高斯图、预测热图、GT/动作 TCP/热图 TCP 投影对比；模型提供预测侧 Target/Reference prior 或 relation anchor 时增加相应列。单阶段模型只输出 `mvt1`。
+- `mvt1.npz` / `mvt2.npz`：RGB、未经显示归一化的逐视图热图概率、world→pixel 仿射矩阵、GT/预测像素坐标及可用的 prior。PNG 颜色按每视图 min/max 拉伸，不能据颜色比较不同样本置信度。GT 图是用于观察的 `sigma=2px` 高斯，不是重新计算的训练 loss 标签；GT 超出当前 refine 视野时不裁到边缘，记录 `gt_in_view=false`。
+- `prediction.json`：样本 ID、任务、instruction、动作配置、预测/GT 动作、世界坐标 TCP 和误差。绿色圈为 GT，红色叉为动作 TCP，青色叉为热图解码 TCP；relative EEF 先按配置还原到世界坐标。非 EEF 模式的热图来自辅助 EEF 头，图中标明 auxiliary；关节模式不伪造 FK 位置，因此没有红色动作 TCP 标记。
+
+导出只采集本次前向结果，不额外调用模型；GT 在推理完成后投影绘图，不进入策略输入。抽样步的 `latency_seconds` 包含诊断载荷的 CPU 拷贝和投影采集，PNG/NPZ 写盘在推理计时之外；测速时用 `--visualize-every 0` 关闭可视化。本接口用于离线评估，独立于 `train_visualization`，不新增 TensorBoard events 或 HTTP 响应图片。底层调用可用 `Policy.act(..., visualization_callback=callback)` 接收 label-free CPU NumPy 载荷；`open_loop(..., visualizer=EvaluationVisualizer(path, every=N))` 接入相同导出器。
+
 闭环工具通过 `--environment module:factory` 接入本机 IsaacLab 适配器。`factory(contract)` 收到的运行时契约包含 `action_spec`，返回：
 
 - reset(case) → {observation, goal, timestamp}，按固定 seed 重置并恢复执行器状态。

@@ -56,6 +56,7 @@ from bridgevla.models.object_conditioning import (
 )
 from bridgevla.models.inference_visualization import (
     blend_heatmap_with_image,
+    build_policy_visualization_payload,
     build_internal_slot_stage_payload,
     internal_slot_stage_diagnostics,
     save_internal_slot_step_visualization,
@@ -2440,6 +2441,7 @@ class RVTAgent:
     def act(
         self, step: int, observation: dict, deterministic=False,
         visualize=False, visualize_save_dir="", return_gembench_action=False,
+        visualization_callback=None,
     ) -> ActResult:
         oracle_points, oracle_valid, oracle_slots = (
             self._select_oracle_prior_points(observation, allow_missing=True)
@@ -2789,6 +2791,10 @@ class RVTAgent:
                 )
             else:
                 save_point_cloud_with_color(os.path.join(save_dir,"point_cloud.ply"), pc_ori.cpu().numpy(), img_feat_ori.cpu().numpy(), pred_wpt[0].cpu().numpy())
+        if visualization_callback is not None:
+            visualization_callback(build_policy_visualization_payload(
+                self._net_mod, out, rev_trans[0], pred_wpt, dyn_cam_info,
+            ))
         continuous_action = np.concatenate(
             (
                 pred_wpt[0].cpu().numpy(),

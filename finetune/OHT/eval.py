@@ -15,7 +15,7 @@ from .runtime.progress import ProgressReporter
 from .action_modes import action_options, action_size, resolve_action, apply_eef_delta, action_descriptor
 
 
-def open_loop(policy, replay, split="val", limit=None, *, progress=None):
+def open_loop(policy, replay, split="val", limit=None, *, progress=None, visualizer=None):
     def report(stage, **details):
         if progress is not None:
             progress.update(stage, **details)
@@ -44,8 +44,10 @@ def open_loop(policy, replay, split="val", limit=None, *, progress=None):
         if current != episode:
             policy.reset()
             episode = current
+        captured = []
+        extra = {"visualization_callback": captured.append} if visualizer is not None and visualizer.due(index) else {}
         started = time.perf_counter()
-        predicted = array(policy.act(row, row["goal"], meta["frame"]), (action_size(options),), "prediction")
+        predicted = array(policy.act(row, row["goal"], meta["frame"], **extra), (action_size(options),), "prediction")
         latency = time.perf_counter() - started
         target = row["action"]
         metrics = dict(gripper_correct=bool(predicted[-1] == target[-1]), latency_seconds=latency)
@@ -63,6 +65,11 @@ def open_loop(policy, replay, split="val", limit=None, *, progress=None):
             metrics.update(translation_m=float(np.linalg.norm(first[:3] - second[:3])),
                            rotation_degrees=float(np.rad2deg(rotation_error(first[3:7], second[3:7]))))
         rows.append(dict(id=meta["id"], task=meta["task"], **metrics))
+        if extra:
+            if len(captured) != 1:
+                raise RuntimeError("Evaluation visualization requires exactly one payload from this inference")
+            report("visualize", emit=index == 0, completed=index, **context)
+            visualizer.write(index, captured[0], row, meta, predicted, options, metrics)
         report("sample_done", emit=index == 0 or index + 1 == total, completed=index + 1,
                read_s=round(read_seconds, 3), predict_s=round(latency, 3), **context)
     report("summarize", completed=total, total=total)
@@ -74,10 +81,14 @@ def open_loop(policy, replay, split="val", limit=None, *, progress=None):
                    for key in values[0] if key not in ("id", "task", "gripper_correct")}
         return dict(samples=len(values), gripper_accuracy=float(np.mean([v["gripper_correct"] for v in values])), **metrics)
     per_task = {task: summarize(values) for task, values in grouped.items()}
-    return dict(kind="open_loop_errors", split=split, contract_sha256=data.contract["sha256"],
+    result = dict(kind="open_loop_errors", split=split, contract_sha256=data.contract["sha256"],
                 action_spec=action_descriptor(options),
                 per_task=per_task, all_samples=summarize(rows), predictions=rows,
                 note="Pose errors do not measure closed-loop task success.")
+    if visualizer is not None:
+        report("write_visualization_index")
+        result["visualization"] = visualizer.finish()
+    return result
 
 
 def closed_loop(client, environment, cases, max_steps=500):
@@ -139,6 +150,9 @@ def main(argv=None):
     p.add_argument("--progress-interval", type=float, default=10,
                    help="Seconds between stderr status updates, including during loading/first inference")
     p.add_argument("--quiet", action="store_true", help="Disable OHT evaluation progress messages")
+    p.add_argument("--visualize-every", type=int, default=50,
+                   help="Capture sample indices 0,N,2N,... as PNG/NPZ (default: 50); 0 disables visualization")
+    p.add_argument("--visualize-output-dir", help="New image directory; default: <output-stem>_visualizations")
     p.add_argument("--output", required=True)
     p = sub.add_parser("closed-loop")
     p.add_argument("--server", required=True)
@@ -156,11 +170,20 @@ def main(argv=None):
     if args.kind == "open-loop":
         if args.limit is not None and args.limit < 1:
             raise ValueError("--limit must be positive")
+        if args.visualize_every < 0:
+            raise ValueError("--visualize-every must be nonnegative")
+        if args.visualize_output_dir and not args.visualize_every:
+            raise ValueError("--visualize-output-dir requires --visualize-every > 0")
+        visualizer = None
+        if args.visualize_every:
+            from .evaluation_visualization import EvaluationVisualizer
+            directory = args.visualize_output_dir or str(Path(args.output).with_suffix('')) + '_visualizations'
+            visualizer = EvaluationVisualizer(directory, args.visualize_every)
         from .runtime.loading import load_policy
         with ProgressReporter(args.progress_interval, enabled=not args.quiet) as progress:
             policy = load_policy(args.checkpoint, args.device, args.pretrain_path,
                                  args.predictor, args.predictor_provenance, progress=progress)
-            result = open_loop(policy, args.replay, args.split, args.limit, progress=progress)
+            result = open_loop(policy, args.replay, args.split, args.limit, progress=progress, visualizer=visualizer)
             progress.update("hash_checkpoint", checkpoint=args.checkpoint)
             result["checkpoint_sha256"] = file_digest(args.checkpoint)
             progress.update("write_report", output=args.output)

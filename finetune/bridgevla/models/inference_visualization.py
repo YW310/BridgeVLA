@@ -19,6 +19,58 @@ _BORDER_COLOR = (70, 70, 70)
 _ORIGINAL_IMAGE_WEIGHT = 0.30
 
 
+@torch.no_grad()
+def build_policy_visualization_payload(network, output, reverse_cube, waypoint, dyn_cam_info=None):
+    """Capture one inference, without labels, using its actual orthographic cameras.
+
+    The affine world-to-pixel maps include both cube normalization and the
+    prediction-centered refine crop. Consumers can project held-out labels later.
+    """
+    if output['trans'].shape[0] != 1:
+        raise ValueError('Policy visualization requires a single observation')
+    device = output['trans'].device
+    basis = torch.cat((torch.zeros(1, 3, device=device), torch.eye(3, device=device),
+                       torch.tensor([[.3, -.2, .4]], device=device)))
+    world = reverse_cube(basis).detach().double().cpu().numpy()
+    world_from_cube = np.eye(4)
+    world_from_cube[:3, :3] = (world[1:4] - world[0]).T
+    world_from_cube[:3, 3] = world[0]
+    cube_from_world = np.linalg.inv(world_from_cube)
+    stages = {}
+    for name, first in (('mvt1', True), ('mvt2', False)):
+        if not first and 'mvt2' not in output:
+            continue
+        stage = output if first else output['mvt2']
+        pixels = network.get_pt_loc_on_img(
+            basis[None], mvt1_or_mvt2=first, dyn_cam_info=dyn_cam_info,
+            out=None if first else output,
+        )[0].detach().double().cpu().numpy()  # [5, views, xy]
+        pixel_from_cube = np.concatenate(
+            ((pixels[1:4] - pixels[0]).transpose(1, 2, 0), pixels[0, :, :, None]), axis=-1,
+        )
+        world_to_pixel = pixel_from_cube @ cube_from_world
+        projected_probe = world_to_pixel @ np.r_[world[4], 1.]
+        if not np.allclose(projected_probe, pixels[4], atol=2e-3, rtol=1e-5):
+            raise ValueError('Policy visualization requires affine orthographic projection')
+        logits = stage['trans'][0].detach().float()
+        probabilities = logits.flatten(1).softmax(-1).reshape_as(logits).cpu().numpy()
+        captured = dict(rgb=_input_images(output[name + '_ori_img'][0, :, 3:6]),
+                        heatmap=probabilities, world_to_pixel=world_to_pixel)
+        # Copy prediction-side role maps only. Teacher/GT maps stay outside policy.
+        if 'object_slot_prior' in stage:
+            roles = stage['object_slot_prior'][0].detach().float().cpu().numpy()
+            captured.update(target_prior=roles[:, 0], reference_prior=roles[:, 1])
+        else:
+            for source, target in (('oracle_target_prior', 'target_prior'),
+                                   ('oracle_reference_prior', 'reference_prior')):
+                if source in stage:
+                    captured[target] = stage[source][0].detach().float().cpu().numpy()
+        if 'oracle_relation_anchor' in stage:
+            captured['relation_anchor'] = stage['oracle_relation_anchor'][0].detach().float().cpu().numpy()
+        stages[name] = captured
+    return dict(stages=stages, heatmap_waypoint_world=waypoint[0].detach().float().cpu().numpy())
+
+
 def _draw_centered_text(draw, bounds, text, fill=(0, 0, 0)):
     left, top, right, bottom = bounds
     text = str(text)

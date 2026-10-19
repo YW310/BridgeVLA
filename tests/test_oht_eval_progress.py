@@ -94,12 +94,14 @@ def test_cli_writes_report_and_keeps_progress_on_stderr(replay_fixture, tmp_path
         return policy
     monkeypatch.setattr(loading, "load_policy", load)
     args = ["open-loop", "--checkpoint", str(checkpoint), "--replay", str(replay_fixture.replay),
-            "--output", str(output), "--limit", "2", "--progress-interval", ".01"]
+            "--output", str(output), "--limit", "2", "--progress-interval", ".01", "--visualize-every", "0"]
     assert evaluation.main(args + (["--quiet"] if quiet else [])) == 0
     captured = capsys.readouterr()
     report = json.loads(output.read_text(encoding="utf-8"))
     assert json.loads(captured.out)["all_samples"]["samples"] == 2
     assert len(report["predictions"]) == 2 and report["checkpoint_sha256"]
+    assert "visualization" not in report
+    assert not (tmp_path / "evaluation_visualizations").exists()
     if quiet:
         assert captured.err == ""
     else:
