@@ -673,6 +673,10 @@ python -m finetune.OHT.eval open-loop \
 
 离线评估自动读取 checkpoint 的动作模式：EEF 类逐任务报告位置/旋转误差（相对 EEF 先还原绝对位姿），关节类报告 rad 单位 MAE/RMSE；所有模式报告夹爪准确率和模型耗时。这些不能代替闭环成功率。内部角色模式没有教师输入，即使 evaluation 数据行存在标签也会被策略白名单过滤。
 
+离线评估默认向 stderr 输出阶段日志，并每 10 秒更新当前阶段、已完成样本数、速度和预计剩余时间（完成首个样本后才有速度估计）。`--progress-interval 5` 可改为 5 秒，`--quiet` 关闭这些提示；最终摘要仍输出到 stdout，逐样本指标保存在 JSON。诊断时先在上述命令中加 `--limit 8`，并使用新的输出名，例如 `baseline-val-smoke.json`；这是前 8 个样本的检查，不能代表完整验证集或覆盖所有任务。确认后去掉 `--limit` 运行正式评估。
+
+若长时间停在 `Cameras: [...]`，请查看其后 `[OHT eval]` 的 `stage`：`build_agent` 是模型构建，`apply_checkpoint` 是应用 OHT 权重，`prepare_replay` 是读取 replay 索引，`read_sample` 是校验/解压当前 NPZ，`predict` 是当前样本推理。首次 EEF 推理还会建立三维热图反投影缓存，可能比后续样本慢；日志中的心跳只表示评估进程仍可报告状态，不证明 GPU 运算正在推进。结合另一终端的 `nvidia-smi` 检查利用率、显存和其他进程。`Loading original paligemma model` 是构造基础网络时的提示，后续成功出现 `model_ready` 才表示 OHT checkpoint 已应用。`hash_checkpoint` 是结果写出前计算权重文件 SHA256，文件较大时也可能耗时。评估期间请保持 checkpoint 文件不变，训练仍在更新 `model_last.pth` 时应选用已保存的固定步数 checkpoint。
+
 闭环工具通过 `--environment module:factory` 接入本机 IsaacLab 适配器。`factory(contract)` 收到的运行时契约包含 `action_spec`，返回：
 
 - reset(case) → {observation, goal, timestamp}，按固定 seed 重置并恢复执行器状态。

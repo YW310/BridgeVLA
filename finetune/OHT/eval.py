@@ -11,17 +11,35 @@ from .data.dataset import OHTDataset
 from .data.geometry import array, quaternion, rotation_error
 from .data.replay import load_contract
 from .runtime.transport import Client
+from .runtime.progress import ProgressReporter
 from .action_modes import action_options, action_size, resolve_action, apply_eef_delta, action_descriptor
 
 
-def open_loop(policy, replay, split="val", limit=None):
+def open_loop(policy, replay, split="val", limit=None, *, progress=None):
+    def report(stage, **details):
+        if progress is not None:
+            progress.update(stage, **details)
+
+    if limit is not None and limit < 1:
+        raise ValueError("limit must be positive")
+    report("prepare_replay", replay=replay, split=split)
     options = action_options(getattr(policy, "action_config", None))
     data = OHTDataset(replay, split, "baseline", action_config=options)
     if policy.contract["sha256"] != data.contract["sha256"]:
         raise ValueError("Checkpoint/evaluation replay mismatch")
+    total = len(data) if limit is None else min(len(data), limit)
+    if not total:
+        raise ValueError(f"Evaluation split is empty: {split}")
+    report("samples_ready", completed=0, total=total, split=split)
     rows, episode = [], None
-    for index in range(len(data) if limit is None else min(len(data), limit)):
-        row, meta = data[index], data.samples[index]
+    for index in range(total):
+        meta = data.samples[index]
+        context = dict(total=total, sample=meta["id"], task=meta["task"])
+        report("read_sample", emit=index == 0, completed=index, **context)
+        started = time.perf_counter()
+        row = data[index]
+        read_seconds = time.perf_counter() - started
+        report("predict", emit=index == 0, completed=index, read_s=round(read_seconds, 3), **context)
         current = (meta["task"], meta["episode_index"])
         if current != episode:
             policy.reset()
@@ -45,6 +63,9 @@ def open_loop(policy, replay, split="val", limit=None):
             metrics.update(translation_m=float(np.linalg.norm(first[:3] - second[:3])),
                            rotation_degrees=float(np.rad2deg(rotation_error(first[3:7], second[3:7]))))
         rows.append(dict(id=meta["id"], task=meta["task"], **metrics))
+        report("sample_done", emit=index == 0 or index + 1 == total, completed=index + 1,
+               read_s=round(read_seconds, 3), predict_s=round(latency, 3), **context)
+    report("summarize", completed=total, total=total)
     grouped = defaultdict(list)
     for row in rows:
         grouped[row["task"]].append(row)
@@ -115,6 +136,9 @@ def main(argv=None):
     p.add_argument("--predictor")
     p.add_argument("--predictor-provenance")
     p.add_argument("--device", default="cuda:0")
+    p.add_argument("--progress-interval", type=float, default=10,
+                   help="Seconds between stderr status updates, including during loading/first inference")
+    p.add_argument("--quiet", action="store_true", help="Disable OHT evaluation progress messages")
     p.add_argument("--output", required=True)
     p = sub.add_parser("closed-loop")
     p.add_argument("--server", required=True)
@@ -133,10 +157,15 @@ def main(argv=None):
         if args.limit is not None and args.limit < 1:
             raise ValueError("--limit must be positive")
         from .runtime.loading import load_policy
-        policy = load_policy(args.checkpoint, args.device, args.pretrain_path,
-                             args.predictor, args.predictor_provenance)
-        result = open_loop(policy, args.replay, args.split, args.limit)
-        result["checkpoint_sha256"] = file_digest(args.checkpoint)
+        with ProgressReporter(args.progress_interval, enabled=not args.quiet) as progress:
+            policy = load_policy(args.checkpoint, args.device, args.pretrain_path,
+                                 args.predictor, args.predictor_provenance, progress=progress)
+            result = open_loop(policy, args.replay, args.split, args.limit, progress=progress)
+            progress.update("hash_checkpoint", checkpoint=args.checkpoint)
+            result["checkpoint_sha256"] = file_digest(args.checkpoint)
+            progress.update("write_report", output=args.output)
+            write_json(args.output, result)
+            progress.update("complete", output=args.output)
     else:
         if args.max_steps < 1:
             raise ValueError("--max-steps must be positive")
@@ -158,7 +187,7 @@ def main(argv=None):
                       executor_id=args.executor_id, environment_factory=args.environment,
                       action_spec=action_descriptor(options),
                       max_steps=args.max_steps)
-    write_json(args.output, result)
+        write_json(args.output, result)
     print(json.dumps({key: value for key, value in result.items() if key not in ("predictions", "cases")}))
     return 0
 
