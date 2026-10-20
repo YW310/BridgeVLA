@@ -664,6 +664,8 @@ absolute_target = execution_target(
 
 ## 8. 离线与闭环评估
 
+实时 IsaacLab 对接使用 HTTP 原始 RGB-D 客户端 `python -m finetune.OHT.isaaclab_client`。推荐通过 `--runtime-factory module:factory` 返回本仓库 `IsaacLabRuntime`，接入工程自己的 env 和全部相机；兼容保留 `--reference-client`。服务端按 checkpoint 准备观测，客户端支持 EEF/relative EEF 的 OSC 跟踪，以及 joint/relative_joint 的关节位置执行。四个任务使用本仓库 instruction，可分别配置初始化和成功条件；默认 `--score none` 不输出成功率，显式 `--score task --task-config ...` 才进行任务评分。工厂示例、运行命令、任务配置、raw 字段及控制器要求见 [IsaacLab 实时 RGB-D 客户端](../../docs/guides/oht-vla-server.md#isaaclab-实时-rgb-d-客户端)。
+
 ~~~bash
 python -m finetune.OHT.eval open-loop \
   --checkpoint /data/oht/runs/baseline-s0/model_last.pth \

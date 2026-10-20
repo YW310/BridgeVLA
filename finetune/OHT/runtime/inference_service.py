@@ -18,6 +18,7 @@ from ..data.common import write_json
 from ..run_directory import RUN_TIMEZONE
 from .inference_api import API_VERSION, OBSERVATION_FORMAT, APIError, decode_request, text
 from .observation_adapter import observation_schema, decode_prepared
+from .raw_observation import RAW_FORMAT, decode_raw, raw_schema
 
 LOG = logging.getLogger(__name__)
 
@@ -54,6 +55,7 @@ class InferenceService:
         self.ready, self.busy, self.stopping = False, False, False
         self.error, self.failed = None, False
         self.episode, self.step, self.timestamp, self.instruction = None, 0, -1., None
+        self.gripper_history, self.input_identity = None, None
         self.episodes, self.request_ids = set(), set()
         self.recent_ids = deque()
         self.logger, self.log_handler = None, None
@@ -101,6 +103,7 @@ class InferenceService:
             mode=self.policy.mode, action_spec=action_descriptor(self.policy.action_config),
             cameras=list(self.policy.contract["data_config"]["cameras"]),
             observation_format=OBSERVATION_FORMAT, observation_schema=self.fields,
+            observation_formats=[OBSERVATION_FORMAT, RAW_FORMAT], raw_observation=raw_schema(self.policy),
             conventions=dict(rgb="CHW uint8", depth="metric Z/depth per training contract",
                              point_cloud="world metres, organized CHW XYZ",
                              camera_extrinsics="T_world_from_optical"),
@@ -226,7 +229,16 @@ class InferenceService:
                 or (self.instruction is not None and request["instruction"] != self.instruction)):
             raise APIError(409, "stale_request", "Expected the next step, a newer timestamp and the same instruction")
         stamp = perf_counter()
-        observation = decode_prepared(request["observation"], self.policy, self.fields)
+        raw = request['observation_format'] == RAW_FORMAT
+        pending = None
+        if raw:
+            observation, pending = decode_raw(request['observation'], self.policy, self.gripper_history)
+            identity = (RAW_FORMAT, request['observation']['task'], request['observation']['data_profile'])
+        else:
+            observation = decode_prepared(request["observation"], self.policy, self.fields)
+            identity = (OBSERVATION_FORMAT,)
+        if self.input_identity is not None and identity != self.input_identity:
+            raise APIError(409, 'observation_conflict', 'Use /reset before changing format, task or data profile')
         prepare_ms = (perf_counter() - stamp)*1000
         self._remember(request["request_id"])
         stamp = perf_counter()
@@ -241,6 +253,7 @@ class InferenceService:
         with self.lock:
             self.step += 1
             self.timestamp, self.instruction = request["timestamp"], request["instruction"]
+            self.gripper_history, self.input_identity = pending, identity
         return dict(api_version=API_VERSION, model_id=self.model_id,
                     contract_sha256=self.policy.contract["sha256"],
                     **{key: request[key] for key in ("request_id", "episode_id", "step", "timestamp")},
@@ -258,6 +271,7 @@ class InferenceService:
             self.episodes.add(episode)
             self.episode, self.step, self.timestamp, self.instruction = episode, 0, -1., None
             self.failed, self.error = False, None
+            self.gripper_history, self.input_identity = None, None
         return dict(api_version=API_VERSION, model_id=self.model_id,
                     contract_sha256=self.policy.contract["sha256"],
                     request_id=request["request_id"], episode_id=episode, next_step=0, reset=True)

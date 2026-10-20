@@ -1,6 +1,6 @@
 # OHT FastAPI VLA server
 
-本入口提供 `GET /health`、`GET /model_info`、`POST /reset`、`POST /predict`。模型结构、物体辅助模式、相机及渲染方向从 checkpoint 获取；server 返回模型输出，IsaacLab client 执行。它参考 H-VLA2 的服务组织方式，但不是现有 H-VLA2 `/predict` client 的逐字段兼容替代品。
+本入口提供 `GET /health`、`GET /model_info`、`POST /reset`、`POST /predict`。支持 prepared 观测及 IsaacLab 原始 RGB-D；模型结构、物体辅助模式、相机及渲染方向从 checkpoint 获取；server 返回模型输出，IsaacLab client 执行。它参考 H-VLA2 的服务组织方式，但不是现有 H-VLA2 `/predict` client 的逐字段兼容替代品。
 
 ## 安装与启动
 
@@ -89,7 +89,7 @@ curl "${VLA_SERVER_URL}/health"
 curl "${VLA_SERVER_URL}/model_info"
 ```
 
-IsaacLab client 向 `${VLA_SERVER_URL}/predict` 发送观测和 instruction，使用 `/reset` 开始新 episode。客户端填写服务端实际 IP，不填 `localhost` 或客户端自己的 IP。两台服务器需网络互通，且服务端 TCP `8004` 端口允许连接。分机部署使用相同的 prepared 请求契约，不要求共享模型文件；replay 烟测工具另需能读取匹配的 replay。
+IsaacLab client 向 `${VLA_SERVER_URL}/predict` 发送观测和 instruction，使用 `/reset` 开始新 episode。客户端填写服务端实际 IP，不填 `localhost` 或客户端自己的 IP。两台服务器需网络互通，且服务端 TCP `8004` 端口允许连接。分机部署支持 prepared 或 raw RGB-D 请求，不要求共享模型文件；replay 烟测使用 prepared 格式，另需能读取匹配的 replay。实时客户端使用 raw RGB-D，启动方式见下文。
 
 ## 检查与 replay 烟测
 
@@ -113,7 +113,7 @@ python tools/smoke_oht_vla_server.py \
 
 ## 请求契约
 
-固定 API 版本为 `bridgevla_predict_v1`，首版观测格式为 `bridgevla_prepared_v1`。先取得 `/model_info`，将其中的 `model_id` 和 `contract_sha256` 带入请求。
+固定 API 版本为 `bridgevla_predict_v1`，支持 `bridgevla_prepared_v1` 和 `bridgevla_rgbd_v1` 两种观测格式。先取得 `/model_info`，将其中的 `model_id` 和 `contract_sha256` 带入请求。原有 prepared 请求保持兼容。
 
 `POST /reset` 的完整外层字段：
 
@@ -150,7 +150,7 @@ python tools/smoke_oht_vla_server.py \
 - K 为对应图像分辨率内参，T 为 `T_world_from_optical`。不能直接将未转换的 USD/OpenGL 外参放入该字段。
 - 浮点字段声明 float32，也接受 float64 并转成 float32；无效 depth/XYZ 的 NaN 按已有契约处理，其余状态及标定必须有效。
 - 相机与尺寸从 checkpoint 获取，缺失相机报错，不自动复制其他视图。额外 teacher、标签和未知字段会被拒绝。
-- 当前不支持 raw RGB-D、`json_numpy` 字符串、H-VLA2 `proprio` 或稀疏点云自动转换。prepared 观测的构造参考 OHT README 中现有 IsaacLab 适配说明。
+- 原始 RGB-D 使用下文单独的 `bridgevla_rgbd_v1` 格式；prepared 格式不接收原始传感器字段、`json_numpy` 字符串、H-VLA2 `proprio` 或稀疏点云。prepared 观测的构造参考 OHT README 中现有 IsaacLab 适配说明。
 - 请求外层字段固定，不接受未声明选项；DDIM、CFG 等 H-VLA2 运行时参数不会被静默忽略。
 
 返回值包含同一 request/episode/step/timestamp、`action`、checkpoint 的 `action_spec` 和 `timing_ms`。不返回伪造的 normalized/fused action 或置信度。客户端应先校验响应标识，再使用动作。
@@ -173,6 +173,110 @@ python tools/smoke_oht_vla_server.py \
 
 输入校验失败不推进 step，也不调用模型。退出时停止接收新工作并等待已运行推理完成。旧的 `/act` 服务保留原接口，需单独运行，不能用旧 `runtime.transport.Client` 直接调用新入口。
 
+## IsaacLab 实时 RGB-D 客户端
+
+`finetune/OHT/isaaclab_client.py` 通过 HTTP 调用 BridgeVLA。推荐使用原生 `--runtime-factory`：IsaacLab 工程负责场景、任务注册和控制器配置，BridgeVLA 负责传感器适配、checkpoint 契约校验、动作解码和执行。保留 `--reference-client` 兼容入口，只借用旧参考脚本的环境和传感器 helper。两种入口互斥。
+
+连接顺序为：两台机器同步本次 BridgeVLA 代码 → 在模型服务器启动 VLA server → 在 IsaacLab 机器用 `curl` 检查 `/health` 和 `/model_info` → 启动下列客户端。模型服务器启动和分机 IP/端口配置见上文“分机部署”；`/model_info.observation_formats` 应包含 `bridgevla_rgbd_v1`，更新代码后需重启旧服务才能启用新格式。
+
+HTTP 连接的是 VLA 模型服务，不会附着到另一个已打开的 Isaac Sim 进程。原生 factory 在调用它的进程内创建或取得 `env`，返回 `runtime/isaaclab_runtime.py` 的 `IsaacLabRuntime`。factory 签名为 `create_runtime(*, args, model_info)`；`args.task` 是四个规范任务名之一，`model_info['action_spec']['mode']` 用于选择 OSC 或关节位置环境，`model_info['cameras']` 指定全部输入相机。`args.runtime_args` 保存 `--headless --device` 等额外参数，由 factory 自行解析。
+
+下面是工厂结构示例，`create_project_oht_environment` 是你在 IsaacLab 工程中实现的场景入口，需要先启动 AppLauncher，再导入依赖 Isaac Sim 的模块；它不属于本仓库：
+
+```python
+def create_runtime(*, args, model_info):
+    from finetune.OHT.runtime.isaaclab_runtime import IsaacLabRuntime
+
+    env, simulation_app = create_project_oht_environment(
+        task=args.task, env_id=args.env_id, seed=args.seed,
+        action_mode=model_info['action_spec']['mode'],
+        runtime_args=args.runtime_args,
+    )
+    cameras = {name: env.scene.sensors[name] for name in model_info['cameras']}
+    return IsaacLabRuntime(
+        env, cameras, ee_link='tool0', quaternion_order='wxyz',
+        simulation_app=simulation_app, owns_env=True, owns_app=True,
+    )
+```
+
+将 `ee_link` 改为训练 `link_to_tcp` 所针对的真实机器人 link；`quaternion_order` 必须按已安装 IsaacLab 版本显式填写 `wxyz` 或 `xyzw`。相机需启用 RGB 和 `distance_to_image_plane`，其对象须提供 `quat_w_opengl`，不使用 `quat_w_world` 代替。factory 返回的相机字典以 checkpoint 中的逻辑名为键，因此可以显式将这些逻辑名绑定到不同的场景 sensor 名。
+
+在 IsaacLab 环境中运行原生客户端（假设上述 factory 保存为可导入的 `my_oht_runtime.py`）：
+
+```bash
+PYTHONPATH=/path/to/BridgeVLA:/path/to/my_oht_project:${PYTHONPATH:-} \
+python -m finetune.OHT.isaaclab_client \
+  --runtime-factory my_oht_runtime:create_runtime \
+  --server http://192.168.1.10:8004 \
+  --task assemble_left \
+  --episodes 1 --max-steps 10 \
+  --output logs/bridgevla-native-smoke \
+  --headless --device cuda:0
+```
+
+四个任务统一使用本仓库 `data/common.py` 中的 instruction；任务配置不能覆盖 instruction、模型输入、相机标定或动作坐标系。factory 必须按 `args.task` 创建相应的物理任务；只修改 instruction 不会自动改变场景资产布局。如果环境已由现有脚本创建，也可以直接构造 `IsaacLabRuntime(env, cameras, ...)`，交给 `IsaacLabBridge`，在同一进程按 `capture() → client.predict() → execute()` 运行，按动作模式选用下文的执行器。
+
+首次使用采用上面的短 rollout，默认 `--initialization env-reset --score none`；`summary.json` 的 success/success_rate 为 null。四个任务的初始化和评分通过自己的配置接入，可复制并修改 [任务配置示例](../../finetune/OHT/configs/isaaclab_tasks.example.yaml)：
+
+```bash
+python -m finetune.OHT.isaaclab_client \
+  --runtime-factory my_oht_runtime:create_runtime \
+  --server http://192.168.1.10:8004 --task assemble_left \
+  --task-config /path/to/isaaclab_tasks.yaml --score task \
+  --episodes 20 --max-steps 500 --output logs/assemble-left-eval
+```
+
+示例中的 `assemble_left_success` 等名称是待接入环境的条件名，必须在 `env.termination_manager` 中实际注册。缺失条件或将 timeout 用作成功条件会报错。没有环境成功条件时，可配置 `evaluator_factory: my_module:create_evaluator`，签名为 `factory(env=..., runtime=..., task=...)`，返回实现 `reset(episode_index=...)` 和 `update(step=..., executed_gripper_cmd=...) -> bool` 的对象。评分器只记录结果及结束 episode，不向策略输入 GT、不切换模型或控制阶段。环境的 terminated/truncated 会停止当前 episode，但不会单独视为成功。
+
+`--initialization env-reset` 使用环境原有 reset。增加 `--initialization task` 后，按所选任务的 `reset_assets` 恢复已注册 `env.scene` 刚体在 runner 初始 reset 后的位置/姿态并清零速度；可再用 `initializer_factory` 实现任务特有的机器人或资产随机化。该 factory 同样接收 `env/runtime/task`，返回 `reset(episode_index=..., seed=...)` 对象。必须至少配置 reset_assets 或 initializer_factory；USD 裸 prim、装配约束和采集分布需要由自己的 initializer 处理。四个任务各自声明设置，不复用左轮拆卸成功几何阈值。
+
+旧参考脚本仍可作为兼容入口。在 IsaacLab 服务器中激活原参考代码可运行的环境，从 IsaacLab 工程目录启动。将 BridgeVLA 仓库加入 `PYTHONPATH`；本机客户端不需要 VLA checkpoint：
+
+```bash
+cd /path/to/IsaacLab
+PYTHONPATH=/path/to/BridgeVLA:${PYTHONPATH:-} \
+python -m finetune.OHT.isaaclab_client \
+  --reference-client /path/to/oht-test-t1v4-gtinfer-client.py \
+  --server http://192.168.1.10:8004 \
+  --task disassemble_left \
+  --env-id Isaac-Deploy-Reach-UR16e-DualEE-AllScene-OSC-v2 \
+  --episodes 1 --max-steps 10 \
+  --output logs/bridgevla-http-smoke \
+  --headless --device cuda:0
+```
+
+需要旧参考脚本的左轮拆卸评估时，使用新输出目录，增加 `--initialization collection --score disassemble-left --episodes 20 --max-steps 500`。此兼容评分开关仅支持 `disassemble_left`，依赖参考脚本原有采集 helper/配置；不自动注入第 300 帧或 GT state。其他任务使用自己的 `--score task` 配置。
+
+客户端从 `/model_info` 获取所需相机。原生 factory 必须提供逻辑名完全匹配的相机字典；兼容入口默认映射为同名大写 USD prim（例如 `global_right -> GLOBAL_RIGHT`），可用 `--camera-map camera-map.json` 覆盖全部映射。两者均绑定 checkpoint 所需全部相机，缺失即报错。采集 uint8 HWC RGB、metric `distance_to_image_plane` Z-depth、实时 K 和 OpenGL sensor→world 位姿；位置统一为相对 `env_origins[0]` 的 world 坐标，在线协议四元数统一为 wxyz。每次查询前 render-only 刷新；无效深度转 NaN。参考相机 warmup 在最终 episode reset 前执行，不在首帧测量时额外推进物理。
+
+每个 raw 请求的 `observation_format` 为 `bridgevla_rgbd_v1`，`observation` 结构为：
+
+```text
+task: assemble_left / assemble_right / disassemble_left / disassemble_right
+data_profile: /model_info.raw_observation.data_profiles 中的精确键
+tensors: { 每项均使用现有 dtype/shape/Base64 封装
+  joint_positions: float32[6]                  # 实测关节，不补零、不做 q99
+  ee_link_pose: float32[7]                     # xyz+wxyz；server 应用 link_to_tcp
+  gripper_position: float32[1]                 # 实测夹爪关节位置之和
+  <camera>_rgb: uint8[H,W,3]
+  <camera>_depth: float32[H,W]                  # 米制 Z-depth，不传 PNG 编码值
+  <camera>_intrinsics: float32[3,3]             # 对应本次 H,W 的 K
+  <camera>_pose: float32[7]                     # OpenGL sensor→world xyz+wxyz
+}
+```
+
+`task` 与 `data_profile` 用于选择 checkpoint 内已保存的逐数据源配置；按任务能唯一匹配时自动选择，否则显式指定 `--data-profile`。服务端使用该 profile 的夹爪标定和因果迟滞、depth limits/kind、毫米舍入、点云过滤和图像尺寸，基于实时 K/pose 反投影，再按训练整数步长采样。OpenGL→optical 仅转换一次；relative EEF 所需 TCP 由实测 link 位姿与 profile 的 `link_to_tcp` 得到。在线 metric depth 不再次执行离线视频的 log/量化解码，不沿用 JEPA 的 q99、7→8 补零或单图 PIL resize。若启用 ray depth，服务端先将 Z-depth 换为 ray distance。原始相机通常 480×640，五相机 RGB-D 请求约十余 MiB，仍受 `/model_info.max_request_bytes` 和 tensor 总量限制约束。
+
+同一 episode 的 format、task、data_profile 和 instruction 固定；切换需要 `/reset` 和新 episode ID。服务端在推理成功后才提交夹爪迟滞状态；非法输入不会消耗 step 或修改历史，reset 会清空历史。
+
+EEF 执行先按 `action_spec` 解码为绝对 TCP 目标，relative EEF 的锚点是该次请求的实测 TCP；随后用 `link_to_tcp` 逆变换得到 EE link 目标，应用 OSC 的 `body_offset`，再转换到实时 robot-root 坐标。跟踪时每次读取当前 link 位姿，计算 base-frame 残差，先按 `--max-translation`（默认每轴 0.05m）和 `--max-rotation`（默认每轴 0.15rad）裁剪，再除以 OSC 配置中的 `position_scale/orientation_scale`。夹爪 open01 映射成环境的 +1/-1。默认 `--max-substeps 1`；增加子步时跟踪同一个固定目标，不重复叠加同一预测增量。动作 term 必须为 OSC，采用 `pose_rel` 控制目标，原生 runtime 的 `ee_link` 须与 `body_name` 一致；使用自定义 `task_frame_rel_path` 的环境需先提供相应适配，内置执行器会明确拒绝。
+
+joint/relative_joint 模式使用内置 `JointPositionExecutor`，要求环境的 `arm_action` 为绝对 `JointPositionAction`，不能送入 OSC 七维口。执行器读取实时 scale/offset，反算原始控制量并校验 action transform 是否发生额外裁剪；目标超出 soft joint limits 时在步进前报错。checkpoint 配置有 `joint_names` 时显式按名称映射，否则必须由环境保证 arm term 顺序与训练六关节顺序一致。控制向量按 action manager 的实际 term 顺序排列，夹爪为单维 +1 开/-1 关。执行器沿用环境现有 PD/驱动配置，通过 `env.step()` 步进。
+
+relative_joint 按请求时的实测关节还原绝对目标一次。`--joint-hold-steps` 默认 1，`--joint-target-tolerance` 默认 0.01rad；可选 `--joint-max-step` 限制每控制步向目标移动的关节位移，默认不限制。多次跟踪时保持同一个物理目标，不重复累加 delta。需要其他驱动方式时可用 `--joint-executor module:factory` 覆盖，`factory(env, runtime)` 返回 `execute(absolute_joint_target, after_step=callback)`；返回实际控制量列表，每步调用 callback，终止时设置 `last_done=True`。
+
+输出目录拒绝覆盖，`run.json` 保存任务、instruction、模型/契约标识、action_spec、profile 和执行/评分配置；`episode_*.json` 保存原始预测、解码后的固定目标、实际控制量及服务耗时，`summary.json` 保存结果。评分时超时、异常和未成功的已尝试 episode 都留在分母；异常后停止控制，不自动重试请求，未执行的 episode 单列为 unattempted。额外参数传入原生 factory 的 `args.runtime_args` 或兼容参考脚本；`--help` 不启动 Isaac Sim。
+
 ## 日志与验证
 
 输出目录包含 `info.json` 和 `requests.jsonl`。info 记录模型、相机、配置、Asia/Shanghai 启动时间和依赖版本；逐请求日志记录标识、状态和耗时，不保存完整 RGB-D/点云。默认每份日志 10 MiB，保留 3 份轮转备份。
@@ -184,6 +288,7 @@ python tools/smoke_oht_vla_server.py \
 ```bash
 python -m pytest tests/test_oht_vla_server.py -q
 python -m pytest tests/test_oht_server_launcher.py -q
+python -m pytest tests/test_oht_isaaclab_http.py tests/test_oht_native_runtime.py -q
 ```
 
-测试使用合成真实 replay，覆盖模型仅加载一次、12 种动作头/辅助模式组合的 Policy 一致性、非法输入隔离、取消后的 busy、并发拒绝、reset、退出等待、轮转日志及真实 Uvicorn HTTP 烟测。VLM/光栅化在 CPU 集成测试中使用小替身；完整 CUDA checkpoint 和 IsaacLab 闭环仍需在服务器验证。
+测试使用合成真实 replay，覆盖模型仅加载一次、12 种动作头/辅助模式组合的 Policy 一致性、非法输入隔离、取消后的 busy、并发拒绝、reset、退出等待、轮转日志及真实 Uvicorn HTTP 烟测。原生运行时测试用仿真接口替身覆盖四任务×四动作模式的 HTTP 联调、相机四元数顺序、关节顺序/scale/offset/限位、相对目标固定及终止停止。VLM/光栅化和 IsaacLab 运行时在 CPU 集成测试中使用小替身；完整 CUDA checkpoint、实际场景条件和 IsaacLab 闭环仍需在服务器验证。

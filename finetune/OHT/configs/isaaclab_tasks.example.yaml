@@ -1,0 +1,17 @@
+# Execution/evaluation settings only. These names must be registered by the
+# IsaacLab project for the selected task; this file defines no success geometry.
+# Configure the runtime factory with args.task to select the physical task.
+version: 1
+tasks:
+  assemble_left:
+    reset_assets: []  # optional env.scene rigid-object keys to restore each episode
+    success_term: assemble_left_success
+  assemble_right:
+    reset_assets: []
+    success_term: assemble_right_success
+  disassemble_left:
+    reset_assets: []
+    success_term: disassemble_left_success
+  disassemble_right:
+    reset_assets: []
+    success_term: disassemble_right_success

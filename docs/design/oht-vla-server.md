@@ -1,6 +1,6 @@
 # OHT VLA server 设计
 
-状态：首版已实现，支持 prepared 观测的四个 FastAPI 接口、串行推理、会话管理、日志及 replay 烟测。已进行 CPU/HTTP 回归；真实 checkpoint 的 CUDA 前向及 IsaacLab 闭环待在服务器验证。现有 `python -m finetune.OHT.server` 的 `/act` 服务继续使用。运行命令见 [服务指南](../guides/oht-vla-server.md)。
+状态：已实现 prepared 和 raw RGB-D 两种观测、四个 FastAPI 接口、串行推理、会话管理、日志、replay 烟测及 HTTP IsaacLab 客户端。原生 runtime factory 接入工程自己的 env/Camera sensors，支持四种动作模式及四任务独立的初始化/评分配置；参考脚本只作为可选兼容入口。CPU/HTTP 和控制数学回归可在无 Isaac Sim 环境运行；真实 checkpoint 的 CUDA 前向及 IsaacLab 闭环待在服务器验证。现有 `python -m finetune.OHT.server` 的 `/act` 服务继续使用。运行命令和 raw 契约见 [服务指南](../guides/oht-vla-server.md)。
 
 本文先确定模型服务的组织方式，不讨论选择哪种机器人动作表示，也不把控制器、运动规划或 `env.step()` 放入服务端。
 
@@ -90,9 +90,9 @@ python -m finetune.OHT.vla_server \
 
 上例的 observation 仅展示数组封装，实际请求必须包含 `/model_info` 声明的全部字段。
 
-首版只实现 prepared 格式：client 提供与训练缓存一致的 CHW RGB、metric depth、world XYZ、相机 K/T 和状态。字段和尺寸完全读取 checkpoint 契约，不把五相机数量或图像尺寸写死。它能复用现有校验和真实 replay 样本进行测试，不依赖取得 IsaacLab client 源码。
+prepared 格式继续支持：client 提供与训练缓存一致的 CHW RGB、metric depth、world XYZ、相机 K/T 和状态。字段和尺寸完全读取 checkpoint 契约，不把五相机数量或图像尺寸写死。
 
-下一阶段可加入 raw RGB-D 格式，由适配层统一执行反投影、缩放和坐标转换。两种格式必须有明确标识；不能根据数组大小猜测单位或外参方向。只提供无像素对应关系的稀疏点云，不能直接等同于当前缓存所需的组织化 XYZ。
+raw RGB-D 格式 `bridgevla_rgbd_v1` 已加入：接收 HWC RGB、米制 Z-depth、实时 K、OpenGL camera→world xyz+wxyz、实测 joint6/EE link/夹爪，以及显式 task/data_profile。服务端统一反投影、整数采样、光学坐标转换、TCP offset 和因果夹爪状态。raw 历史在推理成功后提交，reset 清空；episode 内不能切换 task/profile/format。两种格式不根据数组大小猜测单位或外参方向。无像素对应关系的稀疏点云不能等同于当前组织化 XYZ。
 
 参考服务使用的 `json_numpy` 若需要保留，作为单独、明确启用的兼容解码器实现；仅转换已知字段。不能为了接收旧请求，复制缺失相机、补虚构深度，或把 H-VLA2 的 `proprio` 自动解释成 BridgeVLA 状态。兼容层的字段映射可在取得真实 client 后补齐。
 
@@ -152,16 +152,25 @@ python -m finetune.OHT.vla_server \
 ```text
 finetune/OHT/
   vla_server.py                 # CLI、FastAPI app/lifespan、路由
+  isaaclab_client.py            # 原生 runtime factory / 兼容入口与 rollout
   runtime/
     inference_service.py        # 单工作线程、会话、准入与模型元信息
     inference_api.py            # 请求/响应结构和错误分类
-    observation_adapter.py      # prepared 解码；后续 raw/旧 client 适配
+    observation_adapter.py      # prepared 解码
+    raw_observation.py          # metric RGB-D → 训练一致的观测
+    http_client.py              # 严格会话校验；控制请求不重试
+    isaaclab_runtime.py         # 已有 env / Camera sensors 适配
+    isaaclab_bridge.py          # 实测状态、固定目标、OSC 跟踪
+    joint_executor.py           # 关节顺序、scale/offset 与位置执行
+    task_runtime.py             # 四任务独立初始化/评分接口
   requirements-server.txt      # FastAPI、Uvicorn；测试使用 httpx
   vla_server.sh                # 环境配置、模型检查、启动信息和参数透传
   serve.sh                     # 兼容入口，调用 vla_server.sh
 tests/
   test_oht_vla_server.py
   test_oht_server_launcher.py
+  test_oht_isaaclab_http.py
+  test_oht_native_runtime.py
 tools/
   smoke_oht_vla_server.py       # 真实 replay → HTTP；不执行返回动作
 ```
@@ -176,6 +185,6 @@ tools/
 4. 已加入 fake Policy 测试，覆盖只加载一次、HTTP 编解码、错误状态、取消请求后保持 busy、并发拒绝、reset 和退出等待。
 5. 已加入合成 replay + CPU 小模型测试，覆盖全部四种动作头及三种物体辅助模式的新接口与直接 Policy 调用一致性；真实 Uvicorn HTTP 测试验证 replay 烟测工具。
 6. 待在服务器用真实 checkpoint 和 replay 观测做 CUDA 烟测，确认点云渲染、对象辅助、输出形状与延迟。
-7. 待接 IsaacLab client，再实现它实际需要的原始字段映射与执行端转换。
+7. 已接入原生/兼容 IsaacLab client 的 RGB-D 字段映射、固定目标解码、OSC/关节位置执行及任务评分接口；待在实际 OHT 工程配置场景工厂、成功条件并验收闭环。
 
 首版完成标准是模型加载一次、请求能独立测试、观测与训练一致、推理和 reset 串行、响应可追踪、旧 `/act` 路径不受影响。真实 IsaacLab 闭环成绩作为后续验收单独记录。

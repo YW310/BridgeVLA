@@ -4,6 +4,7 @@ import math
 
 API_VERSION = "bridgevla_predict_v1"
 OBSERVATION_FORMAT = "bridgevla_prepared_v1"
+RAW_OBSERVATION_FORMAT = "bridgevla_rgbd_v1"
 
 
 class APIError(Exception):
@@ -49,6 +50,6 @@ def decode_request(raw, operation):
             valid_time = False
         if not valid_time:
             raise APIError(422, "invalid_request", "timestamp must be finite and nonnegative")
-        if value["observation_format"] != OBSERVATION_FORMAT:
-            raise APIError(422, "unsupported_observation", f"Expected observation_format={OBSERVATION_FORMAT}")
+        if value["observation_format"] not in (OBSERVATION_FORMAT, RAW_OBSERVATION_FORMAT):
+            raise APIError(422, "unsupported_observation", "Unsupported BridgeVLA observation format")
     return value
