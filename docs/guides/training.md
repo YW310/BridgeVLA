@@ -47,6 +47,20 @@ GPUS_PER_NODE=2 bash train_8x40.sh --exp_cfg_path configs/rlbench_config.yaml \
               --pretrain_path PATH_TO_2D_HEATMAP_PRETRAINED_MODEL
 ```
 
+### DataLoader 内存与多卡训练
+
+`pin_memory` 控制 CPU batch 是否使用 CUDA 锁页内存，`num_workers` 是每个 rank 的数据进程数。
+`cross_scale` / `refine` 配置默认 `pin_memory: False`、`num_workers: 2`；其他配置保留原行为（未指定时 pinning 为 True）。启动日志会显示实际值。
+
+若报错出现在 `pin memory thread` / `Tensor.pin_memory()`，可在原命令的 `--exp_cfg_opts` 中加入（已有覆盖项时合并为同一参数）：
+
+```bash
+--exp_cfg_opts "pin_memory False num_workers 2"
+```
+
+这会绕过 DataLoader 的锁页路径，不改变模型、监督目标或 batch 预算，无需重建 replay；吞吐可能变化。
+仍需排查时可设 `num_workers 0`，但它本身不会关闭 pinning。确认环境允许后可用 `pin_memory True` 恢复。
+
 <a id="rlbench-config-datasets"></a>
 
 ### RLBench config 与数据目录

@@ -133,7 +133,7 @@ class RoleFeatureConfigTest(unittest.TestCase):
         joint = (directory / 'rlbench_o2_internal_slots_joint.yaml').read_text(encoding='utf-8')
         opt_in = (directory / 'rlbench_o2_internal_slots_cross_scale.yaml').read_text(encoding='utf-8')
         for line in joint.splitlines():
-            if line and not line.startswith(('#', 'exp_id:', 'bs:', 'freeze_multimodal_projector:')):
+            if line and not line.startswith(('#', 'exp_id:', 'bs:', 'num_workers:', 'freeze_multimodal_projector:')):
                 self.assertIn(line, opt_in)
         for flag in FLAGS:
             self.assertIn(f'  {flag}: True', opt_in)

@@ -1088,6 +1088,11 @@ def experiment(cmd_args):
             f'Train replay storage: {train_replay_storage_dir}',
             flush=True,
         )
+        print(
+            f'DataLoader: num_workers={exp_cfg.num_workers}, '
+            f'pin_memory={exp_cfg.pin_memory}',
+            flush=True,
+        )
     print("Training on {} tasks: {}".format(len(tasks), tasks))
     t_start = time.time()
     get_dataset_func = lambda: get_dataset(
@@ -1102,6 +1107,7 @@ def experiment(cmd_args):
         cmd_args.refresh_replay,
         device_id,
         num_workers=exp_cfg.num_workers,
+        pin_memory=exp_cfg.pin_memory,
         only_train=True,
         sample_distribution_mode=exp_cfg.sample_distribution_mode,
         use_oracle_objects=exp_cfg.use_oracle_objects,

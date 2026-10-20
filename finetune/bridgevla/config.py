@@ -11,6 +11,8 @@ _C.bs = 4
 _C.epochs = 100
 # number of dataloader workers, >= 0
 _C.num_workers = 0
+# Preserve historical transfer behavior unless a profile opts out of host pinning.
+_C.pin_memory = True
 # 'transition_uniform' or 'task_uniform'
 _C.sample_distribution_mode = 'transition_uniform'
 _C.train_iter = 16 * 10000

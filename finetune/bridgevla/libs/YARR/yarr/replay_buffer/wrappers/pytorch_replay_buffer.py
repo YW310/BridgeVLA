@@ -59,9 +59,10 @@ class PyTorchReplayBuffer(WrappedReplayBuffer):
       sample_mode: the mode to sample data, choose from ['random', 'enumerate']
     """
 
-    def __init__(self, replay_buffer: ReplayBuffer, num_workers: int = 2, sample_mode = 'random', sample_distribution_mode = 'transition_uniform'):
+    def __init__(self, replay_buffer: ReplayBuffer, num_workers: int = 2, sample_mode = 'random', sample_distribution_mode = 'transition_uniform', pin_memory: bool = True):
         super(PyTorchReplayBuffer, self).__init__(replay_buffer)
         self._num_workers = num_workers
+        self._pin_memory = pin_memory
         self._sample_mode = sample_mode
         self._sample_distribution_mode = sample_distribution_mode
 
@@ -69,5 +70,5 @@ class PyTorchReplayBuffer(WrappedReplayBuffer):
         d = PyTorchIterableReplayDataset(self._replay_buffer, self._sample_mode, self._sample_distribution_mode)
 
         # Batch size None disables automatic batching
-        return DataLoader(d, batch_size=None, pin_memory=True,
+        return DataLoader(d, batch_size=None, pin_memory=self._pin_memory,
                           num_workers=self._num_workers)

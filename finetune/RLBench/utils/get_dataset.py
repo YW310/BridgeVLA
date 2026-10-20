@@ -37,6 +37,7 @@ def get_dataset(
     use_predicted_objects=False,
     predicted_object_num_points=512,
     sample_distribution_mode="transition_uniform",
+    pin_memory=True,
 ):
 
     train_replay_buffer = create_replay(
@@ -154,6 +155,7 @@ def get_dataset(
         sample_mode="random",
         num_workers=num_workers,
         sample_distribution_mode=sample_distribution_mode,
+        pin_memory=pin_memory,
     )
     train_dataset = train_wrapped_replay.dataset()
 
@@ -164,6 +166,7 @@ def get_dataset(
             test_replay_buffer,
             sample_mode="enumerate",
             num_workers=num_workers,
+            pin_memory=pin_memory,
         )
         test_dataset = test_wrapped_replay.dataset()
     return train_dataset, test_dataset
