@@ -71,9 +71,11 @@ class RoleQueryConfigTest(unittest.TestCase):
             self.assertIn(setting, profile)
         reference = (ROOT / 'finetune/RLBench/configs/rlbench_o2_internal_slots_cross_scale.yaml').read_text(
             encoding='utf-8')
-        for setting in ('bs: 48', 'train_iter: 38400', 'global_batch_size: 192',
+        # Microbatch size and projector freezing can be customized separately;
+        # compare effective budget and shared model settings, not those knobs.
+        for setting in ('train_iter: 38400', 'global_batch_size: 192',
                         'freeze_vision_tower: True', 'freeze_gemma_prefix_layers: 18',
-                        'freeze_multimodal_projector: False', 'gemma_lr: 1e-5',
+                        'gemma_lr: 1e-5',
                         'point_samples: 128'):
             self.assertIn(setting, reference)
             self.assertIn(setting, profile)

@@ -535,6 +535,8 @@ def save_agent(
         'supervise_mixed_role_maps': bool(getattr(conditioning_model, 'object_conditioning_supervise_mixed_role_maps', False)),
         'inherit_coarse_roles': bool(getattr(conditioning_model, 'object_conditioning_inherit_coarse_roles', False)),
         'preserve_role_tokens': bool(getattr(conditioning_model, 'object_conditioning_preserve_role_tokens', False)),
+        'refine_role_masks': bool(getattr(conditioning_model, 'object_conditioning_refine_role_masks', False)),
+        'refine_mask_detach': bool(getattr(conditioning_model, 'object_conditioning_refine_mask_detach', False)),
     }
     if semantic_contract is not None:
         checkpoint['semantic_contract'] = dict(semantic_contract)
@@ -573,6 +575,8 @@ def load_training_checkpoint(agent, path, semantic_contract=None):
         'supervise_mixed_role_maps': bool(getattr(model, 'object_conditioning_supervise_mixed_role_maps', False)),
         'inherit_coarse_roles': bool(getattr(model, 'object_conditioning_inherit_coarse_roles', False)),
         'preserve_role_tokens': bool(getattr(model, 'object_conditioning_preserve_role_tokens', False)),
+        'refine_role_masks': bool(getattr(model, 'object_conditioning_refine_role_masks', False)),
+        'refine_mask_detach': bool(getattr(model, 'object_conditioning_refine_mask_detach', False)),
     }
     stored_conditioning = checkpoint.get('object_conditioning', {})
     if not isinstance(stored_conditioning, dict):
@@ -583,6 +587,7 @@ def load_training_checkpoint(agent, path, semantic_contract=None):
     routing_keys = (
         'shared_action_features', 'use_context',
         'inherit_coarse_roles', 'preserve_role_tokens',
+        'refine_role_masks',
     )
     routing_changed = any(
         bool(stored_conditioning.get(key, False)) != expected_conditioning[key]
@@ -643,7 +648,8 @@ def load_initial_model_checkpoint(agent, path):
         # Retain BridgeVLA backbone/action weights, but reinitialize both
         # object components together. strict=False cannot load shape-mismatched
         # tensors sharing the same key, so remove them before loading.
-        predictor_keys = [key for key in model_state if 'object_slot_predictor' in key]
+        predictor_keys = [key for key in model_state
+                          if 'object_slot_predictor' in key or 'refine_role_mask_head' in key]
         adapter_keys = [key for key in model_state if 'oracle_prior_feature_adapter' in key]
         model_state = {
             key: value for key, value in model_state.items()
@@ -663,6 +669,7 @@ def load_initial_model_checkpoint(agent, path):
         key for key in incompatible.missing_keys
         if 'oracle_prior_' not in key
         and 'object_slot_predictor' not in key
+        and 'refine_role_mask_head' not in key
         and not key.endswith('language_model.lm_head.weight')
     ]
     if unexpected or disallowed_missing:
@@ -1139,6 +1146,8 @@ def experiment(cmd_args):
         object_conditioning_supervise_mixed_role_maps=exp_cfg.object_conditioning.supervise_mixed_role_maps,
         object_conditioning_inherit_coarse_roles=exp_cfg.object_conditioning.inherit_coarse_roles,
         object_conditioning_preserve_role_tokens=exp_cfg.object_conditioning.preserve_role_tokens,
+        object_conditioning_refine_role_masks=exp_cfg.object_conditioning.refine_role_masks,
+        object_conditioning_refine_mask_detach=exp_cfg.object_conditioning.refine_mask_detach,
         object_slots_enabled=exp_cfg.object_slots.enabled,
         object_slot_num_slots=exp_cfg.object_slots.num_slots,
         object_slot_predictor_type=exp_cfg.object_slots.predictor_type,

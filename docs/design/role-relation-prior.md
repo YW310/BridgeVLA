@@ -2,7 +2,7 @@
 
 [文档索引](../README.md) · [论文 survey](../research/object-centric-policy-memory.md) · [实验与命令](../guides/object-conditioning.md#gt-联合对照) · [代码索引](../reference/code-map.md)
 
-> 更新：2026-09-29。设计与接口统一在本文维护。实现状态见下表；memory 与真机部署为后续方案，不代表当前代码能力。
+> 更新：2026-10-20。设计与接口统一在本文维护。实现状态见下表；memory 与真机部署为后续方案，不代表当前代码能力。
 
 阅读导航：[架构](#整体架构) → [当前实现与数据](#当前实现与数据契约) → [角色方案](#角色预测与跨尺度调整) → [实验](#实验顺序)；后续查[Memory](#object-centric-memory后续未实现)、[真机部署](#真实机器人部署后续规划)、[投影扩展](#其他可选扩展未实现)。
 
@@ -29,6 +29,9 @@ flowchart TB
     P --> C
     C --> VF["Refine VLM + 同次 text pooling：共享 backbone 权重"]
     VF --> AR["opt-in：继承角色 → 原 anchor / adapter"]
+    VF -.可选局部读出.-> MR["Refine mask head + RGB/XYZ 细节"]
+    K --> MR
+    MR --> AR
     K --> AR
     C -.实际坐标变换.-> AR
     ST --> AR
@@ -40,17 +43,18 @@ flowchart TB
     RGC --> A
     A -.下一步重新观测.-> O
     GT["训练：GT T/R + 已知 presence"] -.辅助 role-map / NULL loss.-> Q
+    GT -.局部弱监督.-> MR
     D["训练：demo action"] -.action loss.-> AC
     D -.action loss.-> F
     D -.训练 crop teacher forcing.-> C
     M["后续：有界 object memory"] -.历史上下文.-> Q
 
     classDef optional fill:#f0f0f0,stroke:#888;
-    class K,AR,M optional;
+    class K,AR,MR,M optional;
 ```
 
 每步仍是现有两次 VLM 前向（`3 × 2` 视角），text context 来自同次 hidden states。
-预测模式的 GT 只进入辅助监督；推理 crop 来自 coarse waypoint。refine 首版继承 tokens、NULL 与变换后的可信几何，不要求新增局部 mask decoder。
+预测模式的 GT 只进入辅助监督；推理 crop 来自 coarse waypoint。cross-scale 继承 tokens、NULL 与变换后的可信几何；新增 opt-in `internal_slots_refine` 在同一角色条件下学习局部 masks，旧配置仍只重投影点提示。
 
 本步继承不是跨步锁定：下一控制步重新选择。完整场景特征始终进入动作分支，T/R maps 不把 waypoint 限制在物体表面。
 角色与坐标接口见下文[跨尺度继承](#跨尺度角色继承计划未实现)，函数见[代码索引](../reference/code-map.md)。
@@ -64,7 +68,8 @@ flowchart TB
 | 已实现，数据兼容 | 从旧 replay 的角色 `kind` 只读派生 presence/known；NULL loss 监督实际 posterior |
 | 已实现，三个独立开关 | 混合 role-map 监督、coarse→refine 角色继承、几何 unknown 时保留可信 token；默认关闭 |
 | 已实现，结构对照 | `object_slots.predictor_type: role_queries`：两个有序角色 queries，默认仍为 `slots`；闭环收益待验证 |
-| 后续可选 | temporal memory、可信历史点、局部 mask 读出、渲染改进；各自单独验收 |
+| 已实现，闭环待验证 | `refine_role_masks`：coarse 角色条件 + refine VLM/RGB/XYZ 局部读出；独立弱监督，复用原 anchor/action 路径 |
+| 后续可选 | temporal memory、可信历史点、渲染改进；各自单独验收 |
 
 当前普通 internal-slot 配置为 **2 个无序 slots**，joint 为 **6 个**；独立 `role_queries` 配置才是两个固定语义 queries。
 旧配置两级独立预测；`internal_slots_cross_scale` 和 `role_queries` 显式启用本步继承，不自动改变旧配置。
@@ -230,9 +235,13 @@ anchor 分开读取全局角色条件与局部空间支持；同时开启 token 
 首版继承 tokens/NULL/可信几何，并重投影 coarse 预测点提示。逐点/视角要求当前 rendered XYZ 对应，
 容差为 unit-cube 三个像素 pitch；背景、越界或被其他表面覆盖不作为本角色支持。量化容差不保证身份正确。
 继承或 direct role-query 模式的 XYZ 使用干净的实际 crop 坐标，不受 `norm_corr` 或 RGB augmentation 污染；即使关闭继承做 direct-query 消融也保留此坐标契约。VLM RGB 路径不变。
-若细定位仍是瓶颈，再试 `Q_r = W_r h_r + b_r` 的局部 mask readout：
-复用 projection，不增加独立 role/objectness/NULL selector，也不覆盖全局 token。
-VLM patch-grid 分辨率不会因新增 queries 自动提高。
+`internal_slots_refine` 增加 `RoleConditionedRefineMaskHead`：
+`q_r = W_q t_r^c + e_r`，`M_r^f = sigmoid(q_r^T K(D^f)/sqrt(d))`。
+`D^f` 融合当前 refine VLM 特征和 RGB/XYZ 的半/四分辨率 CNN 细节；不额外运行 VLM/SAM。
+新 maps 直接替换局部 prior，送入原 anchor/action 路径；不增加独立 role/objectness/NULL selector，不重算全局 token 或几何。
+沿用继承 packet 的保守局部 role-valid 与当前有效 XYZ：允许区域长出旧点提示，但不能激活无任何继承局部支持的角色。
+Reference NULL 空间质量只应用一次；`refine_mask_detach` 仅切断新 maps 的 action 梯度，global token/geometry 路径不变。
+当前 teacher 是稀疏高斯点投影：新增 BCE/Dice 只在有效角色/视角、有效 XYZ 与非零 teacher footprint 内计算，未知像素不作为背景；这不是密集实例分割监督。精细边界及闭环提升均未验证。
 
 #### 局部支持与坐标
 
@@ -256,18 +265,19 @@ VLM patch-grid 分辨率不会因新增 queries 自动提高。
 
 #### 训练、代码落点与验收
 
-- 独立预测阶段监督同一 demo 角色；继承 refine 只承担 action loss，静态重投影提示不另算角色 loss。
+- 独立预测阶段监督同一 demo 角色；静态继承提示不另算角色 loss。可学习 refine head 单独计算局部 mask loss，不重复匹配、role/objectness/NULL loss。
 - geometry unknown、映射未知或预测点越界不伪造全零负例，更不监督为 NULL。
 - 不新增独立 identity loss，不对不同视域的两级二维 maps 强做逐像素一致性。
 - tokens、soft posterior 与可微中心接受 action 梯度；离散 top-k/rasterization 仅作提示。
 - 同时测试 GT crop 和预测/偏移 crop、coarse 正确与误选；不能只报告正确选择子集。
-- 开关不增加 learned 参数；切换路由用 init，不沿用 optimizer resume。旧 replay 不重写；新旧路由初始数值不保证一致。
+- 旧三个继承开关不增加 learned 参数；新 refine head 增加参数。切换结构用 init，不沿用 optimizer resume。旧 replay 不重写；启用新 head 不保证与旧路由初始数值一致，关闭时保留旧路径。
 
 | 位置 | 当前落点 |
 | --- | --- |
 | `InternalObjectSlotPredictor.forward()` | 输出 geometry valid 与独立 role-token valid |
 | `RVTAgent._object_slot_auxiliary_losses()` | opt-in 混合 map loss，跳过继承阶段的辅助重复 loss |
 | `cross_scale_roles.inherit_coarse_roles()` | 实际 crop 变换、逐视角 XYZ 支持与预测提示重投影 |
+| `refine_role_masks.RoleConditionedRefineMaskHead` / `refine_role_mask_losses()` | 两个继承角色的高分辨率局部读出；投影支持内弱监督 |
 | `mvt.MVT.forward()` / `mvt_single.MVT.forward()` | 传预测 packet，绕过 refine selector；teacher 单独隔离 |
 | `OracleRelationAnchorFeatureAdapter.forward_with_anchor()` | opt-in token 保留，全局条件与局部几何分开 |
 
@@ -305,6 +315,7 @@ GT waypoint/crop teacher forcing 与推理预测 crop 的差距另行诊断；�
 | --- | --- | --- |
 | semantic GT joint | vision tower、projector、Gemma 前 6 层 | 其余 Gemma、action decoder、O2 模块 |
 | internal slots joint / role queries | vision tower、Gemma 前 18 层 | projector、其余 Gemma、action decoder、object 模块 |
+| internal slots refine | vision tower、projector、Gemma 前 18 层 | 其余 Gemma、action decoder、object 模块与局部 mask head |
 
 沿用已有 embedding/lm_head 冻结；分组 LR 为非 Gemma `4e-5`、Gemma `1e-5`。
 使用 `--init_checkpoint` 初始化已有参数，新增 residual 输出端零初始化，允许新增参数缺失。

@@ -28,6 +28,8 @@ def build_agent(config, contract, device, pretrain_path=None, training=True, dis
         object_conditioning_use_context=assisted,
         object_conditioning_inherit_coarse_roles=internal,
         object_conditioning_preserve_role_tokens=internal,
+        object_conditioning_refine_role_masks=object_config.get("refine_role_masks", False),
+        object_conditioning_refine_mask_detach=object_config.get("refine_mask_detach", False),
         object_slots_enabled=internal,
         object_slot_predictor_type="role_queries" if internal else "slots",
         object_slot_num_slots=2 if internal else 6,
@@ -69,7 +71,7 @@ def build_agent(config, contract, device, pretrain_path=None, training=True, dis
         if not assisted:
             raise ValueError("adapter_only requires object assistance")
         for name, parameter in backbone.named_parameters():
-            parameter.requires_grad = any(part in name for part in ("oracle_prior_feature_adapter", "object_slot_predictor", "oht_action_head"))
+            parameter.requires_grad = any(part in name for part in ("oracle_prior_feature_adapter", "object_slot_predictor", "refine_role_mask_head", "oht_action_head"))
         if not any(p.requires_grad for p in backbone.parameters()):
             raise ValueError("No object module parameters selected")
     if action["mode"] != "eef":
@@ -92,6 +94,7 @@ def build_agent(config, contract, device, pretrain_path=None, training=True, dis
                    object_prediction_confidence_threshold=object_config.get("confidence_threshold", .25),
                    object_slot_mask_loss_weight=role_loss.get("map", 1),
                    object_slot_null_loss_weight=role_loss.get("reference_null", .25),
+                   object_refine_mask_loss_weight=role_loss.get("refine_map", 1),
                    object_slot_diversity_loss_weight=0)
     agent_class, extra = RVTAgent, {}
     if action["mode"] != "eef":
@@ -124,7 +127,7 @@ def load_weights(agent, checkpoint, initialize=False):
         agent._net_mod.load_state_dict(state, strict=True)
         return checkpoint
     current = agent._net_mod.state_dict()
-    allowed = ("oracle_prior_feature_adapter", "object_slot_predictor", "oht_action_head")
+    allowed = ("oracle_prior_feature_adapter", "object_slot_predictor", "refine_role_mask_head", "oht_action_head")
     if current_action["mode"] != "eef":
         # Vector policies freeze these unused legacy classifiers. Allow their
         # size to differ when initializing a corrected VLM-width configuration.

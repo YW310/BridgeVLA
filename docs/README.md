@@ -30,6 +30,7 @@
 单帧 slots、soft role 条件化和共享动作特征已有 opt-in 代码，闭环收益仍需验证。
 混合角色图监督、跨尺度继承和 token 保留已有默认关闭的独立开关；见[运行与消融](guides/object-conditioning.md#角色一致性开关)。
 两个有序 T/R queries 已有独立 opt-in 配置；是否优于 6-slot 跨尺度基线尚未验证。temporal memory 与恢复机制仍未实现。
+条件化 refine mask head 已有独立 opt-in 配置，复用原动作路径；点投影弱监督不等于密集实例 GT，闭环收益待验证。见[运行说明](guides/object-conditioning.md#条件化-refine-masksopt-in)。
 现有 YAML 不会因为设计文档更新而自动切换到计划架构。
 
 Oracle-GT 是上界/诊断路线；预测策略的动作前向不得读取 GT T/R。

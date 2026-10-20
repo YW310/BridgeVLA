@@ -240,6 +240,8 @@ def internal_slot_stage_diagnostics(
     if inherited:
         result['roles_inherited'] = True
         result['role_source'] = 'coarse'
+        result['mask_source'] = ('refine' if stage_output.get('object_slot_masks_refined', False)
+                                 else 'coarse_point_reprojection')
     if direct:
         result['predictor_type'] = 'role_queries'
         # These are scores/validity gates, not calibrated object probabilities.

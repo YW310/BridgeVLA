@@ -34,6 +34,7 @@ from bridgevla.models.oracle_prior import (
     rasterize_instance_points,
 )
 from bridgevla.models.cross_scale_roles import inherit_coarse_roles
+from bridgevla.models.refine_role_masks import RoleConditionedRefineMaskHead
 
 class MVT(nn.Module):
     def __init__(
@@ -90,8 +91,16 @@ class MVT(nn.Module):
         object_conditioning_supervise_mixed_role_maps=False,
         object_conditioning_inherit_coarse_roles=False,
         object_conditioning_preserve_role_tokens=False,
+        object_conditioning_refine_role_masks=False,
+        object_conditioning_refine_mask_detach=False,
     ):
         super().__init__()
+        if object_conditioning_refine_role_masks and not (
+            object_conditioning_inherit_coarse_roles and object_conditioning_preserve_role_tokens
+        ):
+            raise ValueError('refine_role_masks requires inherited roles and preserved tokens')
+        if object_conditioning_refine_mask_detach and not object_conditioning_refine_role_masks:
+            raise ValueError('refine_mask_detach requires refine_role_masks')
         if oracle_prior_adapter_rank < 0:
             raise ValueError('oracle_prior_adapter_rank must be >= 0')
         if oracle_relation_anchor_rank < 0:
@@ -180,6 +189,8 @@ class MVT(nn.Module):
         del args['object_conditioning_supervise_mixed_role_maps']
         del args['object_conditioning_inherit_coarse_roles']
         del args['object_conditioning_preserve_role_tokens']
+        del args['object_conditioning_refine_role_masks']
+        del args['object_conditioning_refine_mask_detach']
 
         self.rot_ver = rot_ver
         self.num_rot = num_rot
@@ -203,6 +214,8 @@ class MVT(nn.Module):
         self.object_conditioning_supervise_mixed_role_maps = bool(object_conditioning_supervise_mixed_role_maps)
         self.object_conditioning_inherit_coarse_roles = bool(object_conditioning_inherit_coarse_roles)
         self.object_conditioning_preserve_role_tokens = bool(object_conditioning_preserve_role_tokens)
+        self.object_conditioning_refine_role_masks = bool(object_conditioning_refine_role_masks)
+        self.object_conditioning_refine_mask_detach = bool(object_conditioning_refine_mask_detach)
         oracle_prior_channels = 2 if oracle_prior_relation else 1
         # for verifying the input
         self.feat_ver = feat_ver
@@ -274,6 +287,10 @@ class MVT(nn.Module):
             if self.object_slots_enabled and stage_two
             and not (object_slot_predictor_type == 'role_queries'
                      and self.object_conditioning_inherit_coarse_roles) else None
+        )
+        self.refine_role_mask_head = (
+            RoleConditionedRefineMaskHead(self.mvt1.vlm_dim, object_slot_dim)
+            if self.object_conditioning_refine_role_masks else None
         )
 
 
@@ -761,6 +778,8 @@ class MVT(nn.Module):
                 oracle_relation_state=oracle_relation_state,
                 object_slot_predictor=(None if inherited_roles is not None else self.object_slot_predictor2),
                 inherited_object_roles=inherited_roles,
+                refine_role_mask_head=self.refine_role_mask_head,
+                refine_mask_detach=self.object_conditioning_refine_mask_detach,
                 object_conditioning_shared_action_features=self.object_conditioning_shared_action_features,
                 object_conditioning_use_context=self.object_conditioning_use_context,
                 object_slot_target_heatmap=(

@@ -45,6 +45,7 @@ from bridgevla.models.oracle_prior import (
     validate_oracle_prior_config,
 )
 from bridgevla.models.optimizer_utils import parameter_learning_rate
+from bridgevla.models.refine_role_masks import refine_role_mask_losses
 from bridgevla.models.object_conditioning import (
     active_semantic_target_mask,
     hungarian_role_slot_losses,
@@ -487,6 +488,7 @@ class RVTAgent:
         object_slot_null_loss_weight: float = 0.25,
         object_slot_diversity_loss_weight: float = 0.01,
         object_slot_mixed_role_loss_weight: float = 1.0,
+        object_refine_mask_loss_weight: float = 1.0,
         log_dir="",
         collision_loss_weight: float = 1.0,
     ):
@@ -549,10 +551,14 @@ class RVTAgent:
             object_slot_null_loss_weight,
             object_slot_diversity_loss_weight,
             object_slot_mixed_role_loss_weight,
+            object_refine_mask_loss_weight,
         )
         if any(weight < 0 for weight in slot_loss_weights):
             raise ValueError('object slot loss weights must be non-negative')
         self.object_slot_mask_loss_weight = float(object_slot_mask_loss_weight)
+        if not math.isfinite(object_refine_mask_loss_weight):
+            raise ValueError('object_refine_mask_loss_weight must be finite')
+        self.object_refine_mask_loss_weight = float(object_refine_mask_loss_weight)
         self.object_slot_null_loss_weight = float(object_slot_null_loss_weight)
         self.object_slot_diversity_loss_weight = float(
             object_slot_diversity_loss_weight
@@ -923,12 +929,27 @@ class RVTAgent:
                          'mixed_role_dice': 0.0})
         raw_stage_count = 0
         mixed_stage_count = 0
+        refine_stage_count = 0
         for stage_output in stage_outputs:
             inherited = bool(stage_output.get('object_slot_roles_inherited', False))
             if inherited:
-                # Refine only reprojects coarse predictions. It has no learned
-                # slot/readout head, so repeating map/assignment/NULL losses
-                # would add a constant or duplicate the coarse supervision.
+                # A local mask readout gets its own loss, but never repeats
+                # coarse assignment/objectness/role/NULL supervision.
+                if stage_output.get('object_slot_masks_refined', False):
+                    teacher_valid = oracle_valid
+                    stage_valid = stage_output.get('object_slot_target_valid')
+                    if stage_valid is not None:
+                        teacher_valid = teacher_valid & stage_valid.to(teacher_valid.device).bool()
+                    local = refine_role_mask_losses(
+                        stage_output['object_refine_mask_logits'],
+                        stage_output['object_slot_target_prior'], teacher_valid,
+                        stage_output['object_refine_pixel_valid'],
+                        role_present, role_present_known,
+                    )
+                    for name in ('mask', 'bce', 'dice'):
+                        key = 'refine_' + name
+                        sums[key] = sums.get(key, 0.) + local[name]
+                    refine_stage_count += 1
                 continue
             if stage_output.get('object_slot_predictor_type') == 'role_queries':
                 # Direct T/R queries already emit the policy maps. They have
@@ -1062,7 +1083,8 @@ class RVTAgent:
             raw_stage_count += 1
         zero = output['object_slot_prior'].sum() * 0.0 if raw_stage_count == 0 else None
         return {
-            name: (value / max(mixed_stage_count, 1) if name.startswith('mixed_role')
+            name: (value / max(refine_stage_count, 1) if name.startswith('refine_')
+                   else value / max(mixed_stage_count, 1) if name.startswith('mixed_role')
                    else value / raw_stage_count if raw_stage_count else zero)
             for name, value in sums.items()
         }
@@ -1608,6 +1630,9 @@ class RVTAgent:
                         total_loss + self.object_slot_mixed_role_loss_weight
                         * object_slot_losses['mixed_role']
                     )
+                if 'refine_mask' in object_slot_losses:
+                    total_loss = (total_loss + self.object_refine_mask_loss_weight
+                                  * object_slot_losses['refine_mask'])
             base_total_loss = None
             if base_trans_loss is not None:
                 base_total_loss = choose_oracle_translation_loss(
@@ -1676,6 +1701,12 @@ class RVTAgent:
                         'object_slot_mixed_role_loss': object_slot_losses['mixed_role'].item(),
                         'object_slot_mixed_role_bce_loss': object_slot_losses['mixed_role_bce'].item(),
                         'object_slot_mixed_role_dice_loss': object_slot_losses['mixed_role_dice'].item(),
+                    })
+                if 'refine_mask' in object_slot_losses:
+                    loss_log.update({
+                        'object_refine_mask_loss': object_slot_losses['refine_mask'].item(),
+                        'object_refine_mask_bce_loss': object_slot_losses['refine_bce'].item(),
+                        'object_refine_mask_dice_loss': object_slot_losses['refine_dice'].item(),
                     })
             if base_trans_loss is not None:
                 loss_log['trans_loss_base'] = base_trans_loss.item()

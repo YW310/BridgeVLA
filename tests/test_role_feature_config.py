@@ -90,6 +90,8 @@ def _model_guard_namespace(**overrides):
         'object_conditioning_supervise_mixed_role_maps': False,
         'object_conditioning_inherit_coarse_roles': False,
         'object_conditioning_preserve_role_tokens': False,
+        'object_conditioning_refine_role_masks': False,
+        'object_conditioning_refine_mask_detach': False,
         'stage_two': True,
         'add_corr': True,
         'norm_corr': False,
@@ -131,7 +133,7 @@ class RoleFeatureConfigTest(unittest.TestCase):
         joint = (directory / 'rlbench_o2_internal_slots_joint.yaml').read_text(encoding='utf-8')
         opt_in = (directory / 'rlbench_o2_internal_slots_cross_scale.yaml').read_text(encoding='utf-8')
         for line in joint.splitlines():
-            if line and not line.startswith(('#', 'exp_id:')):
+            if line and not line.startswith(('#', 'exp_id:', 'bs:', 'freeze_multimodal_projector:')):
                 self.assertIn(line, opt_in)
         for flag in FLAGS:
             self.assertIn(f'  {flag}: True', opt_in)
@@ -256,7 +258,8 @@ class RoleFeatureConfigTest(unittest.TestCase):
                        supervise_mixed_role_maps=True)
         namespace['save_agent'](SimpleNamespace(_network=model), 'unused.pth', 2)
         settings = saved[0][0]['object_conditioning']
-        self.assertEqual(set(settings), set(FLAGS) | {'shared_action_features', 'use_context'})
+        self.assertEqual(set(settings), set(FLAGS) | {
+            'shared_action_features', 'use_context', 'refine_role_masks', 'refine_mask_detach'})
         for flag in FLAGS:
             self.assertIs(settings[flag], True)
 

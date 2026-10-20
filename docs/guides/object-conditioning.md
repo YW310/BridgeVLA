@@ -23,6 +23,7 @@ baseline 的安装/预训练/其他 benchmark 命令仍见[训练](training.md)�
 | `semantic_gt_joint` | Semantic-GT | instruction + 完整动作共享 | `rlbench_gt` |
 | `internal_slots_joint` | 6 个无序 slots，128 dim | soft tokens/geometry + instruction + 完整动作共享 | `none` |
 | `internal_slots_cross_scale` | 同一 coarse 的 6 slots | joint + 混合 map 监督 + 本步继承 + token 保留 | `none` |
+| `internal_slots_refine` | 同一 coarse 的 6 slots | 跨尺度继承 + RGB/XYZ 条件化局部 mask head，复用原动作路径 | `none` |
 | `role_queries` | 两个有序 T/R queries | joint + 直接角色图监督 + 本步继承 + token 保留 | `none` |
 
 `rlbench_o2_semantic_roles.yaml` **不是训练配置**：它定义任务/variation 的 T/R、顺序与 NULL 语义，摘要进入数据/checkpoint contract。
@@ -250,13 +251,13 @@ rvt:
 后两项要求 shared action features + anchor；继承还要求 stage_two 与 XYZ channels。
 继承或 direct role-query 模式自动使用未额外归一化、未受图像增强扰动的 XYZ，RGB/VLM 不变；关闭继承做 direct-query 消融也维持该坐标契约。可沿用默认 `rvt2.yaml`。
 继承时 refine 提示为离散重投影，不另算角色/NULL/slot loss；学习式混合 map loss 只在 coarse。
-global tokens/soft geometry 仍接受 refine action 梯度，没有新的局部 mask decoder 或跨步 memory。
+global tokens/soft geometry 仍接受 refine action 梯度；cross-scale 本身没有学习式局部 mask decoder 或跨步 memory，局部读出需另选下方 refine 配置。
 有效性只读取 teacher，不由预测 confidence 决定。Reference 在 refine 全部视角没有投影支持时，两种 map loss 都跳过对应监督，也不产生该角色的 objectness 正例；presence/NULL 标签独立保留。
 teacher 是模糊、峰值归一化的点投影 prior，未验证虚拟视角遮挡，不能按严格实例分割 GT 解释。
 
-新独立配置启用全部三项，沿用 joint 的冻结范围、学习率、slots 和训练预算；已有 semantic buffer 不重写：
+跨尺度配置启用全部三项，保持 joint 的学习率、slots 和有效训练预算；microbatch 和 projector 冻结以各自 YAML/overrides 为准，对照时统一。已有 semantic buffer 不重写：
 
-- 冻结 vision tower、Gemma 前 18 层及既有 embedding/lm_head；训练 projector、上层 Gemma、动作头和 object 模块。
+- 冻结 vision tower、Gemma 前 18 层及既有 embedding/lm_head；projector 依配置，上层 Gemma、动作头和 object 模块参与训练。
 - 非 Gemma 学习率 `4e-5`，Gemma `1e-5`；effective batch 192，50 epochs × 200 optimizer steps = 10,000 updates。
 - `--epochs` 未指定时使用 YAML/overrides，显式指定时覆盖并保存实际值；joint 不传 `--train_object_adapter_only`。
 
@@ -304,6 +305,30 @@ EXP_CFG_PATH="$SLOT_RUN/exp_cfg.yaml" EVAL_DATAFOLDER=/path/to/raw_eval \
 ORACLE_PROVIDER=none REPLAY_GROUND_TRUTH=0 EVAL_EPISODES=1 EVAL_RESUME=0 \
 ORACLE_DEBUG=0 SAVE_VIDEO=0 VISUALIZE=0 bash eval.sh
 ```
+
+### 条件化 refine masks（opt-in）
+
+`rlbench_o2_internal_slots_refine.yaml` 保留 coarse 角色/token/NULL/几何，新增轻量局部 head：
+refine VLM + 半/四分辨率 RGB/XYZ 细节 → T/R maps → 原 anchor → 完整动作。不重选 slots 或角色。
+已有 semantic buffer 不重写；当前 Gaussian 点投影只能作弱监督，loss 屏蔽空视图、无效几何及 teacher footprint 外未知像素。
+沿用继承的局部 role-valid，因此无任何 coarse 局部支持的对象不会凭空激活。开启后不保证数值等于旧模型，闭环收益待验收。
+
+```bash
+cd finetune/RLBench
+GPUS_PER_NODE=2 bash train_8x40.sh \
+  --exp_cfg_path configs/rlbench_o2_internal_slots_refine.yaml \
+  --train_replay_storage_dir "$SEMANTIC_BUFFER" \
+  --init_checkpoint "$BASE_CHECKPOINT" \
+  --exp_cfg_opts "seed 0"
+```
+
+新配置冻结 vision tower、Gemma 前 18 层及 projector；microbatch 16 / effective batch 192。公平对照时统一这些设置。
+初始化使用完整模型 `.pth`，不是预训练目录；架构变化不恢复旧 optimizer，也不传 adapter-only 来代替联合训练。
+`object_conditioning.refine_role_masks` 默认 False；`refine_mask_detach True` 为 action-map detach 对照，分割监督仍保留。
+`rvt.object_refine_mask_loss_weight` 控制新增 loss（默认 1.0）。新 mask 接收 action 梯度的默认值为 joint；不是已验证最优设置。
+评估使用训练保存的配置、`ORACLE_PROVIDER=none`；复用预测-only 闭环命令。JSON 同时标注 `role_source=coarse`、`mask_source=refine`。
+单步 smoke 可在 opts 中加入 `tasks place_cups bs 1 global_batch_size 1 num_workers 0 max_optimizer_steps 1`。
+OHT `role_queries` 可在训练配置的 `object` 中设置同名 `refine_role_masks` / `refine_mask_detach`；`role_loss.refine_map` 控制权重，默认关闭，不修改控制器。
 
 ### 固定 T/R role queries（opt-in）
 

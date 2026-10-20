@@ -40,6 +40,17 @@ def _stage_output(views=3, slots=2, height=12, width=10):
 
 
 class InferenceVisualizationTest(unittest.TestCase):
+    def test_refined_masks_keep_coarse_roles_and_report_local_mask_source(self):
+        stage = _stage_output()
+        stage['object_slot_roles_inherited'] = True
+        stage['object_slot_masks_refined'] = True
+        diagnostics = visualization.internal_slot_stage_diagnostics(stage)
+        self.assertEqual(diagnostics['role_source'], 'coarse')
+        self.assertEqual(diagnostics['mask_source'], 'refine')
+        stage['object_slot_masks_refined'] = False
+        self.assertEqual(visualization.internal_slot_stage_diagnostics(stage)['mask_source'],
+                         'coarse_point_reprojection')
+
     def test_heatmap_overlay_keeps_thirty_percent_of_rgb(self):
         input_image = np.full((4, 5, 3), 0.5, dtype=np.float32)
         # Also exercise resizing of a low-resolution relation-anchor map.

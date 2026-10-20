@@ -92,6 +92,7 @@ def freeze_for_oracle_adaptation(backbone) -> int:
         if (
             'oracle_prior_feature_adapter' in name
             or 'object_slot_predictor' in name
+            or 'refine_role_mask_head' in name
         ):
             parameter.requires_grad = True
             trainable += parameter.numel()

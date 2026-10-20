@@ -536,6 +536,8 @@ class MVT(nn.Module):
         object_conditioning_shared_action_features=False,
         object_conditioning_use_context=False,
         inherited_object_roles=None,
+        refine_role_mask_head=None,
+        refine_mask_detach=False,
         **kwargs,
     ):
         """
@@ -550,6 +552,8 @@ class MVT(nn.Module):
         uses_object_roles = object_slot_predictor is not None or inherited_object_roles is not None
         if object_slot_predictor is not None and inherited_object_roles is not None:
             raise ValueError('refine role inheritance must not run an independent slot selector')
+        if refine_role_mask_head is not None and inherited_object_roles is None:
+            raise ValueError('refine mask head requires inherited object roles')
         if uses_object_roles and img_feat_dim < 6:
             raise ValueError('Internal object slots require rendered XYZ and RGB channels')
         rendered_xyz = img[:, :, 0:3] if uses_object_roles else None
@@ -635,6 +639,11 @@ class MVT(nn.Module):
             )
         elif inherited_object_roles is not None:
             object_slot_output = inherited_object_roles
+            if refine_role_mask_head is not None:
+                object_slot_output = refine_role_mask_head(
+                    x, img, rendered_xyz, inherited_object_roles,
+                    detach_action=refine_mask_detach,
+                )
         if object_slot_output is not None:
             oracle_prior_heatmap = object_slot_output['prior']
             oracle_prior_valid = object_slot_output['valid']
@@ -791,6 +800,10 @@ class MVT(nn.Module):
                     out['object_slot_' + output_key] = object_slot_output[key]
             if object_slot_output.get('roles_inherited', False):
                 out['object_slot_roles_inherited'] = True
+            if object_slot_output.get('masks_refined', False):
+                out['object_slot_masks_refined'] = True
+                out['object_refine_mask_logits'] = object_slot_output['refine_mask_logits']
+                out['object_refine_pixel_valid'] = object_slot_output['refine_pixel_valid']
             if 'predictor_type' in object_slot_output:
                 out['object_slot_predictor_type'] = object_slot_output['predictor_type']
             if object_slot_target_heatmap is not None:
