@@ -1,5 +1,9 @@
 """BridgeVLA-owned joint control, task isolation and native-runtime HTTP integration."""
 import json
+import importlib
+import os
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 import numpy as np
 import pytest
@@ -235,15 +239,23 @@ def test_native_factory_all_tasks_and_actions_over_http(fixture, replay_fixture,
     runtime = IsaacLabRuntime(env, cameras, ee_link='tool', quaternion_order='wxyz', simulation_app=app)
     def create(*, args, model_info):
         assert args.task == task and model_info['action_spec']['mode'] == mode
+        assert Path.cwd() == Path(args.isaaclab_root)
+        assert os.environ['ISAACLAB_ROOT'] == args.isaaclab_root
         return runtime
     monkeypatch.setattr(runner, '_factory', lambda name: create)
     with TestClient(fixture.app()) as server:
         monkeypatch.setattr(runner, 'BridgeVLAClient',
                             lambda *args: BridgeVLAClient('http://testserver', opener=Opener(server)))
         output = tmp_path / 'client-run'
+        root = tmp_path / 'IsaacLab'
+        root.mkdir()
+        (root / 'isaaclab.sh').write_text('# simulator checkout marker', encoding='utf-8')
+        previous_dir = Path.cwd()
         assert runner.main(['--runtime-factory', 'project:create', '--task', task, '--episodes', '1',
                             '--max-steps', '5', '--output', str(output), '--score', 'task',
+                            '--isaaclab-root', str(root),
                             '--success-term', f'{task}_success']) == 0
+        assert Path.cwd() == previous_dir
         summary = json.loads((output / 'summary.json').read_text(encoding='utf-8'))
         metadata = json.loads((output / 'run.json').read_text(encoding='utf-8'))
         assert summary['success_rate'] == 1. and summary['attempted'] == 1
@@ -251,6 +263,7 @@ def test_native_factory_all_tasks_and_actions_over_http(fixture, replay_fixture,
         assert all(call[1] == GOALS[task] for call in fixture.policy.calls)
         assert metadata['runtime_factory'] == 'project:create' and metadata['reference_client'] is None
         assert metadata['instruction'] == GOALS[task] and metadata['action_spec']['mode'] == mode
+        assert metadata['isaaclab_root'] == str(root)
         assert env.closed
 
 
@@ -267,3 +280,78 @@ def test_native_pose_conventions_are_explicit(order):
     np.testing.assert_allclose(runtime.world_from_base(), np.eye(4))
     np.testing.assert_allclose(runtime.camera_pose_ros(camera, env), [1, 2, 3, 1, 0, 0, 0])
     np.testing.assert_allclose(runtime.get_ee_pose_in_world_frame(env, env.scene['robot'])[1], [1, 0, 0, 0])
+
+
+def test_root_cli_overrides_environment_and_preserves_caller_paths(tmp_path, monkeypatch):
+    launch, root = tmp_path / 'launch', tmp_path / 'IsaacLab with spaces'
+    launch.mkdir()
+    root.mkdir()
+    (root / 'isaaclab.sh').touch()
+    # A root-local module must be importable as when launching directly in IsaacLab.
+    (root / 'bridgevla_test_root_helper.py').write_text('value = 42\n', encoding='utf-8')
+    monkeypatch.chdir(launch)
+    monkeypatch.setenv('ISAACLAB_ROOT', 'old-checkout')
+    previous_path = list(sys.path)
+    def run(args, extra):
+        assert Path.cwd() == root
+        assert os.environ['ISAACLAB_ROOT'] == str(root)
+        assert args.isaaclab_root == str(root)
+        assert extra == ['--headless'] and args.runtime_args == extra
+        for name, value in [('reference_client', 'reference.py'), ('task_config', 'tasks.yaml'),
+                            ('camera_map', 'cameras.json'), ('output', 'rollout')]:
+            assert getattr(args, name) == str(launch / value)
+        assert importlib.import_module('bridgevla_test_root_helper').value == 42
+        return 7
+    monkeypatch.setattr(runner, '_run', run)
+    try:
+        assert runner.main(['--reference-client', 'reference.py', '--isaaclab-root', '../IsaacLab with spaces',
+                            '--task-config', 'tasks.yaml', '--camera-map', 'cameras.json', '--output', 'rollout',
+                            '--headless']) == 7
+    finally:
+        sys.modules.pop('bridgevla_test_root_helper', None)
+    assert Path.cwd() == launch and sys.path == previous_path
+    assert os.environ['ISAACLAB_ROOT'] == 'old-checkout'
+
+
+def test_root_environment_restored_after_runtime_failure(tmp_path, monkeypatch):
+    root = tmp_path / 'IsaacLab'
+    root.mkdir()
+    (root / 'isaaclab.sh').touch()
+    monkeypatch.setenv('ISAACLAB_ROOT', str(root))
+    previous_dir, previous_path = Path.cwd(), list(sys.path)
+    with pytest.raises(RuntimeError, match='runtime failed'):
+        with runner.isaaclab_directory() as selected:
+            assert selected == str(root) and Path.cwd() == root
+            raise RuntimeError('runtime failed')
+    assert Path.cwd() == previous_dir and sys.path == previous_path
+    assert os.environ['ISAACLAB_ROOT'] == str(root)
+
+
+@pytest.mark.parametrize('bad', ['missing', 'unmarked_directory', 'file'])
+def test_invalid_root_rejected_before_runtime_loading(tmp_path, monkeypatch, bad):
+    root = tmp_path / bad
+    if bad == 'unmarked_directory':
+        root.mkdir()
+    elif bad == 'file':
+        root.touch()
+    monkeypatch.setattr(runner, '_run', lambda *args: pytest.fail('Runtime loaded before root validation'))
+    with pytest.raises(ValueError, match='containing isaaclab.sh'):
+        runner.main(['--reference-client', 'unused.py', '--isaaclab-root', str(root), '--output', str(tmp_path / 'out')])
+
+
+def test_current_checkout_supplies_root_and_environment_is_restored(tmp_path, monkeypatch):
+    (tmp_path / 'isaaclab.sh').touch()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv('ISAACLAB_ROOT', raising=False)
+    with runner.isaaclab_directory() as root:
+        assert root == str(tmp_path) and os.environ['ISAACLAB_ROOT'] == root
+    assert 'ISAACLAB_ROOT' not in os.environ
+
+
+def test_no_root_keeps_existing_runtime_behavior(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv('ISAACLAB_ROOT', raising=False)
+    previous_path = list(sys.path)
+    with runner.isaaclab_directory() as root:
+        assert root is None and Path.cwd() == tmp_path
+        assert sys.path == previous_path and 'ISAACLAB_ROOT' not in os.environ

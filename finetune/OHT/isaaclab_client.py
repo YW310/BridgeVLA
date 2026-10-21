@@ -3,10 +3,12 @@ import argparse
 import importlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import sys
 import numpy as np
 from copy import deepcopy
+from contextlib import contextmanager
 
 from .data.common import GOALS, write_json
 from .runtime.http_client import BridgeVLAClient
@@ -44,12 +46,43 @@ def _factory(value):
     return getattr(importlib.import_module(module), name)
 
 
+@contextmanager
+def isaaclab_directory(value=None):
+    """Use the selected simulator checkout for imports, relative assets and helpers."""
+    previous_dir = Path.cwd()
+    previous_root = os.environ.get('ISAACLAB_ROOT')
+    selected = value or previous_root
+    if selected is None and (previous_dir / 'isaaclab.sh').is_file():
+        selected = previous_dir
+    if selected is None:
+        yield None
+        return
+    root = Path(selected).expanduser().resolve()
+    if not root.is_dir() or not (root / 'isaaclab.sh').is_file():
+        raise ValueError(f'ISAACLAB_ROOT must be an IsaacLab directory containing isaaclab.sh: {root}')
+    previous_path = list(sys.path)
+    try:
+        os.environ['ISAACLAB_ROOT'] = str(root)
+        os.chdir(root)
+        sys.path.insert(0, str(root))
+        print(f'[BridgeVLA] ISAACLAB_ROOT={root}', flush=True)
+        yield str(root)
+    finally:
+        os.chdir(previous_dir)
+        sys.path[:] = previous_path
+        if previous_root is None:
+            os.environ.pop('ISAACLAB_ROOT', None)
+        else:
+            os.environ['ISAACLAB_ROOT'] = previous_root
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__,
                                      epilog='Unrecognized arguments (e.g. --headless --device cuda:0) are passed in args.runtime_args to the runtime factory, or to the legacy runtime.')
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument('--runtime-factory', help='module:factory(args=...,model_info=...) -> IsaacLabRuntime')
     source.add_argument('--reference-client', help='Optional compatibility source for legacy IsaacLab sensor helpers')
+    parser.add_argument('--isaaclab-root', help='IsaacLab checkout containing isaaclab.sh; overrides ISAACLAB_ROOT and sets the runtime working directory')
     parser.add_argument('--server', default='http://127.0.0.1:8010')
     parser.add_argument('--task', choices=tuple(GOALS), default='disassemble_left')
     parser.add_argument('--env-id', default='Isaac-Deploy-Reach-UR16e-DualEE-AllScene-OSC-v2')
@@ -73,6 +106,17 @@ def main(argv=None):
     parser.add_argument('--output', required=True, help='New output directory for summary and action traces')
     args, reference_args = parser.parse_known_args(argv)
     args.runtime_args = reference_args
+    # User-owned paths stay relative to the launch directory, even when the runtime changes directory.
+    for name in ('reference_client', 'task_config', 'camera_map', 'output'):
+        value = getattr(args, name)
+        if value is not None:
+            setattr(args, name, str(Path(value).expanduser().resolve()))
+    with isaaclab_directory(args.isaaclab_root) as root:
+        args.isaaclab_root = root
+        return _run(args, reference_args)
+
+
+def _run(args, reference_args):
     settings = task_settings(args.task_config, args.task)
     if args.success_term is not None:
         if args.score != 'task':
@@ -153,6 +197,7 @@ def main(argv=None):
                    model_id=client.info['model_id'], contract_sha256=client.info['contract_sha256'],
                    action_spec=client.info['action_spec'], data_profile=profile, task_settings=settings,
                    initialization=args.initialization, score=args.score, runtime_factory=args.runtime_factory,
+                   isaaclab_root=args.isaaclab_root,
                    reference_client=args.reference_client, joint_executor=args.joint_executor or
                    ('JointPositionExecutor' if joint is not None else None),
                    joint_hold_steps=args.joint_hold_steps, joint_target_tolerance=args.joint_target_tolerance,
