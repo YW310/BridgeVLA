@@ -47,7 +47,7 @@ bash finetune/OHT/vla_server.sh
 | `HF_HUB_OFFLINE` | `0`；设置 `1` 启用 Hugging Face 离线加载 |
 | `TRANSFORMERS_OFFLINE` | 未单独设置时跟随 `HF_HUB_OFFLINE` |
 
-命令行参数优先于对应环境变量，其他参数原样透传。例如环境变量设置 `OHT_PORT=8004`，传 `--port 8011` 后实际使用 8011。`GPU_ID=1` 让物理 GPU 1 成为进程内的逻辑 `cuda:0`；不要因此把默认 device 改为 `cuda:1`。脚本不自动激活 Conda，可先激活环境，或设置 `PYTHON_BIN=/path/to/env/bin/python`。
+命令行参数优先于对应环境变量，其他参数原样透传。例如环境变量设置 `OHT_PORT=8004`，传 `--port 8011` 后实际使用 8011。`GPU_ID=1` 让物理 GPU 1 成为进程内的逻辑 `cuda:0`；不要因此把默认 device 改为 `cuda:1`。脚本不自动激活 Conda，可先激活环境，或设置 `PYTHON_BIN=/home/yiwei/env/bin/python`。
 
 脚本自动进入所选仓库，模型/输出等相对路径按仓库根目录解释；检查 server 文件、Python 解释器、checkpoint，以及显式预训练目录中的 `model.safetensors.index.json`。启动时打印最终参数、GPU 可见性和离线设置；`--help` 不要求模型，也不创建日志目录。它将 `PYTHONPATH` 固定为该仓库及其 `finetune` 目录，启用无缓冲输出，最后通过 `exec` 启动 Python。
 
@@ -184,8 +184,8 @@ python tools/smoke_oht_vla_server.py \
 在**仿真服务器**激活能运行 OHT 的 IsaacLab 环境，在 IsaacLab 根目录启动：
 
 ```bash
-cd /path/to/IsaacLab
-python /path/to/BridgeVLA/tools/oht_bridgevla_client.py \
+cd /home/yiwei/IsaacLab
+python /home/yiwei/BridgeVLA/tools/oht_bridgevla_client.py \
   --isaaclab-root "$PWD" \
   --server http://109.105.46.126:8004 \
   --task disassemble_left \
@@ -196,7 +196,7 @@ python /path/to/BridgeVLA/tools/oht_bridgevla_client.py \
   --headless --device cuda:0
 ```
 
-启动文件保存在 BridgeVLA 仓库内时，会自动找到自己的仓库根目录，无需设置 `PYTHONPATH`。也可将这一个启动文件复制到 IsaacLab 根目录，随后执行同样的参数，额外指定 `--bridgevla-root /path/to/BridgeVLA`，或设置环境变量 `BRIDGEVLA_ROOT`。它仍调用仓库中的 BridgeVLA 实现，因此仿真服务器需要该仓库和 NumPy/SciPy 等客户端依赖，不需要模型权重、VLM/CUDA 推理依赖、JEPA、ZeroMQ 或原参考 Python 文件。`--help` 不启动 Isaac Sim。
+启动文件保存在 BridgeVLA 仓库内时，会自动找到自己的仓库根目录，无需设置 `PYTHONPATH`。也可将这一个启动文件复制到 IsaacLab 根目录，随后执行同样的参数，额外指定 `--bridgevla-root /home/yiwei/BridgeVLA`，或设置环境变量 `BRIDGEVLA_ROOT`。它仍调用仓库中的 BridgeVLA 实现，因此仿真服务器需要该仓库和 NumPy/SciPy 等客户端依赖，不需要模型权重、VLM/CUDA 推理依赖、JEPA、ZeroMQ 或原参考 Python 文件。`--help` 不启动 Isaac Sim。
 
 HTTP 连接的是模型服务，客户端在自身进程中创建仿真，不会附着到另一个已打开的 Isaac Sim 进程。原生入口使用 AppLauncher 启用相机后才导入仿真/任务模块，再通过 `gym.make()` 创建单环境。先校验 `/model_info`，按 checkpoint 动作模式检查环境控制器；不会自动将 OSC 环境改为关节位置环境，也不会修改 PD 增益或力矩上限。
 
@@ -214,9 +214,9 @@ USD 模式只读取 RGB、`distance_to_image_plane` 和 pinhole `camera_params`�
 如需文件放在 IsaacLab 根目录，可按以下方式复制启动文件，随后不再用原参考脚本：
 
 ```bash
-cp /path/to/BridgeVLA/tools/oht_bridgevla_client.py ./oht-bridgevla-client.py
+cp /home/yiwei/BridgeVLA/tools/oht_bridgevla_client.py ./oht-bridgevla-client.py
 python ./oht-bridgevla-client.py \
-  --bridgevla-root /path/to/BridgeVLA --isaaclab-root "$PWD" \
+  --bridgevla-root /home/yiwei/BridgeVLA --isaaclab-root "$PWD" \
   --server http://109.105.46.126:8004 --task disassemble_left \
   --camera-source usd --episodes 1 --max-steps 10 \
   --output logs/bridgevla-copied-smoke --headless --device cuda:0
@@ -229,10 +229,10 @@ python ./oht-bridgevla-client.py \
 首次使用采用上面的短 rollout，默认 `--initialization env-reset --score none`；`summary.json` 的 success/success_rate 为 null。四个任务的初始化和评分通过自己的配置接入，可复制并修改 [任务配置示例](../../finetune/OHT/configs/isaaclab_tasks.example.yaml)：
 
 ```bash
-python /path/to/BridgeVLA/tools/oht_bridgevla_client.py \
-  --isaaclab-root /path/to/IsaacLab \
+python /home/yiwei/BridgeVLA/tools/oht_bridgevla_client.py \
+  --isaaclab-root /home/yiwei/IsaacLab \
   --server http://109.105.46.126:8004 --task assemble_left \
-  --task-config /path/to/isaaclab_tasks.yaml --score task \
+  --task-config /home/yiwei/isaaclab_tasks.yaml --score task \
   --episodes 20 --max-steps 500 --output logs/assemble-left-eval
 ```
 
@@ -242,7 +242,7 @@ python /path/to/BridgeVLA/tools/oht_bridgevla_client.py \
 
 ### 使用现有参考脚本启动
 
-已有 `oht-test-t1v4-gtinfer-client.py` 时，使用这个入口，无需 `my_oht_runtime.py` 或额外的自定义项目。在 IsaacLab 服务器中激活原参考代码可运行的环境，可以从 BridgeVLA 根目录启动，通过 `--isaaclab-root` 指定仿真工程；本机客户端不需要 VLA checkpoint。下面的 `/path/to/...` 均需替换为该服务器上的实际路径，`--reference-client` 指向参考 Python 文件本身：
+已有 `oht-test-t1v4-gtinfer-client.py` 时，使用这个入口，无需 `my_oht_runtime.py` 或额外的自定义项目。在 IsaacLab 服务器中激活原参考代码可运行的环境，可以从 BridgeVLA 根目录启动，通过 `--isaaclab-root` 指定仿真工程；本机客户端不需要 VLA checkpoint。下面的 `/home/yiwei/...` 均需替换为该服务器上的实际路径，`--reference-client` 指向参考 Python 文件本身：
 
 IsaacLab 根目录是**仿真服务器**上含 `isaaclab.sh` 的工程目录。`--reference-client` 只指定参考文件，工程根目录由 `--isaaclab-root` 单独指定。如果原参考脚本就是从该目录运行，在原来可正常运行它的终端执行 `pwd -P` 即可获得路径。不清楚安装位置时，可在仿真服务器执行：
 
@@ -257,10 +257,10 @@ find "$HOME" /data -maxdepth 6 -type f -name isaaclab.sh 2>/dev/null
 BridgeVLA 已知路径参数 `--reference-client`、`--task-config`、`--camera-map` 和 `--output` 的相对路径按**启动命令所在目录**解析，不随内部目录切换而改变。额外透传给 runtime 的路径参数仍由它按 IsaacLab 工作目录解释。所用绝对根目录会输出到启动日志及 `run.json`；退出或异常时恢复调用方的工作目录、`ISAACLAB_ROOT` 和 Python 搜索路径。
 
 ```bash
-cd /path/to/BridgeVLA
+cd /home/yiwei/BridgeVLA
 python -m finetune.OHT.isaaclab_client \
-  --isaaclab-root /path/to/IsaacLab \
-  --reference-client /path/to/oht-test-t1v4-gtinfer-client.py \
+  --isaaclab-root /home/yiwei/IsaacLab \
+  --reference-client /home/yiwei/oht-test-t1v4-gtinfer-client.py \
   --server http://109.105.46.126:8004 \
   --task disassemble_left \
   --env-id Isaac-Deploy-Reach-UR16e-DualEE-AllScene-OSC-v2 \
