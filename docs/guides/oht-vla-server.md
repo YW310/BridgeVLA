@@ -175,56 +175,61 @@ python tools/smoke_oht_vla_server.py \
 
 ## IsaacLab 实时 RGB-D 客户端
 
-`finetune/OHT/isaaclab_client.py` 通过 HTTP 调用 BridgeVLA。推荐使用原生 `--runtime-factory`：IsaacLab 工程负责场景、任务注册和控制器配置，BridgeVLA 负责传感器适配、checkpoint 契约校验、动作解码和执行。保留 `--reference-client` 兼容入口，只借用旧参考脚本的环境和传感器 helper。两种入口互斥。
+独立入口是仓库自带的 `tools/oht_bridgevla_client.py`，通过 HTTP 调用 BridgeVLA。默认使用已实现的原生工厂 `runtime/isaaclab_factory.py`，自行启动 Isaac Sim、加载 OHT 环境、绑定相机并执行 rollout，**无需 `--reference-client`、`my_oht_runtime.py` 或自定义项目模板**。底层模块入口 `python -m finetune.OHT.isaaclab_client` 同样默认使用该工厂。IsaacLab 工程仍提供实际场景资产、任务注册和控制器配置。
 
 连接顺序为：两台机器同步本次 BridgeVLA 代码 → 在模型服务器启动 VLA server → 在 IsaacLab 机器用 `curl` 检查 `/health` 和 `/model_info` → 启动下列客户端。模型服务器启动和分机 IP/端口配置见上文“分机部署”；`/model_info.observation_formats` 应包含 `bridgevla_rgbd_v1`，更新代码后需重启旧服务才能启用新格式。
 
-HTTP 连接的是 VLA 模型服务，不会附着到另一个已打开的 Isaac Sim 进程。原生 factory 在调用它的进程内创建或取得 `env`，返回 `runtime/isaaclab_runtime.py` 的 `IsaacLabRuntime`。factory 签名为 `create_runtime(*, args, model_info)`；`args.task` 是四个规范任务名之一，`model_info['action_spec']['mode']` 用于选择 OSC 或关节位置环境，`model_info['cameras']` 指定全部输入相机。`args.runtime_args` 保存 `--headless --device` 等额外参数，由 factory 自行解析。
+### 独立 BridgeVLA 客户端
 
-**下面的原生 factory 是扩展接口示例，尚需接入你自己的场景创建代码。** `my_oht_runtime.py` 和 `create_project_oht_environment()` 均不是仓库自带实现，也没有名为 `my_oht_project` 的必需项目。已有提供的参考脚本时，可先使用下文的[现有参考脚本入口](#使用现有参考脚本启动)，无需创建上述模块。
-
-下面是工厂结构示例，`create_project_oht_environment` 是你在 IsaacLab 工程中实现的场景入口，需要先启动 AppLauncher，再导入依赖 Isaac Sim 的模块；它不属于本仓库：
-
-```python
-def create_runtime(*, args, model_info):
-    from finetune.OHT.runtime.isaaclab_runtime import IsaacLabRuntime
-
-    env, simulation_app = create_project_oht_environment(
-        task=args.task, env_id=args.env_id, seed=args.seed,
-        action_mode=model_info['action_spec']['mode'],
-        runtime_args=args.runtime_args,
-    )
-    cameras = {name: env.scene.sensors[name] for name in model_info['cameras']}
-    return IsaacLabRuntime(
-        env, cameras, ee_link='tool0', quaternion_order='wxyz',
-        simulation_app=simulation_app, owns_env=True, owns_app=True,
-    )
-```
-
-将 `ee_link` 改为训练 `link_to_tcp` 所针对的真实机器人 link；`quaternion_order` 必须按已安装 IsaacLab 版本显式填写 `wxyz` 或 `xyzw`。相机需启用 RGB 和 `distance_to_image_plane`，其对象须提供 `quat_w_opengl`，不使用 `quat_w_world` 代替。factory 返回的相机字典以 checkpoint 中的逻辑名为键，因此可以显式将这些逻辑名绑定到不同的场景 sensor 名。
-
-完成场景工厂后，假设 `my_oht_runtime.py` 保存在 IsaacLab 工程根目录，在该目录运行原生客户端。Python 可以从当前工作目录导入此模块，`PYTHONPATH` 只需额外加入 BridgeVLA 根目录；如果模块存放在其他目录，再将它所在的实际目录加入 `PYTHONPATH`：
+在**仿真服务器**激活能运行 OHT 的 IsaacLab 环境，在 IsaacLab 根目录启动：
 
 ```bash
 cd /path/to/IsaacLab
-PYTHONPATH=/path/to/BridgeVLA:${PYTHONPATH:-} \
-python -m finetune.OHT.isaaclab_client \
-  --runtime-factory my_oht_runtime:create_runtime \
-  --isaaclab-root /path/to/IsaacLab \
+python /path/to/BridgeVLA/tools/oht_bridgevla_client.py \
+  --isaaclab-root "$PWD" \
   --server http://109.105.46.126:8004 \
-  --task assemble_left \
+  --task disassemble_left \
+  --env-id Isaac-Deploy-Reach-UR16e-DualEE-AllScene-OSC-v2 \
+  --camera-source usd \
   --episodes 1 --max-steps 10 \
   --output logs/bridgevla-native-smoke \
   --headless --device cuda:0
 ```
 
-四个任务统一使用本仓库 `data/common.py` 中的 instruction；任务配置不能覆盖 instruction、模型输入、相机标定或动作坐标系。factory 必须按 `args.task` 创建相应的物理任务；只修改 instruction 不会自动改变场景资产布局。如果环境已由现有脚本创建，也可以直接构造 `IsaacLabRuntime(env, cameras, ...)`，交给 `IsaacLabBridge`，在同一进程按 `capture() → client.predict() → execute()` 运行，按动作模式选用下文的执行器。
+启动文件保存在 BridgeVLA 仓库内时，会自动找到自己的仓库根目录，无需设置 `PYTHONPATH`。也可将这一个启动文件复制到 IsaacLab 根目录，随后执行同样的参数，额外指定 `--bridgevla-root /path/to/BridgeVLA`，或设置环境变量 `BRIDGEVLA_ROOT`。它仍调用仓库中的 BridgeVLA 实现，因此仿真服务器需要该仓库和 NumPy/SciPy 等客户端依赖，不需要模型权重、VLM/CUDA 推理依赖、JEPA、ZeroMQ 或原参考 Python 文件。`--help` 不启动 Isaac Sim。
+
+HTTP 连接的是模型服务，客户端在自身进程中创建仿真，不会附着到另一个已打开的 Isaac Sim 进程。原生入口使用 AppLauncher 启用相机后才导入仿真/任务模块，再通过 `gym.make()` 创建单环境。先校验 `/model_info`，按 checkpoint 动作模式检查环境控制器；不会自动将 OSC 环境改为关节位置环境，也不会修改 PD 增益或力矩上限。
+
+- `--env-id`：实际已注册的 OHT 环境 ID；默认使用注册配置。
+- `--env-config module:ConfigClass`：显式替换该环境的配置类。例如提供的 T1V4 参考脚本使用 V4 场景，其配置名为 `isaaclab_tasks.manager_based.manipulation.deploy.reach.config.ur_16e.all_scene_osc_env_cfg:UR16eDualEEAllSceneOSCReachEnvCfgV4`。若要使用这份场景，在上面的命令中增加对应 `--env-config`，并确保你的 IsaacLab 工程确实提供该类及其 USD 资产。只使用默认 OSC-v2 注册配置不代表已复现 V4 场景。
+- `--task-import module`：额外导入 OHT 环境注册模块，可重复；内置已导入 `isaaclab_tasks`。
+- `--ee-link name`：训练 `link_to_tcp` 对应的真实机器人 link；默认读取 OSC 的 `body_name`。关节位置环境没有 `body_name` 时必须显式提供。
+- `--quaternion-order wxyz|xyzw`：已安装 IsaacLab 的状态及配置四元数顺序，默认 `wxyz`（2.x）；使用其他约定的版本需显式设置。
+- `--camera-source auto|sensors|usd`：`auto` 默认优先使用完整的已注册 Camera sensors，否则从现有 USD camera prim 创建 Replicator render products。`sensors` 强制使用已注册 sensors；`usd` 强制使用 USD 相机。
+- `--camera-map file.json`：覆盖 checkpoint 逻辑相机名到 sensor 名/USD prim 名/绝对 prim 路径的全部映射。默认 USD 名为逻辑名大写，重名必须提供精确路径；缺少右侧等必需相机时明确报错。
+- `--camera-width 640 --camera-height 480 --camera-warmup-ticks 8`：USD RGB-D 的渲染尺寸及只渲染的预热次数；预热不执行 `env.step()`。
+
+USD 模式只读取 RGB、`distance_to_image_plane` 和 pinhole `camera_params`；深度直接是米制 Z-depth，不从 pointcloud 生成。机器人挂载相机以 USD 中的固定 body→camera 变换结合实时物理 body pose 求世界位姿；wrist 无法绑定机器人 body 时拒绝运行，避免使用停留在旧位置的 USD wrist pose。相机矩阵始终按 OpenGL 约定发送，在服务端转换一次。实现参照 [AppLauncher 官方说明](https://isaac-sim.github.io/IsaacLab/main/source/tutorials/00_sim/launch_app.html)和 [Replicator 官方 API](https://docs.omniverse.nvidia.com/kit/docs/omni_replicator/1.13.30/source/extensions/omni.replicator.core/docs/API.html)。
+
+如需文件放在 IsaacLab 根目录，可按以下方式复制启动文件，随后不再用原参考脚本：
+
+```bash
+cp /path/to/BridgeVLA/tools/oht_bridgevla_client.py ./oht-bridgevla-client.py
+python ./oht-bridgevla-client.py \
+  --bridgevla-root /path/to/BridgeVLA --isaaclab-root "$PWD" \
+  --server http://109.105.46.126:8004 --task disassemble_left \
+  --camera-source usd --episodes 1 --max-steps 10 \
+  --output logs/bridgevla-copied-smoke --headless --device cuda:0
+```
+
+四个任务统一使用本仓库 `data/common.py` 中的 instruction；任务配置不能覆盖 instruction、模型输入、相机标定或动作坐标系。原生入口使用所选环境的 reset；`--task` 决定 instruction/profile，不会自动改变场景资产布局，装配/拆卸分布需由相应环境或下文 initializer 配置保证。不注入参考脚本的 GT 状态、固定第 300 帧、q99 或原 JEPA 模型策略。
+
+已有特殊环境的项目仍可通过 `--runtime-factory module:factory` 覆盖内置工厂，或在现有仿真进程中直接构造 `IsaacLabRuntime(env, cameras, ...)` 和 `IsaacLabBridge`。自定义 factory 签名仍为 `create_runtime(*, args, model_info)`，返回原生 runtime；`--reference-client` 仅保留为旧 helper 兼容入口。两者互斥，均未指定时使用仓库自带的内置工厂。
 
 首次使用采用上面的短 rollout，默认 `--initialization env-reset --score none`；`summary.json` 的 success/success_rate 为 null。四个任务的初始化和评分通过自己的配置接入，可复制并修改 [任务配置示例](../../finetune/OHT/configs/isaaclab_tasks.example.yaml)：
 
 ```bash
-python -m finetune.OHT.isaaclab_client \
-  --runtime-factory my_oht_runtime:create_runtime \
+python /path/to/BridgeVLA/tools/oht_bridgevla_client.py \
   --isaaclab-root /path/to/IsaacLab \
   --server http://109.105.46.126:8004 --task assemble_left \
   --task-config /path/to/isaaclab_tasks.yaml --score task \
@@ -307,7 +312,7 @@ relative_joint 按请求时的实测关节还原绝对目标一次。`--joint-ho
 ```bash
 python -m pytest tests/test_oht_vla_server.py -q
 python -m pytest tests/test_oht_server_launcher.py -q
-python -m pytest tests/test_oht_isaaclab_http.py tests/test_oht_native_runtime.py -q
+python -m pytest tests/test_oht_isaaclab_http.py tests/test_oht_native_runtime.py tests/test_oht_standalone_client.py -q
 ```
 
 测试使用合成真实 replay，覆盖模型仅加载一次、12 种动作头/辅助模式组合的 Policy 一致性、非法输入隔离、取消后的 busy、并发拒绝、reset、退出等待、轮转日志及真实 Uvicorn HTTP 烟测。原生运行时测试用仿真接口替身覆盖四任务×四动作模式的 HTTP 联调、相机四元数顺序、关节顺序/scale/offset/限位、相对目标固定及终止停止。VLM/光栅化和 IsaacLab 运行时在 CPU 集成测试中使用小替身；完整 CUDA checkpoint、实际场景条件和 IsaacLab 闭环仍需在服务器验证。

@@ -1,0 +1,318 @@
+"""Standalone launcher and built-in native runtime, without requiring Isaac Sim."""
+import json
+from pathlib import Path
+import subprocess
+import sys
+from types import SimpleNamespace, ModuleType
+
+import numpy as np
+import pytest
+import torch
+from fastapi.testclient import TestClient
+from scipy.spatial.transform import Rotation
+
+from tests.test_oht_migration import replay_fixture  # noqa: F401
+from tests.test_oht_vla_server import fixture  # noqa: F401
+from tests.test_oht_isaaclab_http import raw_sample, Opener
+from tests.test_oht_native_runtime import environment
+from finetune.OHT import isaaclab_client as runner
+from finetune.OHT.action_modes import action_options
+from finetune.OHT.runtime import isaaclab_factory as native
+from finetune.OHT.runtime.http_client import BridgeVLAClient
+from finetune.OHT.runtime.usd_cameras import (
+    ReplicatorCamera, ReplicatorRuntime, projection_intrinsics, select_camera_paths, usd_rigid_matrix,
+)
+
+
+def native_arguments(**changes):
+    values = dict(camera_width=3, camera_height=2, camera_warmup_ticks=4, runtime_args=['--headless'],
+                  task_import=['project.tasks'], env_id='OHT-test', env_config=None, disable_fabric=False,
+                  seed=42, camera_source='auto', ee_link=None, quaternion_order='wxyz', camera_map=None)
+    return SimpleNamespace(**{**values, **changes})
+
+
+def sensors_for(tensors, names):
+    class Camera:
+        def __init__(self, name):
+            self.data = SimpleNamespace(output={'rgb': tensors[name + '_rgb'][None],
+                                                'distance_to_image_plane': tensors[name + '_depth'][None, ..., None]},
+                                        pos_w=tensors[name + '_pose'][None, :3],
+                                        quat_w_opengl=tensors[name + '_pose'][None, 3:],
+                                        intrinsic_matrices=tensors[name + '_intrinsics'][None])
+            self.updates = 0
+        def update(self, dt, force_recompute):
+            assert dt == 0 and force_recompute
+            self.updates += 1
+    return {name: Camera(name) for name in names}
+
+
+def fake_simulator(monkeypatch, env):
+    state = SimpleNamespace(launched=False, app_closed=False, cfg=None, parse_calls=[])
+    app = SimpleNamespace(is_running=lambda: True, close=lambda: setattr(state, 'app_closed', True))
+    def launch(extra):
+        assert len(sys.argv) == 1
+        state.launched = True
+        return app, SimpleNamespace(device='cpu')
+    def parse(name, **kwargs):
+        state.parse_calls.append((name, kwargs))
+        return SimpleNamespace(scene=SimpleNamespace(num_envs=1), sim=SimpleNamespace(device='cpu', use_fabric=True))
+    def make(name, cfg):
+        assert state.launched and name == 'OHT-test'
+        state.cfg = cfg
+        return SimpleNamespace(unwrapped=env)
+    def modules(imports):
+        assert state.launched and len(sys.argv) == 1
+        state.imports = imports
+        return SimpleNamespace(make=make), torch, parse
+    monkeypatch.setattr(native, 'launch_application', launch)
+    monkeypatch.setattr(native, 'simulation_modules', modules)
+    return state
+
+
+@pytest.mark.parametrize('mode', ['eef', 'relative_eef', 'joint', 'relative_joint'])
+def test_builtin_default_launches_and_runs_http(fixture, replay_fixture, tmp_path, monkeypatch, mode):
+    tensors, _, raw = raw_sample(replay_fixture.replay, fixture.policy)
+    fixture.policy.action_config = action_options({'mode': mode})
+    original = fixture.policy.act
+    def act(*args):
+        original(*args)
+        return (np.array([.2, 0, .5, 0, 0, 0, 1, 1], np.float32) if mode == 'eef' else
+                np.array([.01, 0, 0, 0, 0, 0, 1], np.float32))
+    fixture.policy.act = act
+    env = environment(mode, raw['task'])
+    env.action_manager.get_term('arm_action').cfg = SimpleNamespace(body_name='tool', position_scale=1., orientation_scale=1.)
+    env.scene.sensors = sensors_for(tensors, fixture.policy.contract['data_config']['cameras'])
+    state = fake_simulator(monkeypatch, env)
+    previous_argv = list(sys.argv)
+    output = tmp_path / 'standalone-run'
+    with TestClient(fixture.app()) as server:
+        monkeypatch.setattr(runner, 'BridgeVLAClient',
+                            lambda *args: BridgeVLAClient('http://testserver', opener=Opener(server)))
+        assert runner.main(['--env-id', 'OHT-test', '--ee-link', 'tool', '--task', raw['task'], '--episodes', '1',
+                            '--max-steps', '2', '--output', str(output), '--headless']) == 0
+    assert len(fixture.policy.calls) == env.common_step_counter == 2
+    assert env.closed and state.app_closed and sys.argv == previous_argv
+    metadata = json.loads((output / 'run.json').read_text(encoding='utf-8'))
+    assert metadata['runtime_factory'] == 'finetune.OHT.runtime.isaaclab_factory:create_runtime'
+    assert metadata['reference_client'] is None and metadata['camera_source'] == 'sensors'
+    assert metadata['ee_link'] == 'tool'
+
+
+def test_explicit_scene_configuration_and_cleanup_on_camera_failure(tmp_path, monkeypatch):
+    env = environment('eef')
+    env.action_manager.get_term('arm_action').cfg.body_name = 'tool'
+    env.scene.sensors = {}
+    state = fake_simulator(monkeypatch, env)
+    expected = SimpleNamespace(scene=SimpleNamespace(num_envs=12), sim=SimpleNamespace(device='old', use_fabric=True))
+    monkeypatch.setattr(native, 'factory', lambda value: lambda: expected)
+    args = native_arguments(env_config='oht:V4Config', camera_source='sensors', disable_fabric=True)
+    before = list(sys.argv)
+    with pytest.raises(ValueError, match='Missing registered Camera'):
+        native.create_runtime(args=args, model_info={'cameras': ['wrist'], 'action_spec': {'mode': 'eef'}})
+    assert state.cfg is expected and not state.parse_calls
+    assert expected.scene.num_envs == 1 and expected.sim.device == 'cpu' and not expected.sim.use_fabric
+    assert state.cfg.seed == 42 and state.imports == ['project.tasks']
+    assert env.closed and state.app_closed and sys.argv == before
+
+
+def test_wrong_controller_rejected_before_camera_creation(monkeypatch):
+    env = environment('eef')
+    state = fake_simulator(monkeypatch, env)
+    monkeypatch.setattr(native, 'build_cameras', lambda *args: pytest.fail('Unexpected camera creation'))
+    with pytest.raises(ValueError, match='JointPositionAction environment'):
+        native.create_runtime(args=native_arguments(), model_info={'action_spec': {'mode': 'joint'}})
+    assert env.closed and state.app_closed
+    with pytest.raises(ValueError, match='--ee-link'):
+        native.ee_link(environment('joint'), None)
+
+
+def test_application_camera_enable_and_strict_argument_parser(monkeypatch):
+    app = object()
+    seen = []
+    class AppLauncher:
+        @staticmethod
+        def add_app_launcher_args(parser):
+            parser.add_argument('--headless', action='store_true')
+            parser.add_argument('--device', default='cuda:0')
+        def __init__(self, options):
+            seen.append(options)
+            self.app = app
+    monkeypatch.setitem(sys.modules, 'isaaclab', SimpleNamespace())
+    monkeypatch.setitem(sys.modules, 'isaaclab.app', SimpleNamespace(AppLauncher=AppLauncher))
+    result, options = native.launch_application(['--headless', '--device', 'cpu'])
+    assert result is app and options.headless and options.enable_cameras and options.device == 'cpu'
+    with pytest.raises(SystemExit):
+        native.launch_application(['--unknown-simulator-flag'])
+    assert len(seen) == 1
+
+
+def test_camera_binding_is_unambiguous():
+    paths = ['/World/Robot/WRIST', '/World/left/GLOBAL_LEFT', '/World/other/GLOBAL_LEFT']
+    assert select_camera_paths(paths, {'wrist': 'WRIST'}) == {'wrist': paths[0]}
+    with pytest.raises(ValueError, match='exact USD path'):
+        select_camera_paths(paths, {'global_left': 'GLOBAL_LEFT'})
+    assert select_camera_paths(paths, {'global_left': paths[1]})['global_left'] == paths[1]
+    with pytest.raises(ValueError, match='distinct USD'):
+        select_camera_paths(paths, {'a': 'WRIST', 'b': paths[0]})
+
+
+def test_projection_and_usd_units_match_metric_geometry():
+    projection = np.eye(4)
+    projection[0, 0], projection[1, 1] = 2., 3.
+    projection[0, 2], projection[1, 2] = .2, -.1
+    params = dict(cameraProjection=projection, renderProductResolution=[640, 480], cameraModel='pinhole')
+    np.testing.assert_allclose(projection_intrinsics(params, 640, 480), [[640, 0, 256], [0, 720, 216], [0, 0, 1]])
+    with pytest.raises(ValueError, match='resolution'):
+        projection_intrinsics(params, 224, 224)
+    with pytest.raises(ValueError, match='pinhole'):
+        projection_intrinsics({**params, 'cameraModel': 'fisheye'}, 640, 480)
+    matrix = np.diag([2., 2., 2., 1.])
+    matrix[3, :3] = [100., 200., 300.]
+    Usd = SimpleNamespace(TimeCode=SimpleNamespace(Default=lambda: None))
+    geom = SimpleNamespace(Xformable=lambda prim: SimpleNamespace(ComputeLocalToWorldTransform=lambda time: matrix))
+    value = usd_rigid_matrix(None, Usd, geom, .01)
+    np.testing.assert_allclose(value[:3, :3], np.eye(3))
+    np.testing.assert_allclose(value[:3, 3], [1., 2., 3.])
+
+
+def test_wrist_pose_uses_live_body_and_snapshot_has_no_gt():
+    env = environment('eef')
+    env.scene.env_origins = torch.tensor([[1., 0., 0.]])
+    runtime = ReplicatorRuntime(env, SimpleNamespace(cameras={}), ee_link='tool', quaternion_order='wxyz',
+                                 simulation_app=None, owns_app=False)
+    camera = object.__new__(ReplicatorCamera)
+    camera.body_index = 0
+    camera.body_from_camera = np.eye(4)
+    camera.body_from_camera[:3, 3] = [.1, 0, 0]
+    # No USD/view-transform access is permitted for a moving robot-mounted camera.
+    camera.usd_matrix = lambda prim: pytest.fail('Read stale USD wrist pose')
+    env.scene['robot'].data.body_pos_w[0, 0] = torch.tensor([2., 1., .5])
+    q = Rotation.from_euler('z', 90, degrees=True).as_quat()[[3, 0, 1, 2]]
+    env.scene['robot'].data.body_quat_w[0, 0] = torch.tensor(q, dtype=torch.float32)
+    np.testing.assert_allclose(camera.pose(runtime)[:3], [1., 1.1, .5], atol=1e-6)
+    np.testing.assert_allclose(camera.pose(runtime)[3:], q, atol=1e-6)
+
+
+def test_render_products_are_cleaned_when_annotator_attach_fails():
+    # Construction failure must release every partially attached annotator and product.
+    calls = []
+    prim = SimpleNamespace(GetParent=lambda: SimpleNamespace(IsValid=lambda: False), GetPath=lambda: '/World/GLOBAL_LEFT')
+    geom = SimpleNamespace(Camera=lambda prim: SimpleNamespace(GetProjectionAttr=lambda: SimpleNamespace(Get=lambda: 'perspective')))
+    def annotator(kind):
+        def attach(product):
+            if kind == 'distance_to_image_plane':
+                raise RuntimeError('attachment failed')
+        return SimpleNamespace(attach=attach, detach=lambda product: calls.append(kind))
+    product = SimpleNamespace(destroy=lambda: calls.append('destroy'))
+    rep = SimpleNamespace(create=SimpleNamespace(render_product=lambda *args: product),
+                          AnnotatorRegistry=SimpleNamespace(get_annotator=annotator))
+    with pytest.raises(RuntimeError, match='attachment failed'):
+        ReplicatorCamera('global_left', prim, environment(), rep, None, geom, 1., 3, 2)
+    assert calls == ['rgb', 'distance_to_image_plane', 'destroy']
+
+
+def test_usd_capture_through_http_without_reference_script(fixture, replay_fixture, tmp_path, monkeypatch):
+    tensors, _, raw = raw_sample(replay_fixture.replay, fixture.policy)
+    names = list(fixture.policy.contract['data_config']['cameras'])
+    env = environment('eef', raw['task'])
+    env.action_manager.get_term('arm_action').cfg.body_name = 'tool'
+    fake_simulator(monkeypatch, env)
+    fixture.policy.act = lambda *args: (fixture.policy.calls.append(args) or
+                                       np.array([.2, 0., .5, 0., 0., 0., 1., 1.], np.float32))
+    height, width = tensors[names[0] + '_rgb'].shape[:2]
+    class Prim:
+        def __init__(self, path, matrix=None, parent=None):
+            self.path, self.matrix, self.parent = path, matrix, parent
+        def IsValid(self):
+            return bool(self.path)
+        def GetPath(self):
+            return self.path
+        def GetName(self):
+            return self.path.rsplit('/', 1)[-1]
+        def IsA(self, kind):
+            return self.path in data_by_path
+        def GetParent(self):
+            return self.parent or Prim('')
+    body_matrix = np.eye(4)
+    body_matrix[:3, 3] = [.1, 0., .5]
+    body = Prim('/World/envs/env_0/Robot/tool', body_matrix)
+    prims, data_by_path = {}, {}
+    for name in names:
+        pose = tensors[name + '_pose']
+        matrix = np.eye(4)
+        matrix[:3, :3] = Rotation.from_quat(pose[3:][[1, 2, 3, 0]]).as_matrix()
+        matrix[:3, 3] = pose[:3]
+        path = (body.path if name == 'wrist' else '/World') + '/' + name.upper()
+        prims[path] = Prim(path, matrix, body if name == 'wrist' else None)
+        k = tensors[name + '_intrinsics']
+        projection = np.eye(4)
+        projection[0, 0], projection[1, 1] = 2 * k[0, 0] / width, 2 * k[1, 1] / height
+        projection[0, 2], projection[1, 2] = 1 - 2 * k[0, 2] / width, 2 * k[1, 2] / height - 1
+        data_by_path[path] = dict(rgb=tensors[name + '_rgb'], distance_to_image_plane=tensors[name + '_depth'],
+                                  camera_params=dict(cameraProjection=projection, renderProductResolution=[width, height]))
+    products, detached = [], []
+    def product(path, size):
+        assert size == (width, height)
+        value = SimpleNamespace(path=path, destroyed=False)
+        value.destroy = lambda: setattr(value, 'destroyed', True)
+        products.append(value)
+        return value
+    class Annotator:
+        def __init__(self, kind):
+            self.kind = kind
+        def attach(self, value):
+            self.product = value
+        def get_data(self):
+            return data_by_path[self.product.path][self.kind]
+        def detach(self, value):
+            detached.append((value.path, self.kind))
+    stage = SimpleNamespace(Traverse=lambda: iter(prims.values()), GetPrimAtPath=lambda path: prims.get(path, Prim('')))
+    omni, usd, replicator, rep, pxr = [ModuleType(name) for name in ('omni', 'omni.usd', 'omni.replicator',
+                                                                   'omni.replicator.core', 'pxr')]
+    usd.get_context = lambda: SimpleNamespace(get_stage=lambda: stage)
+    rep.create = SimpleNamespace(render_product=product)
+    rep.AnnotatorRegistry = SimpleNamespace(get_annotator=Annotator)
+    omni.usd, omni.replicator, replicator.core = usd, replicator, rep
+    class CameraGeometry:
+        def __init__(self, prim):
+            self.prim = prim
+        def GetProjectionAttr(self):
+            return SimpleNamespace(Get=lambda: 'perspective')
+    pxr.Usd = SimpleNamespace(TimeCode=SimpleNamespace(Default=lambda: None))
+    pxr.UsdGeom = SimpleNamespace(Camera=CameraGeometry, GetStageMetersPerUnit=lambda stage: 1.,
+                                 Xformable=lambda prim: SimpleNamespace(ComputeLocalToWorldTransform=lambda time: prim.matrix.T))
+    for module in (omni, usd, replicator, rep, pxr):
+        monkeypatch.setitem(sys.modules, module.__name__, module)
+    output = tmp_path / 'usd-run'
+    with TestClient(fixture.app()) as server:
+        monkeypatch.setattr(runner, 'BridgeVLAClient',
+                            lambda *args: BridgeVLAClient('http://testserver', opener=Opener(server)))
+        assert runner.main(['--env-id', 'OHT-test', '--task', raw['task'], '--camera-source', 'usd',
+                            '--camera-width', str(width), '--camera-height', str(height), '--episodes', '1',
+                            '--max-steps', '2', '--output', str(output), '--headless']) == 0
+    assert len(products) == len(names) and all(item.destroyed for item in products)
+    assert len(detached) == 3 * len(names)
+    assert env.common_step_counter == 2 and len(fixture.policy.calls) == 2
+    observation = fixture.policy.calls[0][0]
+    for name in names:
+        np.testing.assert_allclose(observation[name + '_camera_intrinsics'], tensors[name + '_intrinsics'], atol=1e-6)
+        np.testing.assert_allclose(observation[name + '_depth'][0], tensors[name + '_depth'], atol=1e-6, equal_nan=True)
+    metadata = json.loads((output / 'run.json').read_text(encoding='utf-8'))
+    assert metadata['camera_source'] == 'usd' and metadata['reference_client'] is None
+
+
+@pytest.mark.parametrize('copied', [False, True])
+def test_launcher_help_from_isaaclab_directory(tmp_path, copied):
+    root = Path(__file__).resolve().parents[1]
+    launcher = root / 'tools' / 'oht_bridgevla_client.py'
+    extra = []
+    if copied:
+        target = tmp_path / 'oht-bridgevla-client.py'
+        target.write_bytes(launcher.read_bytes())
+        launcher = target
+        extra = ['--bridgevla-root', str(root)]
+    result = subprocess.run([sys.executable, '-X', 'utf8', str(launcher), *extra, '--help'], cwd=tmp_path,
+                            capture_output=True, text=True, encoding='utf-8', timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert '--bridgevla-root' in result.stdout and '--isaaclab-root' in result.stdout
+    assert '--camera-source' in result.stdout and '--env-config' in result.stdout

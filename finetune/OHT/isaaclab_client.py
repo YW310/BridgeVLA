@@ -79,13 +79,22 @@ def isaaclab_directory(value=None):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__,
                                      epilog='Unrecognized arguments (e.g. --headless --device cuda:0) are passed in args.runtime_args to the runtime factory, or to the legacy runtime.')
-    source = parser.add_mutually_exclusive_group(required=True)
+    source = parser.add_mutually_exclusive_group()
     source.add_argument('--runtime-factory', help='module:factory(args=...,model_info=...) -> IsaacLabRuntime')
     source.add_argument('--reference-client', help='Optional compatibility source for legacy IsaacLab sensor helpers')
     parser.add_argument('--isaaclab-root', help='IsaacLab checkout containing isaaclab.sh; overrides ISAACLAB_ROOT and sets the runtime working directory')
     parser.add_argument('--server', default='http://127.0.0.1:8010')
     parser.add_argument('--task', choices=tuple(GOALS), default='disassemble_left')
     parser.add_argument('--env-id', default='Isaac-Deploy-Reach-UR16e-DualEE-AllScene-OSC-v2')
+    parser.add_argument('--env-config', help='Optional module:ConfigClass to instantiate instead of the registered environment config')
+    parser.add_argument('--task-import', action='append', default=[], help='Additional environment registration module (repeatable)')
+    parser.add_argument('--ee-link', help='Robot EE link used by training link_to_tcp; defaults to the OSC body_name')
+    parser.add_argument('--quaternion-order', choices=('wxyz', 'xyzw'), default='wxyz', help='Installed IsaacLab tensor/config quaternion order (default: IsaacLab 2.x wxyz)')
+    parser.add_argument('--camera-source', choices=('auto', 'sensors', 'usd'), default='auto')
+    parser.add_argument('--camera-width', type=int, default=640)
+    parser.add_argument('--camera-height', type=int, default=480)
+    parser.add_argument('--camera-warmup-ticks', type=int, default=8, help='Render-only warmup; does not advance physics')
+    parser.add_argument('--disable-fabric', '--disable_fabric', action='store_true')
     parser.add_argument('--data-profile')
     parser.add_argument('--camera-map', help='JSON mapping checkpoint camera names to USD camera names')
     parser.add_argument('--episodes', type=int, default=20)
@@ -133,6 +142,8 @@ def _run(args, reference_args):
         raise ValueError('The reference success tracker supports only disassemble_left')
     if args.score == 'disassemble-left' and not args.reference_client:
         raise ValueError('Legacy disassemble-left scorer needs --reference-client; native runtimes use --score task')
+    if not args.reference_client and args.initialization == 'collection':
+        raise ValueError('Legacy collection initialization needs --reference-client; native clients use --initialization task')
     output = Path(args.output).expanduser().resolve()
     if output.exists():
         raise FileExistsError(f'Use a new output directory: {output}')
@@ -145,7 +156,9 @@ def _run(args, reference_args):
             any(not isinstance(name, str) or not name for name in mapping.values()) or
             len(set(mapping.values())) != len(mapping)):
         raise ValueError('camera-map must map every checkpoint camera to a distinct USD camera')
-    reference = (_factory(args.runtime_factory)(args=args, model_info=deepcopy(client.info)) if args.runtime_factory else
+    runtime_factory = args.runtime_factory or (None if args.reference_client else
+                                              'finetune.OHT.runtime.isaaclab_factory:create_runtime')
+    reference = (_factory(runtime_factory)(args=args, model_info=deepcopy(client.info)) if runtime_factory else
                  load_reference(args.reference_client,
                                 [*reference_args, '--task', args.env_id, '--num_envs', '1', '--seed', str(args.seed)]))
     env, records = None, []
@@ -196,8 +209,10 @@ def _run(args, reference_args):
         write_json(output / 'run.json', dict(task=args.task, instruction=GOALS[args.task], seed=args.seed,
                    model_id=client.info['model_id'], contract_sha256=client.info['contract_sha256'],
                    action_spec=client.info['action_spec'], data_profile=profile, task_settings=settings,
-                   initialization=args.initialization, score=args.score, runtime_factory=args.runtime_factory,
+                   initialization=args.initialization, score=args.score, runtime_factory=runtime_factory,
                    isaaclab_root=args.isaaclab_root,
+                   env_id=args.env_id, env_config=args.env_config, ee_link=getattr(reference, 'ee_link', args.ee_link),
+                   quaternion_order=args.quaternion_order, camera_source=getattr(reference, 'camera_source', args.camera_source),
                    reference_client=args.reference_client, joint_executor=args.joint_executor or
                    ('JointPositionExecutor' if joint is not None else None),
                    joint_hold_steps=args.joint_hold_steps, joint_target_tolerance=args.joint_target_tolerance,

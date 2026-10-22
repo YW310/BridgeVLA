@@ -1,6 +1,6 @@
 # OHT VLA server 设计
 
-状态：已实现 prepared 和 raw RGB-D 两种观测、四个 FastAPI 接口、串行推理、会话管理、日志、replay 烟测及 HTTP IsaacLab 客户端。原生 runtime factory 接入工程自己的 env/Camera sensors，支持四种动作模式及四任务独立的初始化/评分配置；参考脚本只作为可选兼容入口。CPU/HTTP 和控制数学回归可在无 Isaac Sim 环境运行；真实 checkpoint 的 CUDA 前向及 IsaacLab 闭环待在服务器验证。现有 `python -m finetune.OHT.server` 的 `/act` 服务继续使用。运行命令和 raw 契约见 [服务指南](../guides/oht-vla-server.md)。
+状态：已实现 prepared 和 raw RGB-D 两种观测、四个 FastAPI 接口、串行推理、会话管理、日志、replay 烟测及独立 HTTP IsaacLab 客户端。内置原生工厂启动 AppLauncher 和注册 OHT 环境，接入已有 Camera sensors 或 USD/Replicator 相机，支持四种动作模式及四任务独立的初始化/评分配置；参考脚本只作为可选兼容入口。CPU/HTTP 和控制数学回归可在无 Isaac Sim 环境运行；真实 checkpoint 的 CUDA 前向及 IsaacLab 闭环待在服务器验证。现有 `python -m finetune.OHT.server` 的 `/act` 服务继续使用。运行命令和 raw 契约见 [服务指南](../guides/oht-vla-server.md)。
 
 本文先确定模型服务的组织方式，不讨论选择哪种机器人动作表示，也不把控制器、运动规划或 `env.step()` 放入服务端。
 
@@ -160,6 +160,8 @@ finetune/OHT/
     raw_observation.py          # metric RGB-D → 训练一致的观测
     http_client.py              # 严格会话校验；控制请求不重试
     isaaclab_runtime.py         # 已有 env / Camera sensors 适配
+    isaaclab_factory.py         # 内置 AppLauncher、注册环境和相机绑定
+    usd_cameras.py              # USD/Replicator RGB-D；物理 body 驱动 wrist pose
     isaaclab_bridge.py          # 实测状态、固定目标、OSC 跟踪
     joint_executor.py           # 关节顺序、scale/offset 与位置执行
     task_runtime.py             # 四任务独立初始化/评分接口
@@ -171,7 +173,9 @@ tests/
   test_oht_server_launcher.py
   test_oht_isaaclab_http.py
   test_oht_native_runtime.py
+  test_oht_standalone_client.py
 tools/
+  oht_bridgevla_client.py       # 可在 IsaacLab 根目录运行/复制的独立启动文件
   smoke_oht_vla_server.py       # 真实 replay → HTTP；不执行返回动作
 ```
 
