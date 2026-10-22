@@ -64,6 +64,16 @@ def usd_rigid_matrix(prim, Usd, UsdGeom, metres_per_unit):
     return result
 
 
+def report_cleanup(errors):
+    invalid = [(where, exc) for where, exc in errors
+               if ' detach ' in where and isinstance(exc, TypeError) and 'Invalid NodeObj' in str(exc)]
+    if invalid:
+        print(f'[BridgeVLA] camera cleanup: skipped {len(invalid)} already-invalid OmniGraph annotator handles', flush=True)
+    for where, exc in errors:
+        if not (' detach ' in where and isinstance(exc, TypeError) and 'Invalid NodeObj' in str(exc)):
+            print(f'[BridgeVLA] camera cleanup warning: {where}: {type(exc).__name__}: {exc}', flush=True)
+
+
 class ReplicatorCamera:
     def __init__(self, name, prim, env, rep, Usd, UsdGeom, metres_per_unit, width, height):
         self.name, self.prim, self.env = name, prim, env
@@ -126,23 +136,29 @@ class ReplicatorCamera:
         quaternion = Rotation.from_matrix(world_from_camera[:3, :3]).as_quat()[[3, 0, 1, 2]]
         return np.r_[position, quaternion].astype(np.float32)
 
-    def close(self):
-        # Detach all annotators even if one cleanup operation fails.
+    def detach(self):
+        """Release graph consumers while every camera's render product still exists."""
         errors = []
-        for annotator in self.annotators.values():
+        annotators, self.annotators = self.annotators, {}
+        for kind, annotator in annotators.items():
             try:
                 annotator.detach(self.product)
             except Exception as exc:
-                errors.append(exc)
-        self.annotators.clear()
-        if self.product is not None:
+                errors.append((f'{self.name} detach {kind}', exc))
+        return errors
+
+    def destroy_product(self):
+        errors = []
+        product, self.product = self.product, None
+        if product is not None:
             try:
-                self.product.destroy()
+                product.destroy()
             except Exception as exc:
-                errors.append(exc)
-            self.product = None
-        if errors:
-            print(f'[BridgeVLA] camera cleanup: {errors}', flush=True)
+                errors.append((f'{self.name} destroy render product', exc))
+        return errors
+
+    def close(self):
+        report_cleanup(self.detach() + self.destroy_product())
 
 
 class ReplicatorCameras:
@@ -173,8 +189,14 @@ class ReplicatorCameras:
             raise
 
     def close(self):
+        # Replicator graph dependencies span cameras: do not destroy camera 1's
+        # render product before detaching camera 2..N's annotators.
+        errors = []
         for camera in self.cameras.values():
-            camera.close()
+            errors.extend(camera.detach())
+        for camera in self.cameras.values():
+            errors.extend(camera.destroy_product())
+        report_cleanup(errors)
 
 
 class ReplicatorRuntime(IsaacLabRuntime):

@@ -303,6 +303,12 @@ relative_joint 按请求时的实测关节还原绝对目标一次。`--joint-ho
 
 ## 日志与验证
 
+客户端输出如 `episode=0 steps=10 success=None stop_reason=max_steps`，表示按 `--max-steps 10` 完成了 10 次策略请求/动作执行后结束；`--score none` 下成功状态保持 null，不代表任务失败或已成功。`stop_reason` 同时写入 episode 和 summary JSON，可为 `max_steps`、`success`、`environment_done` 或 `error`。任务成功率需要上文的显式 `--score task` 和实际环境成功条件。
+
+若退出时出现 `Invalid NodeObj object in Py_Node in getAttributes`，应检查它是否发生在 episode 完成后的相机清理阶段。这与运行期间 `/predict` 或动作执行报错不同。多相机现在先 detach 全部 annotators，再销毁全部 render products，与 [Isaac Sim 官方多相机示例](https://docs.isaacsim.omniverse.nvidia.com/5.1.0/replicator_tutorials/tutorial_replicator_getting_started.html)的释放顺序一致。部分 Kit 版本若仍返回已失效的 annotator NodeObj，退出时仅汇总一次并继续释放；其他 detach/destroy 异常仍显示带相机和操作名的 warning。此改动需在实际 Isaac Sim 环境重跑确认。
+
+`config=registry` 表示使用 `--env-id` 的已注册配置，没有显式选择 `--env-config`。如需匹配参考 T1V4 的 V4 场景，应按上文确认配置类及资产。重跑使用新的 `--output` 目录；客户端拒绝覆盖已有结果。
+
 输出目录包含 `info.json` 和 `requests.jsonl`。info 记录模型、相机、配置、Asia/Shanghai 启动时间和依赖版本；逐请求日志记录标识、状态和耗时，不保存完整 RGB-D/点云。默认每份日志 10 MiB，保留 3 份轮转备份。
 
 离线 `python -m finetune.OHT.eval open-loop ...` 默认开启三视图、预测 heatmap 和 GT/TCP 投影可视化，每 50 个样本保存一次；`--visualize-every 1` 保存每个样本，`--visualize-every 0` 关闭。可选 `--visualize-output-dir` 指定新图片目录；默认是报告路径去掉扩展名再加 `_visualizations/`。评估结束后打开该目录的 `index.html`；完整命令及 PNG/NPZ 字段见 [OHT README 的离线评估说明](../../finetune/OHT/README.md#8-离线与闭环评估)。可视化开关属于离线评估，服务的 `/predict` 响应仍按上述动作协议返回。

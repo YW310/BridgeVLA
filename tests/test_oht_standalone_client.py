@@ -20,7 +20,7 @@ from finetune.OHT.action_modes import action_options
 from finetune.OHT.runtime import isaaclab_factory as native
 from finetune.OHT.runtime.http_client import BridgeVLAClient
 from finetune.OHT.runtime.usd_cameras import (
-    ReplicatorCamera, ReplicatorRuntime, projection_intrinsics, select_camera_paths, usd_rigid_matrix,
+    ReplicatorCamera, ReplicatorCameras, ReplicatorRuntime, projection_intrinsics, select_camera_paths, usd_rigid_matrix,
 )
 
 
@@ -96,6 +96,9 @@ def test_builtin_default_launches_and_runs_http(fixture, replay_fixture, tmp_pat
     assert metadata['runtime_factory'] == 'finetune.OHT.runtime.isaaclab_factory:create_runtime'
     assert metadata['reference_client'] is None and metadata['camera_source'] == 'sensors'
     assert metadata['ee_link'] == 'tool'
+    summary = json.loads((output / 'summary.json').read_text(encoding='utf-8'))
+    assert summary['episodes'][0]['stop_reason'] == 'max_steps'
+    assert summary['success_rate'] is None
 
 
 def test_explicit_scene_configuration_and_cleanup_on_camera_failure(tmp_path, monkeypatch):
@@ -209,6 +212,51 @@ def test_render_products_are_cleaned_when_annotator_attach_fails():
     with pytest.raises(RuntimeError, match='attachment failed'):
         ReplicatorCamera('global_left', prim, environment(), rep, None, geom, 1., 3, 2)
     assert calls == ['rgb', 'distance_to_image_plane', 'destroy']
+
+
+@pytest.mark.parametrize('failure', [None, 'invalid_node', 'other_type_error', 'destroy'])
+def test_multicamera_cleanup_detaches_all_before_destroy_and_is_idempotent(failure, capsys):
+    manager = object.__new__(ReplicatorCameras)
+    manager.cameras = {}
+    events, products = [], []
+    for index in range(5):
+        product = SimpleNamespace(destroyed=False)
+        products.append(product)
+        def destroy(index=index, product=product):
+            events.append(('destroy', index))
+            product.destroyed = True
+            if failure == 'destroy' and index == 0:
+                raise RuntimeError('render product destroy failed')
+        product.destroy = destroy
+        camera = object.__new__(ReplicatorCamera)
+        camera.name, camera.product, camera.annotators = f'camera{index}', product, {}
+        for kind in ('rgb', 'depth', 'params'):
+            def detach(value, index=index, kind=kind, product=product):
+                events.append(('detach', index, kind))
+                assert value is product
+                assert all(not item.destroyed for item in products), 'Destroyed a shared graph producer too early'
+                if index > 0 and failure == 'invalid_node':
+                    raise TypeError('Invalid NodeObj object in Py_Node in getAttributes')
+                if index == 0 and kind == 'rgb' and failure == 'other_type_error':
+                    raise TypeError('unexpected annotator API mismatch')
+            camera.annotators[kind] = SimpleNamespace(detach=detach)
+        manager.cameras[camera.name] = camera
+    manager.close()
+    assert [event[0] for event in events] == ['detach'] * 15 + ['destroy'] * 5
+    assert all(product.destroyed for product in products)
+    output = capsys.readouterr().out
+    if failure == 'invalid_node':
+        assert output.count('already-invalid OmniGraph') == 1 and '12' in output
+        assert 'camera cleanup warning' not in output
+    elif failure == 'other_type_error':
+        assert 'camera cleanup warning' in output and 'unexpected annotator API mismatch' in output
+        assert 'already-invalid' not in output
+    elif failure == 'destroy':
+        assert 'camera cleanup warning' in output and 'render product destroy failed' in output
+    else:
+        assert not output
+    manager.close()
+    assert len(events) == 20 and capsys.readouterr().out == ''
 
 
 def test_usd_capture_through_http_without_reference_script(fixture, replay_fixture, tmp_path, monkeypatch):

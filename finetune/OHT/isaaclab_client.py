@@ -221,7 +221,8 @@ def _run(args, reference_args):
         print(f'[BridgeVLA] HTTP={args.server} task={args.task} mode={client.action_config["mode"]} '
               f'profile={profile} cameras={mapping} initialization={args.initialization} score={args.score}', flush=True)
         for episode in range(args.episodes):
-            row = dict(episode=episode, task=args.task, success=None if tracker is None else False, steps=0, actions=[])
+            row = dict(episode=episode, task=args.task, success=None if tracker is None else False,
+                       stop_reason='max_steps', steps=0, actions=[])
             records.append(row)
             try:
                 env.reset()
@@ -255,12 +256,15 @@ def _run(args, reference_args):
                     row['steps'] = step + 1
                     if tracker is not None and tracker.success:
                         row['success'] = True
+                        row['stop_reason'] = 'success'
                         break
                     if bridge.last_done:
                         row['environment_done'] = True
+                        row['stop_reason'] = 'environment_done'
                         break
             except Exception as exc:
                 row['error'] = f'{type(exc).__name__}: {exc}'
+                row['stop_reason'] = 'error'
                 # No timed-out inference is retried or followed by another control command.
                 print(f'[BridgeVLA] stopped: {row["error"]}', flush=True)
                 break
@@ -273,7 +277,8 @@ def _run(args, reference_args):
                     successes=None if tracker is None else successes,
                     success_rate=None if tracker is None else successes / len(records),
                     episodes=[{key: value for key, value in item.items() if key != 'actions'} for item in records]))
-            print(f'[BridgeVLA] episode={episode} steps={row["steps"]} success={row["success"]}', flush=True)
+            print(f'[BridgeVLA] episode={episode} steps={row["steps"]} success={row["success"]} '
+                  f'stop_reason={row["stop_reason"]}', flush=True)
         return 1 if any('error' in row for row in records) else 0
     finally:
         close = getattr(reference, 'close', None)
