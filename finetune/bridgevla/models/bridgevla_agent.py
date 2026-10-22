@@ -2823,9 +2823,15 @@ class RVTAgent:
             else:
                 save_point_cloud_with_color(os.path.join(save_dir,"point_cloud.ply"), pc_ori.cpu().numpy(), img_feat_ori.cpu().numpy(), pred_wpt[0].cpu().numpy())
         if visualization_callback is not None:
-            visualization_callback(build_policy_visualization_payload(
-                self._net_mod, out, rev_trans[0], pred_wpt, dyn_cam_info,
-            ))
+            try:
+                visualization_callback(build_policy_visualization_payload(
+                    self._net_mod, out, rev_trans[0], pred_wpt, dyn_cam_info,
+                ))
+            except Exception as exc:
+                handler = getattr(visualization_callback, 'on_error', None)
+                if not callable(handler):
+                    raise
+                handler(exc)
         continuous_action = np.concatenate(
             (
                 pred_wpt[0].cpu().numpy(),

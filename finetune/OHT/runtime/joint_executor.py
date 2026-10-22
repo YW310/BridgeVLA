@@ -84,7 +84,8 @@ class JointPositionExecutor:
             raise ValueError('Joint controller scale/offset must be finite')
         return value
 
-    def __call__(self, absolute_target, after_step=None):
+    def step(self, absolute_target):
+        """Apply exactly one control step, for fixed-target waypoint tracking."""
         target = array(absolute_target, (7,), 'absolute joint target')
         if target[-1] not in (0, 1):
             raise ValueError('Expected open01 gripper')
@@ -97,28 +98,31 @@ class JointPositionExecutor:
         scale, offset = self._affine('_scale'), self._affine('_offset')
         if (np.abs(scale) < 1e-9).any():
             raise ValueError('Joint controller scale must be nonzero')
+        current = numpy_value(self.robot.data.joint_pos)[0, self.term_ids]
+        commanded = desired if self.max_step is None else current + np.clip(desired - current, -self.max_step, self.max_step)
+        raw = (commanded - offset) / scale
+        previous = self.term.raw_actions.clone()
+        try:
+            self.term.process_actions(self.torch.as_tensor(raw, device=self.env.device, dtype=self.torch.float32)[None])
+            if not np.allclose(numpy_value(self.term.processed_actions)[0], commanded, atol=1e-5, rtol=1e-5):
+                raise ValueError('Joint action transform clips or changes the requested physical target')
+        finally:
+            self.term.process_actions(previous)
+        command = np.empty(7, np.float32)
+        command[self.layout['arm_action']] = raw
+        command[self.layout['gripper_action']] = 2 * target[-1] - 1
+        result = self.env.step(self.torch.as_tensor(command, device=self.env.device)[None])
+        self.last_done = terminated(result)
+        current = numpy_value(self.robot.data.joint_pos)[0, self.term_ids]
+        self.last_tracking_error = float(np.max(np.abs(current - desired)))
+        return command.tolist()
+
+    def __call__(self, absolute_target, after_step=None):
+        target = array(absolute_target, (7,), 'absolute joint target')
         commands, self.last_done = [], False
         for _ in range(self.hold_steps):
-            current = numpy_value(self.robot.data.joint_pos)[0, self.term_ids]
-            commanded = desired if self.max_step is None else current + np.clip(desired - current, -self.max_step, self.max_step)
-            raw = (commanded - offset) / scale
-            # Check the live action transform (including configured clipping) without stepping physics.
-            previous = self.term.raw_actions.clone()
-            try:
-                self.term.process_actions(self.torch.as_tensor(raw, device=self.env.device, dtype=self.torch.float32)[None])
-                if not np.allclose(numpy_value(self.term.processed_actions)[0], commanded, atol=1e-5, rtol=1e-5):
-                    raise ValueError('Joint action transform clips or changes the requested physical target')
-            finally:
-                self.term.process_actions(previous)
-            command = np.empty(7, np.float32)
-            command[self.layout['arm_action']] = raw
-            command[self.layout['gripper_action']] = 2 * target[-1] - 1
-            result = self.env.step(self.torch.as_tensor(command, device=self.env.device)[None])
-            commands.append(command.tolist())
-            self.last_done = terminated(result)
+            commands.append(self.step(target))
             stopped = after_step is not None and after_step(float(2 * target[-1] - 1))
-            current = numpy_value(self.robot.data.joint_pos)[0, self.term_ids]
-            self.last_tracking_error = float(np.max(np.abs(current - desired)))
             if stopped or self.last_done or self.last_tracking_error <= self.tolerance:
                 break
         return commands

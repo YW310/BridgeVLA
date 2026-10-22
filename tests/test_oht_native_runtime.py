@@ -252,7 +252,7 @@ def test_native_factory_all_tasks_and_actions_over_http(fixture, replay_fixture,
         (root / 'isaaclab.sh').write_text('# simulator checkout marker', encoding='utf-8')
         previous_dir = Path.cwd()
         assert runner.main(['--runtime-factory', 'project:create', '--task', task, '--episodes', '1',
-                            '--max-steps', '5', '--output', str(output), '--score', 'task',
+                            '--execution-mode', 'streaming', '--max-steps', '5', '--output', str(output), '--score', 'task',
                             '--isaaclab-root', str(root),
                             '--success-term', f'{task}_success']) == 0
         assert Path.cwd() == previous_dir

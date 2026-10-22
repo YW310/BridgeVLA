@@ -3,6 +3,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 from ..data.geometry import array, pose_matrix, transform_matrix
+from ..data.actions import gripper_step
 from .executor import execution_target
 from .joint_executor import arm_ids, terminated, numpy_value, action_layout
 from .isaaclab_runtime import controller_offset
@@ -37,16 +38,20 @@ def osc_command(current_link, target_link, world_from_base, position_scale, orie
 
 class IsaacLabBridge:
     def __init__(self, reference, env, client, task, profile, cameras, *, max_substeps=1,
-                 max_translation=.05, max_rotation=.15, joint_executor=None):
+                 max_translation=.05, max_rotation=.15, joint_executor=None, visualizer=None):
         if type(max_substeps) is not int or max_substeps < 1:
             raise ValueError('max_substeps must be positive')
         self.ref, self.env, self.client = reference, env, client
         self.robot, self.task, self.profile, self.cameras = env.scene['robot'], task, profile, cameras
         self.link_to_tcp = transform_matrix(client.info['raw_observation']['data_profiles'][profile]['link_to_tcp'])
+        self.gripper_calibration = dict(client.info['raw_observation']['data_profiles'][profile].get('gripper', {}))
         self.max_substeps, self.max_translation, self.max_rotation = max_substeps, max_translation, max_rotation
         self.joint_executor = joint_executor
+        self.visualizer = visualizer
         self.last_done = False
         self.last_target = None
+        self.last_stopped = False
+        self._gripper_previous = self._gripper_state = None
         self.control_offset = np.eye(4)
         mode = client.action_config['mode']
         if 'joint' in mode and joint_executor is None:
@@ -75,6 +80,15 @@ class IsaacLabBridge:
         return np.r_[self._numpy(position).reshape(3), self._numpy(rotation).reshape(4)]
 
     def capture(self):
+        if self.visualizer is not None:
+            self.visualizer.suspend()
+        try:
+            return self._capture()
+        finally:
+            if self.visualizer is not None:
+                self.visualizer.resume()
+
+    def _capture(self):
         # Render-only refresh after reset/step; never advance physics to obtain RGB.
         self.ref._replicator_render_tick(self.env)
         _, ids = arm_ids(self.env, self.client.action_config)
@@ -124,27 +138,58 @@ class IsaacLabBridge:
         return dict(translation_m=float(np.linalg.norm(target[:3] - pose[:3])),
                     rotation_rad=float((Rotation.from_quat(target[3:7]) * Rotation.from_quat(pose[3:7]).inv()).magnitude()))
 
-    def execute(self, action, measured, after_step=None):
+    def reset_execution_state(self):
+        self.last_done = self.last_stopped = False
+        self.last_target = None
+        self._gripper_previous = self._gripper_state = None
+
+    def measured_gripper(self, measured=None):
+        config = self.gripper_calibration
+        endpoints = array([config.get('open'), config.get('close')], (2,), 'gripper calibration')
+        if abs(endpoints[0] - endpoints[1]) < 1e-8:
+            raise ValueError('Waypoint execution requires distinct physical gripper endpoints')
+        raw = (self.measured_state()['gripper_position'] if measured is None else
+               float(np.asarray(measured['gripper_position']).reshape(1)[0]))
+        ratio = float(np.clip((endpoints[1] - raw) / (endpoints[1] - endpoints[0]), 0, 1))
+        binary = gripper_step(ratio, self._gripper_previous, self._gripper_state, config)
+        self._gripper_previous, self._gripper_state = ratio, binary
+        return ratio, binary
+
+    def resolve_target(self, action, measured):
         self.last_done = False
+        self.last_stopped = False
         current_link = pose_wxyz_matrix(measured['ee_link_pose'])
         current_tcp_matrix = current_link @ self.link_to_tcp
         current_tcp = np.r_[current_tcp_matrix[:3, 3], Rotation.from_matrix(current_tcp_matrix[:3, :3]).as_quat()]
         target = execution_target(action, self.client.action_config, current_tcp=current_tcp,
                                   current_joints=measured['joint_positions'])
         self.last_target = target.tolist()
+        if self.visualizer is not None:
+            self.visualizer.update(self.measured_state(measured), self.last_target, self.client.action_config['mode'])
+        return target
+
+    def step_target(self, target, gripper_open, after_step=None):
+        """Track an already resolved absolute target for exactly one control step."""
+        app = getattr(self.ref, 'simulation_app', None)
+        if app is not None and not app.is_running():
+            raise RuntimeError('Simulation application stopped before control step')
+        if gripper_open not in (0, 1):
+            raise ValueError('Expected binary open01 gripper')
         if 'joint' in self.client.action_config['mode']:
-            commands = self.joint_executor(target, after_step=after_step)
-            self.last_done = getattr(self.joint_executor, 'last_done', False)
-            return commands
-        target_link = pose_matrix(target[:3], target[3:7]) @ np.linalg.inv(self.link_to_tcp)
-        term = self.env.action_manager.get_term('arm_action')
-        cfg = term.cfg
-        commands = []
-        for _ in range(self.max_substeps):
+            single_step = getattr(self.joint_executor, 'step', None)
+            if not callable(single_step):
+                raise ValueError('Waypoint joint execution requires a single-step executor exposing step(target)')
+            controlled = np.asarray(target).copy()
+            controlled[-1] = gripper_open
+            ordered = single_step(controlled)
+            self.last_done = bool(getattr(self.joint_executor, 'last_done', False))
+        else:
+            target_link = pose_matrix(target[:3], target[3:7]) @ np.linalg.inv(self.link_to_tcp)
+            cfg = self.env.action_manager.get_term('arm_action').cfg
             command = osc_command(pose_wxyz_matrix(self.link_pose()) @ self.control_offset,
                                   target_link @ self.control_offset, self._base(),
                                   cfg.position_scale, cfg.orientation_scale,
-                                  self.max_translation, self.max_rotation, int(target[-1]))
+                                  self.max_translation, self.max_rotation, int(gripper_open))
             if hasattr(self.env.action_manager, 'active_terms'):
                 layout = action_layout(self.env)
                 ordered = np.empty(7, np.float32)
@@ -153,9 +198,21 @@ class IsaacLabBridge:
             else:
                 ordered = command
             result = self.env.step(self.ref.torch.as_tensor(ordered, device=self.env.device).reshape(1, 7))
-            commands.append(ordered.tolist())
             self.last_done = terminated(result)
-            stopped = after_step is not None and after_step(float(command[-1]))
-            if stopped or self.last_done:
+            ordered = ordered.tolist()
+        self.last_stopped = bool(after_step is not None and after_step(float(2 * gripper_open - 1)))
+        return [ordered]
+
+    def execute(self, action, measured, after_step=None):
+        """Streaming execution: preserves dense replay timing and legacy callers."""
+        target = self.resolve_target(action, measured)
+        if 'joint' in self.client.action_config['mode']:
+            commands = self.joint_executor(target, after_step=after_step)
+            self.last_done = getattr(self.joint_executor, 'last_done', False)
+            return commands
+        commands = []
+        for _ in range(self.max_substeps):
+            commands.extend(self.step_target(target, int(target[-1]), after_step))
+            if self.last_stopped or self.last_done:
                 break
         return commands

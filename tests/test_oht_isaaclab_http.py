@@ -278,7 +278,7 @@ def test_http_runner_capture_predict_execute_and_summary(fixture, replay_fixture
         map_path = tmp_path / 'cameras.json'
         map_path.write_text(json.dumps(camera_map), encoding='utf-8')
         assert runner.main(['--reference-client', 'unused.py', '--task', raw['task'], '--episodes', '1',
-                            '--max-steps', '2', '--output', str(output), '--camera-map', str(map_path)]) == 0
+                            '--execution-mode', 'streaming', '--max-steps', '2', '--output', str(output), '--camera-map', str(map_path)]) == 0
         assert len(fixture.policy.calls) == env.common_step_counter == 2
         assert env.closed and app.closed
         assert sensors['TOOL_CAMERA'].name == 'WRIST'

@@ -22,7 +22,7 @@
 源帧 i：初始/实测状态
   → 源帧 i+1 的实测 TCP + 滤波后二值夹爪
   → 绝对 EEF8 [world_xyz, quat_xyzw, open01]
-  → IsaacLabBridge.execute（与在线策略相同）
+  → IsaacLabBridge.execute（streaming；在线关键点改用 waypoint）
   → robot-root 残差、物理限幅、OSC scale 补偿、env.step
 ```
 
@@ -35,6 +35,7 @@
 | `--replay-root` | 原始 OHT 数据根目录，必填 |
 | `--replay-episode` | 数据集 episode ID，默认 0；不同于回放重复次数 |
 | `--replay-start-frame` | 默认 0，必须至少还有一个后续帧 |
+| `--replay-targets` | 默认 frame：下一源帧；keypoints：按训练配置提取未来关键点并采用 waypoint 执行 |
 | `--episodes` | 重复回放所选轨迹的次数，默认 1；每次重新初始化 |
 | `--max-steps` | 最多执行的源帧转换数，默认回放全部剩余转换 |
 | `--replay-data-config` | 自定义数据标定 YAML，默认仓库 `finetune/OHT/configs/dataset.yaml`；仍解析该数据源的 metadata |
@@ -58,7 +59,9 @@
 
 未指定关节名称时按各 action term 的实际关节顺序映射，必须与采集顺序一致；有差异时显式提供上述关节名称参数。`controller/body` 选择按源数据的实际记录点设置，`link_to_tcp` 仅应用一次。
 
-每个记录间隔执行一个控制步；要求所选区间内的时间差与 `env.step_dt` 一致，并且 `--max-substeps 1`。不自动跳帧、插值、重复积分或改变控制周期。检查失败时应选择与采集一致的完整环境配置。记录中没有恢复所需的完整动态状态，所以即使起始 pose 一致，也不能承诺复现原采集的每个物理状态。
+默认 frame 模式每个记录间隔执行一个控制步；要求所选区间内的时间差与 `env.step_dt` 一致，并且 `--max-substeps 1`。不自动跳帧、插值、重复积分或改变控制周期。检查失败时应选择与采集一致的完整环境配置。记录中没有恢复所需的完整动态状态，所以即使起始 pose 一致，也不能承诺复现原采集的每个物理状态。
+
+`--replay-targets keypoints` 用于检验未来关键点执行契约：保持每个目标到位后再处理夹爪，源记录周期不限制跟踪控制步数。建议通过 `--replay-contract` 选择当前 checkpoint 的真实关键点配置。完整命令与同初态 policy 对照见[关键点执行说明](oht-waypoint-execution.md#gt-关键点对照)。此模式记录 `action_source=gt_keypoint` 和每目标 `execution`；普通 frame 保持 `gt_trajectory`。
 
 ## 可选物体恢复
 

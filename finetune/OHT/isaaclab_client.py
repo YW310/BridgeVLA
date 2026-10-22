@@ -10,6 +10,7 @@ from time import perf_counter
 import numpy as np
 from copy import deepcopy
 from contextlib import contextmanager
+from dataclasses import asdict
 
 from .data.common import GOALS, write_json
 from .runtime.http_client import BridgeVLAClient
@@ -18,6 +19,8 @@ from .runtime.joint_executor import JointPositionExecutor
 from .runtime.task_runtime import TaskRuntime, task_settings
 from .runtime.control_diagnostics import control_report
 from .runtime.policy_worker import PolicyWorker, refresh_while_waiting
+from .runtime.live_markers import LiveMarkers
+from .runtime.waypoint_executor import WaypointExecutor, WaypointOptions
 
 
 def load_reference(path, argv):
@@ -92,6 +95,8 @@ def main(argv=None):
     parser.add_argument('--replay-root', help='Original OHT root containing <task>/lerobot_dataset/data, not replay-source-v3')
     parser.add_argument('--replay-episode', type=int, default=0, help='Raw dataset episode ID; default: 0')
     parser.add_argument('--replay-start-frame', type=int, default=0)
+    parser.add_argument('--replay-targets', choices=('frame', 'keypoints'), default='frame',
+                        help='frame preserves dense GT timing; keypoints tests the trained future-waypoint contract')
     calibration = parser.add_mutually_exclusive_group()
     calibration.add_argument('--replay-data-config', help='OHT dataset YAML; default: repository configs/dataset.yaml')
     calibration.add_argument('--replay-contract', help='Optional existing replay buffer supplying the resolved training calibration')
@@ -101,6 +106,17 @@ def main(argv=None):
     parser.add_argument('--replay-cameras', action='store_true', help='Also bind live dataset cameras during GT replay; default: robot state only')
     parser.add_argument('--replay-initial-position-tolerance', type=float, default=.005)
     parser.add_argument('--replay-initial-rotation-tolerance', type=float, default=.05)
+    parser.add_argument('--initial-state-root', help='Raw OHT dataset used only to restore policy initialization, not policy actions')
+    parser.add_argument('--initial-state-episode', type=int, default=0)
+    parser.add_argument('--initial-state-frame', type=int, default=0)
+    initial_calibration = parser.add_mutually_exclusive_group()
+    initial_calibration.add_argument('--initial-state-data-config')
+    initial_calibration.add_argument('--initial-state-contract', help='Training replay contract used to verify initialization calibration')
+    parser.add_argument('--initial-state-object-map')
+    parser.add_argument('--initial-state-joint-names', nargs=6)
+    parser.add_argument('--initial-state-gripper-joint-names', nargs=2)
+    parser.add_argument('--initial-state-position-tolerance', type=float, default=.005)
+    parser.add_argument('--initial-state-rotation-tolerance', type=float, default=.05)
     parser.add_argument('--task', choices=tuple(GOALS), default='disassemble_left')
     parser.add_argument('--env-id', default='Isaac-Deploy-Reach-UR16e-DualEE-AllScene-OSC-v2')
     parser.add_argument('--env-config', help='Optional module:ConfigClass to instantiate instead of the registered environment config')
@@ -113,6 +129,11 @@ def main(argv=None):
                         help='Native raw EE measurement: controller applies body_offset (OHT recorded TCP); body reads the bare link')
     parser.add_argument('--dry-run', action='store_true', help='Save control diagnostics and exit without policy predictions or env.step')
     parser.add_argument('--log-interval', type=int, default=10, help='Print first/every N policy action and tracking errors; 0 disables')
+    display = parser.add_mutually_exclusive_group()
+    display.add_argument('--visualize', dest='visualize', action='store_true', default=True,
+                         help='Show measured TCP, resolved EEF target and trajectories in the GUI (default)')
+    display.add_argument('--no-visualize', dest='visualize', action='store_false', help='Disable simulator TCP overlays')
+    parser.add_argument('--visualize-history', type=int, default=200, help='Maximum number of trajectory points shown (default: 200)')
     parser.add_argument('--quaternion-order', choices=('wxyz', 'xyzw'), default='wxyz', help='Installed IsaacLab tensor/config quaternion order (default: IsaacLab 2.x wxyz)')
     parser.add_argument('--camera-source', choices=('auto', 'sensors', 'usd'), default='auto')
     parser.add_argument('--camera-width', type=int, default=640)
@@ -123,13 +144,22 @@ def main(argv=None):
     parser.add_argument('--camera-map', help='JSON mapping checkpoint camera names to USD camera names')
     parser.add_argument('--episodes', type=int, help='Default: 20 policy episodes, or one replay of the selected trajectory')
     parser.add_argument('--max-steps', type=int, help='Default: 500 policy requests, or all remaining replay transitions')
-    parser.add_argument('--max-substeps', type=int, default=1)
+    parser.add_argument('--max-substeps', type=int, default=1, help='Streaming control steps per target; waypoint uses waypoint-max-steps')
+    parser.add_argument('--execution-mode', choices=('auto', 'waypoint', 'streaming'), default='auto',
+                        help='auto: waypoint for policy/GT keypoints, streaming for dense GT replay')
+    parser.add_argument('--waypoint-max-steps', type=int, default=600)
+    parser.add_argument('--waypoint-position-tolerance', type=float, default=.005)
+    parser.add_argument('--waypoint-rotation-tolerance', type=float, default=.05)
+    parser.add_argument('--waypoint-arrival-steps', type=int, default=3)
+    parser.add_argument('--waypoint-stall-steps', type=int, default=100)
+    parser.add_argument('--gripper-min-steps', type=int, default=10)
+    parser.add_argument('--gripper-stable-steps', type=int, default=5)
     parser.add_argument('--max-translation', type=float, default=.05)
     parser.add_argument('--max-rotation', type=float, default=.15)
     parser.add_argument('--timeout', type=float, default=120)
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--initialization', choices=('env-reset', 'task', 'collection', 'trajectory'),
-                        help='Default: env-reset for policy; trajectory restores recorded robot joints for replay')
+                        help='Default: env-reset for policy; trajectory for replay or policy with initial-state-root')
     parser.add_argument('--score', choices=('none', 'task', 'disassemble-left'), default='none')
     parser.add_argument('--task-config', help='BridgeVLA YAML with per-task reset assets and initializer/evaluator factories')
     parser.add_argument('--success-term', help='Explicit environment success termination term for --score task')
@@ -142,16 +172,26 @@ def main(argv=None):
     replay_options = [option.split('=', 1)[0] for option in argv if option.startswith('--replay-')]
     if args.mode != 'replay' and replay_options:
         raise ValueError(f'{", ".join(replay_options)} require --mode replay')
+    initial_options = [option.split('=', 1)[0] for option in argv if option.startswith('--initial-state-')]
+    if initial_options and (args.mode != 'policy' or not args.initial_state_root):
+        raise ValueError('initial-state options require --mode policy and --initial-state-root')
+    if args.execution_mode == 'auto':
+        args.execution_mode = 'streaming' if args.mode == 'replay' and args.replay_targets == 'frame' else 'waypoint'
+    if args.mode == 'replay' and args.execution_mode != ('waypoint' if args.replay_targets == 'keypoints' else 'streaming'):
+        raise ValueError('Dense frame replay requires streaming execution; GT keypoint replay requires waypoint execution')
     args.runtime_args = reference_args
     if args.episodes is None:
         args.episodes = 1 if args.mode == 'replay' else 20
     if args.initialization is None:
-        args.initialization = 'trajectory' if args.mode == 'replay' else 'env-reset'
+        args.initialization = 'trajectory' if args.mode == 'replay' or args.initial_state_root else 'env-reset'
+    if args.initial_state_root and args.initialization != 'trajectory':
+        raise ValueError('initial-state-root requires --initialization trajectory')
     if args.max_steps is None and args.mode == 'policy':
         args.max_steps = 500
     # User-owned paths stay relative to the launch directory, even when the runtime changes directory.
     for name in ('reference_client', 'task_config', 'camera_map', 'output', 'expected_robot_usd',
-                 'replay_root', 'replay_data_config', 'replay_contract', 'replay_object_map'):
+                 'replay_root', 'replay_data_config', 'replay_contract', 'replay_object_map',
+                 'initial_state_root', 'initial_state_data_config', 'initial_state_contract', 'initial_state_object_map'):
         value = getattr(args, name)
         if value is not None:
             setattr(args, name, str(Path(value).expanduser().resolve()))
@@ -161,7 +201,7 @@ def main(argv=None):
 
 
 def _run(args, reference_args):
-    replay = None
+    replay, initial_state = None, None
     if args.mode == 'replay':
         if args.reference_client:
             raise ValueError('Trajectory replay uses the native BridgeVLA executor, not --reference-client')
@@ -170,8 +210,10 @@ def _run(args, reference_args):
         if not np.isfinite([args.replay_initial_position_tolerance, args.replay_initial_rotation_tolerance]).all() or min(
                 args.replay_initial_position_tolerance, args.replay_initial_rotation_tolerance) <= 0:
             raise ValueError('Replay initial TCP tolerances must be finite and positive')
-    elif args.replay_root or args.initialization == 'trajectory':
-        raise ValueError('replay-root/trajectory initialization require --mode replay')
+    elif args.initialization == 'trajectory' and not args.initial_state_root:
+        raise ValueError('Policy trajectory initialization requires --initial-state-root')
+    if args.initial_state_root and args.reference_client:
+        raise ValueError('Recorded initial states require the native/runtime-factory executor, not --reference-client')
     if (args.scene_preset != 'registry' or args.expected_robot_usd is not None) and (args.reference_client or args.runtime_factory):
         raise ValueError('scene-preset/expected-robot-usd require the built-in native runtime')
     settings = task_settings(args.task_config, args.task)
@@ -185,6 +227,16 @@ def _run(args, reference_args):
         raise ValueError('episodes, max-steps and max-substeps must be positive')
     if args.log_interval < 0:
         raise ValueError('log-interval must be nonnegative')
+    if args.visualize_history < 1:
+        raise ValueError('visualize-history must be positive')
+    waypoint_options = dict(max_steps=args.waypoint_max_steps,
+                            position_tolerance=args.waypoint_position_tolerance,
+                            rotation_tolerance=args.waypoint_rotation_tolerance,
+                            joint_tolerance=args.joint_target_tolerance,
+                            arrival_steps=args.waypoint_arrival_steps, stall_steps=args.waypoint_stall_steps,
+                            gripper_min_steps=args.gripper_min_steps, gripper_stable_steps=args.gripper_stable_steps)
+    if args.execution_mode == 'waypoint':
+        WaypointOptions(**waypoint_options)
     if not np.isfinite([args.timeout, args.max_translation, args.max_rotation]).all() or min(
             args.timeout, args.max_translation, args.max_rotation) <= 0:
         raise ValueError('timeout and physical clip limits must be finite and positive')
@@ -199,7 +251,11 @@ def _run(args, reference_args):
         raise FileExistsError(f'Use a new output directory: {output}')
     if args.mode == 'replay':
         from .runtime.trajectory_replay import TrajectoryReplay
-        replay = TrajectoryReplay(args)
+        if args.replay_targets == 'keypoints':
+            from .runtime.keypoint_replay import KeypointReplay
+            replay = KeypointReplay(args)
+        else:
+            replay = TrajectoryReplay(args)
         client = replay
         if args.max_steps is None:
             args.max_steps = replay.length
@@ -208,6 +264,9 @@ def _run(args, reference_args):
     else:
         client = BridgeVLAClient(args.server, args.timeout)
     profile = client.profile(args.task, args.data_profile)
+    if args.initial_state_root:
+        from .runtime.trajectory_initialization import InitialState
+        initial_state = InitialState(args, client, args.task, profile)
     names = client.info['cameras']
     mapping = (json.loads(Path(args.camera_map).read_text(encoding='utf-8')) if args.camera_map
                else {name: name.upper() for name in names})
@@ -220,7 +279,7 @@ def _run(args, reference_args):
     reference = (_factory(runtime_factory)(args=args, model_info=deepcopy(client.info)) if runtime_factory else
                  load_reference(args.reference_client,
                                 [*reference_args, '--task', args.env_id, '--num_envs', '1', '--seed', str(args.seed)]))
-    env, records, worker = None, [], None
+    env, records, worker, markers = None, [], None, None
     try:
         env = getattr(reference, 'env', None)
         if env is None:
@@ -260,10 +319,16 @@ def _run(args, reference_args):
             joint = JointPositionExecutor(env, reference.torch, client.action_config,
                                           hold_steps=args.joint_hold_steps, tolerance=args.joint_target_tolerance,
                                           max_step=args.joint_max_step)
+        markers = LiveMarkers(reference, env, enabled=args.visualize and not args.dry_run,
+                              history=args.visualize_history)
         bridge = IsaacLabBridge(reference, env, client, args.task, profile,
                                 bound_cameras,
                                 max_substeps=args.max_substeps, max_translation=args.max_translation,
-                                max_rotation=args.max_rotation, joint_executor=joint)
+                                max_rotation=args.max_rotation, joint_executor=joint, visualizer=markers)
+        waypoint = WaypointExecutor(bridge, **waypoint_options) if args.execution_mode == 'waypoint' else None
+        if waypoint is not None and joint is not None and not callable(getattr(joint, 'step', None)):
+            raise ValueError('Waypoint joint execution requires a single-step executor exposing step(target); '
+                             'use the built-in JointPositionExecutor or select streaming explicitly')
         if replay is not None:
             replay.validate_runtime(env, args)
         output.mkdir(parents=True)
@@ -271,10 +336,14 @@ def _run(args, reference_args):
         write_json(output / 'control_diagnostics.json', diagnostics)
         write_json(output / 'run.json', dict(task=args.task, instruction=GOALS[args.task], seed=args.seed,
                    mode=args.mode, replay=replay.metadata if replay is not None else None,
+                   initial_state=initial_state.metadata if initial_state is not None else None,
+                   execution_mode=args.execution_mode, waypoint_options=asdict(waypoint.options) if waypoint else None,
+                   motion_path='direct_target_tracking_no_collision_planner',
                    model_id=client.info['model_id'], contract_sha256=client.info['contract_sha256'],
                    action_spec=client.info['action_spec'], data_profile=profile, task_settings=settings,
                    initialization=args.initialization, score=args.score, runtime_factory=runtime_factory,
                    policy_wait='background_http_render_only' if replay is None else None,
+                   visualization=markers.info,
                    isaaclab_root=args.isaaclab_root,
                    env_id=args.env_id, env_config=args.env_config, ee_link=getattr(reference, 'ee_link', args.ee_link),
                    quaternion_order=args.quaternion_order, camera_source=getattr(reference, 'camera_source', args.camera_source),
@@ -300,7 +369,11 @@ def _run(args, reference_args):
         rng = np.random.default_rng(args.seed)
         connection = f'replay={replay.record["path"]} HTTP=disabled' if replay is not None else f'HTTP={args.server}'
         print(f'[BridgeVLA] {connection} task={args.task} mode={client.action_config["mode"]} '
-              f'profile={profile} cameras={mapping} initialization={args.initialization} score={args.score}', flush=True)
+              f'profile={profile} cameras={mapping} initialization={args.initialization} score={args.score} '
+              f'execution={args.execution_mode}', flush=True)
+        print(f'[BridgeVLA] TCP overlay={markers.info}', flush=True)
+        if replay is None and client.info.get('visualization', {}).get('enabled'):
+            print(f'[BridgeVLA] live heatmaps: {args.server.rstrip("/")}/visualization', flush=True)
         if replay is None:
             worker = PolicyWorker(client, GOALS[args.task], profile)
         def refresh_wait():
@@ -310,6 +383,8 @@ def _run(args, reference_args):
                        stop_reason='max_steps', steps=0, actions=[])
             records.append(row)
             try:
+                markers.reset()
+                bridge.reset_execution_state()
                 env.reset()
                 if startup is not None:
                     reference.restore_rigid_object_to_startup_state(env, startup)
@@ -318,10 +393,12 @@ def _run(args, reference_args):
                 elif args.initialization == 'task':
                     task_runtime.initialize(episode_index=episode, seed=args.seed + episode)
                 elif args.initialization == 'trajectory':
-                    row['initialization'] = replay.initialize(bridge)
+                    row['initialization'] = (initial_state if initial_state is not None else replay).initialize(bridge)
                 for _ in range(4):
                     reference._replicator_render_tick(env)
                 if replay is None:
+                    if initial_state is not None:
+                        row['initial_alignment'] = initial_state.check_initial(bridge)
                     worker.submit_reset()
                     worker.result(wait_callback=refresh_wait)
                 else:
@@ -339,6 +416,7 @@ def _run(args, reference_args):
                         raise RuntimeError('Simulation application stopped')
                     step_started = perf_counter()
                     measured = bridge.capture()
+                    markers.update(bridge.measured_state(measured), bridge.last_target, client.action_config['mode'])
                     captured = perf_counter()
                     timestamp = int(env.common_step_counter) * float(env.step_dt)
                     source_details = {}
@@ -352,11 +430,15 @@ def _run(args, reference_args):
                     # Also guard a reply that completed just as the user closed the window.
                     if not reference.simulation_app.is_running():
                         raise RuntimeError('Simulation application stopped before executing policy action')
-                    commands = bridge.execute(action, measured, after_step)
+                    commands = (waypoint.execute(action, measured, after_step) if waypoint is not None else
+                                bridge.execute(action, measured, after_step))
+                    execution = waypoint.last_result if waypoint is not None else None
                     executed = perf_counter()
                     before = bridge.measured_state(measured)
                     after = bridge.measured_state()
-                    errors_before, errors_after = bridge.tracking_errors(before), bridge.tracking_errors(after)
+                    markers.update(after, bridge.last_target, client.action_config['mode'])
+                    errors_before, errors_after = ((bridge.tracking_errors(before), bridge.tracking_errors(after))
+                                                   if bridge.last_target is not None else ({}, {}))
                     client_timing = dict(response.get('client_timing_ms', {}))
                     client_timing.update(capture=(captured - step_started) * 1000,
                                          request=(predicted - captured) * 1000 if replay is None else 0.,
@@ -366,9 +448,13 @@ def _run(args, reference_args):
                                                target=bridge.last_target, commands=commands,
                                                measured_before=before, measured_after=after,
                                                errors_before=errors_before, errors_after=errors_after,
-                                               action_source='gt_trajectory' if replay is not None else 'policy',
+                                               action_source=('gt_keypoint' if args.replay_targets == 'keypoints' else 'gt_trajectory')
+                                               if replay is not None else 'policy',
                                                **source_details,
-                                               timing_ms=response['timing_ms'], client_timing_ms=client_timing))
+                                               timing_ms=response['timing_ms'], client_timing_ms=client_timing,
+                                               visualization=response.get('visualization')))
+                    if execution is not None:
+                        row['actions'][-1]['execution'] = execution
                     if args.log_interval and (step == 0 or (step + 1) % args.log_interval == 0):
                         print(f'[BridgeVLA] step={step} action={action.tolist()} target={bridge.last_target} '
                               f'error_before={errors_before} error_after={errors_after} '
@@ -382,6 +468,10 @@ def _run(args, reference_args):
                     if bridge.last_done:
                         row['environment_done'] = True
                         row['stop_reason'] = 'environment_done'
+                        break
+                    if execution is not None and not execution['completed']:
+                        row['stop_reason'] = 'waypoint_' + execution['status']
+                        row['error'] = execution.get('error') or f'Waypoint did not complete: {execution["status"]}'
                         break
                 if replay is not None and row['stop_reason'] == 'max_steps' and row['steps'] == replay.length:
                     row['stop_reason'] = 'trajectory_end'
@@ -402,10 +492,14 @@ def _run(args, reference_args):
                     episodes=[{key: value for key, value in item.items() if key != 'actions'} for item in records]))
             print(f'[BridgeVLA] episode={episode} steps={row["steps"]} success={row["success"]} '
                   f'stop_reason={row["stop_reason"]}', flush=True)
+            if 'error' in row:
+                break
         return 1 if any('error' in row for row in records) else 0
     finally:
         if worker is not None:
             worker.close()
+        if markers is not None:
+            markers.close()
         close = getattr(reference, 'close', None)
         if callable(close):
             close()

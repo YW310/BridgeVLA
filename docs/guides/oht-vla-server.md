@@ -13,6 +13,7 @@ GPU_ID=1 bash finetune/OHT/vla_server.sh \
   --model-path /data/oht/runs/baseline-s0/model_last.pth \
   --device cuda:0 \
   --host 0.0.0.0 --port 8004 \
+  --visualize-every 10 \
   --output-dir logs/oht_vla_server_8004
 ```
 
@@ -46,7 +47,7 @@ curl http://109.105.46.126:8004/model_info
 
 启动脚本：[tools/oht_bridgevla_client.py](../../tools/oht_bridgevla_client.py)。主逻辑：[finetune/OHT/isaaclab_client.py](../../finetune/OHT/isaaclab_client.py)。
 
-在仿真服务器激活能运行 OHT 的 IsaacLab 环境，在其根目录执行以下命令。客户端启动仿真、连接 VLA 服务并执行策略；示例运行 1 个 episode，最多请求并执行 500 次策略动作。
+在仿真服务器激活能运行 OHT 的 IsaacLab 环境，在其根目录执行以下命令。客户端启动仿真、连接 VLA 服务并执行策略；示例运行 1 个 episode，最多请求 20 个未来关键点。
 
 ```bash
 cd /home/yiwei/IsaacLab
@@ -57,14 +58,27 @@ python /home/yiwei/BridgeVLA/tools/oht_bridgevla_client.py \
   --env-id Isaac-Deploy-Reach-UR16e-DualEE-AllScene-OSC-v2 \
   --scene-preset oht-v4 --camera-source usd \
   --ee-pose-source controller \
-  --episodes 1 --max-steps 500 \
+  --execution-mode waypoint \
+  --episodes 1 --max-steps 20 \
   --output logs/bridgevla-v4-run-01 \
   --headless --device cuda:0
 ```
 
 **每次运行使用尚不存在的输出目录。** 默认 `--initialization env-reset --score none`，因此 `success=null`；这不是任务成功率评估。
 
-去掉 `--headless` 即可显示窗口。客户端默认在后台处理 HTTP reset/predict（包括观测打包），等待期间由主线程以最多约 20 Hz 调用 [IsaacLab render 接口](https://github.com/isaac-sim/IsaacLab/blob/v2.2.1/source/isaaclab/isaaclab/sim/simulation_context.py)刷新窗口；headless 下不做额外等待渲染。等待时不推进物理，收到预测后才执行原有控制步；关闭窗口后丢弃未执行的预测。窗口响应与策略动作频率是两项指标，动作频率仍受采集、传输和推理耗时影响。
+policy 默认按 waypoint 执行：固定本次解码的绝对目标，先保持当前夹爪状态并跟踪到位，连续确认后才开闭夹爪；等待夹爪稳定后再请求下一目标。每目标最多 600 个物理控制步，停滞/超时会记录原因并停止。逐帧 GT replay 仍按原始时间线执行。详细参数、同初态策略验证和 GT 关键点对照见[关键点执行说明](oht-waypoint-execution.md)。
+
+去掉 `--headless` 即可显示窗口。客户端默认在后台处理 HTTP reset/predict（包括观测打包），等待期间由主线程以最多约 20 Hz 调用 [IsaacLab render 接口](https://github.com/isaac-sim/IsaacLab/blob/v2.2.1/source/isaaclab/isaaclab/sim/simulation_context.py)刷新窗口；headless 下不做额外等待渲染。等待预测时不推进物理，收到预测后才开始跟踪目标；关闭窗口后丢弃未执行的预测。窗口响应与策略动作频率是两项指标，动作频率仍受采集、传输和推理耗时影响。
+
+### 在线可视化
+
+正常启动 server 和 client 后，浏览器打开 **[http://109.105.46.126:8004/visualization](http://109.105.46.126:8004/visualization)**。页面每秒更新，显示最近一次采样推理的 coarse/refine 三视图 RGB、预测 heatmap、动作 TCP（红色）和热图 TCP（青色），以及可用的 Target/Reference prior。在线图不使用 GT。
+
+server 默认 `--visualize-every 10`，每个 episode 的第 0、10、20…步采集；改为 `1` 可逐步采集，`0` 关闭。导出复用本次模型前向，CPU 拼图/写盘异步进行，队列满时跳过可视化采样。默认 `--visualize-keep 100`，每次 server 启动在 `<output-dir>/visualizations/run-<时间>-<ID>/` 下保留最近 100 份 PNG/NPZ/JSON。采集诊断仍有 GPU→CPU 拷贝开销，按耗时调整间隔。
+
+带窗口运行 client 时，TCP 标记默认开启：绿色为实测 TCP 和轨迹，红色为本次解码后的绝对 EEF 目标及目标轨迹，坐标轴表示姿态。使用 `--no-visualize` 关闭，`--visualize-history 200` 控制轨迹长度；headless 自动跳过。相对 EEF 只解码一次，joint 模式仅绘制实测 TCP，不伪造目标 FK。标记在采集 RGB-D 前清除、快照完成后恢复；`run.json.visualization` 记录显示后端与可用状态。若 SDK 缺少 debug-draw，客户端提示后继续执行，浏览器热图仍可使用。
+
+HTTP `/predict` 的采样响应包含 `visualization` 状态/文件链接，不直接携带图片。`GET /visualization/latest` 提供最近完成的诊断及写盘状态；浏览器显示的 step 可能早于当前控制 step，需按 episode/step 对照日志。服务代码更新后需重启 server，新客户端也需同步代码。
 
 ### 关键参数
 
@@ -82,10 +96,14 @@ python /home/yiwei/BridgeVLA/tools/oht_bridgevla_client.py \
 | `--camera-source` | `usd` 使用现有 USD 相机；`sensors` 使用注册 Camera；`auto` 优先完整注册相机。必须提供 checkpoint 所需全部视角 |
 | `--camera-map file.json` | checkpoint 相机名→sensor 名/USD prim 名或精确路径的完整映射 |
 | `--data-profile` | 任务无法唯一匹配时，从 `/model_info.raw_observation.data_profiles` 显式选择 |
-| `--max-substeps` | 默认 1；每次模型目标最多跟踪多少控制步，多子步不重复累加预测增量 |
+| `--execution-mode` | 默认 auto：policy/GT 关键点采用 waypoint，逐帧 GT 采用 streaming；streaming 是显式的逐步执行兼容模式 |
+| `--waypoint-max-steps` | 默认 600，每个关键点允许的物理控制步上限 |
+| `--max-substeps` | 仅用于 streaming，默认 1；dense GT 必须为 1，waypoint 使用独立的 max-steps 上限 |
 | `--max-translation / --max-rotation` | OSC 每轴物理限幅，默认 0.05 m / 0.15 rad，限幅后再除以控制器尺度 |
 | `--dry-run` | 可选：只保存启动诊断，不执行策略动作 |
 | `--log-interval` | 默认 10；1 为每步打印，0 关闭 |
+| `--visualize / --no-visualize` | 默认显示 GUI 中的 TCP、EEF 目标和轨迹；与服务端 heatmap 开关独立 |
+| `--visualize-history` | 默认 200，GUI 中每条轨迹保留的点数 |
 | `--task-import module` | 额外导入自有任务注册模块，可重复 |
 
 `ee-pose-source` 必须匹配当前 checkpoint 的采集定义，不能只根据 `eef/relative_eef` 选择。joint/relative_joint 需要 `JointPositionAction` 环境，使用 `registry` 选择匹配配置；不能使用上面的 V4 OSC 预设。
@@ -108,7 +126,7 @@ cp /home/yiwei/BridgeVLA/tools/oht_bridgevla_client.py ./oht-bridgevla-client.py
 
 支持 `assemble_left`、`assemble_right`、`disassemble_left`、`disassemble_right`。`--task` 选择 instruction/profile，场景布局和初始状态由环境或 task initializer 决定。
 
-这是可选的初始化/评分配置，正常运行使用前面的命令即可，默认 `--initialization env-reset --score none`。
+这是可选的初始化/评分配置，正常运行使用前面的命令即可，默认 `--initialization env-reset --score none`。若希望 policy 与已有 GT replay 使用同一记录初态，在正常命令中增加 `--initial-state-root /home/yiwei/BridgeVLA/oht_curobo_pd_v423 --initial-state-episode 0 --initial-state-frame 0`；自动采用 trajectory 初始化，后续仍用实时传感器和模型动作。标定校验、显式物体恢复与完整命令见[同初态对照](oht-waypoint-execution.md#相同记录初态运行策略)。
 
 `--task-config` 指向用户实际创建的任务 YAML，用于配置重置资产、初始化器和成功条件；它不是 IsaacLab 根目录、环境配置或模型配置。仓库提供[任务配置模板](../../finetune/OHT/configs/isaaclab_tasks.example.yaml)，需按仿真环境填写后才能用于评估。
 
@@ -138,7 +156,7 @@ python /home/yiwei/BridgeVLA/tools/oht_bridgevla_client.py \
 
 默认恢复所选轨迹起始帧的机械臂/夹爪，逐帧将下一帧实测 TCP 作为绝对 EEF 目标，沿用在线执行器；不执行原始 `action` 列。默认回放一次直到轨迹结束，可用 `--replay-start-frame N` 选择起点、`--max-steps N` 限制长度。默认不绑定相机；去掉 `--headless` 可在仿真窗口观察运动。
 
-标定默认读取仓库 `dataset.yaml` 并解析源数据 metadata，也可用 `--replay-contract /data/oht/replay-source-v3` 复用已有训练缓存标定。回放要求记录帧间隔与环境 `step_dt` 一致、`--max-substeps 1`。物体默认保留环境 reset 状态；物体映射、关节顺序和诊断字段见 [OHT replay 说明](oht-replay.md)。
+标定默认读取仓库 `dataset.yaml` 并解析源数据 metadata，也可用 `--replay-contract /data/oht/replay-source-v3` 复用已有训练缓存标定。逐帧回放要求记录帧间隔与环境 `step_dt` 一致、`--max-substeps 1`。需要检验未来关键点执行时，在该命令中增加 `--replay-targets keypoints --replay-contract /data/oht/replay-source-v3`，换用新的输出目录；自动使用 waypoint 执行，不强制源帧周期匹配。物体默认保留环境 reset 状态；物体映射、关节顺序和诊断字段见 [OHT replay 说明](oht-replay.md)。
 
 ## 检查与 replay 烟测
 
@@ -164,11 +182,13 @@ python tools/smoke_oht_vla_server.py \
 | 客户端 `episode_*.json / summary.json` | 预测、实际命令、执行前后位姿及误差、stop_reason、成功统计 |
 | 每步 `client_timing_ms` | `capture` 相机/状态采集，`pack` 数组/Base64 打包，`serialize` JSON 编码，`http` 完整 HTTP 往返及回包解析，`predict` 后台预测调用总耗时，`request` 主线程等待预测耗时（含刷新），`execute` 控制执行，`total` 该步总耗时；单位均为 ms，字段包含关系不能直接相加 |
 | 每步 `timing_ms` | 服务端 `decode / prepare / policy / total`，与客户端计时分别保留；`--log-interval 1` 可逐步打印两者 |
-| `stop_reason=max_steps` | 已达到策略请求上限；一次控制步不保证到达未来关键点 |
+| 每步 `execution` | waypoint 状态、approach/gripper 物理步数、固定目标、夹爪状态与最终误差；streaming 没有此字段 |
+| `stop_reason=max_steps` | 已达到策略/关键点请求数上限；物理控制步数看 commands 和 execution.steps |
+| `waypoint_stalled / waypoint_timeout` | 目标未完成，保留已执行命令并停止后续预测；不能只增加模型请求数绕过 |
 | 运动异常或长期限幅 | 对比 `measured_before/after` 与 `errors_before/after`，区分目标跳变与执行跟踪问题；不要仅翻转夹爪符号 |
 | HTTP 409 / 429 / 503 | 分别检查模型/会话冲突、服务 busy、服务未就绪；请求结果不确定时不重发旧动作，待空闲后重置 episode |
 | 退出时 `Invalid NodeObj` | 区分相机清理错误与运行期间错误，检查 episode 是否已完成；其他 cleanup warning 保留排查 |
-| heatmap 可视化 | 使用离线 `eval open-loop`，见 [OHT 评估说明](../../finetune/OHT/README.md#8-离线与闭环评估)；HTTP `/predict` 返回动作 |
+| 在线 heatmap 可视化 | 打开 `/visualization`，检查 `/model_info.visualization` 和 `/visualization/latest`；离线 GT 对比见 [OHT 评估说明](../../finetune/OHT/README.md#8-离线与闭环评估) |
 
 客户端自动处理 `/model_info`、`/reset`、`/predict` 和会话校验；服务端支持 prepared/raw 两种观测格式。协议字段与实现见[服务设计](../design/oht-vla-server.md#4-http-接口)，坐标、TCP 与参考脚本差异见[对照检查](../design/oht-client-server-audit.md)，动作模式见[动作模式指南](oht-action-modes.md)。
 

@@ -33,9 +33,12 @@ def raw_schema(policy):
                 cameras=list(policy.contract['data_config']['cameras']),
                 tasks=list(GOALS), data_profiles={
                     name: dict(task=profile_task(name), link_to_tcp=config['link_to_tcp'],
-                               gripper={key: config['gripper'][key] for key in ('open', 'close')},
+                               gripper={key: config['gripper'].get(key, default) for key, default in (
+                                   ('open', None), ('close', None), ('open_threshold', .9),
+                                   ('close_threshold', .1), ('diff_threshold', .05), ('initial_state', 1))},
                                scene_bounds=config['scene_bounds'],
-                               image_size=config['image_size']) for name, config in data_profiles(policy).items()})
+                               image_size=config['image_size'], keypoints=deepcopy(config.get('keypoints', {})))
+                    for name, config in data_profiles(policy).items()})
 
 
 def decode_raw(packed, policy, previous=None):

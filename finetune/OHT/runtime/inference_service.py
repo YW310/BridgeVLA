@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 import copy
 from datetime import datetime
 import hashlib
+import inspect
 from importlib.metadata import PackageNotFoundError, version
 import json
 import logging
@@ -36,7 +37,11 @@ class InferenceService:
     def __init__(self, model_path, *, device="cuda:0", pretrain_path=None, predictor=None,
                  predictor_provenance=None, output_dir="logs/oht_vla_server", model_id=None,
                  policy_loader=None, warmup_replay=None, warmup_split="val", warmup_index=0,
-                 log_max_bytes=10*1024*1024, log_backups=3):
+                 log_max_bytes=10*1024*1024, log_backups=3, visualize_every=10, visualize_keep=100):
+        if type(visualize_every) is not int or visualize_every < 0:
+            raise ValueError('visualize_every must be a nonnegative integer')
+        if type(visualize_keep) is not int or visualize_keep < 1:
+            raise ValueError('visualize_keep must be a positive integer')
         self.checkpoint = resolve_checkpoint(model_path)
         stat = self.checkpoint.stat()
         identity = f"{self.checkpoint}:{stat.st_size}:{stat.st_mtime_ns}"
@@ -59,6 +64,9 @@ class InferenceService:
         self.episodes, self.request_ids = set(), set()
         self.recent_ids = deque()
         self.logger, self.log_handler = None, None
+        self.visualizer = None
+        self.visualize_every, self.visualize_keep = visualize_every, visualize_keep
+        self.visualization_reason, self.visualization_capture_error = 'disabled', None
 
     async def start(self):
         await self._wait(self.executor.submit(self._load))
@@ -89,6 +97,25 @@ class InferenceService:
                              self.predictor, self.provenance)
         self.fields = observation_schema(self.policy)
         self._warmup()
+        if self.visualize_every:
+            try:
+                parameters = inspect.signature(self.policy.act).parameters
+                supported = ('visualization_callback' in parameters or
+                             any(value.kind == inspect.Parameter.VAR_KEYWORD for value in parameters.values()))
+            except (ValueError, TypeError):
+                supported = False
+            if supported:
+                from .online_visualization import OnlineVisualizer
+                try:
+                    self.visualizer = OnlineVisualizer(self.output_dir / 'visualizations',
+                                                        every=self.visualize_every, keep=self.visualize_keep)
+                    self.visualization_reason = None
+                except Exception as exc:
+                    self.visualization_reason = f'Visualization initialization failed: {type(exc).__name__}'
+                    LOG.warning('%s: %s', self.visualization_reason, exc)
+            else:
+                self.visualization_reason = 'Policy does not support same-forward visualization callbacks'
+                LOG.warning(self.visualization_reason)
         config = getattr(self.policy, "training_config", {})
         versions = {}
         for name in ("fastapi", "uvicorn", "numpy", "torch", "transformers"):
@@ -108,6 +135,10 @@ class InferenceService:
                              point_cloud="world metres, organized CHW XYZ",
                              camera_extrinsics="T_world_from_optical"),
             render_config=config.get("mvt", {}),
+            visualization=dict(enabled=self.visualizer is not None, every=self.visualize_every,
+                               keep=self.visualize_keep, url='/visualization',
+                               output_dir=str(self.visualizer.root) if self.visualizer is not None else None,
+                               reason=self.visualization_reason),
             created_at=datetime.now(RUN_TIMEZONE).isoformat(), timezone="Asia/Shanghai",
             versions=versions, request_id_history=4096,
         )
@@ -141,6 +172,14 @@ class InferenceService:
         if not self.health()["ready"]:
             raise APIError(503, "not_ready", "Model is not ready")
         return copy.deepcopy(self.metadata)
+
+    def visualization_state(self):
+        if self.visualizer is None:
+            return dict(enabled=False, every=self.visualize_every, latest=None, writer_status='disabled',
+                        reason=self.visualization_reason)
+        result = self.visualizer.latest()
+        result['capture_error'] = self.visualization_capture_error
+        return result
 
     def check_available(self):
         with self.lock:
@@ -204,6 +243,8 @@ class InferenceService:
                     if "action" in response:
                         row["action_summary"] = dict(length=len(response["action"]),
                                                      minimum=min(response["action"]), maximum=max(response["action"]))
+                    if 'visualization' in response:
+                        row['visualization'] = response['visualization']
                 self.logger.info(json.dumps(row, allow_nan=False))
             finally:
                 # Only the worker releases admission, never the HTTP waiter.
@@ -247,19 +288,41 @@ class InferenceService:
             with self.lock:
                 self.episode = episode
                 self.episodes.add(episode)
-        action = validate_action(self.policy.act(observation, request["instruction"], request["step"]),
+        captured, capture_errors = [], []
+        due = self.visualizer is not None and self.visualizer.due(request['step'])
+        def capture(payload):
+            captured.append(payload)
+        # Opt in to nonfatal diagnostic construction errors; no policy retry.
+        capture.on_error = lambda exc: capture_errors.append(type(exc).__name__)
+        extra = {'visualization_callback': capture} if due else {}
+        action = validate_action(self.policy.act(observation, request["instruction"], request["step"], **extra),
                                  self.policy.action_config)
         policy_ms = (perf_counter() - stamp)*1000
+        visualization = None
+        if due:
+            try:
+                if capture_errors or len(captured) != 1:
+                    raise ValueError('Diagnostic capture failed: ' + (', '.join(capture_errors) or 'expected one payload'))
+                visualization = self.visualizer.submit(captured[0], request, action,
+                                                        self.policy.action_config, observation)
+                self.visualization_capture_error = None
+            except Exception as exc:
+                LOG.warning('Online visualization skipped: %s', exc)
+                self.visualization_capture_error = str(exc)
+                visualization = dict(status='error', error='Diagnostic capture failed', url='/visualization')
         with self.lock:
             self.step += 1
             self.timestamp, self.instruction = request["timestamp"], request["instruction"]
             self.gripper_history, self.input_identity = pending, identity
-        return dict(api_version=API_VERSION, model_id=self.model_id,
+        response = dict(api_version=API_VERSION, model_id=self.model_id,
                     contract_sha256=self.policy.contract["sha256"],
                     **{key: request[key] for key in ("request_id", "episode_id", "step", "timestamp")},
                     action=action.tolist(), action_spec=action_descriptor(self.policy.action_config),
                     timing_ms=dict(decode=decode_ms, prepare=prepare_ms, policy=policy_ms,
                                    total=(perf_counter() - started)*1000))
+        if visualization is not None:
+            response['visualization'] = visualization
+        return response
 
     def _reset(self, request):
         episode = request["episode_id"]
@@ -289,6 +352,8 @@ class InferenceService:
             if self.policy is not None:
                 self.policy.reset()
         finally:
+            if self.visualizer is not None:
+                self.visualizer.close()
             self.policy = None
             if self.log_handler is not None:
                 self.logger.removeHandler(self.log_handler)

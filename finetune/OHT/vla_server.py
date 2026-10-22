@@ -2,10 +2,12 @@
 import argparse
 from contextlib import asynccontextmanager
 import logging
+from pathlib import Path
+import re
 from time import perf_counter
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 from .runtime.inference_api import API_VERSION, APIError
 from .runtime.inference_service import InferenceService
@@ -52,6 +54,27 @@ def create_app(model_path, *, max_bytes=MAX_BYTES, **service_options):
         result = runtime().model_info()
         result["max_request_bytes"] = max_bytes
         return result
+
+    @app.get('/visualization', response_class=HTMLResponse)
+    async def visualization_page():
+        from .runtime.online_visualization import viewer_html
+        return HTMLResponse(viewer_html(), headers={'Cache-Control': 'no-store'})
+
+    @app.get('/visualization/latest')
+    async def visualization_latest():
+        return JSONResponse(runtime().visualization_state(), headers={'Cache-Control': 'no-store'})
+
+    @app.get('/visualization/files/{entry_id}/{filename}')
+    async def visualization_file(entry_id: str, filename: str):
+        visualizer = runtime().visualizer
+        allowed = {'prediction.json', 'mvt1.png', 'mvt2.png', 'mvt1.npz', 'mvt2.npz'}
+        if visualizer is None or re.fullmatch(r'[0-9a-f]{32}', entry_id) is None or filename not in allowed:
+            raise APIError(404, 'not_found', 'Visualization file is unavailable')
+        root = Path(visualizer.root).resolve()
+        path = (root / entry_id / filename).resolve()
+        if root not in path.parents or not path.is_file():
+            raise APIError(404, 'not_found', 'Visualization file is unavailable')
+        return FileResponse(path, headers={'Cache-Control': 'no-store'})
 
     async def dispatch(request, operation):
         started = perf_counter()
@@ -105,6 +128,10 @@ def build_arg_parser():
     parser.add_argument("--warmup-replay")
     parser.add_argument("--warmup-split", choices=("train", "val", "test"), default="val")
     parser.add_argument("--warmup-index", type=int, default=0)
+    parser.add_argument('--visualize-every', type=int, default=10,
+                        help='Capture online prediction images every N steps, including 0; 0 disables (default: 10)')
+    parser.add_argument('--visualize-keep', type=int, default=100,
+                        help='Retain the latest N online image snapshots in this server run (default: 100)')
     return parser
 
 

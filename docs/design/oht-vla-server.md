@@ -60,6 +60,9 @@ python -m finetune.OHT.vla_server \
 | `GET /model_info` | 返回模型标识、API 版本、相机名、观测字段/shape/dtype、数据契约标识及 checkpoint 输出描述 |
 | `POST /reset` | 清除当前 episode 的策略/predictor 状态，设置新的 episode 标识 |
 | `POST /predict` | 解码、验证当前观测，调用一次 Policy，返回一次模型输出 |
+| `GET /visualization` | 自动更新的在线预测 RGB/heatmap 页面 |
+| `GET /visualization/latest` | 最近完成的可视化、writer 状态和采样信息 |
+| `GET /visualization/files/{entry_id}/{filename}` | 指定采样的 PNG/NPZ/JSON；内部生成 ID 和文件名白名单 |
 
 首版不做在线切换 checkpoint。旧 `/act` 与新 `/predict` 是独立入口，需要使用不同进程和端口，不在同一个模型上建立两套状态。
 
@@ -149,6 +152,10 @@ raw RGB-D 格式 `bridgevla_rgbd_v1` 已加入：接收 HWC RGB、米制 Z-depth
 
 IsaacLab 客户端将 reset/predict 和数组/JSON 编码放入单个后台 HTTP 线程，每次只保留一个请求。主线程等待时限频调用 `env.sim.render()`，不推进物理、不重复更新注册 Camera 数据；headless 下跳过等待渲染。采集结果为独立 CPU 快照，关闭窗口或请求异常后不执行迟到动作、不重试。每步 `client_timing_ms` 记录采集、打包、JSON 编码、HTTP 往返、后台预测、主线程等待和控制执行；服务端 `timing_ms` 单独保留。
 
+在线诊断默认每个 episode 的第 0、10、20…步通过已有 `visualization_callback` 采集本次真实模型前向，不使用 GT、不额外调用策略。CPU writer 最多保留两个待处理任务（含正在写入），满时跳过采样；默认保留 100 份快照，每次服务启动生成独立目录。先完成 PNG/NPZ/JSON，再发布 latest，最后清理旧文件。低分辨率 prior/anchor 仅在显示时插值，NPZ 保留原始分辨率；relative EEF 从当前实测 TCP 解码，joint 图标明辅助热图且不伪造动作 TCP。可选诊断构建或导出错误不会重试或拒绝已成功计算的动作。客户端 debug-draw 显示实测/目标轨迹，RGB-D 采集前清除、完成独立快照后恢复，避免标记作为视觉输入。
+
+policy 默认执行未来关键点，目标解析一次后由 waypoint executor 跟踪，连续到位才切换夹爪，夹爪稳定后才发下一请求。物理步上限、停滞、退出和错误独立于 HTTP 请求步数，部分执行结果写入 action trace。GT frame 保留原始单步时序；GT keypoints 使用同一 waypoint executor。policy 的记录初态模块仅恢复明确选择的初始状态，不提供未来模型动作或教师。直接 OSC/joint 跟踪不提供碰撞规划。
+
 实现文件：
 
 ```text
@@ -162,6 +169,11 @@ finetune/OHT/
     raw_observation.py          # metric RGB-D → 训练一致的观测
     http_client.py              # 严格会话校验；控制请求不重试
     policy_worker.py            # 客户端串行 HTTP；主线程 render-only 等待
+    online_visualization.py     # 同次前向无 GT 诊断、限长 CPU writer 和浏览器页面
+    live_markers.py             # GUI TCP/目标轨迹；传感器采集边界隔离
+    waypoint_executor.py        # 固定目标到位、夹爪稳定、停滞/超时状态机
+    trajectory_initialization.py # policy 记录初态与训练标定校验
+    keypoint_replay.py          # 同源未来关键点 GT 对照；不填补密集路径
     isaaclab_runtime.py         # 已有 env / Camera sensors 适配
     isaaclab_factory.py         # 内置 AppLauncher、注册环境和相机绑定
     isaaclab_scene.py           # 完整 V4 场景选择、配置来源和 USD 资产校验

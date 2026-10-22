@@ -96,7 +96,7 @@ def test_builtin_default_launches_and_runs_http(fixture, replay_fixture, tmp_pat
         monkeypatch.setattr(runner, 'BridgeVLAClient',
                             lambda *args: BridgeVLAClient('http://testserver', opener=Opener(server)))
         assert runner.main(['--env-id', 'OHT-test', '--ee-link', 'tool', '--task', raw['task'], '--episodes', '1',
-                            '--max-steps', '2', '--output', str(output), '--headless']) == 0
+                            '--execution-mode', 'streaming', '--max-steps', '2', '--output', str(output), '--headless']) == 0
     assert len(fixture.policy.calls) == env.common_step_counter == 2
     assert env.closed and state.app_closed and sys.argv == previous_argv
     metadata = json.loads((output / 'run.json').read_text(encoding='utf-8'))
@@ -180,7 +180,7 @@ def test_policy_wait_keeps_gui_responsive_without_advancing_physics(
                             lambda *args: DelayedClient('http://testserver', opener=Opener(server)))
         try:
             result = runner.main(['--task', raw['task'], '--episodes', '2' if outcome != 'success' else '1',
-                                  '--max-steps', '1', '--output', str(output)])
+                                  '--execution-mode', 'streaming', '--max-steps', '1', '--output', str(output)])
             assert result == (0 if outcome == 'success' else 1)
         finally:
             release.set()
@@ -509,7 +509,7 @@ def test_usd_capture_through_http_without_reference_script(fixture, replay_fixtu
                             lambda *args: BridgeVLAClient('http://testserver', opener=Opener(server)))
         assert runner.main(['--env-id', 'OHT-test', '--task', raw['task'], '--camera-source', 'usd',
                             '--camera-width', str(width), '--camera-height', str(height), '--episodes', '1',
-                            '--max-steps', '2', '--output', str(output), '--headless']) == 0
+                            '--execution-mode', 'streaming', '--max-steps', '2', '--output', str(output), '--headless']) == 0
     assert len(products) == len(names) and all(item.destroyed for item in products)
     assert len(detached) == 3 * len(names)
     assert env.common_step_counter == 2 and len(fixture.policy.calls) == 2

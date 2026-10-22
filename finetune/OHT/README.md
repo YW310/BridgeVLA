@@ -668,6 +668,10 @@ absolute_target = execution_target(
 
 ## 8. 离线与闭环评估
 
+在线 policy 现在默认采用未来关键点执行：固定目标到位后开闭夹爪、确认稳定后再预测，超时/停滞即停止。逐帧 GT replay 保留原始时序；新增 GT keypoints 与记录初态 policy 对照，命令见[关键点执行说明](../../docs/guides/oht-waypoint-execution.md)。直接 OSC 尚不提供碰撞路径规划。
+
+**在线预测可视化。** VLA server 默认每 10 步导出同一次前向的 RGB/heatmap，运行客户端时打开 `http://109.105.46.126:8004/visualization` 查看自动更新的 coarse/refine 图。带窗口的 IsaacLab client 默认显示实测 TCP、EEF 目标与轨迹；采集前清除标记，避免进入策略图像。开关、保留数量和运行方式见 [在线可视化](../../docs/guides/oht-vla-server.md#在线可视化)。在线诊断不含 GT；下方离线评估可用于 GT 对比。
+
 实时 IsaacLab 对接使用独立客户端 `tools/oht_bridgevla_client.py`，可从 IsaacLab 根目录直接启动，也可复制启动文件后用 `--bridgevla-root` 指定仓库。底层入口 `python -m finetune.OHT.isaaclab_client` 默认使用自带的原生工厂，无需参考脚本或自定义 runtime 模板；支持 `--isaaclab-root`、注册环境/显式配置类及已有 sensor/USD 相机绑定。服务端按 checkpoint 准备 RGB-D 观测，客户端支持 EEF/relative EEF 的 OSC 跟踪，以及 joint/relative_joint 的关节位置执行。四个任务使用本仓库 instruction，可分别配置初始化和成功条件；默认 `--score none` 不输出成功率，显式 `--score task --task-config ...` 才进行任务评分。运行命令、任务配置、raw 字段及控制器要求见 [IsaacLab 实时 RGB-D 客户端](../../docs/guides/oht-vla-server.md#isaaclab-实时-rgb-d-客户端)。
 
 ~~~bash
