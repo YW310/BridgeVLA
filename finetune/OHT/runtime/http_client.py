@@ -4,7 +4,7 @@ import uuid
 import urllib.request
 import numpy as np
 
-from ..action_modes import DEFAULTS, action_options, validate_action
+from ..action_modes import DEFAULTS, action_options, action_descriptor, validate_action
 from .inference_api import API_VERSION
 from .raw_observation import RAW_FORMAT, profile_task
 from .transport import pack_observation
@@ -19,6 +19,8 @@ class BridgeVLAClient:
             raise ValueError('Server must advertise bridgevla_rgbd_v1; update the BridgeVLA server')
         spec = self.info['action_spec']
         self.action_config = action_options({key: value for key, value in spec.items() if key in DEFAULTS})
+        if spec != action_descriptor(self.action_config):
+            raise ValueError('Unsupported action_spec: frame, quaternion order, units, size and gripper must match BridgeVLA semantics')
         self.episode, self.step, self.timestamp, self.instruction = None, 0, -1., None
         self.uncertain = False
 

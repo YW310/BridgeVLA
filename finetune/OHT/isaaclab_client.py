@@ -15,6 +15,7 @@ from .runtime.http_client import BridgeVLAClient
 from .runtime.isaaclab_bridge import IsaacLabBridge
 from .runtime.joint_executor import JointPositionExecutor
 from .runtime.task_runtime import TaskRuntime, task_settings
+from .runtime.control_diagnostics import control_report
 
 
 def load_reference(path, argv):
@@ -87,8 +88,15 @@ def main(argv=None):
     parser.add_argument('--task', choices=tuple(GOALS), default='disassemble_left')
     parser.add_argument('--env-id', default='Isaac-Deploy-Reach-UR16e-DualEE-AllScene-OSC-v2')
     parser.add_argument('--env-config', help='Optional module:ConfigClass to instantiate instead of the registered environment config')
+    parser.add_argument('--scene-preset', choices=('registry', 'oht-v4'), default='registry',
+                        help='oht-v4 loads and verifies the full reference V4 scene instead of the registry config')
+    parser.add_argument('--expected-robot-usd', help='Require the selected full environment config to reference this local USD; does not override the asset')
     parser.add_argument('--task-import', action='append', default=[], help='Additional environment registration module (repeatable)')
     parser.add_argument('--ee-link', help='Robot EE link used by training link_to_tcp; defaults to the OSC body_name')
+    parser.add_argument('--ee-pose-source', choices=('body', 'controller'), default='controller',
+                        help='Native raw EE measurement: controller applies body_offset (OHT recorded TCP); body reads the bare link')
+    parser.add_argument('--dry-run', action='store_true', help='Save control diagnostics and exit without policy predictions or env.step')
+    parser.add_argument('--log-interval', type=int, default=10, help='Print first/every N policy action and tracking errors; 0 disables')
     parser.add_argument('--quaternion-order', choices=('wxyz', 'xyzw'), default='wxyz', help='Installed IsaacLab tensor/config quaternion order (default: IsaacLab 2.x wxyz)')
     parser.add_argument('--camera-source', choices=('auto', 'sensors', 'usd'), default='auto')
     parser.add_argument('--camera-width', type=int, default=640)
@@ -116,7 +124,7 @@ def main(argv=None):
     args, reference_args = parser.parse_known_args(argv)
     args.runtime_args = reference_args
     # User-owned paths stay relative to the launch directory, even when the runtime changes directory.
-    for name in ('reference_client', 'task_config', 'camera_map', 'output'):
+    for name in ('reference_client', 'task_config', 'camera_map', 'output', 'expected_robot_usd'):
         value = getattr(args, name)
         if value is not None:
             setattr(args, name, str(Path(value).expanduser().resolve()))
@@ -126,6 +134,8 @@ def main(argv=None):
 
 
 def _run(args, reference_args):
+    if (args.scene_preset != 'registry' or args.expected_robot_usd is not None) and (args.reference_client or args.runtime_factory):
+        raise ValueError('scene-preset/expected-robot-usd require the built-in native runtime')
     settings = task_settings(args.task_config, args.task)
     if args.success_term is not None:
         if args.score != 'task':
@@ -135,6 +145,8 @@ def _run(args, reference_args):
         raise ValueError('Task initialization requires reset_assets or initializer_factory in --task-config')
     if min(args.episodes, args.max_steps, args.max_substeps) < 1:
         raise ValueError('episodes, max-steps and max-substeps must be positive')
+    if args.log_interval < 0:
+        raise ValueError('log-interval must be nonnegative')
     if not np.isfinite([args.timeout, args.max_translation, args.max_rotation]).all() or min(
             args.timeout, args.max_translation, args.max_rotation) <= 0:
         raise ValueError('timeout and physical clip limits must be finite and positive')
@@ -206,6 +218,8 @@ def _run(args, reference_args):
                                 max_substeps=args.max_substeps, max_translation=args.max_translation,
                                 max_rotation=args.max_rotation, joint_executor=joint)
         output.mkdir(parents=True)
+        diagnostics = control_report(bridge)
+        write_json(output / 'control_diagnostics.json', diagnostics)
         write_json(output / 'run.json', dict(task=args.task, instruction=GOALS[args.task], seed=args.seed,
                    model_id=client.info['model_id'], contract_sha256=client.info['contract_sha256'],
                    action_spec=client.info['action_spec'], data_profile=profile, task_settings=settings,
@@ -213,10 +227,25 @@ def _run(args, reference_args):
                    isaaclab_root=args.isaaclab_root,
                    env_id=args.env_id, env_config=args.env_config, ee_link=getattr(reference, 'ee_link', args.ee_link),
                    quaternion_order=args.quaternion_order, camera_source=getattr(reference, 'camera_source', args.camera_source),
+                   ee_pose_source=diagnostics['ee_pose_source'],
+                   scene=diagnostics['scene'],
                    reference_client=args.reference_client, joint_executor=args.joint_executor or
                    ('JointPositionExecutor' if joint is not None else None),
                    joint_hold_steps=args.joint_hold_steps, joint_target_tolerance=args.joint_target_tolerance,
                    joint_max_step=args.joint_max_step))
+        print(f'[BridgeVLA] control diagnostics: {output / "control_diagnostics.json"} '
+              f'ee_pose_source={diagnostics["ee_pose_source"]} gripper_verified={diagnostics["gripper"]["verified"]}', flush=True)
+        grip = diagnostics['gripper']
+        print(f'[BridgeVLA] gripper +1=open targets={grip.get("open_joint_targets")} '
+              f'-1=close targets={grip.get("close_joint_targets")} '
+              f'training_physical_endpoints={grip["training_physical_endpoints"]}', flush=True)
+        if diagnostics['gripper']['verified'] is False:
+            raise ValueError('Gripper action transform does not map +1 to configured open and -1 to close; inspect control_diagnostics.json')
+        if diagnostics['gripper']['calibration_direction_matches'] is False:
+            raise ValueError('Simulator gripper open/close physical direction disagrees with the training profile; check scene/asset and checkpoint calibration in control_diagnostics.json')
+        if args.dry_run:
+            print('[BridgeVLA] dry run complete; no predictions or control steps executed', flush=True)
+            return 0
         rng = np.random.default_rng(args.seed)
         print(f'[BridgeVLA] HTTP={args.server} task={args.task} mode={client.action_config["mode"]} '
               f'profile={profile} cameras={mapping} initialization={args.initialization} score={args.score}', flush=True)
@@ -250,9 +279,18 @@ def _run(args, reference_args):
                     action, response = client.predict(measured, GOALS[args.task], timestamp,
                                                       task=args.task, data_profile=profile)
                     commands = bridge.execute(action, measured, after_step)
+                    before = bridge.measured_state(measured)
+                    after = bridge.measured_state()
+                    errors_before, errors_after = bridge.tracking_errors(before), bridge.tracking_errors(after)
                     row['actions'].append(dict(step=step, timestamp=timestamp, action=action.tolist(),
                                                target=bridge.last_target, commands=commands,
+                                               measured_before=before, measured_after=after,
+                                               errors_before=errors_before, errors_after=errors_after,
                                                timing_ms=response['timing_ms']))
+                    if args.log_interval and (step == 0 or (step + 1) % args.log_interval == 0):
+                        print(f'[BridgeVLA] step={step} action={action.tolist()} target={bridge.last_target} '
+                              f'error_before={errors_before} error_after={errors_after} '
+                              f'gripper_physical={before["gripper_position"]:.6g}->{after["gripper_position"]:.6g}', flush=True)
                     row['steps'] = step + 1
                     if tracker is not None and tracker.success:
                         row['success'] = True

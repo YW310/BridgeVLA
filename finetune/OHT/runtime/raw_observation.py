@@ -33,6 +33,8 @@ def raw_schema(policy):
                 cameras=list(policy.contract['data_config']['cameras']),
                 tasks=list(GOALS), data_profiles={
                     name: dict(task=profile_task(name), link_to_tcp=config['link_to_tcp'],
+                               gripper={key: config['gripper'][key] for key in ('open', 'close')},
+                               scene_bounds=config['scene_bounds'],
                                image_size=config['image_size']) for name, config in data_profiles(policy).items()})
 
 

@@ -18,6 +18,7 @@ from tests.test_oht_native_runtime import environment
 from finetune.OHT import isaaclab_client as runner
 from finetune.OHT.action_modes import action_options
 from finetune.OHT.runtime import isaaclab_factory as native
+from finetune.OHT.runtime import isaaclab_scene as scenes
 from finetune.OHT.runtime.http_client import BridgeVLAClient
 from finetune.OHT.runtime.usd_cameras import (
     ReplicatorCamera, ReplicatorCameras, ReplicatorRuntime, projection_intrinsics, select_camera_paths, usd_rigid_matrix,
@@ -27,7 +28,8 @@ from finetune.OHT.runtime.usd_cameras import (
 def native_arguments(**changes):
     values = dict(camera_width=3, camera_height=2, camera_warmup_ticks=4, runtime_args=['--headless'],
                   task_import=['project.tasks'], env_id='OHT-test', env_config=None, disable_fabric=False,
-                  seed=42, camera_source='auto', ee_link=None, quaternion_order='wxyz', camera_map=None)
+                  scene_preset='registry', expected_robot_usd=None, isaaclab_root=None,
+                  seed=42, camera_source='auto', ee_link=None, ee_pose_source='controller', quaternion_order='wxyz', camera_map=None)
     return SimpleNamespace(**{**values, **changes})
 
 
@@ -99,6 +101,51 @@ def test_builtin_default_launches_and_runs_http(fixture, replay_fixture, tmp_pat
     summary = json.loads((output / 'summary.json').read_text(encoding='utf-8'))
     assert summary['episodes'][0]['stop_reason'] == 'max_steps'
     assert summary['success_rate'] is None
+    episode = json.loads((output / 'episode_0000.json').read_text(encoding='utf-8'))
+    assert 'gripper_position' in episode['actions'][0]['measured_after']
+    assert episode['actions'][0]['errors_after']
+
+
+def test_dry_run_saves_control_contract_without_predictions_or_actions(fixture, replay_fixture, tmp_path, monkeypatch):
+    tensors, _, raw = raw_sample(replay_fixture.replay, fixture.policy)
+    env = environment('eef', raw['task'])
+    env.action_manager.get_term('arm_action').cfg.body_name = 'tool'
+    env.scene.sensors = sensors_for(tensors, fixture.policy.contract['data_config']['cameras'])
+    state = fake_simulator(monkeypatch, env)
+    output = tmp_path / 'dry-run'
+    with TestClient(fixture.app()) as server:
+        monkeypatch.setattr(runner, 'BridgeVLAClient',
+                            lambda *args: BridgeVLAClient('http://testserver', opener=Opener(server)))
+        assert runner.main(['--env-id', 'OHT-test', '--task', raw['task'], '--dry-run', '--output', str(output), '--headless']) == 0
+        assert server.get('/health').json()['episode_id'] is None
+    assert not env.commands and not fixture.policy.calls and env.closed and state.app_closed
+    report = json.loads((output / 'control_diagnostics.json').read_text(encoding='utf-8'))
+    assert report['action_spec']['gripper'] == 'open01'
+    assert report['ee_pose_source'] == 'controller' and report['gripper']['open_command'] == 1.
+    assert report['gripper']['training_physical_endpoints'] is not None
+
+
+def test_gripper_calibration_direction_mismatch_stops_before_control(fixture, replay_fixture, tmp_path, monkeypatch):
+    tensors, _, raw = raw_sample(replay_fixture.replay, fixture.policy)
+    env = environment('eef', raw['task'])
+    env.action_manager.get_term('arm_action').cfg.body_name = 'tool'
+    env.scene.sensors = sensors_for(tensors, fixture.policy.contract['data_config']['cameras'])
+    state = fake_simulator(monkeypatch, env)
+    original_report = runner.control_report
+    def report(bridge):
+        result = original_report(bridge)
+        result['gripper'].update(verified=True, calibration_direction_matches=False)
+        return result
+    monkeypatch.setattr(runner, 'control_report', report)
+    output = tmp_path / 'bad-gripper-calibration'
+    with TestClient(fixture.app()) as server:
+        monkeypatch.setattr(runner, 'BridgeVLAClient',
+                            lambda *args: BridgeVLAClient('http://testserver', opener=Opener(server)))
+        with pytest.raises(ValueError, match='physical direction disagrees'):
+            runner.main(['--env-id', 'OHT-test', '--task', raw['task'], '--output', str(output), '--headless'])
+        assert server.get('/health').json()['episode_id'] is None
+    assert (output / 'control_diagnostics.json').is_file()
+    assert not env.commands and not fixture.policy.calls and env.closed and state.app_closed
 
 
 def test_explicit_scene_configuration_and_cleanup_on_camera_failure(tmp_path, monkeypatch):
@@ -107,7 +154,7 @@ def test_explicit_scene_configuration_and_cleanup_on_camera_failure(tmp_path, mo
     env.scene.sensors = {}
     state = fake_simulator(monkeypatch, env)
     expected = SimpleNamespace(scene=SimpleNamespace(num_envs=12), sim=SimpleNamespace(device='old', use_fabric=True))
-    monkeypatch.setattr(native, 'factory', lambda value: lambda: expected)
+    monkeypatch.setattr(scenes, 'factory', lambda value: lambda: expected)
     args = native_arguments(env_config='oht:V4Config', camera_source='sensors', disable_fabric=True)
     before = list(sys.argv)
     with pytest.raises(ValueError, match='Missing registered Camera'):

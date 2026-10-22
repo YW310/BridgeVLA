@@ -1,20 +1,39 @@
 """BridgeVLA adapter for an existing IsaacLab env and registered Camera sensors."""
 from types import SimpleNamespace
 import numpy as np
+from scipy.spatial.transform import Rotation
 
 from .joint_executor import numpy_value
 from ..data.geometry import pose_matrix
 
 
+def controller_offset(cfg, quaternion_order='wxyz'):
+    offset = getattr(cfg, 'body_offset', None)
+    if offset is None:
+        return np.eye(4)
+    rotation = np.asarray(offset.rot)
+    if quaternion_order == 'wxyz':
+        rotation = rotation[[1, 2, 3, 0]]
+    return pose_matrix(offset.pos, rotation)
+
+
 class IsaacLabRuntime:
     def __init__(self, env, cameras, *, ee_link, quaternion_order, simulation_app,
-                 owns_env=True, owns_app=False):
+                 owns_env=True, owns_app=False, ee_pose_source='body'):
         import torch
         if quaternion_order not in ('wxyz', 'xyzw'):
             raise ValueError('Declare the installed IsaacLab quaternion order explicitly')
+        if ee_pose_source not in ('body', 'controller'):
+            raise ValueError('ee_pose_source must be body or controller')
         if getattr(env, 'num_envs', 1) != 1:
             raise ValueError('BridgeVLA HTTP runtime supports one environment')
         self.env, self.cameras, self.simulation_app = env, cameras, simulation_app
+        for camera in cameras.values():
+            cfg = getattr(camera, 'cfg', None)
+            if cfg is not None and hasattr(cfg, 'update_latest_camera_pose'):
+                # CameraCfg defaults to returning the initialization pose.
+                # Force live poses before the first render/data refresh.
+                cfg.update_latest_camera_pose = True
         self.quaternion_order, self.torch = quaternion_order, torch
         self.owns_env, self.owns_app = owns_env, owns_app
         self.args_cli = SimpleNamespace(device=env.device)
@@ -23,6 +42,11 @@ class IsaacLabRuntime:
             raise ValueError(f'Unknown EE link: {ee_link}')
         self.ee_link = ee_link
         self.body_index = list(robot.body_names).index(ee_link)
+        self.ee_pose_source = ee_pose_source
+        cfg = getattr(env.action_manager.get_term('arm_action'), 'cfg', None)
+        if ee_pose_source == 'controller' and getattr(cfg, 'body_name', ee_link) != ee_link:
+            raise ValueError('Controller EE pose source requires ee_link to match arm_action.body_name')
+        self.body_to_observation = controller_offset(cfg, quaternion_order) if ee_pose_source == 'controller' else np.eye(4)
 
     @staticmethod
     def tensor_to_numpy(value, dtype=np.float32):
@@ -45,7 +69,8 @@ class IsaacLabRuntime:
     def get_ee_pose_in_world_frame(self, env, robot):
         position = numpy_value(robot.data.body_pos_w)[0, self.body_index] - self._origin()
         rotation = self._wxyz(numpy_value(robot.data.body_quat_w)[0, self.body_index])
-        return position, rotation
+        measured = pose_matrix(position, rotation[[1, 2, 3, 0]]) @ self.body_to_observation
+        return measured[:3, 3], Rotation.from_matrix(measured[:3, :3]).as_quat()[[3, 0, 1, 2]]
 
     @staticmethod
     def get_online_gripper_physical_state(env, robot):

@@ -190,6 +190,7 @@ python /home/yiwei/BridgeVLA/tools/oht_bridgevla_client.py \
   --server http://109.105.46.126:8004 \
   --task disassemble_left \
   --env-id Isaac-Deploy-Reach-UR16e-DualEE-AllScene-OSC-v2 \
+  --scene-preset oht-v4 \
   --camera-source usd \
   --episodes 1 --max-steps 10 \
   --output logs/bridgevla-native-smoke \
@@ -201,13 +202,18 @@ python /home/yiwei/BridgeVLA/tools/oht_bridgevla_client.py \
 HTTP 连接的是模型服务，客户端在自身进程中创建仿真，不会附着到另一个已打开的 Isaac Sim 进程。原生入口使用 AppLauncher 启用相机后才导入仿真/任务模块，再通过 `gym.make()` 创建单环境。先校验 `/model_info`，按 checkpoint 动作模式检查环境控制器；不会自动将 OSC 环境改为关节位置环境，也不会修改 PD 增益或力矩上限。
 
 - `--env-id`：实际已注册的 OHT 环境 ID；默认使用注册配置。
-- `--env-config module:ConfigClass`：显式替换该环境的配置类。例如提供的 T1V4 参考脚本使用 V4 场景，其配置名为 `isaaclab_tasks.manager_based.manipulation.deploy.reach.config.ur_16e.all_scene_osc_env_cfg:UR16eDualEEAllSceneOSCReachEnvCfgV4`。若要使用这份场景，在上面的命令中增加对应 `--env-config`，并确保你的 IsaacLab 工程确实提供该类及其 USD 资产。只使用默认 OSC-v2 注册配置不代表已复现 V4 场景。
+- `--scene-preset registry|oht-v4`：默认 `registry` 保留已注册场景；本文对齐参考 T1V4 的命令显式选择 `oht-v4`。V4 预设加载完整 `UR16eDualEEAllSceneOSCReachEnvCfgV4`，校验配置模块位于所选 IsaacLab 工程内、机器人 USD 指向 `<ISAACLAB_ROOT>/oht/assets_v4/ALL/Collected_all/all.usd` 且文件存在、EE body 为 `base_link_0`、OSC 为 `pose_rel`。任何不匹配都报错，不退回注册配置或 V2。该预设为 OSC 场景，不适用于 joint checkpoint。
+- `--expected-robot-usd /absolute/path/all.usd`：自定义场景时校验实际配置引用的本地 USD 路径；不会替换 `spawn.usd_path`。应加载匹配的完整环境配置，避免只换 USD 而保留错误的夹爪、控制器和 EE 定义。
+- `--env-config module:ConfigClass`：显式替换该环境的配置类。参考 T1V4 使用的类为 `isaaclab_tasks.manager_based.manipulation.deploy.reach.config.ur_16e.all_scene_osc_env_cfg:UR16eDualEEAllSceneOSCReachEnvCfgV4`；`--scene-preset oht-v4` 已自动选择并校验该类，无需再手工指定。使用自定义配置时保留 `--scene-preset registry` 并提供 `--env-config`，可另加 `--expected-robot-usd` 校验资产。
 - `--task-import module`：额外导入 OHT 环境注册模块，可重复；内置已导入 `isaaclab_tasks`。
 - `--ee-link name`：训练 `link_to_tcp` 对应的真实机器人 link；默认读取 OSC 的 `body_name`。关节位置环境没有 `body_name` 时必须显式提供。
+- `--ee-pose-source controller|body`：原生工厂默认 `controller`，观测 EE 位姿为 `body pose × arm_action.body_offset`，匹配本仓库 OHT 数据配置中“记录位姿已含 TCP 偏移”的约定。执行器不会再添加相同偏移。导出器记录裸 link，或 profile 的 `link_to_tcp` 已含完整 body→TCP 偏移时，显式选择 `body`，避免重复转换。直接嵌入 `IsaacLabRuntime` 的旧调用仍默认 `body`，需按数据契约显式选择。
 - `--quaternion-order wxyz|xyzw`：已安装 IsaacLab 的状态及配置四元数顺序，默认 `wxyz`（2.x）；使用其他约定的版本需显式设置。
 - `--camera-source auto|sensors|usd`：`auto` 默认优先使用完整的已注册 Camera sensors，否则从现有 USD camera prim 创建 Replicator render products。`sensors` 强制使用已注册 sensors；`usd` 强制使用 USD 相机。
 - `--camera-map file.json`：覆盖 checkpoint 逻辑相机名到 sensor 名/USD prim 名/绝对 prim 路径的全部映射。默认 USD 名为逻辑名大写，重名必须提供精确路径；缺少右侧等必需相机时明确报错。
 - `--camera-width 640 --camera-height 480 --camera-warmup-ticks 8`：USD RGB-D 的渲染尺寸及只渲染的预热次数；预热不执行 `env.step()`。
+- `--dry-run`：启动环境和相机，保存 `run.json`、`control_diagnostics.json` 后退出，不发 `/predict`、不执行控制用的 `env.step()`。夹爪检查只调用 action term 的 `process_actions` 并恢复原值，不调用 `apply_actions`。
+- `--log-interval N`：默认首步和每 10 步输出预测/目标、跟踪误差及夹爪物理状态；`1` 每步输出，`0` 关闭。
 
 USD 模式只读取 RGB、`distance_to_image_plane` 和 pinhole `camera_params`；深度直接是米制 Z-depth，不从 pointcloud 生成。机器人挂载相机以 USD 中的固定 body→camera 变换结合实时物理 body pose 求世界位姿；wrist 无法绑定机器人 body 时拒绝运行，避免使用停留在旧位置的 USD wrist pose。相机矩阵始终按 OpenGL 约定发送，在服务端转换一次。实现参照 [AppLauncher 官方说明](https://isaac-sim.github.io/IsaacLab/main/source/tutorials/00_sim/launch_app.html)和 [Replicator 官方 API](https://docs.omniverse.nvidia.com/kit/docs/omni_replicator/1.13.30/source/extensions/omni.replicator.core/docs/API.html)。
 
@@ -217,6 +223,7 @@ USD 模式只读取 RGB、`distance_to_image_plane` 和 pinhole `camera_params`�
 cp /home/yiwei/BridgeVLA/tools/oht_bridgevla_client.py ./oht-bridgevla-client.py
 python ./oht-bridgevla-client.py \
   --bridgevla-root /home/yiwei/BridgeVLA --isaaclab-root "$PWD" \
+  --scene-preset oht-v4 \
   --server http://109.105.46.126:8004 --task disassemble_left \
   --camera-source usd --episodes 1 --max-steps 10 \
   --output logs/bridgevla-copied-smoke --headless --device cuda:0
@@ -231,6 +238,7 @@ python ./oht-bridgevla-client.py \
 ```bash
 python /home/yiwei/BridgeVLA/tools/oht_bridgevla_client.py \
   --isaaclab-root /home/yiwei/IsaacLab \
+  --scene-preset oht-v4 \
   --server http://109.105.46.126:8004 --task assemble_left \
   --task-config /home/yiwei/isaaclab_tasks.yaml --score task \
   --episodes 20 --max-steps 500 --output logs/assemble-left-eval
@@ -295,6 +303,30 @@ tensors: { 每项均使用现有 dtype/shape/Base64 封装
 
 EEF 执行先按 `action_spec` 解码为绝对 TCP 目标，relative EEF 的锚点是该次请求的实测 TCP；随后用 `link_to_tcp` 逆变换得到 EE link 目标，应用 OSC 的 `body_offset`，再转换到实时 robot-root 坐标。跟踪时每次读取当前 link 位姿，计算 base-frame 残差，先按 `--max-translation`（默认每轴 0.05m）和 `--max-rotation`（默认每轴 0.15rad）裁剪，再除以 OSC 配置中的 `position_scale/orientation_scale`。夹爪 open01 映射成环境的 +1/-1。默认 `--max-substeps 1`；增加子步时跟踪同一个固定目标，不重复叠加同一预测增量。动作 term 必须为 OSC，采用 `pose_rel` 控制目标，原生 runtime 的 `ee_link` 须与 `body_name` 一致；使用自定义 `task_frame_rel_path` 的环境需先提供相应适配，内置执行器会明确拒绝。
 
+其中“应用 body_offset”按观测参考点处理：`controller` 观测已经是控制点，观测→控制点变换为单位阵；`body` 观测才需要应用配置的偏移。HTTP 的历史字段名 `ee_link_pose` 保留，但其内容须由上述来源选择与训练记录参考点对齐；profile 的 `link_to_tcp` 仅应用一次。模型 `eef` 输出 8 维 `[world_xyz, quat_xyzw, open01]`，IsaacLab OSC 实际接收 7 维 `[base_dxyz, base_rotvec, gripper_sign]`，不能将这两种数组直接互换。
+
+### 运动异常时先检查控制契约
+
+先使用新输出目录运行诊断：
+
+```bash
+cd /home/yiwei/IsaacLab
+python /home/yiwei/BridgeVLA/tools/oht_bridgevla_client.py \
+  --isaaclab-root "$PWD" --server http://109.105.46.126:8004 \
+  --scene-preset oht-v4 \
+  --task disassemble_left --camera-source usd \
+  --ee-pose-source controller --dry-run \
+  --output logs/bridgevla-control-check --headless --device cuda:0
+```
+
+检查 `control_diagnostics.json` 中的 `body_to_observation`、`link_to_tcp`、`observation_to_control`、实时 root 变换、关节顺序和夹爪目标。`gripper.verified=true` 仅说明环境的 `process_actions(+1/-1)` 与其配置的 open/close 目标一致，不保证配置的物理开口、训练标定或成功抓取已验证。标准 [IsaacLab BinaryJointAction](https://raw.githubusercontent.com/isaac-sim/IsaacLab/v2.2.1/source/isaaclab/isaaclab/envs/mdp/actions/binary_joint_actions.py) 为正值打开、负值关闭；BridgeVLA 的 `1=open` 映射为 `+1`，不应未经验证直接翻转符号。
+
+`gripper.calibration_direction_matches` 单独检查命令目标之和的物理开闭方向与训练端点是否相同；相反或退化时在动作执行前退出，不自动修改夹爪语义。端点数值差异仍需结合实际开口与数据范围判断。客户端启动时完整校验 `action_spec` 的坐标、四元数、单位、参考点、维数和夹爪定义。原生环境关闭 `terminations.time_out`，由客户端限制 rollout 长度，其他终止条件保留；注册 Camera 传感器开启实时位姿更新。具体证据、与参考脚本的区别和未验证项见[client/server 对照检查](../design/oht-client-server-audit.md)。
+
+新版服务 `/model_info` 的 raw profiles 会显示训练的物理夹爪 open/close 端点及 scene bounds，需更新并重启服务后获得；旧服务缺少这些元信息时报告为 null。若环境目标之和与训练端点明显不符，应核对 V2/V4 场景和夹爪配置，而不是把物理关节值、open01 和命令符号混为一谈。一次 `--max-substeps 1` 只推进一个控制步，不能据此认定已到达模型预测的未来关键点；绝对目标跳变或长期处于限幅，需要结合执行前后的误差确认原因。
+
+正常 rollout 的每条 action 现在还保存 `measured_before`、`measured_after`、`errors_before`、`errors_after`：实测 EE 为 xyz+wxyz，TCP 为 xyz+xyzw，夹爪为物理关节位置之和。它们用于区分模型目标异常、坐标/参考点不匹配和控制器跟踪不足。
+
 joint/relative_joint 模式使用内置 `JointPositionExecutor`，要求环境的 `arm_action` 为绝对 `JointPositionAction`，不能送入 OSC 七维口。执行器读取实时 scale/offset，反算原始控制量并校验 action transform 是否发生额外裁剪；目标超出 soft joint limits 时在步进前报错。checkpoint 配置有 `joint_names` 时显式按名称映射，否则必须由环境保证 arm term 顺序与训练六关节顺序一致。控制向量按 action manager 的实际 term 顺序排列，夹爪为单维 +1 开/-1 关。执行器沿用环境现有 PD/驱动配置，通过 `env.step()` 步进。
 
 relative_joint 按请求时的实测关节还原绝对目标一次。`--joint-hold-steps` 默认 1，`--joint-target-tolerance` 默认 0.01rad；可选 `--joint-max-step` 限制每控制步向目标移动的关节位移，默认不限制。多次跟踪时保持同一个物理目标，不重复累加 delta。需要其他驱动方式时可用 `--joint-executor module:factory` 覆盖，`factory(env, runtime)` 返回 `execute(absolute_joint_target, after_step=callback)`；返回实际控制量列表，每步调用 callback，终止时设置 `last_done=True`。
@@ -307,7 +339,7 @@ relative_joint 按请求时的实测关节还原绝对目标一次。`--joint-ho
 
 若退出时出现 `Invalid NodeObj object in Py_Node in getAttributes`，应检查它是否发生在 episode 完成后的相机清理阶段。这与运行期间 `/predict` 或动作执行报错不同。多相机现在先 detach 全部 annotators，再销毁全部 render products，与 [Isaac Sim 官方多相机示例](https://docs.isaacsim.omniverse.nvidia.com/5.1.0/replicator_tutorials/tutorial_replicator_getting_started.html)的释放顺序一致。部分 Kit 版本若仍返回已失效的 annotator NodeObj，退出时仅汇总一次并继续释放；其他 detach/destroy 异常仍显示带相机和操作名的 warning。此改动需在实际 Isaac Sim 环境重跑确认。
 
-`config=registry` 表示使用 `--env-id` 的已注册配置，没有显式选择 `--env-config`。如需匹配参考 T1V4 的 V4 场景，应按上文确认配置类及资产。重跑使用新的 `--output` 目录；客户端拒绝覆盖已有结果。
+`config=registry` 表示使用 `--env-id` 的已注册配置，没有显式选择 V4。环境 ID 后缀 `OSC-v2` 也不能单独证明实际资产版本：参考 T1V4 同样使用这个 ID，但额外传入完整 V4 config。现在启动日志会显示 scene preset、配置类/来源文件及实际 robot USD；`run.json` 和 `control_diagnostics.json` 的 `scene` 字段保存同样信息及资产校验结果。旧日志没有 USD 路径时不能据此确认资产版本，需重跑诊断。重跑使用新的 `--output` 目录；客户端拒绝覆盖已有结果。
 
 输出目录包含 `info.json` 和 `requests.jsonl`。info 记录模型、相机、配置、Asia/Shanghai 启动时间和依赖版本；逐请求日志记录标识、状态和耗时，不保存完整 RGB-D/点云。默认每份日志 10 MiB，保留 3 份轮转备份。
 

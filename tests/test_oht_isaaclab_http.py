@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 
 from tests.test_oht_migration import replay_fixture  # noqa: F401
 from tests.test_oht_vla_server import fixture, prediction, envelope  # noqa: F401
-from finetune.OHT.action_modes import action_options
+from finetune.OHT.action_modes import action_options, action_descriptor
 from finetune.OHT.data.dataset import OHTDataset
 from finetune.OHT.data.geometry import pose_matrix
 from finetune.OHT.runtime.raw_observation import RAW_FORMAT, decode_raw, OPENGL_TO_OPTICAL
@@ -19,6 +19,22 @@ from finetune.OHT.runtime.transport import pack_observation
 from finetune.OHT.runtime.http_client import BridgeVLAClient
 from finetune.OHT.runtime.isaaclab_bridge import osc_command, IsaacLabBridge, pose_wxyz_matrix
 from finetune.OHT.isaaclab_client import load_reference
+from finetune.OHT.runtime.inference_api import API_VERSION
+
+
+@pytest.mark.parametrize('field,value', [('frame', 'base'), ('quaternion_order', 'wxyz'),
+                                       ('size', 7), ('units', 'millimetres'),
+                                       ('gripper', 'close01'), ('reference_point', 'flange')])
+def test_client_rejects_semantically_incompatible_server_before_control(field, value):
+    spec = action_descriptor(action_options())
+    spec[field] = value
+    info = dict(api_version=API_VERSION, observation_formats=[RAW_FORMAT], action_spec=spec)
+    class InfoOnly:
+        def open(self, request, timeout):
+            assert request.full_url.endswith('/model_info')
+            return io.BytesIO(json.dumps(info).encode())
+    with pytest.raises(ValueError, match='Unsupported action_spec'):
+        BridgeVLAClient('http://testserver', opener=InfoOnly())
 
 
 def raw_sample(replay, policy):

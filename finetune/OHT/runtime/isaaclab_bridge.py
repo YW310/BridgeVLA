@@ -5,6 +5,7 @@ from scipy.spatial.transform import Rotation
 from ..data.geometry import array, pose_matrix, transform_matrix
 from .executor import execution_target
 from .joint_executor import arm_ids, terminated, numpy_value, action_layout
+from .isaaclab_runtime import controller_offset
 
 
 def pose_wxyz_matrix(pose):
@@ -62,12 +63,9 @@ class IsaacLabBridge:
             body = getattr(term.cfg, 'body_name', None)
             if body is not None and hasattr(reference, 'ee_link') and body != reference.ee_link:
                 raise ValueError('OSC body_name must match the runtime ee_link')
-            offset = getattr(term.cfg, 'body_offset', None)
-            if offset is not None:
-                rotation = np.asarray(offset.rot)
-                if getattr(reference, 'quaternion_order', 'wxyz') == 'wxyz':
-                    rotation = rotation[[1, 2, 3, 0]]
-                self.control_offset = pose_matrix(offset.pos, rotation)
+            body_to_control = controller_offset(term.cfg, getattr(reference, 'quaternion_order', 'wxyz'))
+            body_to_observation = transform_matrix(getattr(reference, 'body_to_observation', np.eye(4)))
+            self.control_offset = np.linalg.inv(body_to_observation) @ body_to_control
 
     def _numpy(self, value):
         return self.ref.tensor_to_numpy(value, np.float32)
@@ -106,6 +104,25 @@ class IsaacLabBridge:
         if origins is not None:
             position -= self._numpy(origins[0])
         return pose_wxyz_matrix(np.r_[position, self._numpy(self.robot.data.root_quat_w[0])])
+
+    def measured_state(self, measured=None):
+        if measured is None:
+            _, ids = arm_ids(self.env, self.client.action_config)
+            measured = dict(ee_link_pose=self.link_pose(), joint_positions=numpy_value(self.robot.data.joint_pos)[0, ids],
+                            gripper_position=self.ref.get_online_gripper_physical_state(self.env, self.robot))
+        tcp = pose_wxyz_matrix(measured['ee_link_pose']) @ self.link_to_tcp
+        return dict(ee_pose_wxyz=np.asarray(measured['ee_link_pose']).tolist(),
+                    tcp_pose_xyzw=np.r_[tcp[:3, 3], Rotation.from_matrix(tcp[:3, :3]).as_quat()].tolist(),
+                    joint_positions=np.asarray(measured['joint_positions']).tolist(),
+                    gripper_position=float(np.asarray(measured['gripper_position']).reshape(-1)[0]))
+
+    def tracking_errors(self, state):
+        target = np.asarray(self.last_target)
+        if 'joint' in self.client.action_config['mode']:
+            return dict(joint_max_rad=float(np.max(np.abs(target[:6] - state['joint_positions']))))
+        pose = np.asarray(state['tcp_pose_xyzw'])
+        return dict(translation_m=float(np.linalg.norm(target[:3] - pose[:3])),
+                    rotation_rad=float((Rotation.from_quat(target[3:7]) * Rotation.from_quat(pose[3:7]).inv()).magnitude()))
 
     def execute(self, action, measured, after_step=None):
         self.last_done = False

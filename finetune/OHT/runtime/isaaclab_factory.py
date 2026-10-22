@@ -9,7 +9,7 @@ import sys
 import numpy as np
 
 from .isaaclab_runtime import IsaacLabRuntime
-from .task_runtime import factory
+from .isaaclab_scene import expected_asset, scene_configuration
 
 
 def launch_application(extra):
@@ -75,14 +75,16 @@ def build_cameras(env, app, args, model_info):
         if len(bound) != len(names):
             raise ValueError(f'Missing registered Camera sensors: {sorted(set(names) - set(bound))}')
         runtime = IsaacLabRuntime(env, bound, ee_link=ee_link(env, args.ee_link),
-                                  quaternion_order=args.quaternion_order, simulation_app=app, owns_app=True)
+                                  quaternion_order=args.quaternion_order, simulation_app=app, owns_app=True,
+                                  ee_pose_source=args.ee_pose_source)
         runtime.camera_source = 'sensors'
         return runtime
     from .usd_cameras import ReplicatorCameras, ReplicatorRuntime
     manager = ReplicatorCameras(env, mapping, args.camera_width, args.camera_height)
     try:
         runtime = ReplicatorRuntime(env, manager, ee_link=ee_link(env, args.ee_link),
-                                    quaternion_order=args.quaternion_order, simulation_app=app, owns_app=True)
+                                    quaternion_order=args.quaternion_order, simulation_app=app, owns_app=True,
+                                    ee_pose_source=args.ee_pose_source)
     except BaseException:
         manager.close()
         raise
@@ -92,6 +94,7 @@ def build_cameras(env, app, args, model_info):
 def create_runtime(*, args, model_info):
     if min(args.camera_width, args.camera_height, args.camera_warmup_ticks) < 1:
         raise ValueError('Camera dimensions and warmup ticks must be positive')
+    expected = expected_asset(args, model_info['action_spec']['mode'])
     app, env, runtime = None, None, None
     previous_argv = sys.argv
     try:
@@ -102,22 +105,14 @@ def create_runtime(*, args, model_info):
         random.seed(args.seed)
         np.random.seed(args.seed)
         torch.manual_seed(args.seed)
-        if args.env_config:
-            cfg = factory(args.env_config)()
-            cfg.scene.num_envs = 1
-            cfg.sim.device = options.device
-        else:
-            cfg = parse_env_cfg(args.env_id, device=options.device, num_envs=1)
-        cfg.seed = args.seed
-        if args.disable_fabric:
-            cfg.sim.use_fabric = False
-        cfg.env_name = args.env_id
+        cfg, scene_info = scene_configuration(args, parse_env_cfg, options.device, expected)
         env = gym.make(args.env_id, cfg=cfg).unwrapped
         if getattr(env, 'num_envs', 1) != 1:
             raise ValueError('BridgeVLA supports exactly one simulator environment')
         check_controller(env, model_info['action_spec']['mode'])
         env.reset()
         runtime = build_cameras(env, app, args, model_info)
+        runtime.scene_info = scene_info
         for _ in range(args.camera_warmup_ticks):
             runtime._replicator_render_tick(env)
         # Fail on missing RGB/depth/calibration before starting an HTTP episode.
@@ -126,7 +121,7 @@ def create_runtime(*, args, model_info):
             runtime.camera_depth(camera)
             runtime.camera_intrinsic(camera)
             runtime.camera_pose_ros(camera, env, robot=env.scene['robot'])
-        print(f'[BridgeVLA] native env={args.env_id} config={args.env_config or "registry"} '
+        print(f'[BridgeVLA] native env={args.env_id} config={scene_info["config"]} '
               f'ee_link={runtime.ee_link} cameras={runtime.camera_source}', flush=True)
         return runtime
     except BaseException:

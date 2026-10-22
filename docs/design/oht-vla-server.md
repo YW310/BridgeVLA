@@ -161,6 +161,7 @@ finetune/OHT/
     http_client.py              # 严格会话校验；控制请求不重试
     isaaclab_runtime.py         # 已有 env / Camera sensors 适配
     isaaclab_factory.py         # 内置 AppLauncher、注册环境和相机绑定
+    isaaclab_scene.py           # 完整 V4 场景选择、配置来源和 USD 资产校验
     usd_cameras.py              # USD/Replicator RGB-D；物理 body 驱动 wrist pose
     isaaclab_bridge.py          # 实测状态、固定目标、OSC 跟踪
     joint_executor.py           # 关节顺序、scale/offset 与位置执行
@@ -174,6 +175,8 @@ tests/
   test_oht_isaaclab_http.py
   test_oht_native_runtime.py
   test_oht_standalone_client.py
+  test_oht_scene_config.py
+  test_oht_control_alignment.py
 tools/
   oht_bridgevla_client.py       # 可在 IsaacLab 根目录运行/复制的独立启动文件
   smoke_oht_vla_server.py       # 真实 replay → HTTP；不执行返回动作
@@ -182,6 +185,8 @@ tools/
 依赖单独列出，数据处理工具无需安装 Web 服务依赖。已有 loading/Policy/transport 保持为实际模型能力的唯一实现。
 
 ## 7. 实施顺序与验收
+
+参考客户端的场景、坐标、夹爪、初始化和 HTTP 动作协议核对结果见 [OHT client/server 对照检查](oht-client-server-audit.md)。
 
 1. 已实现 FastAPI app factory、lifespan、加载器注入和四个 HTTP 接口；首版接 prepared 观测，复用现有 Policy。
 2. 已实现单工作线程准入和严格会话状态，predict/reset 不交错，health 在推理期间仍可查询。
