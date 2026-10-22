@@ -47,7 +47,7 @@
 
 ## 仍需在仿真服务器验证
 
-1. 先按[运行指南](../guides/oht-vla-server.md#运动异常时先检查控制契约)运行 V4 `--dry-run`，检查实际 USD、body_offset、观测→控制点变换和夹爪物理端点。需要更新并重启服务才能获得新增训练端点信息。
+1. 排查配置时可按[运行指南的日志与排错](../guides/oht-vla-server.md#日志与排错)使用 V4 `--dry-run`，检查实际 USD、body_offset、观测→控制点变换和夹爪物理端点。需要更新并重启服务才能获得新增训练端点信息。
 2. 核对 checkpoint 所用采集代码记录的是 body 还是带偏移的控制点。HTTP `ee_link_pose` 是历史字段名，不能靠名字判定参考点；选择 `--ee-pose-source` 必须与该 checkpoint 对齐。
 3. 核对启动状态。参考 T1V4 paired 路径会从选定训练帧恢复六关节与夹爪；我们的旧 run 只做 `env.reset()`，不等价。可使用已有 `--initialization task` 与 task initializer 恢复明确的状态；不能把参考脚本的 GT 机器人状态当作在线策略观测替代品。物体状态也需独立对齐。
 4. 先短程执行并查看新 action trace 的 `measured_before/after`、`errors_before/after`，判断控制量是否产生预期的物理变化。一次控制步不保证到达未来关键点；增加子步是实验参数，不能掩盖错误参考点。
