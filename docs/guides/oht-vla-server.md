@@ -64,6 +64,8 @@ python /home/yiwei/BridgeVLA/tools/oht_bridgevla_client.py \
 
 **每次运行使用尚不存在的输出目录。** 默认 `--initialization env-reset --score none`，因此 `success=null`；这不是任务成功率评估。
 
+去掉 `--headless` 即可显示窗口。客户端默认在后台处理 HTTP reset/predict（包括观测打包），等待期间由主线程以最多约 20 Hz 调用 [IsaacLab render 接口](https://github.com/isaac-sim/IsaacLab/blob/v2.2.1/source/isaaclab/isaaclab/sim/simulation_context.py)刷新窗口；headless 下不做额外等待渲染。等待时不推进物理，收到预测后才执行原有控制步；关闭窗口后丢弃未执行的预测。窗口响应与策略动作频率是两项指标，动作频率仍受采集、传输和推理耗时影响。
+
 ### 关键参数
 
 | 参数 | 说明 |
@@ -160,6 +162,8 @@ python tools/smoke_oht_vla_server.py \
 | 服务端 `info.json / requests.jsonl` | checkpoint、模型/契约、请求状态及分段耗时 |
 | 客户端 `run.json / control_diagnostics.json` | 实际 USD、TCP 变换、控制尺度、关节顺序、夹爪标定 |
 | 客户端 `episode_*.json / summary.json` | 预测、实际命令、执行前后位姿及误差、stop_reason、成功统计 |
+| 每步 `client_timing_ms` | `capture` 相机/状态采集，`pack` 数组/Base64 打包，`serialize` JSON 编码，`http` 完整 HTTP 往返及回包解析，`predict` 后台预测调用总耗时，`request` 主线程等待预测耗时（含刷新），`execute` 控制执行，`total` 该步总耗时；单位均为 ms，字段包含关系不能直接相加 |
+| 每步 `timing_ms` | 服务端 `decode / prepare / policy / total`，与客户端计时分别保留；`--log-interval 1` 可逐步打印两者 |
 | `stop_reason=max_steps` | 已达到策略请求上限；一次控制步不保证到达未来关键点 |
 | 运动异常或长期限幅 | 对比 `measured_before/after` 与 `errors_before/after`，区分目标跳变与执行跟踪问题；不要仅翻转夹爪符号 |
 | HTTP 409 / 429 / 503 | 分别检查模型/会话冲突、服务 busy、服务未就绪；请求结果不确定时不重发旧动作，待空闲后重置 episode |

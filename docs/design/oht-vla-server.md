@@ -147,6 +147,8 @@ raw RGB-D 格式 `bridgevla_rgbd_v1` 已加入：接收 HWC RGB、米制 Z-depth
 
 `policy` 耗时先定义为包含设备结果回传的墙钟耗时；若另提供 GPU kernel 耗时，明确使用 CUDA events，避免用异步提交时长冒充前向执行时长。
 
+IsaacLab 客户端将 reset/predict 和数组/JSON 编码放入单个后台 HTTP 线程，每次只保留一个请求。主线程等待时限频调用 `env.sim.render()`，不推进物理、不重复更新注册 Camera 数据；headless 下跳过等待渲染。采集结果为独立 CPU 快照，关闭窗口或请求异常后不执行迟到动作、不重试。每步 `client_timing_ms` 记录采集、打包、JSON 编码、HTTP 往返、后台预测、主线程等待和控制执行；服务端 `timing_ms` 单独保留。
+
 实现文件：
 
 ```text
@@ -159,6 +161,7 @@ finetune/OHT/
     observation_adapter.py      # prepared 解码
     raw_observation.py          # metric RGB-D → 训练一致的观测
     http_client.py              # 严格会话校验；控制请求不重试
+    policy_worker.py            # 客户端串行 HTTP；主线程 render-only 等待
     isaaclab_runtime.py         # 已有 env / Camera sensors 适配
     isaaclab_factory.py         # 内置 AppLauncher、注册环境和相机绑定
     isaaclab_scene.py           # 完整 V4 场景选择、配置来源和 USD 资产校验
@@ -179,6 +182,7 @@ tests/
   test_oht_scene_config.py
   test_oht_control_alignment.py
   test_oht_trajectory_replay.py
+  test_oht_client_responsiveness.py
 tools/
   oht_bridgevla_client.py       # 可在 IsaacLab 根目录运行/复制的独立启动文件
   smoke_oht_vla_server.py       # 真实 replay → HTTP；不执行返回动作

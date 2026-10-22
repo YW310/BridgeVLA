@@ -81,7 +81,7 @@ class IsaacLabBridge:
         tensors = dict(joint_positions=numpy_value(self.robot.data.joint_pos)[0, ids].astype(np.float32),
                        ee_link_pose=self.link_pose().astype(np.float32),
                        gripper_position=np.asarray(self.ref.get_online_gripper_physical_state(
-                           self.env, self.robot), np.float32).reshape(1))
+                           self.env, self.robot), np.float32).reshape(1).copy())
         for name, camera in self.cameras.items():
             # Both runtimes expose metric Z-depth and live OpenGL sensor poses.
             rgb = np.asarray(self.ref.camera_rgb(camera))
@@ -91,9 +91,9 @@ class IsaacLabBridge:
             depth[~np.isfinite(depth) | (depth <= 0)] = np.nan
             tensors.update({f'{name}_rgb': rgb[..., :3].copy(),
                             f'{name}_depth': depth,
-                            f'{name}_intrinsics': np.asarray(self.ref.camera_intrinsic(camera), np.float32),
+                            f'{name}_intrinsics': np.asarray(self.ref.camera_intrinsic(camera), np.float32).copy(),
                             f'{name}_pose': np.asarray(self.ref.camera_pose_ros(
-                                camera, self.env, robot=self.robot), np.float32)})
+                                camera, self.env, robot=self.robot), np.float32).copy()})
         return tensors
 
     def _base(self):

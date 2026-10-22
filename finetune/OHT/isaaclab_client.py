@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import sys
+from time import perf_counter
 import numpy as np
 from copy import deepcopy
 from contextlib import contextmanager
@@ -16,6 +17,7 @@ from .runtime.isaaclab_bridge import IsaacLabBridge
 from .runtime.joint_executor import JointPositionExecutor
 from .runtime.task_runtime import TaskRuntime, task_settings
 from .runtime.control_diagnostics import control_report
+from .runtime.policy_worker import PolicyWorker, refresh_while_waiting
 
 
 def load_reference(path, argv):
@@ -218,7 +220,7 @@ def _run(args, reference_args):
     reference = (_factory(runtime_factory)(args=args, model_info=deepcopy(client.info)) if runtime_factory else
                  load_reference(args.reference_client,
                                 [*reference_args, '--task', args.env_id, '--num_envs', '1', '--seed', str(args.seed)]))
-    env, records = None, []
+    env, records, worker = None, [], None
     try:
         env = getattr(reference, 'env', None)
         if env is None:
@@ -272,6 +274,7 @@ def _run(args, reference_args):
                    model_id=client.info['model_id'], contract_sha256=client.info['contract_sha256'],
                    action_spec=client.info['action_spec'], data_profile=profile, task_settings=settings,
                    initialization=args.initialization, score=args.score, runtime_factory=runtime_factory,
+                   policy_wait='background_http_render_only' if replay is None else None,
                    isaaclab_root=args.isaaclab_root,
                    env_id=args.env_id, env_config=args.env_config, ee_link=getattr(reference, 'ee_link', args.ee_link),
                    quaternion_order=args.quaternion_order, camera_source=getattr(reference, 'camera_source', args.camera_source),
@@ -298,6 +301,10 @@ def _run(args, reference_args):
         connection = f'replay={replay.record["path"]} HTTP=disabled' if replay is not None else f'HTTP={args.server}'
         print(f'[BridgeVLA] {connection} task={args.task} mode={client.action_config["mode"]} '
               f'profile={profile} cameras={mapping} initialization={args.initialization} score={args.score}', flush=True)
+        if replay is None:
+            worker = PolicyWorker(client, GOALS[args.task], profile)
+        def refresh_wait():
+            refresh_while_waiting(reference, env)
         for episode in range(args.episodes):
             row = dict(episode=episode, task=args.task, success=None if tracker is None else False,
                        stop_reason='max_steps', steps=0, actions=[])
@@ -315,7 +322,8 @@ def _run(args, reference_args):
                 for _ in range(4):
                     reference._replicator_render_tick(env)
                 if replay is None:
-                    client.reset()
+                    worker.submit_reset()
+                    worker.result(wait_callback=refresh_wait)
                 else:
                     row['initial_alignment'] = replay.check_initial(bridge, args)
                 simulator_steps = 0
@@ -329,30 +337,43 @@ def _run(args, reference_args):
                 for step in range(steps):
                     if not reference.simulation_app.is_running():
                         raise RuntimeError('Simulation application stopped')
+                    step_started = perf_counter()
                     measured = bridge.capture()
+                    captured = perf_counter()
                     timestamp = int(env.common_step_counter) * float(env.step_dt)
                     source_details = {}
                     if replay is None:
-                        action, response = client.predict(measured, GOALS[args.task], timestamp,
-                                                          task=args.task, data_profile=profile)
+                        worker.submit(measured, args.task, timestamp)
+                        action, response = worker.result(wait_callback=refresh_wait)
                     else:
                         action, source_details = replay.action(step)
                         response = {'timing_ms': {}}
+                    predicted = perf_counter()
+                    # Also guard a reply that completed just as the user closed the window.
+                    if not reference.simulation_app.is_running():
+                        raise RuntimeError('Simulation application stopped before executing policy action')
                     commands = bridge.execute(action, measured, after_step)
+                    executed = perf_counter()
                     before = bridge.measured_state(measured)
                     after = bridge.measured_state()
                     errors_before, errors_after = bridge.tracking_errors(before), bridge.tracking_errors(after)
+                    client_timing = dict(response.get('client_timing_ms', {}))
+                    client_timing.update(capture=(captured - step_started) * 1000,
+                                         request=(predicted - captured) * 1000 if replay is None else 0.,
+                                         execute=(executed - predicted) * 1000,
+                                         total=(perf_counter() - step_started) * 1000)
                     row['actions'].append(dict(step=step, timestamp=timestamp, action=action.tolist(),
                                                target=bridge.last_target, commands=commands,
                                                measured_before=before, measured_after=after,
                                                errors_before=errors_before, errors_after=errors_after,
                                                action_source='gt_trajectory' if replay is not None else 'policy',
                                                **source_details,
-                                               timing_ms=response['timing_ms']))
+                                               timing_ms=response['timing_ms'], client_timing_ms=client_timing))
                     if args.log_interval and (step == 0 or (step + 1) % args.log_interval == 0):
                         print(f'[BridgeVLA] step={step} action={action.tolist()} target={bridge.last_target} '
                               f'error_before={errors_before} error_after={errors_after} '
-                              f'gripper_physical={before["gripper_position"]:.6g}->{after["gripper_position"]:.6g}', flush=True)
+                              f'gripper_physical={before["gripper_position"]:.6g}->{after["gripper_position"]:.6g} '
+                              f'client_ms={client_timing} server_ms={response["timing_ms"]}', flush=True)
                     row['steps'] = step + 1
                     if tracker is not None and tracker.success:
                         row['success'] = True
@@ -383,6 +404,8 @@ def _run(args, reference_args):
                   f'stop_reason={row["stop_reason"]}', flush=True)
         return 1 if any('error' in row for row in records) else 0
     finally:
+        if worker is not None:
+            worker.close()
         close = getattr(reference, 'close', None)
         if callable(close):
             close()

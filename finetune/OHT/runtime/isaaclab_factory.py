@@ -118,6 +118,7 @@ def create_runtime(*, args, model_info):
         check_controller(env, model_info['action_spec']['mode'])
         env.reset()
         runtime = build_cameras(env, app, args, model_info)
+        runtime.args_cli.headless = getattr(options, 'headless', False)
         runtime.scene_info = scene_info
         for _ in range(args.camera_warmup_ticks):
             runtime._replicator_render_tick(env)

@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import threading
 from types import SimpleNamespace, ModuleType
 
 import numpy as np
@@ -20,6 +21,10 @@ from finetune.OHT.action_modes import action_options
 from finetune.OHT.runtime import isaaclab_factory as native
 from finetune.OHT.runtime import isaaclab_scene as scenes
 from finetune.OHT.runtime.http_client import BridgeVLAClient
+from finetune.OHT.runtime.isaaclab_bridge import IsaacLabBridge
+from finetune.OHT.runtime.isaaclab_runtime import IsaacLabRuntime
+from finetune.OHT.runtime.policy_worker import PolicyWorker
+from finetune.OHT.runtime.raw_observation import raw_schema
 from finetune.OHT.runtime.usd_cameras import (
     ReplicatorCamera, ReplicatorCameras, ReplicatorRuntime, projection_intrinsics, select_camera_paths, usd_rigid_matrix,
 )
@@ -104,6 +109,126 @@ def test_builtin_default_launches_and_runs_http(fixture, replay_fixture, tmp_pat
     episode = json.loads((output / 'episode_0000.json').read_text(encoding='utf-8'))
     assert 'gripper_position' in episode['actions'][0]['measured_after']
     assert episode['actions'][0]['errors_after']
+
+
+@pytest.mark.parametrize('outcome', ['success', 'closed', 'late_closed', 'timeout'])
+def test_policy_wait_keeps_gui_responsive_without_advancing_physics(
+        fixture, replay_fixture, tmp_path, monkeypatch, outcome):
+    tensors, _, raw = raw_sample(replay_fixture.replay, fixture.policy)
+    env = environment('eef', raw['task'])
+    env.action_manager.get_term('arm_action').cfg.body_name = 'tool'
+    cameras = sensors_for(tensors, fixture.policy.contract['data_config']['cameras'])
+    main_thread = threading.get_ident()
+    state = SimpleNamespace(running=True, closed=False, phase=None, resets=0, predictions=0,
+                            request_threads=[], rendered_phases=[])
+    release = threading.Event()
+    finished = threading.Event()
+    app = SimpleNamespace(is_running=lambda: state.running,
+                          close=lambda: setattr(state, 'closed', True))
+    runtime = IsaacLabRuntime(env, cameras, ee_link='tool', quaternion_order='wxyz',
+                              simulation_app=app, owns_app=True)
+
+    def render():
+        assert threading.get_ident() == main_thread
+        if state.phase is not None:
+            assert env.common_step_counter == 0 and not env.commands
+            state.rendered_phases.append(state.phase)
+            if outcome == 'closed' and state.phase == 'predict':
+                state.running = False
+            release.set()
+
+    env.sim.render = render
+    env.sim.has_gui = lambda: True
+    monkeypatch.setattr(runner, '_factory', lambda name: lambda **kwargs: runtime)
+
+    class DelayedClient(BridgeVLAClient):
+        def wait_for_gui(self, phase):
+            state.request_threads.append(threading.get_ident())
+            assert threading.get_ident() != main_thread
+            release.clear()
+            state.phase = phase
+            assert release.wait(3), 'Main thread did not refresh the GUI'
+
+        def reset(self, episode=None):
+            state.resets += 1
+            self.wait_for_gui('reset')
+            return super().reset(episode)
+
+        def predict(self, *args, **kwargs):
+            state.predictions += 1
+            try:
+                self.wait_for_gui('predict')
+                if outcome == 'timeout':
+                    raise TimeoutError('request completion is unknown')
+                return super().predict(*args, **kwargs)
+            finally:
+                state.phase = None
+                finished.set()
+
+    class CloseAfterReply(PolicyWorker):
+        def result(self, *args, **kwargs):
+            result = super().result(*args, **kwargs)
+            if isinstance(result, tuple):
+                state.running = False
+            return result
+
+    if outcome == 'late_closed':
+        monkeypatch.setattr(runner, 'PolicyWorker', CloseAfterReply)
+    output = tmp_path / 'responsive-run'
+    with TestClient(fixture.app()) as server:
+        monkeypatch.setattr(runner, 'BridgeVLAClient',
+                            lambda *args: DelayedClient('http://testserver', opener=Opener(server)))
+        try:
+            result = runner.main(['--task', raw['task'], '--episodes', '2' if outcome != 'success' else '1',
+                                  '--max-steps', '1', '--output', str(output)])
+            assert result == (0 if outcome == 'success' else 1)
+        finally:
+            release.set()
+            assert finished.wait(3)
+    assert state.closed and env.closed
+    assert state.resets == state.predictions == 1
+    assert len(set(state.request_threads)) == 1
+    assert {'reset', 'predict'} <= set(state.rendered_phases)
+    episode = json.loads((output / 'episode_0000.json').read_text(encoding='utf-8'))
+    summary = json.loads((output / 'summary.json').read_text(encoding='utf-8'))
+    if outcome == 'success':
+        assert env.common_step_counter == len(env.commands) == 1
+        action = episode['actions'][0]
+        timing = action['client_timing_ms']
+        assert set(timing) == {'capture', 'pack', 'serialize', 'http', 'predict', 'request', 'execute', 'total'}
+        assert all(np.isfinite(value) and value >= 0 for value in timing.values())
+        assert timing['total'] >= timing['capture'] + timing['request'] + timing['execute']
+        assert timing['predict'] >= timing['pack'] + timing['serialize'] + timing['http']
+        assert 'policy' in action['timing_ms'] and 'capture' not in action['timing_ms']
+        metadata = json.loads((output / 'run.json').read_text(encoding='utf-8'))
+        assert metadata['policy_wait'] == 'background_http_render_only'
+    else:
+        assert not env.commands and env.common_step_counter == 0
+        assert not episode['actions'] and episode['stop_reason'] == 'error'
+        assert summary['attempted'] == 1 and summary['unattempted'] == 1
+
+
+def test_camera_snapshot_owns_calibration_and_pose_while_waiting(fixture, replay_fixture):
+    tensors, _, raw = raw_sample(replay_fixture.replay, fixture.policy)
+    env = environment('eef', raw['task'])
+    env.action_manager.get_term('arm_action').cfg.body_name = 'tool'
+    cameras = sensors_for(tensors, fixture.policy.contract['data_config']['cameras'])
+    runtime = IsaacLabRuntime(env, cameras, ee_link='tool', quaternion_order='wxyz', simulation_app=None)
+    client = SimpleNamespace(action_config=fixture.policy.action_config,
+                             info={'raw_observation': raw_schema(fixture.policy)})
+    bridge = IsaacLabBridge(runtime, env, client, raw['task'], raw['data_profile'], cameras)
+    observed = bridge.capture()
+    expected = {key: value.copy() for key, value in observed.items()}
+    for camera in cameras.values():
+        camera.data.intrinsic_matrices[...] = 0
+        camera.data.pos_w[...] = 99
+        camera.data.quat_w_opengl[...] = 0
+        camera.data.output['rgb'][...] = 0
+        camera.data.output['distance_to_image_plane'][...] = 99
+    env.scene['robot'].data.joint_pos[:] = 99
+    env.scene['robot'].data.body_pos_w[:] = 99
+    for key, value in observed.items():
+        np.testing.assert_array_equal(value, expected[key], err_msg=key)
 
 
 def test_dry_run_saves_control_contract_without_predictions_or_actions(fixture, replay_fixture, tmp_path, monkeypatch):
