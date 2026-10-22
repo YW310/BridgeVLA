@@ -2,7 +2,7 @@
 exp_id: rlbench_o2_internal_slots_refine
 seed: 0
 tasks: all
-bs: 16
+bs: 24
 num_workers: 2
 # Avoid CUDA host-pinning failures in resource-limited multi-GPU containers.
 pin_memory: False
