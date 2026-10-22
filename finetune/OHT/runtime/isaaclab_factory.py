@@ -64,6 +64,12 @@ def check_controller(env, mode):
 
 def build_cameras(env, app, args, model_info):
     names = model_info['cameras']
+    if not names:
+        runtime = IsaacLabRuntime(env, {}, ee_link=ee_link(env, args.ee_link),
+                                  quaternion_order=args.quaternion_order, simulation_app=app, owns_app=True,
+                                  ee_pose_source=args.ee_pose_source)
+        runtime.camera_source = 'none'
+        return runtime
     mapping = camera_mapping(args, names)
     sensors = getattr(env.scene, 'sensors', {})
     bound = {}

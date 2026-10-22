@@ -106,23 +106,37 @@ cp /home/yiwei/BridgeVLA/tools/oht_bridgevla_client.py ./oht-bridgevla-client.py
 
 支持 `assemble_left`、`assemble_right`、`disassemble_left`、`disassemble_right`。`--task` 选择 instruction/profile，场景布局和初始状态由环境或 task initializer 决定。
 
-先按实际环境修改[任务配置示例](../../finetune/OHT/configs/isaaclab_tasks.example.yaml)，配置初始化和有效成功条件，再运行：
+这是可选的初始化/评分配置，正常运行使用前面的命令即可，默认 `--initialization env-reset --score none`。
+
+`--task-config` 指向用户实际创建的任务 YAML，用于配置重置资产、初始化器和成功条件；它不是 IsaacLab 根目录、环境配置或模型配置。仓库提供[任务配置模板](../../finetune/OHT/configs/isaaclab_tasks.example.yaml)，需按仿真环境填写后才能用于评估。
+
+| 评估选项 | 使用条件 |
+| --- | --- |
+| `--task-config` | 指向已按实际环境配置的 YAML 文件；不提供时使用默认任务设置 |
+| `--initialization task` | YAML 中至少配置有效的 `reset_assets` 或 `initializer_factory` |
+| `--score task` | 配置实际注册的 `success_term` 或 `evaluator_factory`；也可用 `--success-term` 指定实际环境成功条件 |
+
+模板中的成功条件名称需要仿真环境真实提供，不能仅复制模板就得到成功率。普通 `env.reset()` 不等同于参考脚本的训练帧状态恢复，环境 terminated/truncated 也不自动等于成功。
+
+## OHT GT 轨迹回放
+
+在 IsaacLab 服务器运行，不需要 VLA server 或 checkpoint。`--replay-root` 指向原始数据根目录，其中应有 `<task>/lerobot_dataset/data/chunk-*/episode_*.parquet`，不是 `replay-source-v3` 缓存目录。
 
 ```bash
+cd /home/yiwei/IsaacLab
 python /home/yiwei/BridgeVLA/tools/oht_bridgevla_client.py \
-  --isaaclab-root /home/yiwei/IsaacLab \
-  --server http://109.105.46.126:8004 \
-  --task disassemble_left \
-  --scene-preset oht-v4 --camera-source usd \
-  --ee-pose-source controller \
-  --task-config /home/yiwei/isaaclab_tasks.yaml \
-  --initialization task --score task \
-  --episodes 20 --max-steps 500 \
-  --output logs/bridgevla-v4-eval-01 \
+  --mode replay \
+  --isaaclab-root "$PWD" \
+  --replay-root /home/yiwei/BridgeVLA/oht_curobo_pd_v423 \
+  --task disassemble_left --replay-episode 0 \
+  --scene-preset oht-v4 --ee-pose-source controller \
+  --output logs/bridgevla-gt-replay-01 \
   --headless --device cuda:0
 ```
 
-`--initialization task` 要求配置 `reset_assets` 或 `initializer_factory`；`--score task` 要求实际注册的 `success_term` 或 `evaluator_factory`。普通 `env.reset()` 不等同于参考脚本的训练帧状态恢复，环境 terminated/truncated 也不自动等于成功。
+默认恢复所选轨迹起始帧的机械臂/夹爪，逐帧将下一帧实测 TCP 作为绝对 EEF 目标，沿用在线执行器；不执行原始 `action` 列。默认回放一次直到轨迹结束，可用 `--replay-start-frame N` 选择起点、`--max-steps N` 限制长度。默认不绑定相机；去掉 `--headless` 可在仿真窗口观察运动。
+
+标定默认读取仓库 `dataset.yaml` 并解析源数据 metadata，也可用 `--replay-contract /data/oht/replay-source-v3` 复用已有训练缓存标定。回放要求记录帧间隔与环境 `step_dt` 一致、`--max-substeps 1`。物体默认保留环境 reset 状态；物体映射、关节顺序和诊断字段见 [OHT replay 说明](oht-replay.md)。
 
 ## 检查与 replay 烟测
 

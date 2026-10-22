@@ -1,4 +1,4 @@
-"""Run a BridgeVLA policy using a native IsaacLab runtime or legacy sensor helpers."""
+"""Run a BridgeVLA policy or replay an observed OHT EEF trajectory in IsaacLab."""
 import argparse
 import importlib
 import importlib.util
@@ -78,6 +78,7 @@ def isaaclab_directory(value=None):
 
 
 def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
     parser = argparse.ArgumentParser(description=__doc__,
                                      epilog='Unrecognized arguments (e.g. --headless --device cuda:0) are passed in args.runtime_args to the runtime factory, or to the legacy runtime.')
     source = parser.add_mutually_exclusive_group()
@@ -85,6 +86,19 @@ def main(argv=None):
     source.add_argument('--reference-client', help='Optional compatibility source for legacy IsaacLab sensor helpers')
     parser.add_argument('--isaaclab-root', help='IsaacLab checkout containing isaaclab.sh; overrides ISAACLAB_ROOT and sets the runtime working directory')
     parser.add_argument('--server', default='http://127.0.0.1:8010')
+    parser.add_argument('--mode', choices=('policy', 'replay'), default='policy')
+    parser.add_argument('--replay-root', help='Original OHT root containing <task>/lerobot_dataset/data, not replay-source-v3')
+    parser.add_argument('--replay-episode', type=int, default=0, help='Raw dataset episode ID; default: 0')
+    parser.add_argument('--replay-start-frame', type=int, default=0)
+    calibration = parser.add_mutually_exclusive_group()
+    calibration.add_argument('--replay-data-config', help='OHT dataset YAML; default: repository configs/dataset.yaml')
+    calibration.add_argument('--replay-contract', help='Optional existing replay buffer supplying the resolved training calibration')
+    parser.add_argument('--replay-joint-names', nargs=6, help='Robot joint names in recorded observation.state[:6] order')
+    parser.add_argument('--replay-gripper-joint-names', nargs=2, help='Gripper joint names in recorded observation.gripper_joints order')
+    parser.add_argument('--replay-object-map', help='JSON with explicit quaternion_order and assets {scene_key: recorded_object_index}')
+    parser.add_argument('--replay-cameras', action='store_true', help='Also bind live dataset cameras during GT replay; default: robot state only')
+    parser.add_argument('--replay-initial-position-tolerance', type=float, default=.005)
+    parser.add_argument('--replay-initial-rotation-tolerance', type=float, default=.05)
     parser.add_argument('--task', choices=tuple(GOALS), default='disassemble_left')
     parser.add_argument('--env-id', default='Isaac-Deploy-Reach-UR16e-DualEE-AllScene-OSC-v2')
     parser.add_argument('--env-config', help='Optional module:ConfigClass to instantiate instead of the registered environment config')
@@ -105,14 +119,15 @@ def main(argv=None):
     parser.add_argument('--disable-fabric', '--disable_fabric', action='store_true')
     parser.add_argument('--data-profile')
     parser.add_argument('--camera-map', help='JSON mapping checkpoint camera names to USD camera names')
-    parser.add_argument('--episodes', type=int, default=20)
-    parser.add_argument('--max-steps', type=int, default=500)
+    parser.add_argument('--episodes', type=int, help='Default: 20 policy episodes, or one replay of the selected trajectory')
+    parser.add_argument('--max-steps', type=int, help='Default: 500 policy requests, or all remaining replay transitions')
     parser.add_argument('--max-substeps', type=int, default=1)
     parser.add_argument('--max-translation', type=float, default=.05)
     parser.add_argument('--max-rotation', type=float, default=.15)
     parser.add_argument('--timeout', type=float, default=120)
     parser.add_argument('--seed', type=int, default=42)
-    parser.add_argument('--initialization', choices=('env-reset', 'task', 'collection'), default='env-reset')
+    parser.add_argument('--initialization', choices=('env-reset', 'task', 'collection', 'trajectory'),
+                        help='Default: env-reset for policy; trajectory restores recorded robot joints for replay')
     parser.add_argument('--score', choices=('none', 'task', 'disassemble-left'), default='none')
     parser.add_argument('--task-config', help='BridgeVLA YAML with per-task reset assets and initializer/evaluator factories')
     parser.add_argument('--success-term', help='Explicit environment success termination term for --score task')
@@ -122,9 +137,19 @@ def main(argv=None):
     parser.add_argument('--joint-executor', help='module:factory(env,reference) -> callable(absolute_joint_target,after_step=...)')
     parser.add_argument('--output', required=True, help='New output directory for summary and action traces')
     args, reference_args = parser.parse_known_args(argv)
+    replay_options = [option.split('=', 1)[0] for option in argv if option.startswith('--replay-')]
+    if args.mode != 'replay' and replay_options:
+        raise ValueError(f'{", ".join(replay_options)} require --mode replay')
     args.runtime_args = reference_args
+    if args.episodes is None:
+        args.episodes = 1 if args.mode == 'replay' else 20
+    if args.initialization is None:
+        args.initialization = 'trajectory' if args.mode == 'replay' else 'env-reset'
+    if args.max_steps is None and args.mode == 'policy':
+        args.max_steps = 500
     # User-owned paths stay relative to the launch directory, even when the runtime changes directory.
-    for name in ('reference_client', 'task_config', 'camera_map', 'output', 'expected_robot_usd'):
+    for name in ('reference_client', 'task_config', 'camera_map', 'output', 'expected_robot_usd',
+                 'replay_root', 'replay_data_config', 'replay_contract', 'replay_object_map'):
         value = getattr(args, name)
         if value is not None:
             setattr(args, name, str(Path(value).expanduser().resolve()))
@@ -134,6 +159,17 @@ def main(argv=None):
 
 
 def _run(args, reference_args):
+    replay = None
+    if args.mode == 'replay':
+        if args.reference_client:
+            raise ValueError('Trajectory replay uses the native BridgeVLA executor, not --reference-client')
+        if args.replay_object_map and args.initialization != 'trajectory':
+            raise ValueError('replay-object-map requires --initialization trajectory')
+        if not np.isfinite([args.replay_initial_position_tolerance, args.replay_initial_rotation_tolerance]).all() or min(
+                args.replay_initial_position_tolerance, args.replay_initial_rotation_tolerance) <= 0:
+            raise ValueError('Replay initial TCP tolerances must be finite and positive')
+    elif args.replay_root or args.initialization == 'trajectory':
+        raise ValueError('replay-root/trajectory initialization require --mode replay')
     if (args.scene_preset != 'registry' or args.expected_robot_usd is not None) and (args.reference_client or args.runtime_factory):
         raise ValueError('scene-preset/expected-robot-usd require the built-in native runtime')
     settings = task_settings(args.task_config, args.task)
@@ -143,7 +179,7 @@ def _run(args, reference_args):
         settings['success_term'] = args.success_term
     if args.initialization == 'task' and not (settings['reset_assets'] or settings['initializer_factory']):
         raise ValueError('Task initialization requires reset_assets or initializer_factory in --task-config')
-    if min(args.episodes, args.max_steps, args.max_substeps) < 1:
+    if min(args.episodes, args.max_substeps) < 1 or (args.max_steps is not None and args.max_steps < 1):
         raise ValueError('episodes, max-steps and max-substeps must be positive')
     if args.log_interval < 0:
         raise ValueError('log-interval must be nonnegative')
@@ -159,7 +195,16 @@ def _run(args, reference_args):
     output = Path(args.output).expanduser().resolve()
     if output.exists():
         raise FileExistsError(f'Use a new output directory: {output}')
-    client = BridgeVLAClient(args.server, args.timeout)
+    if args.mode == 'replay':
+        from .runtime.trajectory_replay import TrajectoryReplay
+        replay = TrajectoryReplay(args)
+        client = replay
+        if args.max_steps is None:
+            args.max_steps = replay.length
+        print(f'[BridgeVLA] loaded replay={replay.record["path"]} start_frame={replay.start} '
+              f'actions={min(args.max_steps, replay.length)} HTTP=disabled', flush=True)
+    else:
+        client = BridgeVLAClient(args.server, args.timeout)
     profile = client.profile(args.task, args.data_profile)
     names = client.info['cameras']
     mapping = (json.loads(Path(args.camera_map).read_text(encoding='utf-8')) if args.camera_map
@@ -217,10 +262,13 @@ def _run(args, reference_args):
                                 bound_cameras,
                                 max_substeps=args.max_substeps, max_translation=args.max_translation,
                                 max_rotation=args.max_rotation, joint_executor=joint)
+        if replay is not None:
+            replay.validate_runtime(env, args)
         output.mkdir(parents=True)
         diagnostics = control_report(bridge)
         write_json(output / 'control_diagnostics.json', diagnostics)
         write_json(output / 'run.json', dict(task=args.task, instruction=GOALS[args.task], seed=args.seed,
+                   mode=args.mode, replay=replay.metadata if replay is not None else None,
                    model_id=client.info['model_id'], contract_sha256=client.info['contract_sha256'],
                    action_spec=client.info['action_spec'], data_profile=profile, task_settings=settings,
                    initialization=args.initialization, score=args.score, runtime_factory=runtime_factory,
@@ -247,7 +295,8 @@ def _run(args, reference_args):
             print('[BridgeVLA] dry run complete; no predictions or control steps executed', flush=True)
             return 0
         rng = np.random.default_rng(args.seed)
-        print(f'[BridgeVLA] HTTP={args.server} task={args.task} mode={client.action_config["mode"]} '
+        connection = f'replay={replay.record["path"]} HTTP=disabled' if replay is not None else f'HTTP={args.server}'
+        print(f'[BridgeVLA] {connection} task={args.task} mode={client.action_config["mode"]} '
               f'profile={profile} cameras={mapping} initialization={args.initialization} score={args.score}', flush=True)
         for episode in range(args.episodes):
             row = dict(episode=episode, task=args.task, success=None if tracker is None else False,
@@ -261,9 +310,14 @@ def _run(args, reference_args):
                     reference.randomize_robot_initial_pose_like_collection(env, robot, rng, episode)
                 elif args.initialization == 'task':
                     task_runtime.initialize(episode_index=episode, seed=args.seed + episode)
+                elif args.initialization == 'trajectory':
+                    row['initialization'] = replay.initialize(bridge)
                 for _ in range(4):
                     reference._replicator_render_tick(env)
-                client.reset()
+                if replay is None:
+                    client.reset()
+                else:
+                    row['initial_alignment'] = replay.check_initial(bridge, args)
                 simulator_steps = 0
                 if tracker is not None:
                     tracker.reset(episode_index=episode)
@@ -271,13 +325,19 @@ def _run(args, reference_args):
                     nonlocal simulator_steps
                     simulator_steps += 1
                     return tracker is not None and tracker.update(step=simulator_steps, executed_gripper_cmd=gripper)
-                for step in range(args.max_steps):
+                steps = args.max_steps if replay is None else min(args.max_steps, replay.length)
+                for step in range(steps):
                     if not reference.simulation_app.is_running():
                         raise RuntimeError('Simulation application stopped')
                     measured = bridge.capture()
                     timestamp = int(env.common_step_counter) * float(env.step_dt)
-                    action, response = client.predict(measured, GOALS[args.task], timestamp,
-                                                      task=args.task, data_profile=profile)
+                    source_details = {}
+                    if replay is None:
+                        action, response = client.predict(measured, GOALS[args.task], timestamp,
+                                                          task=args.task, data_profile=profile)
+                    else:
+                        action, source_details = replay.action(step)
+                        response = {'timing_ms': {}}
                     commands = bridge.execute(action, measured, after_step)
                     before = bridge.measured_state(measured)
                     after = bridge.measured_state()
@@ -286,6 +346,8 @@ def _run(args, reference_args):
                                                target=bridge.last_target, commands=commands,
                                                measured_before=before, measured_after=after,
                                                errors_before=errors_before, errors_after=errors_after,
+                                               action_source='gt_trajectory' if replay is not None else 'policy',
+                                               **source_details,
                                                timing_ms=response['timing_ms']))
                     if args.log_interval and (step == 0 or (step + 1) % args.log_interval == 0):
                         print(f'[BridgeVLA] step={step} action={action.tolist()} target={bridge.last_target} '
@@ -300,6 +362,8 @@ def _run(args, reference_args):
                         row['environment_done'] = True
                         row['stop_reason'] = 'environment_done'
                         break
+                if replay is not None and row['stop_reason'] == 'max_steps' and row['steps'] == replay.length:
+                    row['stop_reason'] = 'trajectory_end'
             except Exception as exc:
                 row['error'] = f'{type(exc).__name__}: {exc}'
                 row['stop_reason'] = 'error'
@@ -310,7 +374,7 @@ def _run(args, reference_args):
                 write_json(output / f'episode_{episode:04d}.json', row)
                 successes = sum(item['success'] is True for item in records)
                 write_json(output / 'summary.json', dict(
-                    task=args.task, initialization=args.initialization, success_evaluator=args.score,
+                    task=args.task, mode=args.mode, initialization=args.initialization, success_evaluator=args.score,
                     planned=args.episodes, attempted=len(records), unattempted=args.episodes - len(records),
                     successes=None if tracker is None else successes,
                     success_rate=None if tracker is None else successes / len(records),

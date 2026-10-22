@@ -164,6 +164,7 @@ finetune/OHT/
     isaaclab_scene.py           # 完整 V4 场景选择、配置来源和 USD 资产校验
     usd_cameras.py              # USD/Replicator RGB-D；物理 body 驱动 wrist pose
     isaaclab_bridge.py          # 实测状态、固定目标、OSC 跟踪
+    trajectory_replay.py        # 原始 Parquet 实测 TCP 轨迹、初始化与无模型 GT 回放
     joint_executor.py           # 关节顺序、scale/offset 与位置执行
     task_runtime.py             # 四任务独立初始化/评分接口
   requirements-server.txt      # FastAPI、Uvicorn；测试使用 httpx
@@ -177,6 +178,7 @@ tests/
   test_oht_standalone_client.py
   test_oht_scene_config.py
   test_oht_control_alignment.py
+  test_oht_trajectory_replay.py
 tools/
   oht_bridgevla_client.py       # 可在 IsaacLab 根目录运行/复制的独立启动文件
   smoke_oht_vla_server.py       # 真实 replay → HTTP；不执行返回动作

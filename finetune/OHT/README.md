@@ -571,6 +571,8 @@ python -m finetune.OHT.train \
 
 ## 7. 推理服务与 IsaacLab 接入
 
+**GT 轨迹回放。** `tools/oht_bridgevla_client.py --mode replay --replay-root <原始OHT根目录>` 可在 IsaacLab 中回放原始 Parquet 的逐帧实测 TCP 与夹爪，复用在线 EEF 执行器，不需要 VLA server 或 checkpoint。默认恢复起始机械臂/夹爪状态，完整回放所选 episode；物体可用显式映射恢复。运行命令见[OHT GT 轨迹回放](../../docs/guides/oht-vla-server.md#oht-gt-轨迹回放)，参数与输出见[回放说明](../../docs/guides/oht-replay.md)。
+
 仿真客户端启动脚本为 [tools/oht_bridgevla_client.py](../../tools/oht_bridgevla_client.py)。正常运行会启动 IsaacLab 仿真、连接 VLA 服务并执行策略动作，完整命令见[独立 BridgeVLA 客户端](../../docs/guides/oht-vla-server.md#独立-bridgevla-客户端)。对齐参考 T1V4 的 EEF 示例显式使用 `--scene-preset oht-v4 --ee-pose-source controller`；若 checkpoint 的采集记录为裸 body，需按其数据定义改选 `body`。
 
 **FastAPI VLA server。** 新入口提供 `/health`、`/model_info`、`/reset`、`/predict`，复用 checkpoint 绑定的 Policy，支持 prepared 观测、串行推理、请求日志和 replay 烟测：
