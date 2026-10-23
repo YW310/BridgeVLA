@@ -38,15 +38,10 @@ def test_seg_directory_has_canonical_task_identity_and_rejects_ambiguous_roots(t
         discover(tmp_path)
 
 
-@pytest.mark.parametrize('version', [3, 4])
-def test_real_seg_export_and_teacher_or_v4_annotations(replay_fixture, tmp_path, version, monkeypatch):
+def make_seg_source(f, tmp_path):
     import av
     import pyarrow as pa
     import pyarrow.parquet as pq
-    from finetune.OHT.data.audit import audit
-    from finetune.OHT.data.replay import build
-    from finetune.OHT.data.role_teacher import build_teacher
-    f = replay_fixture
     root = tmp_path / 'raw'
     shutil.copytree(f.root / 'disassemble_left', root / 'disassemble_left-seg')
     for record in discover(root):
@@ -72,11 +67,21 @@ def test_real_seg_export_and_teacher_or_v4_annotations(replay_fixture, tmp_path,
                     container.mux(packet)
             columns[f'observation.seg.{camera}'] = [dict(Path=relative, Timestamp=[s]) for s in columns['timestamp']]
         pq.write_table(pa.table(columns), path)
-    manifest = tmp_path / 'audit.json'
-    audit(root, manifest, fractions=(1, 0, 0), progress=False)
     config = copy.deepcopy(f.config)
     config['depth']['path_pattern'] = '{task}-seg/depth/{episode:06d}/{frame:06d}.npy'
     config['keypoints'] = dict(method='gripper')
+    return root, config
+
+
+@pytest.mark.parametrize('version', [3, 4])
+def test_real_seg_export_and_teacher_or_v4_annotations(replay_fixture, tmp_path, version, monkeypatch):
+    from finetune.OHT.data.audit import audit
+    from finetune.OHT.data.replay import build
+    from finetune.OHT.data.role_teacher import build_teacher
+    f = replay_fixture
+    root, config = make_seg_source(f, tmp_path)
+    manifest = tmp_path / 'audit.json'
+    audit(root, manifest, fractions=(1, 0, 0), progress=False)
     replay = tmp_path / 'replay'
     if version == 4:
         from finetune.OHT.data.chunk_replay import build
@@ -126,3 +131,31 @@ def test_real_seg_export_and_teacher_or_v4_annotations(replay_fixture, tmp_path,
     with pytest.raises(ValueError, match='Source RGB frame/sampling differs'):
         export_roles(root, manifest, replay, mapping, bad_output)
     assert not (bad_output / 'annotations.jsonl').exists()
+
+
+@pytest.mark.parametrize('version', [3, 4])
+def test_full_pipeline_starts_from_raw_only_without_any_contract(replay_fixture, tmp_path, version):
+    import subprocess
+    import sys
+    from pathlib import Path
+    import yaml
+    root, config = make_seg_source(replay_fixture, tmp_path)
+    assert not list(root.rglob('contract.json'))
+    assert not list(root.rglob('audit.json'))
+    config_path = tmp_path / 'dataset.yaml'
+    config_path.write_text(yaml.safe_dump(config), encoding='utf-8')
+    output = tmp_path / 'generated'
+    script = Path(__file__).parents[1] / 'tools/prepare_oht_seg_data.py'
+    result = subprocess.run([sys.executable, '-u', str(script), '--root', str(root),
+        '--config', str(config_path), '--output', str(output), '--replay-version', str(version),
+        '--sample-stride', '2', '--chunk-horizon', '4', '--workers', '1', '--visualize-every', '0'],
+        capture_output=True, text=True, encoding='utf-8', timeout=90)
+    assert result.returncode == 0, result.stdout + result.stderr
+    status = json.loads((output / 'pipeline.json').read_text())
+    assert status['status'] == 'complete'
+    replay = output / f'replay-source-v{version}'
+    assert (output / 'audit.json').is_file()
+    assert (replay / 'contract.json').is_file() and (replay / 'complete.json').is_file()
+    assert (output / 'seg-role-annotations/annotations.jsonl').is_file()
+    assert (output / 'role-teacher/manifest.json').is_file() == (version == 3)
+    assert not list(root.rglob('contract.json'))

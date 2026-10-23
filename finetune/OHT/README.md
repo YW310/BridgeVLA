@@ -191,6 +191,8 @@ python tools/export_oht_replay_viewer.py \
 
 `oht_curobo_pd_v423-seg` 是重新采集的单任务数据，目录为 `disassemble_left-seg/lerobot_dataset`，工具将其任务身份规范为 `disassemble_left`。不能与旧数据按 episode 编号配对或给旧 replay 补 mask；需单独 audit、构建新的 replay。原版与 `-seg` 同名任务同时出现在一个根目录时会拒绝读取，避免轨迹身份冲突。
 
+`--root` 指向只含原始数据的根目录，**不需要预先准备 contract.json、replay 或 audit.json**。这些由脚本从头生成。`--output` 是新建的流水线输出目录，最终训练/导出使用其中的 `replay-source-v4/`；其 `contract.json` 和 `complete.json` 必须由构建步骤产生。脚本会核对这两个文件再进入校验阶段。
+
 可直接运行完整生成脚本（默认 V4，包含关键目标、连续稠密 action chunk 和分割角色 mask）：
 
 ```bash
@@ -203,6 +205,8 @@ bash finetune/OHT/prepare_seg_data.sh \
 默认脚本依次执行 audit → V4 replay → 完整校验 → seg-role annotations，任一步失败立即停止。V4 targets 保存下一关键目标、未来实测 TCP/夹爪 `action_chunk[K,8]`、关节/夹爪 `joint_chunk[K,7]` 及有效 mask、帧号和时间戳；不使用原始 action 命令或关键点间插值。默认每个观测监督未来 16 个连续原始帧，`--sample-stride 10` 只控制输入观测抽样，不会将 action stride 改成 10。原始 60 fps 数据的动作间隔约为 1/60 s，实际间隔由原始时间戳推导并校验。原始数据不覆盖，`--output` 必须为新目录；目录内保存 `dataset.yaml`、`seg_roles.yaml` 配置快照和 `pipeline.json` 执行状态，各工具直接打印进度。只包含 disassemble_left 的数据无需补其他任务。
 
 默认 `--sample-stride 10 --visualize-every 100 --workers 4 --point-count 512`。可用 `--config /path/to/dataset.yaml --mapping /path/to/seg_roles.yaml` 指定已确认的标定/角色配置，`--dry-run` 查看命令且不创建文件。默认 reference 仍是 unknown；要生成轴/盘的 reference 标注，先在映射配置启用确认后的阶段规则。也可直接执行 `python tools/prepare_oht_seg_data.py`，参数相同；Bash 入口可通过 `PYTHON_BIN` 指定解释器。
+
+正常运行会先打印原始数据根目录、解释器、输出目录和 replay 路径，并在启动 audit 前写出 `pipeline.json`。若当前输出目录没有任何 JSON，检查终端最早的启动/路径错误及 `--dry-run`；尚未生成的 replay 不能用于训练或 mask 导出。`--root "$ROOT"` 中的变量必须已设置，空字符串会立即报错。配置快照失败也会记录在 `pipeline.json` 的 `failed_stage=setup` 中。
 
 仅需要原有单关键点 replay 和 3D role teacher 时，显式选择 V3：
 

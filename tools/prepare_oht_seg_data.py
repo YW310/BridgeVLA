@@ -68,6 +68,12 @@ def write_status(path, value):
 def main(argv=None):
     p = parser()
     args = p.parse_args(argv)
+    if not args.root.strip():
+        p.error('--root is empty; set ROOT to the raw dataset path before running this command')
+    if args.output is not None and not args.output.strip():
+        p.error('--output is empty; specify a new output directory or omit the option')
+    print(f'[OHT prepare] repo={REPO_ROOT} python={sys.executable}\n'
+          f'[OHT prepare] raw_root={Path(args.root).resolve()}', flush=True)
     for name in ('sample_stride', 'workers', 'point_count', 'chunk_horizon', 'action_frame_stride'):
         if getattr(args, name) < 1:
             p.error(f'--{name.replace("_", "-")} must be positive')
@@ -96,17 +102,34 @@ def main(argv=None):
     for name, command in stages:
         print(f'[{name}] {json.dumps(command, ensure_ascii=False)}', flush=True)
     if args.dry_run:
+        print('[OHT prepare] dry-run only: no replay, masks or JSON files were generated.', flush=True)
         return 0
     output.mkdir(parents=True, exist_ok=False)
-    shutil.copyfile(args.config, output / 'dataset.yaml')
-    shutil.copyfile(args.mapping, output / 'seg_roles.yaml')
     status = dict(status='running', options=vars(args), completed=[], stages=dict(stages))
     status_path = output / 'pipeline.json'
     write_status(status_path, status)
+    print(f'[OHT prepare] status={status_path}\n'
+          f'[OHT prepare] replay={output / ("replay-source-v" + str(args.replay_version))}', flush=True)
+    try:
+        shutil.copyfile(args.config, output / 'dataset.yaml')
+        shutil.copyfile(args.mapping, output / 'seg_roles.yaml')
+    except OSError as exc:
+        status.update(status='failed', failed_stage='setup', error=str(exc))
+        write_status(status_path, status)
+        print(f'[OHT prepare] stopped at setup: {exc}; see {status_path}', file=sys.stderr, flush=True)
+        return 1
     for name, command in stages:
         print(f'\n[OHT prepare] starting {name}', flush=True)
         try:
             subprocess.run(command, cwd=REPO_ROOT, check=True)
+            if name == 'replay':
+                replay = output / f'replay-source-v{args.replay_version}'
+                missing = [str(replay / filename) for filename in ('contract.json', 'complete.json')
+                           if not (replay / filename).is_file()]
+                if missing:
+                    raise FileNotFoundError('Replay build returned success without creating: '
+                                            + ', '.join(missing)
+                                            + '. Stopping before validation; inspect the build output above.')
         except (subprocess.CalledProcessError, OSError, KeyboardInterrupt) as exc:
             status.update(status='failed', failed_stage=name, error=str(exc))
             write_status(status_path, status)
