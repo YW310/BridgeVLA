@@ -4,8 +4,9 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 
-def path_panel(predicted, target=None, valid=None):
-    predicted = np.asarray(predicted, dtype=float)[:, :3]
+def path_panel(predicted, target=None, valid=None, *, target_color='#40db70'):
+    observed_only = predicted is None
+    predicted = np.empty((0, 3)) if observed_only else np.asarray(predicted, dtype=float)[:, :3]
     target = np.empty((0, 3)) if target is None else np.asarray(target, dtype=float)[:, :3]
     if valid is not None:
         target = target[np.asarray(valid, bool)]
@@ -13,10 +14,16 @@ def path_panel(predicted, target=None, valid=None):
     lower, upper = points.min(0) - .01, points.max(0) + .01
     image = Image.new('RGB', (900, 320), '#202020')
     draw = ImageDraw.Draw(image)
-    draw.text((8, 5), 'Chunk: red prediction / green observed future (valid labels only)', fill='white')
+    title = ('GT future TCP positions (valid labels only)' if observed_only else
+             'Chunk: red prediction / green observed future (valid labels only)')
+    draw.text((8, 5), title, fill='white')
     for panel, (a, b, label) in enumerate(((0, 1, 'XY'), (0, 2, 'XZ'), (1, 2, 'YZ'))):
         draw.text((panel * 300 + 10, 28), label, fill='white')
-        for values, color in ((target, '#40db70'), (predicted, '#ff6060')):
+        if observed_only:
+            draw.text((panel * 300 + 10, 43),
+                      f'{"XYZ"[a]} [{points[:, a].min():.3f},{points[:, a].max():.3f}] '
+                      f'{"XYZ"[b]} [{points[:, b].min():.3f},{points[:, b].max():.3f}] m', fill='white')
+        for values, color in ((target, target_color), (predicted, '#ff6060')):
             if not len(values):
                 continue
             normalized = (values - lower) / (upper - lower)

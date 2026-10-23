@@ -146,8 +146,8 @@ python tools/validate_oht_replay.py \
 | `--action-frame-stride 1` | 每个动作前进 1 个原始帧，与输入采样步长分开 |
 | `--action-dt` | 可选，显式期望动作时间间隔；省略时从原始时间戳推导并固定整个缓存的间隔 |
 | `--sample-stride 10` | 输入观测每隔 10 帧抽样，另保留非终帧关键事件；不是动作的 dt |
-| `--visualize-every 100` | 每个 episode 的首个及每隔 100 个样本保存基础 PNG；不改变数据标签 |
-| `--object-cloud-config ...` | 可选，沿用原有近似对象点云和 HTML 诊断导出；不是训练 role teacher |
+| `--visualize-every 100` | 每个 episode 的首个及每隔 100 个样本保存 PNG/HTML，含有效 GT chunk 的相机投影、世界坐标轨迹及放大图；不改变数据标签 |
+| `--object-cloud-config ...` | 可选，增加近似对象点云导出；V4 基础 HTML 不依赖此配置，不是训练 role teacher |
 
 V4 同时保存下一关键目标和未来连续轨迹，动作取实测 TCP/关节/夹爪，不使用原始动作命令或关键点间直线插值。目标时间为 `t+dt ... t+K*dt`；实际 `dt`、stride、K、标定、audit 和索引摘要写入 contract。不同 episode 的采样率不匹配时构建失败，时间缺口或粗采样丢失完整夹爪切换的窗口会跳过并记录原因。`--action-timestamp-atol/rtol` 可设时间检查容差；不能用放宽容差掩盖不同采样率。
 
@@ -160,14 +160,32 @@ replay-source-v4/
   complete.json
   observations/<task>/<episode>/<frame>.npz
   targets/<task>/<episode>/<frame>.npz
-  preview/                                  # 启用预览时
+  preview/index.html                        # 整批构建完成后生成
+  preview/<task>/<episode>/<frame>/preview.png
+  preview/<task>/<episode>/<frame>/point-cloud-roi.html
 ~~~
 
 观测包含实测 `tcp_pose`、`joint_positions` 和 `gripper_open01`；独立 targets NPZ 保存 `key_action/key_joint_action/key_valid/key_frame`、`action_chunk[K,8]`、`joint_chunk[K,7]`、`action_frames`、`action_timestamps` 和 `action_valid`。位置是 world 米、TCP 四元数是 xyzw、夹爪 1 开 0 关。每个 payload 都有独立哈希，完整校验会检查观测、目标、mask、时间、边界和组划分。
 
 构建进度写 stderr，包含当前 episode、样本数、跳过窗口数、实际 dt 和耗时；`--quiet` 隐藏进度。`complete.json` 记录各划分数量、原始 dt 统计与跳过原因。失败目录不写完成标记；重跑使用新的目录。
 
-读取入口为 `OHTChunkDataset`，batch 中 chunk 为 `[B,1,K,8]`，历史轴与未来轴分开。V4 必须使用下方的 chunk 配置；单关键点配置和旧 role-cache 工具仍拒绝 V4。构建时的基础预览显示当前 TCP 与有效下一关键目标；预测 chunk 图在训练、离线评估和在线服务中生成。
+读取入口为 `OHTChunkDataset`，batch 中 chunk 为 `[B,1,K,8]`，历史轴与未来轴分开。V4 必须使用下方的 chunk 配置；单关键点配置和旧 role-cache 工具仍拒绝 V4。
+
+构建预览中，青色为当前 TCP，品红色为有效的下一关键目标，橙色为有效的真实未来 chunk。相机 RGB 图和世界坐标 XY/XZ/YZ 点云图叠加轨迹，底部另有放大的未来 TCP 位置图及坐标范围。连线仅连接实测采样点，不表示规划出的中间路径；相机投影不进行遮挡判定。尾部 padding 不绘制，无未来关键目标时仍显示有效 chunk。仅为启用 preview 后选中的样本生成图，预测与 GT 的对比图仍由训练/离线评估生成。
+
+V4 开启 `--visualize-every N` 后，采样帧同时生成 PNG 和逐帧 HTML，无需 `--object-cloud-config`。整批完成、网页绑定最终 contract 后生成 `preview/index.html`，随后写入 `complete.json`；构建途中可能已有逐帧页面但尚无统一入口。`--visualize-output-dir` 可将这些文件放到指定预览目录；`0` 关闭预览。旧代码生成的 PNG 不会自动补出 HTML，请用下面命令导出。
+
+已有完整 V4 可单独刷新 PNG/HTML，不重建数据、不改写观测或标签：
+
+~~~bash
+OHT_ROOT=/common-data-32t/data/robot_data/oht_curobo_pd_v423
+python tools/export_oht_replay_viewer.py \
+  --replay "$OHT_ROOT/replay-source-v4" \
+  --output "$OHT_ROOT/replay-source-v4/preview/chunk-refresh-01" \
+  --every 100 --max-points 40000
+~~~
+
+打开输出目录的 `index.html`，轨迹显示在页面上方的 PNG 预览中。`--every` 按每个 episode 的缓存样本计数，包含首个；输出目录必须尚不存在。导出会核对选中样本的观测/目标哈希和 chunk 标签有效性，不读取原始视频。
 
 ### V4：关键目标 + 连续 chunk 训练与评估
 
@@ -249,7 +267,7 @@ python tools/validate_oht_replay.py --replay /common-data-32t/data/robot_data/oh
 
 - `--sample-stride 10` 控制哪些原始帧进入 replay；完整重建仍沿用该采样策略，如需更密的 replay 可减小步长。
 - `--visualize-every 1` 为每个生成的 replay 样本输出 PNG/HTML；改为 `100` 可减少预览数量和开销，对象 PLY/NPZ 仍逐样本生成。
-- `--object-cloud-config` 启用对象截取和对象预览。只传 `--visualize-every` 会生成基础场景 PNG，没有对象区域和 HTML 统一入口。
+- 本段单关键点版本使用 `--object-cloud-config` 启用对象截取和 HTML 对象预览；只传 `--visualize-every` 时仅生成基础 PNG。上文 V4 版本开启预览即可生成基础 HTML 入口。
 - 示例省略 `--visualize-output-dir`，所有诊断文件统一放在 replay 下的 `preview`；显式指定该参数会将 PNG/HTML/入口输出到指定的新目录，对象数据仍保存在 replay 下。
 
 旧 PNG/HTML 不会随代码更新自动变化。请打开本次新目录；复制到本机时保留整个 `preview` 目录及相对路径。

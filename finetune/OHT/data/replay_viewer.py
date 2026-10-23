@@ -61,7 +61,12 @@ def export_replay_viewer(replay, output, *, every=1, max_points=40_000, source=N
     replay, output = Path(replay), Path(output)
     if output.exists():
         raise FileExistsError(f"Use a new replay viewer directory: {output}")
-    contract = load_contract(replay)
+    is_chunk = json.loads((replay / 'contract.json').read_text(encoding='utf-8')).get('schema') == 'oht_bridgevla_v4'
+    if is_chunk:
+        from .chunk_dataset import load_chunk_contract
+        contract = load_chunk_contract(replay)
+    else:
+        contract = load_contract(replay)
     options = object_cloud_config if object_cloud_config is not None else contract.get("diagnostic_object_clouds")
     selector = None if options is None else BuildObjectCloudWriter(output,options)
     selected_source = source or (selector.options["source"] if selector else "depth")
@@ -77,6 +82,21 @@ def export_replay_viewer(replay, output, *, every=1, max_points=40_000, source=N
             raise ValueError(f"Observation changed: {sample['id']}")
         with np.load(io.BytesIO(content),allow_pickle=False) as data:
             observation = {key:data[key] for key in data.files}
+        chunk_options = {}
+        if is_chunk:
+            from .chunk_actions import validate_chunk_targets
+            from .chunk_replay import _target_bounds
+            content = inside(replay, sample['targets']).read_bytes()
+            if hashlib.sha256(content).hexdigest() != sample['targets_sha256']:
+                raise ValueError(f"Targets changed: {sample['id']}")
+            with np.load(io.BytesIO(content), allow_pickle=False) as data:
+                targets = {key: data[key] for key in data.files}
+            validate_chunk_targets(targets, contract['chunk'], sample)
+            _target_bounds(targets, config['scene_bounds'])
+            sample = dict(sample, labels={})
+            if bool(targets['key_valid']):
+                sample['labels']['gripper_pose'] = targets['key_action'][:7].tolist()
+            chunk_options['chunk_targets'] = targets
         _validate_frame(observation,config,sample)
         if object_root:
             sample = dict(sample,diagnostic_objects=load_source_objects(object_root,object_manifest,contract,sample))
@@ -85,7 +105,7 @@ def export_replay_viewer(replay, output, *, every=1, max_points=40_000, source=N
                                                    contract_sha256=contract["sha256"])
         path = inside(output,sample["id"]+"/point-cloud-roi.html")
         image = save_preview(path.parent/"preview.png",observation,config,sample,current_tcp=sample.get("current_tcp"),
-                             object_boxes=boxes)
+                             object_boxes=boxes, **chunk_options)
         save_point_cloud_html(path,observation,config,sample,max_points,source=selected_source,object_boxes=boxes,
                               preview_image=image)
         frames.append(dict(sample_id=sample["id"],frame=sample["frame"],target_frame=sample["target_frame"],

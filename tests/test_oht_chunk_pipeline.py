@@ -71,7 +71,8 @@ def agent_data(chunk_fixture, training=True):
 
 def test_chunk_config_inherits_epoch_adamw_and_rejects_inconsistent_modes():
     config = load('finetune/OHT/configs/oht_chunk_v4_8x40.yaml')
-    assert config['epochs'] == 100 and config['global_batch_size'] == 192
+    parent = load('finetune/OHT/configs/oht_full_8x40.yaml')
+    assert config['epochs'] == parent['epochs'] and config['global_batch_size'] == parent['global_batch_size']
     assert config['agent']['optimizer_type'] == 'adamw'
     assert config['freeze_vision_tower'] and config['freeze_gemma_prefix_layers'] == 6
     assert not config['agent']['transform_augmentation']

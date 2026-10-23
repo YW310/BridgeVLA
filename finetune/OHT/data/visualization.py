@@ -13,6 +13,7 @@ REFERENCE = np.array([65, 125, 255], dtype=np.uint8)
 OVERLAP = np.array([255, 220, 50], dtype=np.uint8)
 CURRENT = (0, 220, 255)
 ACTION = (255, 70, 220)
+CHUNK = (255, 160, 50)
 PANEL_W, PANEL_H = 256, 192
 MAX_PREVIEW_POINTS = 200_000
 LOCAL_HALF_EXTENT = 0.20  # metres; diagnostic cube, not the model's stage-two crop
@@ -141,14 +142,47 @@ def projection_status(pose, intrinsics, world_from_optical, image_shape):
     return f"{state} uv=({xy[0, 0]:.1f},{xy[0, 1]:.1f}) z={optical[2]:.3f}m"
 
 
+def _chunk_data(targets, current_tcp):
+    if targets is None:
+        return None
+    actions, valid = np.asarray(targets['action_chunk']), np.asarray(targets['action_valid'])
+    if (actions.ndim != 2 or actions.shape[1] != 8 or valid.shape != actions.shape[:1]
+            or valid.dtype != np.bool_ or not valid.any()
+            or not np.array_equal(valid, np.arange(len(valid)) < valid.sum())):
+        raise ValueError('Preview chunk requires [K,8] actions and a nonempty bool valid prefix')
+    actions = actions[valid].copy()
+    if not np.isfinite(actions).all():
+        raise ValueError('Preview chunk has nonfinite valid actions')
+    positions = actions[:, :3]
+    if current_tcp is not None:
+        positions = np.concatenate((np.asarray(current_tcp, dtype=float)[None, :3], positions))
+    return dict(actions=actions, positions=positions, horizon=len(valid))
+
+
+def _draw_chunk(draw, pixels, visible):
+    # Keep original sequence indices: never connect across a point behind the
+    # camera or outside the view/crop. Projection does not test occlusion.
+    for index in range(1, len(pixels)):
+        if visible[index - 1] and visible[index]:
+            draw.line([tuple(pixels[index - 1]), tuple(pixels[index])], fill=CHUNK, width=2)
+    for index in np.flatnonzero(visible):
+        x, y = pixels[index]
+        draw.ellipse((x - 2, y - 2, x + 2, y + 2), fill=CHUNK)
+        if index == len(pixels) - 1:
+            draw.text((x + 4, y + 3), 'chunk end', fill=CHUNK)
+
+
 def _camera_rgb(observation, camera, current_tcp, action_tcp, masks, specs, role_points, role_valid,
-                current_label="TCP"):
+                current_label="TCP", chunk=None):
     raw = observation[f"{camera}_rgb"].transpose(1, 2, 0)
     image = Image.fromarray(role_overlay(raw, masks)).resize((PANEL_W, PANEL_H), Image.Resampling.NEAREST)
     draw = ImageDraw.Draw(image)
     height, width = raw.shape[:2]
     scale = np.array([PANEL_W / width, PANEL_H / height])
     K, transform = observation[f"{camera}_camera_intrinsics"], observation[f"{camera}_camera_extrinsics"]
+    if chunk is not None:
+        xy, visible = project_world(chunk['positions'], K, transform, (height, width))
+        _draw_chunk(draw, xy * scale, visible)
     # Site regions are projected point hints, never painted as visible masks.
     if specs is not None:
         for index, (role, color) in enumerate((("target", TARGET), ("reference", REFERENCE))):
@@ -166,7 +200,7 @@ def _camera_rgb(observation, camera, current_tcp, action_tcp, masks, specs, role
 
 
 def _orthographic(points, colors, bounds, axes, current_tcp, action_tcp, role_points, role_valid,
-                  region_bounds=None, object_overlay=None, current_label="TCP"):
+                  region_bounds=None, object_overlay=None, current_label="TCP", chunk=None):
     width, height = 340, 256
     image = np.zeros((height, width, 3), dtype=np.uint8)
     bounds = np.asarray(bounds)
@@ -232,6 +266,10 @@ def _orthographic(points, colors, bounds, axes, current_tcp, action_tcp, role_po
                 valid &= (cloud < bounds[3:]).all(axis=1)
                 for x, y in pixels(cloud[valid]):
                     draw.ellipse((x - 2, y - 2, x + 2, y + 2), outline=tuple(map(int, color)))
+    if chunk is not None:
+        path = chunk['positions']
+        visible = np.isfinite(path).all(axis=1) & (path >= bounds[:3]).all(axis=1) & (path < bounds[3:]).all(axis=1)
+        _draw_chunk(draw, pixels(path), visible)
     for pose, color, label in ((current_tcp, CURRENT, current_label), (action_tcp, ACTION, "goal")):
         if pose is not None:
             point = np.asarray(pose)[:3]
@@ -251,9 +289,11 @@ def _sample_preview_cloud(points, colors):
 
 
 def save_preview(path, observation, config, sample, current_tcp=None, role_specs=None,
-                 role_masks=None, role_points=None, role_valid=None, color_by_camera=False, object_boxes=None):
+                 role_masks=None, role_points=None, role_valid=None, color_by_camera=False, object_boxes=None,
+                 chunk_targets=None):
     """Save sampled diagnostics without changing cached tensors or labels."""
     current_label = current_position_label(config)
+    chunk = _chunk_data(chunk_targets, current_tcp)
     cameras = list(config["cameras"])
     goal_pose = sample.get("labels", {}).get("gripper_pose")
     action_tcp = None if goal_pose is None else np.asarray(goal_pose)
@@ -283,6 +323,9 @@ def save_preview(path, observation, config, sample, current_tcp=None, role_specs
     row_height, top = PANEL_H + 44, 96
     ortho_top = top + ((len(cameras) + 1) // 2) * row_height
     footer_top = ortho_top + (638 if action_tcp is not None else 318)
+    chunk_top = footer_top
+    if chunk is not None:
+        footer_top += 344
     object_top = footer_top
     if object_overlay is not None:
         footer_top += 24 + max(1, len(object_overlay["boxes"])) * 318
@@ -299,6 +342,8 @@ def save_preview(path, observation, config, sample, current_tcp=None, role_specs
     legend = (f"Cyan=current {current_label}; magenta=future action; orthographic colors=physical camera (NOT roles)"
               if color_by_camera else
               f"Cyan=current {current_label}; magenta=future action; green=Target; blue=Reference; yellow=overlap")
+    if chunk is not None:
+        legend = f"Cyan=current {current_label}; magenta=next key goal; orange=GT future chunk (not collision/visibility checked)"
     draw.text((8, 60), legend, fill="white")
     if role_specs is not None:
         status = " | ".join(f"{role}: {spec['source']} present={spec['present']} known={spec['known']} geometry={bool(role_valid[i])}"
@@ -306,12 +351,14 @@ def save_preview(path, observation, config, sample, current_tcp=None, role_specs
         draw.text((8, 78), status, fill="white")
     elif sample.get("diagnostic_note"):
         draw.text((8, 78), f"Diagnostic only: replay completeness not checked; direct NPZ may have no {current_label}/goal metadata.", fill=ACTION)
+    elif chunk is not None:
+        draw.text((8, 78), f"GT dense chunk: {len(chunk['actions'])}/{chunk['horizon']} valid future frames; padding omitted; zoomed path below", fill=CHUNK)
     for index, camera in enumerate(cameras):
         x, y = (index % 2) * 512, top + (index // 2) * row_height
         masks = {role: values[camera] for role, values in (role_masks or {}).items()}
         draw.text((x + 4, y + 2), camera + (" RGB + roles" if role_specs is not None else " RGB"), fill="white")
         canvas.paste(_camera_rgb(observation, camera, current_tcp, action_tcp, masks,
-                                role_specs, role_points, role_valid, current_label=current_label), (x, y + 20))
+                                role_specs, role_points, role_valid, current_label=current_label, chunk=chunk), (x, y + 20))
         K = observation[f"{camera}_camera_intrinsics"]
         transform = observation[f"{camera}_camera_extrinsics"]
         image_shape = observation[f"{camera}_rgb"].shape[1:]
@@ -328,6 +375,9 @@ def save_preview(path, observation, config, sample, current_tcp=None, role_specs
         else:
             text = f"Blue near {limits[0]:.3f} m / red far {limits[1]:.3f} m"
         draw.text((x + PANEL_W + 4, y + 214), text, fill="white")
+        if chunk is not None:
+            _, visible = project_world(chunk['actions'][:, :3], K, transform, image_shape)
+            draw.text((x + PANEL_W + 4, y + 225), f"GT chunk: {int(visible.sum())}/{len(visible)} points in image", fill=CHUNK)
     filter_status = " | manual XYZ filter ON" if filter_options["enabled"] else ""
     draw.text((8, ortho_top + 2),
               f"Global workspace | in-bounds points {global_count} -> shown {len(points)} | 1px points" + filter_status, fill="white")
@@ -344,7 +394,7 @@ def save_preview(path, observation, config, sample, current_tcp=None, role_specs
             draw.text((x + 4, row_top + 20), "".join("XYZ"[axis] for axis in axes) + " world point cloud", fill="white")
             canvas.paste(_orthographic(cloud, rgb, view_bounds, axes, current_tcp, action_tcp,
                                        role_points, role_valid, region_bounds=roi,
-                                       current_label=current_label), (x, row_top + 38))
+                                       current_label=current_label, chunk=chunk), (x, row_top + 38))
     if action_tcp is None:
         draw.text((8, ortho_top + 300), "GT goal unavailable: no goal marker, local cube or GT-centered refine views are generated.", fill=ACTION)
     else:
@@ -353,6 +403,10 @@ def save_preview(path, observation, config, sample, current_tcp=None, role_specs
             draw.text((8, local_top + 300), "No observed points in local cube; the GT keypoint does not create geometry.", fill="white")
         else:
             draw.text((8, local_top + 300), "Local cube is fixed at the GT keypoint; it is not a coarse prediction or the model's noisy training crop.", fill="white")
+    if chunk is not None:
+        from ..chunk_visualization import path_panel
+        draw.text((8, chunk_top + 2), 'GT future chunk zoom (world metres): lines connect measured TCP samples; no planned intermediate path', fill=CHUNK)
+        canvas.paste(path_panel(None, chunk['actions'], target_color=CHUNK), (8, chunk_top + 20))
     if object_overlay is not None:
         draw.text((8, object_top), f"Approximate object crops below | source={object_overlay['source']} | "
                   f"selected={len(object_overlay['boxes'])} | white=overlapping boxes; no instance masks", fill="white")

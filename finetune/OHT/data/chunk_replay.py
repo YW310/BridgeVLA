@@ -77,7 +77,7 @@ def build(root, manifest_path, config, output, sample_stride=10, *, chunk_config
         contract['diagnostic_object_clouds'] = object_writer.options
     contract['sha256'] = digest(contract)
     write_json(output / 'contract.json', contract)
-    rows, skipped_windows, skipped_episodes, timing = [], [], [], []
+    rows, skipped_windows, skipped_episodes, timing, html_frames = [], [], [], [], []
     started = last_report = perf_counter()
     for episode_number, record in enumerate(manifest['episodes'], 1):
         data = profiles[record['dataset']]['data_config']
@@ -156,9 +156,21 @@ def build(root, manifest_path, config, output, sample_stride=10, *, chunk_config
                     preview_sample['labels']['gripper_pose'] = targets['key_action'][:7].tolist()
                 preview_kwargs = {} if object_writer is None else dict(object_boxes=object_writer.specification(sample))
                 preview_path = preview.write(observation, data, preview_sample,
-                                             current_tcp=poses[frame], **preview_kwargs)
+                                             current_tcp=poses[frame], chunk_targets=targets, **preview_kwargs)
                 if object_writer is not None and preview_path is not None:
                     object_writer.write_preview(observation, data, preview_sample, preview_image=preview_path)
+                elif preview_path is not None:
+                    # Basic V4 previews have a browser entry too; object crops
+                    # are optional and never required just to produce HTML.
+                    from .html_preview import save_point_cloud_html
+                    html_path = preview_path.with_name('point-cloud-roi.html')
+                    diagnostic = dict(preview_sample, diagnostic_contract_sha256=None,
+                                      diagnostic_note='Build preview; check complete.json for replay completion.')
+                    save_point_cloud_html(html_path, observation, data, diagnostic,
+                                          source='depth', preview_image=preview_path)
+                    html_frames.append(dict(sample_id=sample['id'], frame=sample['frame'],
+                                            target_frame=sample['target_frame'], timestamp=sample['timestamp'],
+                                            html=html_path, image=preview_path))
                 now = perf_counter()
                 if progress and now - last_report >= 5:
                     print(f'[OHT build v4] samples={len(rows)} skipped_windows={len(skipped_windows)} '
@@ -182,6 +194,12 @@ def build(root, manifest_path, config, output, sample_stride=10, *, chunk_config
     write_json(output / 'contract.json', contract)
     if object_writer is not None:
         object_writer.bind_contract(contract['sha256'])
+    if html_frames:
+        from .html_preview import bind_point_cloud_html_contract
+        from .replay_viewer import save_replay_viewer
+        for frame in html_frames:
+            bind_point_cloud_html_contract(frame['html'], contract['sha256'])
+        save_replay_viewer(preview.output / 'index.html', html_frames, contract['sha256'])
     write_json(output / 'complete.json', dict(
         contract_sha256=contract['sha256'], index_sha256=contract['index_sha256'], samples=len(rows),
         split_counts=dict(Counter(row['split'] for row in rows)), skipped_windows=skipped_windows,
@@ -190,4 +208,6 @@ def build(root, manifest_path, config, output, sample_stride=10, *, chunk_config
     if progress:
         print(f'[OHT build v4] complete samples={len(rows)} skipped_windows={len(skipped_windows)} '
               f'elapsed_s={perf_counter() - started:.1f}', file=sys.stderr, flush=True)
+        if html_frames or (object_writer is not None and object_writer.frames):
+            print(f"[OHT build v4] preview={preview.output / 'index.html'}", file=sys.stderr, flush=True)
     return len(rows)
