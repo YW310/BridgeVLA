@@ -17,7 +17,14 @@ def discover(root):
     root = Path(root).resolve()
     records = []
     for task in TASKS:
-        dataset = root / task / "lerobot_dataset"
+        candidates = [root / name for name in (task, task + "-seg")
+                      if (root / name / "lerobot_dataset" / "data").is_dir()]
+        if len(candidates) > 1:
+            raise ValueError(f"Ambiguous original/seg task directories: {task}; use separate dataset roots")
+        if not candidates:
+            continue
+        task_dir = candidates[0]
+        dataset = task_dir / "lerobot_dataset"
         for path in sorted((dataset / "data").glob("chunk-*/episode_*.parquet")):
             try:
                 episode = int(path.stem.split("_")[-1])
@@ -26,7 +33,7 @@ def discover(root):
             records.append(dict(task=task, task_index=TASKS.index(task), episode_index=episode,
                                 path=path.relative_to(root).as_posix(),
                                 dataset=dataset.relative_to(root).as_posix(),
-                                metadata=(Path(task) / f"episode_{episode:06d}" / "metadata.json").as_posix()))
+                                metadata=(task_dir.relative_to(root) / f"episode_{episode:06d}" / "metadata.json").as_posix()))
     keys = [(r["task"], r["episode_index"]) for r in records]
     if len(set(keys)) != len(keys):
         raise ValueError("Duplicate task/episode Parquet files across chunks")

@@ -79,6 +79,7 @@ finetune/CoppeliaSim_Edu_V4_1_0_Ubuntu20_04
 LPY
 *exp*
 !tools/export_oht_replay_viewer.py
+!tools/export_oht_seg_roles.py
 !tools/export_oht_tensorboard.py
 # Keep experiment documentation; generated experiment artifacts remain ignored.
 !/docs/experiments/

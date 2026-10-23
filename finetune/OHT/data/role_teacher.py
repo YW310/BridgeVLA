@@ -29,6 +29,15 @@ def build_teacher(replay, annotations_path, output, point_count=512, *,
     if len({row["id"] for row in annotations}) != len(annotations):
         raise ValueError("Duplicate teacher annotation IDs")
     base = Path(annotations_path).resolve().parent
+    segmentation_provenance = {}
+    provenance_path = base / 'provenance.json'
+    if provenance_path.is_file():
+        provenance = json.loads(provenance_path.read_text(encoding='utf-8'))
+        if provenance.get('schema') == 'oht_seg_roles_v1':
+            if (provenance.get('replay_contract_sha256') != contract['sha256']
+                    or provenance.get('annotation_sha256') != file_digest(annotations_path)):
+                raise ValueError('Segmentation annotation provenance does not match replay/annotations')
+            segmentation_provenance['segmentation_provenance_sha256'] = file_digest(provenance_path)
     source_hashes = {}
     preview = PreviewWriter(visualize_output_dir or Path(output) / "preview", visualize_every)
     def rows():
@@ -97,4 +106,5 @@ def build_teacher(replay, annotations_path, output, point_count=512, *,
     # contains every source checksum without holding all point clouds in memory.
     return create_cache(output, "teacher", contract["sha256"], point_count,
                         dict(annotation_sha256=file_digest(annotations_path),
-                             mask_sha256=source_hashes, geometry="typed_surface_or_site"), rows())
+                             mask_sha256=source_hashes, geometry="typed_surface_or_site",
+                             **segmentation_provenance), rows())

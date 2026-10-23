@@ -187,6 +187,65 @@ python tools/export_oht_replay_viewer.py \
 
 打开输出目录的 `index.html`，轨迹显示在页面上方的 PNG 预览中。`--every` 按每个 episode 的缓存样本计数，包含首个；输出目录必须尚不存在。导出会核对选中样本的观测/目标哈希和 chunk 标签有效性，不读取原始视频。
 
+### 分割增强数据：语义 ID 转 target/reference
+
+`oht_curobo_pd_v423-seg` 是重新采集的单任务数据，目录为 `disassemble_left-seg/lerobot_dataset`，工具将其任务身份规范为 `disassemble_left`。不能与旧数据按 episode 编号配对或给旧 replay 补 mask；需单独 audit、构建新的 replay。原版与 `-seg` 同名任务同时出现在一个根目录时会拒绝读取，避免轨迹身份冲突。
+
+可直接运行完整生成脚本（默认 V4，包含关键目标、连续稠密 action chunk 和分割角色 mask）：
+
+```bash
+ROOT=/media/34.92/common-data-32t/data/robot_data/oht_curobo_pd_v423-seg
+bash finetune/OHT/prepare_seg_data.sh \
+  --root "$ROOT" --output "$ROOT/bridgevla-seg-v4-run01" \
+  --chunk-horizon 16 --action-frame-stride 1
+```
+
+默认脚本依次执行 audit → V4 replay → 完整校验 → seg-role annotations，任一步失败立即停止。V4 targets 保存下一关键目标、未来实测 TCP/夹爪 `action_chunk[K,8]`、关节/夹爪 `joint_chunk[K,7]` 及有效 mask、帧号和时间戳；不使用原始 action 命令或关键点间插值。默认每个观测监督未来 16 个连续原始帧，`--sample-stride 10` 只控制输入观测抽样，不会将 action stride 改成 10。原始 60 fps 数据的动作间隔约为 1/60 s，实际间隔由原始时间戳推导并校验。原始数据不覆盖，`--output` 必须为新目录；目录内保存 `dataset.yaml`、`seg_roles.yaml` 配置快照和 `pipeline.json` 执行状态，各工具直接打印进度。只包含 disassemble_left 的数据无需补其他任务。
+
+默认 `--sample-stride 10 --visualize-every 100 --workers 4 --point-count 512`。可用 `--config /path/to/dataset.yaml --mapping /path/to/seg_roles.yaml` 指定已确认的标定/角色配置，`--dry-run` 查看命令且不创建文件。默认 reference 仍是 unknown；要生成轴/盘的 reference 标注，先在映射配置启用确认后的阶段规则。也可直接执行 `python tools/prepare_oht_seg_data.py`，参数相同；Bash 入口可通过 `PYTHON_BIN` 指定解释器。
+
+仅需要原有单关键点 replay 和 3D role teacher 时，显式选择 V3：
+
+```bash
+bash finetune/OHT/prepare_seg_data.sh \
+  --root "$ROOT" --output "$ROOT/bridgevla-seg-v3-run01" \
+  --replay-version 3
+```
+
+V3 在 mask 导出后继续生成 teacher。V4 自动执行到角色 mask 导出，**不运行不兼容的 teacher 步骤**，也不表示 chunk 训练已接入角色监督。V4 预览在 `replay-source-v4/preview/index.html`，有效稠密轨迹叠加在 sensor RGB 和点云投影图上。以下为各步骤的独立命令。
+
+先在 BridgeVLA 根目录构建新数据缓存（以下为单关键点版本；chunk 数据使用上方 V4 构建参数和新输出目录）：
+
+```bash
+SEG_ROOT=/media/34.92/common-data-32t/data/robot_data/oht_curobo_pd_v423-seg
+python tools/audit_oht_dataset.py --root "$SEG_ROOT" --output "$SEG_ROOT/audit.json"
+python tools/build_oht_replay.py \
+  --root "$SEG_ROOT" --manifest "$SEG_ROOT/audit.json" \
+  --config finetune/OHT/configs/dataset.yaml \
+  --output "$SEG_ROOT/replay-source-v3" --sample-stride 10
+
+python tools/export_oht_seg_roles.py \
+  --root "$SEG_ROOT" --manifest "$SEG_ROOT/audit.json" \
+  --replay "$SEG_ROOT/replay-source-v3" \
+  --mapping finetune/OHT/configs/seg_roles.yaml \
+  --output "$SEG_ROOT/seg-role-annotations"
+
+python tools/build_oht_role_teacher.py \
+  --replay "$SEG_ROOT/replay-source-v3" \
+  --annotations "$SEG_ROOT/seg-role-annotations/annotations.jsonl" \
+  --output "$SEG_ROOT/role-teacher" --point-count 512 --visualize-every 100
+```
+
+`dataset.yaml` 的深度、相机和夹爪参数仍需匹配采集定义。该根目录只有一个任务，audit 报告其余任务缺失属预期；坏 episode 仍需检查。
+
+类别 ID：`0=robot, 1=wheel_left, 2=wheel_right, 3=wheel_stack, 4=plate, 5=shaft_left, 6=shaft_right, 255=背景/未标注`。其中原采集名 `shaft_1`（ID 5）已确认是左轴，`shaft_2`（ID 6）是右轴。这是语义分割，不能区分同类别的多个实例。默认映射仅指定 `target: [1]`，`reference: unknown`；角色阶段规则确认后再启用配置中的示例。可按**当前帧** `instruction_id` 配置 `phases`，例如拆轮阶段使用左轴 `[5]`、放盘阶段使用 `[4]`，不会使用未来关键帧的阶段。`[]` 仅用于已确认语义为空的角色，`unknown` 表示未标注，二者不同。
+
+导出逐帧读取 `observation.seg.*` 引用的实际路径（包括非标准 `seg/`），按原始帧序号对齐，校验流长度、RGB/seg 引用时间戳和原始分辨率。只接受原生灰度 `uint8` 精确 ID，不经 RGB 转换或插值；与 RGB-D 一样做整数步长缩采样。小目标可能因缩采样消失，可提高 replay 的 `image_size` 后重建；不能用插值恢复标签。角色存在性来自映射，完全遮挡时保留 present/known，空 mask 对应无有效 3D geometry。
+
+输出包含每个角色各视角的 bool mask NPZ、`annotations.jsonl` 及源视频/映射/契约哈希的 `provenance.json`；teacher 通过缓存深度点云选取可见表面，不凭分割补全被遮挡几何。预览叠加在 sensor 图和点云投影视图上。mask 和阶段标签是离线监督，不加入策略 observation；部署的 predicted object assistance 仍需由可部署的预测器提供角色几何，不能把 GT 分割当作预测结果。
+
+导出器也接受 V4 `--replay` 并生成同样的 2D 标注。**V4 chunk 训练目前不接收 role cache**；上面的 teacher 命令及现有 role_queries/predicted_external 训练路径适用于单关键点缓存。输出目录需全新；失败后的不完整目录不能作为完成产物。
+
 ### V4：关键目标 + 连续 chunk 训练与评估
 
 先准备一个已训练的绝对 EEF 关键目标 checkpoint，其解析后的相机、TCP、夹爪、图像尺寸及数据 profile 必须与新 V4 一致。默认沿用 OHT full 的冻结规则：冻结 Gemma 前 6 层、视觉编码器和 multimodal projector；联合训练后续 Gemma 层、关键目标头和 chunk decoder。chunk 分支只读取当前观测、实测 proprioception 和预测关键目标；GT 裁剪仅用于独立的关键目标监督分支。
