@@ -7,6 +7,11 @@ bs: 24
 num_workers: 2
 # Avoid CUDA host-pinning failures in resource-limited multi-GPU containers.
 pin_memory: False
+train_visualization:
+  enabled: True
+  interval: 100
+  tensorboard: True
+  save_png: True
 epochs: 50
 train_iter: 38400
 global_batch_size: 192

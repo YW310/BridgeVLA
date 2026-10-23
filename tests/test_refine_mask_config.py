@@ -50,6 +50,10 @@ class RefineMaskConfigTest(unittest.TestCase):
         self.assertEqual(cfg.rvt.object_slot_mask_loss_weight, 1.)
         self.assertEqual(cfg.rvt.object_slot_null_loss_weight, .25)
         self.assertTrue(cfg.object_conditioning.refine_local_query)
+        self.assertTrue(cfg.train_visualization.enabled)
+        self.assertEqual(cfg.train_visualization.interval, 100)
+        self.assertTrue(cfg.train_visualization.tensorboard)
+        self.assertTrue(cfg.train_visualization.save_png)
         self.assertEqual((cfg.bs, cfg.global_batch_size, cfg.epochs, cfg.train_iter),
                          (24, 192, 50, 38400))
         self.assertTrue(cfg.freeze_vision_tower)
