@@ -146,7 +146,7 @@ python tools/validate_oht_replay.py \
 | `--action-frame-stride 1` | 每个动作前进 1 个原始帧，与输入采样步长分开 |
 | `--action-dt` | 可选，显式期望动作时间间隔；省略时从原始时间戳推导并固定整个缓存的间隔 |
 | `--sample-stride 10` | 输入观测每隔 10 帧抽样，另保留非终帧关键事件；不是动作的 dt |
-| `--visualize-every 100` | 每个 episode 的首个及每隔 100 个样本保存 PNG/HTML，含有效 GT chunk 的相机投影、世界坐标轨迹及放大图；不改变数据标签 |
+| `--visualize-every 100` | 每个 episode 的首个及每隔 100 个样本保存 PNG/HTML，将有效 GT chunk 叠加在 sensor RGB 和点云投影图上；不改变数据标签 |
 | `--object-cloud-config ...` | 可选，增加近似对象点云导出；V4 基础 HTML 不依赖此配置，不是训练 role teacher |
 
 V4 同时保存下一关键目标和未来连续轨迹，动作取实测 TCP/关节/夹爪，不使用原始动作命令或关键点间直线插值。目标时间为 `t+dt ... t+K*dt`；实际 `dt`、stride、K、标定、audit 和索引摘要写入 contract。不同 episode 的采样率不匹配时构建失败，时间缺口或粗采样丢失完整夹爪切换的窗口会跳过并记录原因。`--action-timestamp-atol/rtol` 可设时间检查容差；不能用放宽容差掩盖不同采样率。
@@ -171,7 +171,7 @@ replay-source-v4/
 
 读取入口为 `OHTChunkDataset`，batch 中 chunk 为 `[B,1,K,8]`，历史轴与未来轴分开。V4 必须使用下方的 chunk 配置；单关键点配置和旧 role-cache 工具仍拒绝 V4。
 
-构建预览中，青色为当前 TCP，品红色为有效的下一关键目标，橙色为有效的真实未来 chunk。相机 RGB 图和世界坐标 XY/XZ/YZ 点云图叠加轨迹，底部另有放大的未来 TCP 位置图及坐标范围。连线仅连接实测采样点，不表示规划出的中间路径；相机投影不进行遮挡判定。尾部 padding 不绘制，无未来关键目标时仍显示有效 chunk。仅为启用 preview 后选中的样本生成图，预测与 GT 的对比图仍由训练/离线评估生成。
+构建预览中，青色为当前 TCP，品红色为有效的下一关键目标，橙色为有效的真实未来 chunk。轨迹直接叠加在原始 sensor RGB 图（使用缓存相机内外参进行透视投影，按面板尺寸缩放）以及全局/局部 XY/XZ/YZ 点云投影图上，不额外生成独立轨迹面板。连线仅连接实测采样点，不表示规划出的中间路径；相机投影不进行遮挡判定。尾部 padding 不绘制，无未来关键目标时仍显示有效 chunk。仅为启用 preview 后选中的样本生成图，预测与 GT 的对比图仍由训练/离线评估生成。
 
 V4 开启 `--visualize-every N` 后，采样帧同时生成 PNG 和逐帧 HTML，无需 `--object-cloud-config`。整批完成、网页绑定最终 contract 后生成 `preview/index.html`，随后写入 `complete.json`；构建途中可能已有逐帧页面但尚无统一入口。`--visualize-output-dir` 可将这些文件放到指定预览目录；`0` 关闭预览。旧代码生成的 PNG 不会自动补出 HTML，请用下面命令导出。
 

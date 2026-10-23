@@ -323,9 +323,6 @@ def save_preview(path, observation, config, sample, current_tcp=None, role_specs
     row_height, top = PANEL_H + 44, 96
     ortho_top = top + ((len(cameras) + 1) // 2) * row_height
     footer_top = ortho_top + (638 if action_tcp is not None else 318)
-    chunk_top = footer_top
-    if chunk is not None:
-        footer_top += 344
     object_top = footer_top
     if object_overlay is not None:
         footer_top += 24 + max(1, len(object_overlay["boxes"])) * 318
@@ -352,7 +349,7 @@ def save_preview(path, observation, config, sample, current_tcp=None, role_specs
     elif sample.get("diagnostic_note"):
         draw.text((8, 78), f"Diagnostic only: replay completeness not checked; direct NPZ may have no {current_label}/goal metadata.", fill=ACTION)
     elif chunk is not None:
-        draw.text((8, 78), f"GT dense chunk: {len(chunk['actions'])}/{chunk['horizon']} valid future frames; padding omitted; zoomed path below", fill=CHUNK)
+        draw.text((8, 78), f"GT dense chunk: {len(chunk['actions'])}/{chunk['horizon']} valid future frames; padding omitted; overlaid on RGB and point-cloud views", fill=CHUNK)
     for index, camera in enumerate(cameras):
         x, y = (index % 2) * 512, top + (index // 2) * row_height
         masks = {role: values[camera] for role, values in (role_masks or {}).items()}
@@ -403,10 +400,6 @@ def save_preview(path, observation, config, sample, current_tcp=None, role_specs
             draw.text((8, local_top + 300), "No observed points in local cube; the GT keypoint does not create geometry.", fill="white")
         else:
             draw.text((8, local_top + 300), "Local cube is fixed at the GT keypoint; it is not a coarse prediction or the model's noisy training crop.", fill="white")
-    if chunk is not None:
-        from ..chunk_visualization import path_panel
-        draw.text((8, chunk_top + 2), 'GT future chunk zoom (world metres): lines connect measured TCP samples; no planned intermediate path', fill=CHUNK)
-        canvas.paste(path_panel(None, chunk['actions'], target_color=CHUNK), (8, chunk_top + 20))
     if object_overlay is not None:
         draw.text((8, object_top), f"Approximate object crops below | source={object_overlay['source']} | "
                   f"selected={len(object_overlay['boxes'])} | white=overlapping boxes; no instance masks", fill="white")

@@ -35,16 +35,18 @@ def has_chunk_color(image):
     return np.any(np.all(np.asarray(image) == CHUNK, axis=-1))
 
 
-def test_preview_draws_masked_gt_in_camera_world_and_zoom_without_input_mutation(tmp_path):
+def test_preview_overlays_masked_gt_on_sensor_and_projected_images_without_extra_panel(tmp_path):
     observation, config, sample, current, targets = scene()
     before = copy.deepcopy((observation, targets))
     base = save_preview(tmp_path / 'base.png', observation, config, sample, current_tcp=current)
     path = save_preview(tmp_path / 'chunk.png', observation, config, sample, current_tcp=current, chunk_targets=targets)
     with Image.open(path) as image, Image.open(base) as original:
-        assert image.size == (original.width, original.height + 344)
+        assert image.size == original.size
         assert has_chunk_color(image.crop((0, 116, 256, 308)))  # Optical sensor projection.
-        assert has_chunk_color(image.crop((0, 370, 340, 626)))  # World XY.
-        assert has_chunk_color(image.crop((0, 970, 1024, 1310)))  # Future-only zoom.
+        for x in (0, 341, 682):  # Global XY/XZ/YZ projections, within the point-cloud images.
+            assert has_chunk_color(image.crop((x, 370, x + 340, 626)))
+        # First future point: (-.4,-.25,1) -> sensor pixel (9.6,12), scaled to (76.8,72).
+        assert has_chunk_color(image.crop((75, 186, 80, 191)))
     for old, new in zip(before, (observation, targets)):
         for name in old:
             np.testing.assert_array_equal(old[name], new[name])
@@ -61,7 +63,7 @@ def test_no_future_key_and_single_valid_future_still_have_a_chunk_preview(tmp_pa
     path = save_preview(tmp_path / 'tail.png', observation, config, sample, current_tcp=current, chunk_targets=targets)
     with Image.open(path) as image:
         assert has_chunk_color(image.crop((0, 116, 256, 308)))
-        assert image.size == (1024, 1042)  # No synthetic key-centered view.
+        assert image.size == (1024, 698)  # No synthetic key-centered view or separate path plot.
 
 
 def test_chunk_projection_never_connects_across_hidden_or_outside_samples():
