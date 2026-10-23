@@ -36,7 +36,7 @@ OHT 配置显式启用 use_point_renderer，关闭 SE(3) 增强，因此无需�
 ~~~bash
 python tools/audit_oht_dataset.py \
   --root /common-data-32t/data/robot_data/oht_curobo_pd_v423 \
-  --output /data/oht/audit-seed0.json --seed 0
+  --output /common-data-32t/data/robot_data/oht_curobo_pd_v423/audit-seed0.json --seed 0
 ~~~
 
 直接扫描四个任务的 data/chunk-*/episode_*.parquet，忽略不完整的 LeRobot features 描述和重复的 episodes.jsonl。任务身份为任务名加 episode index。检查必需列、形状、时间单调性、相机引用文件、四元数及成功标记，记录 EE 范围、时间间隔、原始 action 零值率和夹爪命令分布（仅诊断，不要求可信）等。无成功标记或 metadata 明确失败的 episode 排除并报告；存在坏 episode 时命令返回非零，审查报告后再决定是否使用保留的 episode。
@@ -127,15 +127,15 @@ V4 从原始 Parquet 和 RGB-D 视频重新生成全部所选输入帧，不复�
 ~~~bash
 python tools/build_oht_replay.py \
   --root /common-data-32t/data/robot_data/oht_curobo_pd_v423 \
-  --manifest /data/oht/audit-seed0.json \
+  --manifest /common-data-32t/data/robot_data/oht_curobo_pd_v423/audit-seed0.json \
   --config finetune/OHT/configs/dataset.yaml \
-  --output /data/oht/replay-source-v4 \
+  --output /common-data-32t/data/robot_data/oht_curobo_pd_v423/replay-source-v4 \
   --replay-version 4 \
   --chunk-horizon 16 --action-frame-stride 1 \
   --sample-stride 10 --visualize-every 100
 
 python tools/validate_oht_replay.py \
-  --replay /data/oht/replay-source-v4 --workers 4
+  --replay /common-data-32t/data/robot_data/oht_curobo_pd_v423/replay-source-v4 --workers 4
 ~~~
 
 `--root` 指原始四任务数据的父目录，不是 `replay-source-v3`。若之前使用本地标定 YAML，继续用已核查的文件替换 `--config`，不要丢掉本地标定。
@@ -176,13 +176,13 @@ replay-source-v4/
 ~~~bash
 python -m finetune.OHT.train \
   --config finetune/OHT/configs/oht_chunk_v4_8x40.yaml \
-  --replay /data/oht/replay-source-v4 --validate-only
+  --replay /common-data-32t/data/robot_data/oht_curobo_pd_v423/replay-source-v4 --validate-only
 
 GPUS_PER_NODE=8 bash finetune/OHT/train_8x40.sh \
   --config finetune/OHT/configs/oht_chunk_v4_8x40.yaml \
-  --replay /data/oht/replay-source-v4 \
+  --replay /common-data-32t/data/robot_data/oht_curobo_pd_v423/replay-source-v4 \
   --init-checkpoint /home/yiwei/project/BridgeVLA/finetune/OHT/runs/baseline-eef-8gpu-s0/model_last.pth \
-  --log-dir /data/oht/runs --exp-id key-chunk-v4-s0
+  --log-dir /common-data-32t/data/robot_data/oht_curobo_pd_v423/runs --exp-id key-chunk-v4-s0
 ~~~
 
 `--init-checkpoint` 替换为实际旧 EEF 模型；新 chunk decoder 随机初始化并训练。新 run 继续使用时间戳目录、epoch、全局 batch、AdamW、TensorBoard 和模型保存机制。`trainable_parameters.json` 列出可训练层。全局刚体增强关闭，避免破坏实测关节与 TCP 的关系。
@@ -207,11 +207,11 @@ chunk_policy:
 训练会打印实际 run 目录。将该目录填写为环境变量后执行：
 
 ~~~bash
-CHUNK_RUN=/data/oht/runs/实际训练目录
+CHUNK_RUN=/common-data-32t/data/robot_data/oht_curobo_pd_v423/runs/实际训练目录
 python -u -m finetune.OHT.eval open-loop \
   --checkpoint "$CHUNK_RUN/model_last.pth" \
-  --replay /data/oht/replay-source-v4 --split val \
-  --output /data/oht/eval/key-chunk-v4-val.json
+  --replay /common-data-32t/data/robot_data/oht_curobo_pd_v423/replay-source-v4 --split val \
+  --output /common-data-32t/data/robot_data/oht_curobo_pd_v423/eval/key-chunk-v4-val.json
 
 GPU_ID=1 bash finetune/OHT/vla_server.sh \
   --model-path "$CHUNK_RUN/model_last.pth" \
@@ -228,24 +228,24 @@ GPU_ID=1 bash finetune/OHT/vla_server.sh \
 
 ### 完整重新生成 replay
 
-以下为现有单关键点版本。使用当前仓库配置，从原始 RGB-D 重新生成 replay、近似对象点云和预览。已有有效的 `/data/oht/audit-seed0.json` 可直接复用；输出目录 `/data/oht/replay-source-v3` 必须尚不存在。再次重建时更换新目录名，保留旧结果用于对照。
+以下为现有单关键点版本。使用当前仓库配置，从原始 RGB-D 重新生成 replay、近似对象点云和预览。已有有效的 `/common-data-32t/data/robot_data/oht_curobo_pd_v423/audit-seed0.json` 可直接复用；输出目录 `/common-data-32t/data/robot_data/oht_curobo_pd_v423/replay-source-v3` 必须尚不存在。再次重建时更换新目录名，保留旧结果用于对照。
 
 ~~~bash
 python tools/build_oht_replay.py \
   --root /common-data-32t/data/robot_data/oht_curobo_pd_v423 \
-  --manifest /data/oht/audit-seed0.json \
+  --manifest /common-data-32t/data/robot_data/oht_curobo_pd_v423/audit-seed0.json \
   --config finetune/OHT/configs/dataset.yaml \
-  --output /data/oht/replay-source-v3 \
+  --output /common-data-32t/data/robot_data/oht_curobo_pd_v423/replay-source-v3 \
   --sample-stride 10 \
   --object-cloud-config finetune/OHT/configs/object_clouds.yaml \
   --visualize-every 1
 
-python tools/validate_oht_replay.py --replay /data/oht/replay-source-v3 --workers 4
+python tools/validate_oht_replay.py --replay /common-data-32t/data/robot_data/oht_curobo_pd_v423/replay-source-v3 --workers 4
 ~~~
 
 `validate` 会检查全部划分的全部样本，逐个计算观测 NPZ 哈希、解压并校验相机/状态/标签；它是 CPU/磁盘任务，不使用 GPU，不能仅按 400 个 episode 估算耗时。`--workers 4` 使用四个线程并行检查，默认仍为串行 `--workers 1`，校验范围相同。进度写到 stderr，显示当前划分的完成样本数、samples/s 和预计剩余秒数，约每 5 秒更新（开始/结束也输出）；最终 JSON 仍写 stdout。`--quiet` 仅关闭进度。机械盘、共享存储或内存紧张时可降为 `--workers 1` 或 `2`；更多线程不保证更快。预览图片、HTML 和对象诊断点云不参与此项训练 replay 校验。
 
-构建结束并通过校验后，打开 **`/data/oht/replay-source-v3/preview/index.html`**。PNG 保留原有场景面板，底部增加各对象点云区域；HTML 上方显示 PNG，下方提供点云交互、视角和帧选择。
+构建结束并通过校验后，打开 **`/common-data-32t/data/robot_data/oht_curobo_pd_v423/replay-source-v3/preview/index.html`**。PNG 保留原有场景面板，底部增加各对象点云区域；HTML 上方显示 PNG，下方提供点云交互、视角和帧选择。
 
 - `--sample-stride 10` 控制哪些原始帧进入 replay；完整重建仍沿用该采样策略，如需更密的 replay 可减小步长。
 - `--visualize-every 1` 为每个生成的 replay 样本输出 PNG/HTML；改为 `100` 可减少预览数量和开销，对象 PLY/NPZ 仍逐样本生成。
@@ -347,13 +347,13 @@ HTML 中对象与场景共用一张点云画布，“对象框成员”颜色按
 
 ~~~bash
 python tools/export_oht_replay_viewer.py \
-  --replay /data/oht/replay-source-v3 \
-  --output /data/oht/replay-source-v3/preview/refresh \
+  --replay /common-data-32t/data/robot_data/oht_curobo_pd_v423/replay-source-v3 \
+  --output /common-data-32t/data/robot_data/oht_curobo_pd_v423/replay-source-v3/preview/refresh \
   --object-cloud-config finetune/OHT/configs/object_clouds.yaml \
   --every 1 --max-points 40000
 ~~~
 
-打开 `/data/oht/replay-source-v3/preview/refresh/index.html`。输出目录必须尚不存在，每帧 PNG/HTML 保存到 `<output>/<task>/<episode>/<frame>/`。`--every N` 按各 episode 的 replay 样本数选帧，包含首个；浏览器每次仅加载一帧。默认源为缓存米制 depth/K/外参，可用 `--source xyz` 改为缓存 XYZ。导出校验已完成 replay 和观测 NPZ，不改写缓存，也不额外导出 PLY/NPZ。
+打开 `/common-data-32t/data/robot_data/oht_curobo_pd_v423/replay-source-v3/preview/refresh/index.html`。输出目录必须尚不存在，每帧 PNG/HTML 保存到 `<output>/<task>/<episode>/<frame>/`。`--every N` 按各 episode 的 replay 样本数选帧，包含首个；浏览器每次仅加载一帧。默认源为缓存米制 depth/K/外参，可用 `--source xyz` 改为缓存 XYZ。导出校验已完成 replay 和观测 NPZ，不改写缓存，也不额外导出 PLY/NPZ。
 
 #### 单帧几何排错（可选）
 
@@ -361,9 +361,9 @@ python tools/export_oht_replay_viewer.py \
 
 ~~~bash
 python tools/diagnose_oht_geometry.py \
-  --replay /data/oht/replay-source-v3 \
+  --replay /common-data-32t/data/robot_data/oht_curobo_pd_v423/replay-source-v3 \
   --sample-id assemble_left/000000/000000 \
-  --output /data/oht/replay-source-v3/preview/geometry-frame0 \
+  --output /common-data-32t/data/robot_data/oht_curobo_pd_v423/replay-source-v3/preview/geometry-frame0 \
   --html --html-source depth --max-points 40000
 ~~~
 
@@ -387,7 +387,7 @@ python tools/diagnose_oht_geometry.py \
 
 参考代码没有确认对象索引与语义名称的对应关系，也没有确认 `objects_quat` 的顺序，因此不自动猜测车轮/托盘或 Target/Reference。姿态轴默认隐藏；核实导出端约定后，在页面的“对象四元数顺序”中独立选择 `wxyz` 或 `xyzw`（不继承 camera/EE 设置）。轴为对象局部 x 红/y 绿/z 蓝，长度可调，坐标直接使用 world 位姿，不套相机 optical 翻轴。对象中心不是表面点或轴口 site；实例 mask 和角色点仍使用下文教师接口。
 
-仅旧 replay 缺少对象元数据时，导出工具可同时增加 `--object-root /common-data-32t/data/robot_data/oht_curobo_pd_v423` 和 `--object-manifest /data/oht/audit-seed0.json`，清单必须是构建该 replay 时使用的 audit。单帧诊断还需启用 `--html`。读取器核对 audit、Parquet 哈希及当前帧，绑定不符则拒绝输出；不改写缓存，也不猜测缺失位姿。新重建流程无需这些补充参数。
+仅旧 replay 缺少对象元数据时，导出工具可同时增加 `--object-root /common-data-32t/data/robot_data/oht_curobo_pd_v423` 和 `--object-manifest /common-data-32t/data/robot_data/oht_curobo_pd_v423/audit-seed0.json`，清单必须是构建该 replay 时使用的 audit。单帧诊断还需启用 `--html`。读取器核对 audit、Parquet 哈希及当前帧，绑定不符则拒绝输出；不改写缓存，也不猜测缺失位姿。新重建流程无需这些补充参数。
 
 #### 没有实例 mask 时近似提取 object 点云
 
@@ -399,10 +399,10 @@ HTML 支持以当前记录的对象中心为中心，设置 **world X/Y/Z 轴对
 
 ~~~bash
 python tools/extract_oht_object_clouds.py \
-  --replay /data/oht/replay-source-v3 \
+  --replay /common-data-32t/data/robot_data/oht_curobo_pd_v423/replay-source-v3 \
   --sample-id assemble_left/000000/000000 \
-  --boxes /data/oht/oht-object-boxes.json \
-  --output /data/oht/replay-source-v3/preview/object-clouds-frame0
+  --boxes /common-data-32t/data/robot_data/oht_curobo_pd_v423/oht-object-boxes.json \
+  --output /common-data-32t/data/robot_data/oht_curobo_pd_v423/replay-source-v3/preview/object-clouds-frame0
 ~~~
 
 旧 replay 缺少对象位姿时，在提取命令中同样增加 `--object-root` 和 `--object-manifest`，无需重建点云。仅诊断未完成 replay 可显式加 `--allow-incomplete`；训练完整性要求不变。对象配置绑定当前帧，不能直接用于另一帧或另一份缓存；重新预览相应样本后再导出。
@@ -417,11 +417,11 @@ python tools/extract_oht_object_clouds.py \
 
 ~~~bash
 python tools/diagnose_oht_geometry.py \
-  --replay /data/oht/replay-source-v3 \
+  --replay /common-data-32t/data/robot_data/oht_curobo_pd_v423/replay-source-v3 \
   --observation observations/assemble_left/000000/000000.npz \
   --data-profile assemble_left/lerobot_dataset \
   --allow-incomplete --html --html-source depth \
-  --output /data/oht/replay-source-v3/preview/geometry-building-frame
+  --output /common-data-32t/data/robot_data/oht_curobo_pd_v423/replay-source-v3/preview/geometry-building-frame
 ~~~
 
 NPZ 路径相对于 replay，不能越出该目录；`--data-profile` 必须替换成 `contract.json.source_data_configs` 中对应数据源的键，多源时必须显式提供，单源可省略。`--observation` 与 `--sample-id` 二选一；它只依赖已有 contract 和 NPZ，不依赖索引或完成标记，也不读取原始视频。
@@ -435,7 +435,7 @@ NPZ 路径相对于 replay，不能越出该目录；`--data-profile` 必须替�
 以下 Bash 命令从 **BridgeVLA 仓库根目录** 执行；正式训练需要第 1 节的 Linux/CUDA 模型环境，数据预检可在 CPU 环境执行。先设置实际路径：
 
 ~~~bash
-OHT_REPLAY=/data/oht/replay-source-v3
+OHT_REPLAY=/common-data-32t/data/robot_data/oht_curobo_pd_v423/replay-source-v3
 BRIDGEVLA_PRETRAIN=/path/to/bridgevla-heatmap-pretrain
 ~~~
 
@@ -447,7 +447,7 @@ BRIDGEVLA_PRETRAIN=/path/to/bridgevla-heatmap-pretrain
 python -m finetune.OHT.train \
   --config finetune/OHT/configs/baseline.yaml \
   --replay "$OHT_REPLAY" \
-  --output /data/oht/check-only \
+  --output /common-data-32t/data/robot_data/oht_curobo_pd_v423/check-only \
   --validate-only
 ~~~
 
@@ -461,7 +461,7 @@ python -m finetune.OHT.train \
 python -m finetune.OHT.train \
   --config finetune/OHT/configs/smoke.yaml \
   --replay "$OHT_REPLAY" \
-  --output /data/oht/runs/smoke \
+  --output /common-data-32t/data/robot_data/oht_curobo_pd_v423/runs/smoke \
   --pretrain-path "$BRIDGEVLA_PRETRAIN"
 ~~~
 
@@ -473,7 +473,7 @@ python -m finetune.OHT.train \
 python -m finetune.OHT.train \
   --config finetune/OHT/configs/baseline.yaml \
   --replay "$OHT_REPLAY" \
-  --output /data/oht/runs/baseline-s0 \
+  --output /common-data-32t/data/robot_data/oht_curobo_pd_v423/runs/baseline-s0 \
   --pretrain-path "$BRIDGEVLA_PRETRAIN"
 ~~~
 
@@ -504,7 +504,7 @@ bash finetune/OHT/train_8x40.sh \
   --config finetune/OHT/configs/baseline.yaml \
   --replay "$OHT_REPLAY" \
   --pretrain-path "$BRIDGEVLA_PRETRAIN" \
-  --log-dir /data/oht/runs --exp-note baseline-eef-8gpu-s0
+  --log-dir /common-data-32t/data/robot_data/oht_curobo_pd_v423/runs --exp-note baseline-eef-8gpu-s0
 ~~~
 
 用 `GPUS_PER_NODE=4 CUDA_VISIBLE_DEVICES=0,1,2,3` 作为上述 `bash` 命令的前缀即可改为四卡；两卡设 `GPUS_PER_NODE=2` 并选择两个 GPU。与 RLBench 脚本一致，`PYTHONWARNINGS` 默认 `ignore`（可用环境变量覆盖），`TRANSFORMERS_VERBOSITY` 设为 `error`，`MASTER_PORT` 默认 `29500` 并传给 torchrun；但 PyTorch 的 `--standalone` 会将 rendezvous endpoint 设为 `localhost:0`，实际端口自动分配，不能依赖 `MASTER_PORT` 固定该端口。脚本透传 batch/动作配置、`--role-cache`、`--init-checkpoint`、`--resume` 等训练参数，相对参数路径按仓库根目录解析。训练超参数仍由 OHT YAML 控制，启动脚本一致不代表训练配置已对齐 RLBench。`8x40` 沿用参考脚本的名称，不会自动检测显存或保证 40 GB 显存足够。
@@ -585,7 +585,7 @@ tensorboard --logdir exp/OHT/train --port 6006
 **旧训练只有 JSONL 时补导曲线。** 更新代码不会为已运行的旧进程自动补写 event；使用 [export_oht_tensorboard.py](../../tools/export_oht_tensorboard.py) 转换已有完整日志，无需重跑训练：
 
 ~~~bash
-python tools/export_oht_tensorboard.py --run /data/oht/runs/baseline-eef-8gpu-s0
+python tools/export_oht_tensorboard.py --run /common-data-32t/data/robot_data/oht_curobo_pd_v423/runs/baseline-eef-8gpu-s0
 ~~~
 
 默认写入 `<run>/tensorboard-from-jsonl/`，也可用 `--output` 指定新目录；拒绝覆盖已有导出，不修改源 JSONL、checkpoint 或原 TensorBoard 日志。按优化步恢复已有标量；遇到续训步数回退时剔除旧分支的后续记录。JSONL 没有保存的图像、学习率或真实历史时间不能凭空补出。若训练进程正在追加文件，使用完整 JSONL 快照或在其结束后转换，截断的末行会报错。
@@ -622,19 +622,19 @@ Reference=NULL **仅示范格式**，实际任务必须逐阶段定义正确角�
 
 ~~~bash
 python tools/build_oht_role_teacher.py \
-  --replay /data/oht/replay-source-v3 --annotations /data/oht/annotations.jsonl \
-  --output /data/oht/teachers-v1 --point-count 512 \
+  --replay /common-data-32t/data/robot_data/oht_curobo_pd_v423/replay-source-v3 --annotations /common-data-32t/data/robot_data/oht_curobo_pd_v423/annotations.jsonl \
+  --output /common-data-32t/data/robot_data/oht_curobo_pd_v423/teachers-v1 --point-count 512 \
   --visualize-every 100
 
 python tools/validate_oht_replay.py \
-  --replay /data/oht/replay-source-v3 --mode role_queries \
-  --role-cache /data/oht/teachers-v1
+  --replay /common-data-32t/data/robot_data/oht_curobo_pd_v423/replay-source-v3 --mode role_queries \
+  --role-cache /common-data-32t/data/robot_data/oht_curobo_pd_v423/teachers-v1
 
 python -m finetune.OHT.train \
   --config finetune/OHT/configs/role_queries.yaml \
-  --replay /data/oht/replay-source-v3 --role-cache /data/oht/teachers-v1 \
-  --output /data/oht/runs/role-queries-s0 \
-  --init-checkpoint /data/oht/runs/baseline-s0/model_last.pth
+  --replay /common-data-32t/data/robot_data/oht_curobo_pd_v423/replay-source-v3 --role-cache /common-data-32t/data/robot_data/oht_curobo_pd_v423/teachers-v1 \
+  --output /common-data-32t/data/robot_data/oht_curobo_pd_v423/runs/role-queries-s0 \
+  --init-checkpoint /common-data-32t/data/robot_data/oht_curobo_pd_v423/runs/baseline-s0/model_last.pth
 ~~~
 
 Teacher 使用相同的可视化参数，默认输出到 `<teacher-output>/preview/`。Target 为绿色、Reference 为蓝色、重叠为黄色；标注 mask 区域显示 `30% 原始 RGB + 70% 角色颜色`，背景保留 RGB。`site_region` 只显示区域点轮廓。图中列出角色 source/present/known/几何有效性，NULL/unknown 不伪造点。v2 在样本索引中保存当前 TCP，仅供诊断；teacher 预览可同时显示当前 TCP 和未来 goal，该字段不进入训练 batch。
@@ -664,15 +664,15 @@ provenance YAML 至少含 model_sha256（真实感知权重 SHA256）和 trainin
 
 ~~~bash
 python tools/predict_oht_objects.py \
-  --replay /data/oht/replay-source-v3 --predictor my_oht_predictor:create \
-  --provenance /data/oht/predictor-provenance.yaml \
-  --output /data/oht/predictions-v1
+  --replay /common-data-32t/data/robot_data/oht_curobo_pd_v423/replay-source-v3 --predictor my_oht_predictor:create \
+  --provenance /common-data-32t/data/robot_data/oht_curobo_pd_v423/predictor-provenance.yaml \
+  --output /common-data-32t/data/robot_data/oht_curobo_pd_v423/predictions-v1
 
 python -m finetune.OHT.train \
   --config finetune/OHT/configs/predicted_external.yaml \
-  --replay /data/oht/replay-source-v3 --role-cache /data/oht/predictions-v1 \
-  --output /data/oht/runs/predicted-external-s0 \
-  --init-checkpoint /data/oht/runs/baseline-s0/model_last.pth
+  --replay /common-data-32t/data/robot_data/oht_curobo_pd_v423/replay-source-v3 --role-cache /common-data-32t/data/robot_data/oht_curobo_pd_v423/predictions-v1 \
+  --output /common-data-32t/data/robot_data/oht_curobo_pd_v423/runs/predicted-external-s0 \
+  --init-checkpoint /common-data-32t/data/robot_data/oht_curobo_pd_v423/runs/baseline-s0/model_last.pth
 ~~~
 
 训练缓存须覆盖训练样本；验证时各模式检查对应集合的缓存覆盖。离线预测按缓存采样帧顺序、episode 开始时 reset，在线按控制采样频率调用；有历史状态的预测器必须对齐两者采样策略，否则应先用无状态预测器。在线服务要求 factory/provenance 与训练缓存完全匹配。
@@ -688,13 +688,13 @@ python -m finetune.OHT.train \
 ~~~bash
 python -m pip install -r finetune/OHT/requirements-server.txt
 bash finetune/OHT/serve.sh \
-  --model-path /data/oht/runs/baseline-s0 \
+  --model-path /common-data-32t/data/robot_data/oht_curobo_pd_v423/runs/baseline-s0 \
   --host 0.0.0.0 --port 8010 \
   --output-dir logs/oht_vla_server_8010
 
 python tools/smoke_oht_vla_server.py \
   --server http://127.0.0.1:8010 \
-  --replay /data/oht/replay-source-v3 --split val --index 0
+  --replay /common-data-32t/data/robot_data/oht_curobo_pd_v423/replay-source-v3 --split val --index 0
 ~~~
 
 `--model-path` 可为 checkpoint 或含 `model_last.pth` 的 run 目录。`serve.sh` 调用 [vla_server.sh](vla_server.sh)，也支持参考 H-VLA2 shell 的环境变量方式：`GPU_ID=1 OHT_MODEL_PATH=/path/to/model_last.pth OHT_PORT=8004 bash finetune/OHT/vla_server.sh`。CLI 参数优先，默认不强制 HF 离线；基础模型/processor 资源仍需由 BridgeVLA 加载器读取。
@@ -705,7 +705,7 @@ python tools/smoke_oht_vla_server.py \
 
 ~~~bash
 python -m finetune.OHT.server \
-  --checkpoint /data/oht/runs/baseline-s0/model_last.pth \
+  --checkpoint /common-data-32t/data/robot_data/oht_curobo_pd_v423/runs/baseline-s0/model_last.pth \
   --host 127.0.0.1 --port 8010
 ~~~
 
@@ -784,9 +784,9 @@ absolute_target = execution_target(
 
 ~~~bash
 python -m finetune.OHT.eval open-loop \
-  --checkpoint /data/oht/runs/baseline-s0/model_last.pth \
-  --replay /data/oht/replay-source-v3 --split val \
-  --output /data/oht/eval/baseline-val.json
+  --checkpoint /common-data-32t/data/robot_data/oht_curobo_pd_v423/runs/baseline-s0/model_last.pth \
+  --replay /common-data-32t/data/robot_data/oht_curobo_pd_v423/replay-source-v3 --split val \
+  --output /common-data-32t/data/robot_data/oht_curobo_pd_v423/eval/baseline-val.json
 ~~~
 
 离线评估自动读取 checkpoint 的动作模式：EEF 类逐任务报告位置/旋转误差（相对 EEF 先还原绝对位姿），关节类报告 rad 单位 MAE/RMSE；所有模式报告夹爪准确率和模型耗时。这些不能代替闭环成功率。内部角色模式没有教师输入，即使 evaluation 数据行存在标签也会被策略白名单过滤。
@@ -800,10 +800,10 @@ python -m finetune.OHT.eval open-loop \
 ~~~bash
 python -u -m finetune.OHT.eval open-loop \
   --checkpoint finetune/OHT/runs/baseline-eef-8gpu-s0/model_last.pth \
-  --replay /data/oht/replay-source-v3 --split val --limit 8 \
+  --replay /common-data-32t/data/robot_data/oht_curobo_pd_v423/replay-source-v3 --split val --limit 8 \
   --visualize-every 1 \
-  --visualize-output-dir /data/oht/eval/baseline-val-images \
-  --output /data/oht/eval/baseline-val-with-images.json
+  --visualize-output-dir /common-data-32t/data/robot_data/oht_curobo_pd_v423/eval/baseline-val-images \
+  --output /common-data-32t/data/robot_data/oht_curobo_pd_v423/eval/baseline-val-with-images.json
 ~~~
 
 报告和图片目录均要求使用新路径。不指定图片目录时，默认保存到报告路径去掉扩展名再加 `_visualizations/`。完整验证可去掉 `--limit`，省略 `--visualize-every` 使用默认间隔 50；固定间隔不保证覆盖每个子任务。评估结束后打开图片目录的 `index.html`，各 `sample_000000/` 子目录包含：
@@ -827,10 +827,10 @@ python -u -m finetune.OHT.eval open-loop \
 ~~~bash
 python -m finetune.OHT.eval closed-loop \
   --config finetune/OHT/configs/baseline.yaml \
-  --server http://127.0.0.1:8010 --replay /data/oht/replay-source-v3 \
-  --environment my_isaac_oht:create --cases /data/oht/eval-cases.jsonl \
+  --server http://127.0.0.1:8010 --replay /common-data-32t/data/robot_data/oht_curobo_pd_v423/replay-source-v3 \
+  --environment my_isaac_oht:create --cases /common-data-32t/data/robot_data/oht_curobo_pd_v423/eval-cases.jsonl \
   --executor-id verified-eef-executor-v1 --max-steps 500 \
-  --output /data/oht/eval/baseline-eef-s0.json
+  --output /common-data-32t/data/robot_data/oht_curobo_pd_v423/eval/baseline-eef-s0.json
 ~~~
 
 评估其他模式时，同步更换 server checkpoint、`--config`、已验证的执行器 ID 和输出路径；例如 joint 模式使用 `joint-s0/model_last.pth` 与 `configs/joint.yaml`，完整命令见 [动作模式指南](../../docs/guides/oht-action-modes.md)。省略 `--config` 会采用旧 EEF 默认值，不会自动从远端 server 选择模式。

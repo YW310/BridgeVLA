@@ -25,8 +25,8 @@ action_mode: joint
 ~~~bash
 python -m finetune.OHT.train \
   --config finetune/OHT/configs/joint.yaml \
-  --replay /data/oht/replay-v3 \
-  --output /data/oht/runs/joint-s0 \
+  --replay /common-data-32t/data/robot_data/oht_curobo_pd_v423/replay-v3 \
+  --output /common-data-32t/data/robot_data/oht_curobo_pd_v423/runs/joint-s0 \
   --validate-only
 ~~~
 
@@ -131,7 +131,7 @@ checkpoint 保存完整动作配置。严格加载/续训拒绝模式或动作�
 
 ~~~bash
 python -m finetune.OHT.server \
-  --checkpoint /data/oht/runs/joint-s0/model_last.pth \
+  --checkpoint /common-data-32t/data/robot_data/oht_curobo_pd_v423/runs/joint-s0/model_last.pth \
   --port 8010
 ~~~
 
@@ -169,10 +169,10 @@ closed-loop 显式提供对应训练 config，下面与上面的 `joint` server 
 ~~~bash
 python -m finetune.OHT.eval closed-loop \
   --config finetune/OHT/configs/joint.yaml \
-  --server http://127.0.0.1:8010 --replay /data/oht/replay-v3 \
-  --environment my_isaac_oht:create --cases /data/oht/eval-cases.jsonl \
+  --server http://127.0.0.1:8010 --replay /common-data-32t/data/robot_data/oht_curobo_pd_v423/replay-v3 \
+  --environment my_isaac_oht:create --cases /common-data-32t/data/robot_data/oht_curobo_pd_v423/eval-cases.jsonl \
   --executor-id verified-joint-v1 \
-  --output /data/oht/eval/joint.json
+  --output /common-data-32t/data/robot_data/oht_curobo_pd_v423/eval/joint.json
 ~~~
 
 environment factory 收到的 contract 包含 action_spec，adapter 必须按该模式解释 step(action)。省略 --config 保持旧 EEF 行为。报告记录 action_spec，失败/超时继续计入分母。

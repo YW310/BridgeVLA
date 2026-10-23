@@ -38,7 +38,7 @@ flowchart LR
 
 ```bash
 python -m finetune.OHT.vla_server \
-  --model-path /data/oht/runs/baseline-s0 \
+  --model-path /common-data-32t/data/robot_data/oht_curobo_pd_v423/runs/baseline-s0 \
   --device cuda:0 \
   --host 0.0.0.0 \
   --port 8010 \

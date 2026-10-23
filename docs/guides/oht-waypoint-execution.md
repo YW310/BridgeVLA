@@ -38,7 +38,7 @@ python /home/yiwei/BridgeVLA/tools/oht_bridgevla_client.py \
   --task disassemble_left --scene-preset oht-v4 --camera-source usd \
   --ee-pose-source controller --execution-mode waypoint \
   --initial-state-root /home/yiwei/BridgeVLA/oht_curobo_pd_v423 \
-  --initial-state-contract /data/oht/replay-source-v3 \
+  --initial-state-contract /common-data-32t/data/robot_data/oht_curobo_pd_v423/replay-source-v3 \
   --initial-state-episode 0 --initial-state-frame 0 \
   --episodes 1 --max-steps 20 \
   --output logs/bridgevla-policy-paired-01 --device cuda:0
@@ -58,7 +58,7 @@ python /home/yiwei/BridgeVLA/tools/oht_bridgevla_client.py \
   --mode replay --replay-targets keypoints \
   --isaaclab-root "$PWD" \
   --replay-root /home/yiwei/BridgeVLA/oht_curobo_pd_v423 \
-  --replay-contract /data/oht/replay-source-v3 \
+  --replay-contract /common-data-32t/data/robot_data/oht_curobo_pd_v423/replay-source-v3 \
   --task disassemble_left --replay-episode 0 --replay-start-frame 0 \
   --scene-preset oht-v4 --ee-pose-source controller \
   --output logs/bridgevla-gt-keypoints-01 --device cuda:0

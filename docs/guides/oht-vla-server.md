@@ -25,7 +25,7 @@ GPU_ID=1 bash finetune/OHT/vla_server.sh \
 | 预训练资源 | 按加载环境增加 `--pretrain-path /path/to/BridgeVLA-pretrain`；PaliGemma/processor 资源需可访问或已缓存 |
 | 离线加载 | 资源齐备后设置 `HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1` |
 | 外部物体预测 | `--predictor` 与 `--predictor-provenance` 必须匹配 checkpoint 的训练记录 |
-| 预热 | 增加 `--warmup-replay /data/oht/replay-source-v3 --warmup-split val --warmup-index 0`；replay 契约须匹配 |
+| 预热 | 增加 `--warmup-replay /common-data-32t/data/robot_data/oht_curobo_pd_v423/replay-source-v3 --warmup-split val --warmup-index 0`；replay 契约须匹配 |
 | 指定解释器 | `PYTHON_BIN=/path/to/env/bin/python` |
 
 命令行参数优先于对应环境变量。服务使用单进程、单模型，不用 `torchrun`；多个模型分别使用不同端口和日志目录。
@@ -169,7 +169,7 @@ python /home/yiwei/BridgeVLA/tools/oht_bridgevla_client.py \
 
 默认恢复所选轨迹起始帧的机械臂/夹爪，逐帧将下一帧实测 TCP 作为绝对 EEF 目标，沿用在线执行器；不执行原始 `action` 列。默认回放一次直到轨迹结束，可用 `--replay-start-frame N` 选择起点、`--max-steps N` 限制长度。默认不绑定相机；去掉 `--headless` 可在仿真窗口观察运动。
 
-标定默认读取仓库 `dataset.yaml` 并解析源数据 metadata，也可用 `--replay-contract /data/oht/replay-source-v3` 复用已有训练缓存标定。逐帧回放要求记录帧间隔与环境 `step_dt` 一致、`--max-substeps 1`。需要检验未来关键点执行时，在该命令中增加 `--replay-targets keypoints --replay-contract /data/oht/replay-source-v3`，换用新的输出目录；自动使用 waypoint 执行，不强制源帧周期匹配。物体默认保留环境 reset 状态；物体映射、关节顺序和诊断字段见 [OHT replay 说明](oht-replay.md)。
+标定默认读取仓库 `dataset.yaml` 并解析源数据 metadata，也可用 `--replay-contract /common-data-32t/data/robot_data/oht_curobo_pd_v423/replay-source-v3` 复用已有训练缓存标定。逐帧回放要求记录帧间隔与环境 `step_dt` 一致、`--max-substeps 1`。需要检验未来关键点执行时，在该命令中增加 `--replay-targets keypoints --replay-contract /common-data-32t/data/robot_data/oht_curobo_pd_v423/replay-source-v3`，换用新的输出目录；自动使用 waypoint 执行，不强制源帧周期匹配。物体默认保留环境 reset 状态；物体映射、关节顺序和诊断字段见 [OHT replay 说明](oht-replay.md)。
 
 ## 检查与 replay 烟测
 
@@ -178,7 +178,7 @@ python /home/yiwei/BridgeVLA/tools/oht_bridgevla_client.py \
 ```bash
 python tools/smoke_oht_vla_server.py \
   --server http://109.105.46.126:8004 \
-  --replay /data/oht/replay-source-v3 \
+  --replay /common-data-32t/data/robot_data/oht_curobo_pd_v423/replay-source-v3 \
   --split val --index 0
 ```
 
