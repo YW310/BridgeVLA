@@ -10,7 +10,7 @@
 python -m pip install -r finetune/OHT/requirements-server.txt
 
 GPU_ID=1 bash finetune/OHT/vla_server.sh \
-  --model-path /data/oht/runs/baseline-s0/model_last.pth \
+  --model-path /home/yiwei/project/BridgeVLA/finetune/OHT/runs/baseline-eef-8gpu-s0/model_last.pth \
   --device cuda:0 \
   --host 0.0.0.0 --port 8004 \
   --visualize-every 10 \
