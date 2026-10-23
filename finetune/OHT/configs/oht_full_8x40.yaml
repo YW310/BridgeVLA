@@ -4,8 +4,8 @@ mode: baseline
 action_mode: eef
 batch_size: 4
 num_workers: 3
-epochs: 100
-train_iter: 160000
+epochs: 60
+train_iter: 40000
 global_batch_size: 192
 max_optimizer_steps: 83300
 checkpoint_every_epochs: 10
