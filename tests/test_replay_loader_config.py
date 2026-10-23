@@ -71,7 +71,7 @@ class ReplayLoaderConfigTest(unittest.TestCase):
                                         f'rlbench_o2_internal_slots_{profile}.yaml'))
                 self.assertFalse(cfg.pin_memory)
                 self.assertEqual(cfg.num_workers, 2)
-                self.assertEqual(cfg.bs, 16)
+                self.assertEqual(cfg.bs, 24)
                 self.assertEqual(cfg.global_batch_size, 192)
 
     def test_existing_joint_profile_keeps_its_loader_settings(self):

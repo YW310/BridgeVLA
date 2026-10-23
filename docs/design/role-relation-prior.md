@@ -29,7 +29,7 @@ flowchart TB
     P --> C
     C --> VF["Refine VLM + 同次 text pooling：共享 backbone 权重"]
     VF --> AR["opt-in：继承角色 → 原 anchor / adapter"]
-    VF -.可选局部读出.-> MR["Refine mask head + RGB/XYZ 细节"]
+    VF -.可选局部读出.-> MR["Coarse-conditioned 局部 query + mask head + RGB/XYZ"]
     K --> MR
     MR --> AR
     K --> AR
@@ -68,10 +68,10 @@ flowchart TB
 | 已实现，数据兼容 | 从旧 replay 的角色 `kind` 只读派生 presence/known；NULL loss 监督实际 posterior |
 | 已实现，三个独立开关 | 混合 role-map 监督、coarse→refine 角色继承、几何 unknown 时保留可信 token；默认关闭 |
 | 已实现，结构对照 | `object_slots.predictor_type: role_queries`：两个有序角色 queries，默认仍为 `slots`；闭环收益待验证 |
-| 已实现，闭环待验证 | `refine_role_masks`：coarse 角色条件 + refine VLM/RGB/XYZ 局部读出；独立弱监督，复用原 anchor/action 路径 |
+| 已实现，闭环待验证 | `refine_role_masks`：局部读出；`refine_local_query`：coarse-conditioned cross-attention + 投影/几何偏置，更新 tokens/maps 后复用 anchor/action |
 | 后续可选 | temporal memory、可信历史点、渲染改进；各自单独验收 |
 
-当前普通 internal-slot 配置为 **2 个无序 slots**，joint 为 **6 个**；独立 `role_queries` 配置才是两个固定语义 queries。
+当前普通 internal-slot 配置为 **2 个无序 slots**，joint/cross-scale 为 **6 个**；`role_queries` 与当前 `internal_slots_refine` 使用两个固定 T/R 语义 queries。
 旧配置两级独立预测；`internal_slots_cross_scale` 和 `role_queries` 显式启用本步继承，不自动改变旧配置。
 旧配置保留旧动作路由；冻结范围见[训练设置](#训练设置)。只有显式选择新 YAML/开关才会切换结构或路由。
 
@@ -202,7 +202,7 @@ q_T / q_R + instruction + 当前状态
 - 没有可靠 Target absence 标签时不新增 Target NULL head；终止占位不参与角色 loss。
 - 复用 text pooling、soft geometry 与共享动作路由，保留 action 到 queries/maps/anchor 的梯度。
 
-新结构由独立 [role-query 配置](../../finetune/RLBench/configs/rlbench_o2_role_queries.yaml)启用，旧配置仍为无序 slots；checkpoint 记录 predictor type。
+新结构由独立 [role-query 配置](../../finetune/RLBench/configs/rlbench_o2_role_queries.yaml)及当前 refine 配置启用，其余 slots 配置不变；checkpoint 记录 predictor type。
 从 slots 切换时用 `--init_checkpoint`，联合重置 predictor 与 adapter、沿用兼容 backbone/action 权重，不沿用旧 optimizer resume。
 [SlotVLA](https://arxiv.org/html/2511.06754#S4)已有对象 slots、relation queries，且依赖更丰富的实例/时序监督；
 [SR-WM](https://arxiv.org/abs/2608.22294)已有 task-conditioned functional role binding；
@@ -235,12 +235,17 @@ anchor 分开读取全局角色条件与局部空间支持；同时开启 token 
 首版继承 tokens/NULL/可信几何，并重投影 coarse 预测点提示。逐点/视角要求当前 rendered XYZ 对应，
 容差为 unit-cube 三个像素 pitch；背景、越界或被其他表面覆盖不作为本角色支持。量化容差不保证身份正确。
 继承或 direct role-query 模式的 XYZ 使用干净的实际 crop 坐标，不受 `norm_corr` 或 RGB augmentation 污染；即使关闭继承做 direct-query 消融也保留此坐标契约。VLM RGB 路径不变。
-`internal_slots_refine` 增加 `RoleConditionedRefineMaskHead`：
-`q_r = W_q t_r^c + e_r`，`M_r^f = sigmoid(q_r^T K(D^f)/sqrt(d))`。
+`internal_slots_refine` 以两个固定 T/R queries 为 coarse 条件，关闭无序匹配、额外 mixed-map 与 diversity 项，再增加 `RoleConditionedRefineMaskHead`：
+旧静态路径为 `q_r = W_q t_r^c + e_r`，`M_r^f = sigmoid(q_r^T K(D^f)/sqrt(d))`。
 `D^f` 融合当前 refine VLM 特征和 RGB/XYZ 的半/四分辨率 CNN 细节；不额外运行 VLM/SAM。
-新 maps 直接替换局部 prior，送入原 anchor/action 路径；不增加独立 role/objectness/NULL selector，不重算全局 token 或几何。
-沿用继承 packet 的保守局部 role-valid 与当前有效 XYZ：允许区域长出旧点提示，但不能激活无任何继承局部支持的角色。
-Reference NULL 空间质量只应用一次；`refine_mask_detach` 仅切断新 maps 的 action 梯度，global token/geometry 路径不变。
+当前 refine YAML 同时开启 `refine_local_query`：
+`t_r^f = t_r^c + W_o CrossAttn(LN(t_r^c), D^f, XYZ^f; B_r)`，
+`L_r^f = q(t_r^f)^T K(D^f)/sqrt(d) + alpha B_r`。
+仅两个独立 query 读取下采样局部特征，不做角色间 self-attention；`W_o` 和 `alpha` 零初始化。
+`B_r` 来自归一化投影提示与变换后的中心/spread 距离，Reference 的 NULL mass 不作为空间位置强度重复注入。
+当前有效 XYZ 上的点提示或三倍 spread 近邻可提供局部证据；spread 下限为三个像素 pitch，不代表完整物体尺寸，也不认证身份。
+没有证据的角色保持 coarse token、局部 map 为零；有证据时更新 token 和 map 一起进入原 anchor/action，不增加 role/objectness/NULL selector，不重算 coarse 几何。
+Reference NULL 空间质量只应用一次；`refine_mask_detach` 仅切断 maps 的 action 梯度，更新 token 仍可接收 action 梯度。
 当前 teacher 是稀疏高斯点投影：新增 BCE/Dice 只在有效角色/视角、有效 XYZ 与非零 teacher footprint 内计算，未知像素不作为背景；这不是密集实例分割监督。精细边界及闭环提升均未验证。
 
 #### 局部支持与坐标
@@ -301,6 +306,8 @@ coarse/refine 分工已有[BridgeVLA++](https://arxiv.org/html/2608.05042#S4)先
 | B | A+M 加本步跨尺度继承 | crop 外 Reference 是否仍误切换？ |
 | B+T | B 再启用 token 保留 | 不重选后，crop 外角色条件是否仍被屏蔽？ |
 | C | B+T 的 coarse 改为两个固定 T/R queries；其余路由/数据/预算相同 | 去匹配简化是否优于 6-slot 对照？ |
+| C+R | C 只开启 `refine_role_masks`，`refine_local_query=False`，其余设置相同 | 局部读出是否改善角色图与闭环？ |
+| C+R+Q | C+R 再启用 `refine_local_query`；当前 refine YAML 默认 | 局部证据能否改善角色条件传递，而非仅改善辅助 loss？ |
 
 GT 准入采用同数据、初始化、解冻范围、训练步数和评估 episodes，至少 3 个训练 seeds；
 配对闭环成功率差的 95% CI 下界为正才进入预测联合实验。

@@ -91,6 +91,7 @@ def _model_guard_namespace(**overrides):
         'object_conditioning_inherit_coarse_roles': False,
         'object_conditioning_preserve_role_tokens': False,
         'object_conditioning_refine_role_masks': False,
+        'object_conditioning_refine_local_query': False,
         'object_conditioning_refine_mask_detach': False,
         'stage_two': True,
         'add_corr': True,
@@ -259,7 +260,8 @@ class RoleFeatureConfigTest(unittest.TestCase):
         namespace['save_agent'](SimpleNamespace(_network=model), 'unused.pth', 2)
         settings = saved[0][0]['object_conditioning']
         self.assertEqual(set(settings), set(FLAGS) | {
-            'shared_action_features', 'use_context', 'refine_role_masks', 'refine_mask_detach'})
+            'shared_action_features', 'use_context', 'refine_role_masks',
+            'refine_local_query', 'refine_mask_detach'})
         for flag in FLAGS:
             self.assertIs(settings[flag], True)
 

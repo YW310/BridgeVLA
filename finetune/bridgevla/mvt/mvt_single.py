@@ -804,6 +804,11 @@ class MVT(nn.Module):
                 out['object_slot_masks_refined'] = True
                 out['object_refine_mask_logits'] = object_slot_output['refine_mask_logits']
                 out['object_refine_pixel_valid'] = object_slot_output['refine_pixel_valid']
+            if object_slot_output.get('queries_refined', False):
+                out['object_slot_queries_refined'] = True
+                for key in ('refine_query_active', 'refine_point_hint_valid',
+                            'refine_query_update_norm'):
+                    out['object_' + key] = object_slot_output[key]
             if 'predictor_type' in object_slot_output:
                 out['object_slot_predictor_type'] = object_slot_output['predictor_type']
             if object_slot_target_heatmap is not None:

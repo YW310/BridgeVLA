@@ -92,9 +92,12 @@ class MVT(nn.Module):
         object_conditioning_inherit_coarse_roles=False,
         object_conditioning_preserve_role_tokens=False,
         object_conditioning_refine_role_masks=False,
+        object_conditioning_refine_local_query=False,
         object_conditioning_refine_mask_detach=False,
     ):
         super().__init__()
+        if object_conditioning_refine_local_query and not object_conditioning_refine_role_masks:
+            raise ValueError('refine_local_query requires refine_role_masks')
         if object_conditioning_refine_role_masks and not (
             object_conditioning_inherit_coarse_roles and object_conditioning_preserve_role_tokens
         ):
@@ -190,6 +193,7 @@ class MVT(nn.Module):
         del args['object_conditioning_inherit_coarse_roles']
         del args['object_conditioning_preserve_role_tokens']
         del args['object_conditioning_refine_role_masks']
+        del args['object_conditioning_refine_local_query']
         del args['object_conditioning_refine_mask_detach']
 
         self.rot_ver = rot_ver
@@ -215,6 +219,7 @@ class MVT(nn.Module):
         self.object_conditioning_inherit_coarse_roles = bool(object_conditioning_inherit_coarse_roles)
         self.object_conditioning_preserve_role_tokens = bool(object_conditioning_preserve_role_tokens)
         self.object_conditioning_refine_role_masks = bool(object_conditioning_refine_role_masks)
+        self.object_conditioning_refine_local_query = bool(object_conditioning_refine_local_query)
         self.object_conditioning_refine_mask_detach = bool(object_conditioning_refine_mask_detach)
         oracle_prior_channels = 2 if oracle_prior_relation else 1
         # for verifying the input
@@ -289,7 +294,8 @@ class MVT(nn.Module):
                      and self.object_conditioning_inherit_coarse_roles) else None
         )
         self.refine_role_mask_head = (
-            RoleConditionedRefineMaskHead(self.mvt1.vlm_dim, object_slot_dim)
+            RoleConditionedRefineMaskHead(self.mvt1.vlm_dim, object_slot_dim,
+                                         local_query=self.object_conditioning_refine_local_query)
             if self.object_conditioning_refine_role_masks else None
         )
 

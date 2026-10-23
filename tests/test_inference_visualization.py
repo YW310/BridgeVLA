@@ -40,6 +40,21 @@ def _stage_output(views=3, slots=2, height=12, width=10):
 
 
 class InferenceVisualizationTest(unittest.TestCase):
+    def test_local_query_diagnostics_keep_coarse_binding_and_report_evidence(self):
+        stage = _stage_output()
+        stage.update(object_slot_roles_inherited=True, object_slot_masks_refined=True,
+                     object_slot_queries_refined=True,
+                     object_refine_query_active=torch.tensor([[True, False]]),
+                     object_refine_point_hint_valid=torch.tensor([[False, False]]),
+                     object_refine_query_update_norm=torch.tensor([[.5, 0.]]))
+        result = visualization.internal_slot_stage_diagnostics(stage)
+        self.assertEqual(result['role_source'], 'coarse')
+        self.assertEqual(result['query_source'], 'coarse_conditioned_refine')
+        self.assertEqual(result['refine_query_active'], [True, False])
+        self.assertEqual(result['refine_point_hint_valid'], [False, False])
+        self.assertEqual(result['refine_query_update_norm'], [.5, 0.])
+        json.dumps(result)
+
     def test_refined_masks_keep_coarse_roles_and_report_local_mask_source(self):
         stage = _stage_output()
         stage['object_slot_roles_inherited'] = True

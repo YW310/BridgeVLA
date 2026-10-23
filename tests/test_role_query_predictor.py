@@ -153,6 +153,8 @@ class RoleQueryPredictorTest(unittest.TestCase):
             return SimpleNamespace(vlm_dim=4)
 
         namespace = {'nn': torch.nn, 'copy': copy, 'MVTSingle': backbone}
+        from bridgevla.models.refine_role_masks import RoleConditionedRefineMaskHead
+        namespace['RoleConditionedRefineMaskHead'] = RoleConditionedRefineMaskHead
         for name in ('InternalRoleQueryPredictor', 'InternalObjectSlotPredictor',
                      'OraclePriorFeatureAdapter', 'OracleRelationAnchorFeatureAdapter',
                      'OracleRelationGatedFeatureAdapter'):
@@ -180,6 +182,12 @@ class RoleQueryPredictorTest(unittest.TestCase):
             self.assertIsInstance(direct.object_slot_predictor1, InternalRoleQueryPredictor)
             self.assertIsNone(direct.object_slot_predictor2)
             self.assertNotIn('object_slot_predictor_type', captured)
+            refined = model_class(**dict(
+                arguments, object_conditioning_refine_role_masks=True,
+                object_conditioning_refine_local_query=True))
+            self.assertIsNotNone(refined.refine_role_mask_head.local_query)
+            self.assertIsNone(refined.object_slot_predictor2)
+            self.assertNotIn('object_conditioning_refine_local_query', captured)
             ablated = model_class(**dict(arguments, object_conditioning_inherit_coarse_roles=False))
             self.assertIsInstance(ablated.object_slot_predictor2, InternalRoleQueryPredictor)
             legacy = model_class(**dict(arguments, object_slot_predictor_type='slots', object_slot_num_slots=6))

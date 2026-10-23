@@ -42,7 +42,7 @@ RVTAgent.update/act
 | [object_conditioning.py](../../finetune/bridgevla/models/object_conditioning.py) | `pool_instruction_context()`、`soft_role_geometry()`、`action_feature_routes()` |
 | 同上 | `role_supervision_mask()` 统一 stage/role/view 支持；`mixed_role_map_losses()`、`hungarian_role_slot_losses()`、`reference_null_loss()` |
 | [cross_scale_roles.py](../../finetune/bridgevla/models/cross_scale_roles.py) | `inherit_coarse_roles()`、`transform_role_geometry()`；本步角色传递与局部提示支持 |
-| [refine_role_masks.py](../../finetune/bridgevla/models/refine_role_masks.py) | `RoleConditionedRefineMaskHead.forward()`；局部 VLM/RGB/XYZ 条件化读出；`refine_role_mask_losses()` 屏蔽未知像素 |
+| [refine_role_masks.py](../../finetune/bridgevla/models/refine_role_masks.py) | `CoarseConditionedLocalQuery.forward()` 更新 coarse-bound tokens；局部 mask head 读出；`refine_role_mask_losses()` 屏蔽未知像素 |
 | [train.py](../../finetune/RLBench/train.py) | `load_initial_model_checkpoint()`、`load_training_checkpoint()` |
 | [training_utils.py](../../finetune/RLBench/training_utils.py) | `resolve_training_epochs()`、`build_batch_plan()`、`optimizer_steps_per_epoch()`；显式 CLI 优先，实际预算存入训练配置 |
 | [compare_paired_success.py](../../tools/compare_paired_success.py) | `compare()`，同 episodes 配对闭环 CI |
@@ -60,7 +60,7 @@ RVTAgent.update/act
 | `rlbench_o2_semantic_gt_joint.yaml` | opt-in shared action + instruction，先做 GT 对照 |
 | `rlbench_o2_internal_slots_joint.yaml` | 6 个无序 slots，soft roles/geometry + joint training；GT 准入后实验 |
 | `rlbench_o2_internal_slots_cross_scale.yaml` | 同 joint 预算，6 无序 slots，显式启用 mixed supervision / inheritance / token preservation |
-| `rlbench_o2_internal_slots_refine.yaml` | coarse 角色继承 + 学习式局部 mask 读出；microbatch 16 / effective batch 192，projector 冻结 |
+| `rlbench_o2_internal_slots_refine.yaml` | 2 固定 T/R queries + coarse-conditioned 局部 query + mask 读出；microbatch 24 / effective batch 192，projector 冻结 |
 | `rlbench_o2_role_queries.yaml` | 2 有序 T/R queries；直接角色图 + Reference NULL loss，本步继承/token 保留；与 6-slot 跨尺度路线分开消融 |
 
 默认旧配置不切换新路由；数值与闭环收益须在目标环境验收。

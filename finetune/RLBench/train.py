@@ -536,6 +536,7 @@ def save_agent(
         'inherit_coarse_roles': bool(getattr(conditioning_model, 'object_conditioning_inherit_coarse_roles', False)),
         'preserve_role_tokens': bool(getattr(conditioning_model, 'object_conditioning_preserve_role_tokens', False)),
         'refine_role_masks': bool(getattr(conditioning_model, 'object_conditioning_refine_role_masks', False)),
+        'refine_local_query': bool(getattr(conditioning_model, 'object_conditioning_refine_local_query', False)),
         'refine_mask_detach': bool(getattr(conditioning_model, 'object_conditioning_refine_mask_detach', False)),
     }
     if semantic_contract is not None:
@@ -576,6 +577,7 @@ def load_training_checkpoint(agent, path, semantic_contract=None):
         'inherit_coarse_roles': bool(getattr(model, 'object_conditioning_inherit_coarse_roles', False)),
         'preserve_role_tokens': bool(getattr(model, 'object_conditioning_preserve_role_tokens', False)),
         'refine_role_masks': bool(getattr(model, 'object_conditioning_refine_role_masks', False)),
+        'refine_local_query': bool(getattr(model, 'object_conditioning_refine_local_query', False)),
         'refine_mask_detach': bool(getattr(model, 'object_conditioning_refine_mask_detach', False)),
     }
     stored_conditioning = checkpoint.get('object_conditioning', {})
@@ -587,7 +589,7 @@ def load_training_checkpoint(agent, path, semantic_contract=None):
     routing_keys = (
         'shared_action_features', 'use_context',
         'inherit_coarse_roles', 'preserve_role_tokens',
-        'refine_role_masks',
+        'refine_role_masks', 'refine_local_query',
     )
     routing_changed = any(
         bool(stored_conditioning.get(key, False)) != expected_conditioning[key]
@@ -1153,6 +1155,7 @@ def experiment(cmd_args):
         object_conditioning_inherit_coarse_roles=exp_cfg.object_conditioning.inherit_coarse_roles,
         object_conditioning_preserve_role_tokens=exp_cfg.object_conditioning.preserve_role_tokens,
         object_conditioning_refine_role_masks=exp_cfg.object_conditioning.refine_role_masks,
+        object_conditioning_refine_local_query=exp_cfg.object_conditioning.refine_local_query,
         object_conditioning_refine_mask_detach=exp_cfg.object_conditioning.refine_mask_detach,
         object_slots_enabled=exp_cfg.object_slots.enabled,
         object_slot_num_slots=exp_cfg.object_slots.num_slots,

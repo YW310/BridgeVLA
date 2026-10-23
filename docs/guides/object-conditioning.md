@@ -11,7 +11,7 @@ baseline 的安装/预训练/其他 benchmark 命令仍见[训练](training.md)�
 ## 配置选择
 
 三种 object 来源共用 prior → 原 relation/anchor → action decoder；差别是来源、特征路由与训练范围。
-以下配置均在 `finetune/RLBench/configs/`；只有 `role_queries` 切换 object predictor 结构，旧配置保持原样。
+以下配置均在 `finetune/RLBench/configs/`；`role_queries` 和当前 `internal_slots_refine` 使用固定双 query，其余 slots 配置不变。
 
 | 配置（省略 `rlbench_o2_` 前缀与 `.yaml`） | Object 来源 | 动作特征 | 评估 provider |
 | --- | --- | --- | --- |
@@ -23,7 +23,7 @@ baseline 的安装/预训练/其他 benchmark 命令仍见[训练](training.md)�
 | `semantic_gt_joint` | Semantic-GT | instruction + 完整动作共享 | `rlbench_gt` |
 | `internal_slots_joint` | 6 个无序 slots，128 dim | soft tokens/geometry + instruction + 完整动作共享 | `none` |
 | `internal_slots_cross_scale` | 同一 coarse 的 6 slots | joint + 混合 map 监督 + 本步继承 + token 保留 | `none` |
-| `internal_slots_refine` | 同一 coarse 的 6 slots | 跨尺度继承 + RGB/XYZ 条件化局部 mask head，复用原动作路径 | `none` |
+| `internal_slots_refine` | 两个固定 T/R queries | coarse-conditioned 局部 query 更新 + RGB/XYZ mask head；更新 token 进入 anchor | `none` |
 | `role_queries` | 两个有序 T/R queries | joint + 直接角色图监督 + 本步继承 + token 保留 | `none` |
 
 `rlbench_o2_semantic_roles.yaml` **不是训练配置**：它定义任务/variation 的 T/R、顺序与 NULL 语义，摘要进入数据/checkpoint contract。
@@ -308,10 +308,12 @@ ORACLE_DEBUG=0 SAVE_VIDEO=0 VISUALIZE=0 bash eval.sh
 
 ### 条件化 refine masks（opt-in）
 
-`rlbench_o2_internal_slots_refine.yaml` 保留 coarse 角色/token/NULL/几何，新增轻量局部 head：
-refine VLM + 半/四分辨率 RGB/XYZ 细节 → T/R maps → 原 anchor → 完整动作。不重选 slots 或角色。
+`rlbench_o2_internal_slots_refine.yaml` 使用两个固定 T/R queries（`predictor_type: role_queries, num_slots: 2`），不做无序匹配或 slot 混合。
+coarse maps 直接监督，关闭额外 mixed-map 与 diversity 项；继承 coarse 角色/token/NULL/几何，新增轻量局部 head：
+coarse T/R query + refine VLM/RGB/XYZ + 投影/几何空间偏置 → 一层局部 cross-attention → 更新的 T/R tokens 与 maps → 原 anchor → 完整动作。不重选角色，不增加 VLM 前向。
 已有 semantic buffer 不重写；当前 Gaussian 点投影只能作弱监督，loss 屏蔽空视图、无效几何及 teacher footprint 外未知像素。
-沿用继承的局部 role-valid，因此无任何 coarse 局部支持的对象不会凭空激活。开启后不保证数值等于旧模型，闭环收益待验收。
+局部 query 要求可靠 coarse token，以及点提示或变换后几何附近的真实 rendered XYZ；几何近邻可恢复点提示失效的局部条件，但不是实例身份认证。
+没有局部证据时 token 原样保留、局部 map 为零，Reference 不会改成 NULL。新增 token 更新和输出空间偏置均零初始化，整个新模式并不保证等同旧路径；闭环收益待验收。
 
 ```bash
 cd finetune/RLBench
@@ -322,13 +324,18 @@ GPUS_PER_NODE=2 bash train_8x40.sh \
   --exp_cfg_opts "seed 0"
 ```
 
-新配置冻结 vision tower、Gemma 前 18 层及 projector；microbatch 16 / effective batch 192。公平对照时统一这些设置。
+新配置冻结 vision tower、Gemma 前 18 层及 projector；microbatch 24 / effective batch 192。公平对照时统一这些设置。
 初始化使用完整模型 `.pth`，不是预训练目录；架构变化不恢复旧 optimizer，也不传 adapter-only 来代替联合训练。
-`object_conditioning.refine_role_masks` 默认 False；`refine_mask_detach True` 为 action-map detach 对照，分割监督仍保留。
+当前 YAML 已从旧版 6-slot 改为双 query：旧 checkpoint 评估仍用其训练保存的 `exp_cfg.yaml`，不要直接套用新版配置。
+从旧 `slots` checkpoint 初始化会重置 predictor、adapter 和 refine head；从同为 `role_queries` 的 checkpoint 初始化可保留兼容权重。
+`object_conditioning.refine_role_masks` / `refine_local_query` 全局默认 False，当前 refine YAML 开启二者；后者依赖前者。
+`refine_mask_detach True` 只切断 maps 的 action 梯度，更新后的 token 仍进入 anchor，分割监督仍保留；不是整个局部 query 的梯度隔离。
 `rvt.object_refine_mask_loss_weight` 控制新增 loss（默认 1.0）。新 mask 接收 action 梯度的默认值为 joint；不是已验证最优设置。
-评估使用训练保存的配置、`ORACLE_PROVIDER=none`；复用预测-only 闭环命令。JSON 同时标注 `role_source=coarse`、`mask_source=refine`。
+对照只改开关：`refine_local_query=False, refine_role_masks=False` 为继承提示；`False, True` 为旧静态 mask head；`True, True` 为局部 query。保持初始化来源、冻结范围和预算相同。
+同为双 query 的静态 head checkpoint 可用 `--init_checkpoint` 保留旧权重、补建零初始化更新分支；不能用旧 optimizer resume，评估不能跳过新开关的 checkpoint 检查。
+评估使用训练保存的配置、`ORACLE_PROVIDER=none`。JSON 标注 `role_source=coarse`、`mask_source=refine`、`query_source=coarse_conditioned_refine`，并记录 point-hint validity、query active、token update norm，便于做 token 置空/打乱干预对照。
 单步 smoke 可在 opts 中加入 `tasks place_cups bs 1 global_batch_size 1 num_workers 0 max_optimizer_steps 1`。
-OHT `role_queries` 可在训练配置的 `object` 中设置同名 `refine_role_masks` / `refine_mask_detach`；`role_loss.refine_map` 控制权重，默认关闭，不修改控制器。
+OHT `role_queries` 可在 `object` 中设置同名 `refine_role_masks` / `refine_local_query` / `refine_mask_detach`；`role_loss.refine_map` 控制权重，默认关闭，不修改 baseline 或控制器。
 
 ### 固定 T/R role queries（opt-in）
 

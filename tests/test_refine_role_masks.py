@@ -44,6 +44,46 @@ class RefineRoleMaskTest(unittest.TestCase):
         self.assertNotIn('role_logits', result)
         self.assertNotIn('slot_masks', result)
 
+    def test_fixed_role_queries_transport_into_refine_with_live_gradients(self):
+        from finetune.bridgevla.models.oracle_prior import InternalRoleQueryPredictor
+        from finetune.bridgevla.models.cross_scale_roles import inherit_coarse_roles
+
+        head, local_features, rgb, xyz, _ = self.inputs()
+        xyz = torch.full_like(xyz, .25)
+        coarse_features = torch.randn_like(local_features, requires_grad=True)
+        context = torch.randn(1, 4, requires_grad=True)
+        predictor = InternalRoleQueryPredictor(
+            4, 3, num_slots=2, slot_dim=8, decoder_layers=1, num_heads=2,
+            point_samples=4, confidence_threshold=0., use_context=True,
+            soft_conditioning=True,
+        )
+        coarse = predictor(coarse_features, xyz, context=context)
+        stage = {'object_slot_' + key: value for key, value in coarse.items()}
+        packet = inherit_coarse_roles(
+            stage, torch.zeros(1, 3), 1., xyz,
+            lambda points: points.new_full((1, points.shape[1], 3, 2), 6.25),
+        )
+        self.assertTrue(packet['valid'].all())
+        result = head(local_features, rgb, xyz, packet)
+        self.assertEqual(result['predictor_type'], 'role_queries')
+        self.assertIs(result['role_tokens'], coarse['role_tokens'])
+        self.assertIs(result['reference_null_probability'],
+                      coarse['reference_null_probability'])
+        self.assertTrue(result['roles_inherited'])
+        self.assertTrue(result['masks_refined'])
+        self.assertNotIn('slot_masks', result)
+        self.assertNotIn('role_logits', result)
+        result['prior'].square().mean().backward()
+        for value in (predictor.slot_queries, coarse_features,
+                      predictor.context_projection[-1].weight,
+                      predictor.reference_null_head.weight, head.query.weight):
+            self.assertIsNotNone(value.grad)
+            self.assertTrue(torch.isfinite(value.grad).all())
+            self.assertGreater(value.grad.abs().sum().item(), 0.)
+        # The context projection intentionally starts at zero: its weights
+        # learn on step one, while upstream text gradients start afterwards.
+        torch.testing.assert_close(context.grad, torch.zeros_like(context))
+
     def test_missing_local_reference_is_not_replaced_or_made_null(self):
         head, features, rgb, xyz, packet = self.inputs()
         packet['valid'][:, 1] = False

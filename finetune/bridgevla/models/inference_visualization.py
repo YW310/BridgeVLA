@@ -242,6 +242,11 @@ def internal_slot_stage_diagnostics(
         result['role_source'] = 'coarse'
         result['mask_source'] = ('refine' if stage_output.get('object_slot_masks_refined', False)
                                  else 'coarse_point_reprojection')
+    if stage_output.get('object_slot_queries_refined', False):
+        result['query_source'] = 'coarse_conditioned_refine'
+        for key in ('refine_query_active', 'refine_point_hint_valid',
+                    'refine_query_update_norm'):
+            result[key] = stage_output['object_' + key][0].detach().cpu().tolist()
     if direct:
         result['predictor_type'] = 'role_queries'
         # These are scores/validity gates, not calibrated object probabilities.

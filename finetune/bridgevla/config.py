@@ -81,6 +81,7 @@ _C.object_conditioning.inherit_coarse_roles = False
 _C.object_conditioning.preserve_role_tokens = False
 # Local readout of inherited roles; old configs keep point reprojection.
 _C.object_conditioning.refine_role_masks = False
+_C.object_conditioning.refine_local_query = False
 _C.object_conditioning.refine_mask_detach = False
 # Internal object-slot predictor. In o2_internal_slots mode Oracle objects are
 # supervision labels only and are never passed into the policy adapter.
