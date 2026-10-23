@@ -19,7 +19,7 @@ from ..data.common import write_json
 from ..run_directory import RUN_TIMEZONE
 from .inference_api import API_VERSION, OBSERVATION_FORMAT, APIError, decode_request, text
 from .observation_adapter import observation_schema, decode_prepared
-from .raw_observation import RAW_FORMAT, decode_raw, raw_schema
+from .raw_observation import RAW_FORMAT, data_profiles, decode_raw, raw_schema
 
 LOG = logging.getLogger(__name__)
 
@@ -271,13 +271,28 @@ class InferenceService:
             raise APIError(409, "stale_request", "Expected the next step, a newer timestamp and the same instruction")
         stamp = perf_counter()
         raw = request['observation_format'] == RAW_FORMAT
+        due = self.visualizer is not None and self.visualizer.due(request['step'])
+        sensor_observation = None
+        def capture_sensors(values, config, tcp):
+            nonlocal sensor_observation
+            from .sensor_visualization import raw_sensor_snapshot
+            sensor_observation = raw_sensor_snapshot(values, config, tcp)
         pending = None
         if raw:
-            observation, pending = decode_raw(request['observation'], self.policy, self.gripper_history)
+            observation, pending = decode_raw(request['observation'], self.policy, self.gripper_history,
+                                              sensor_callback=capture_sensors if due else None)
             identity = (RAW_FORMAT, request['observation']['task'], request['observation']['data_profile'])
         else:
             observation = decode_prepared(request["observation"], self.policy, self.fields)
             identity = (OBSERVATION_FORMAT,)
+        if due and sensor_observation is None:
+            try:
+                from .sensor_visualization import prepared_sensor_snapshot
+                config = (data_profiles(self.policy)[request['observation']['data_profile']] if raw else
+                          self.policy.contract['data_config'])
+                sensor_observation = prepared_sensor_snapshot(observation, config)
+            except Exception:
+                LOG.warning('Prepared sensor visualization snapshot skipped', exc_info=True)
         if self.input_identity is not None and identity != self.input_identity:
             raise APIError(409, 'observation_conflict', 'Use /reset before changing format, task or data profile')
         prepare_ms = (perf_counter() - stamp)*1000
@@ -289,7 +304,6 @@ class InferenceService:
                 self.episode = episode
                 self.episodes.add(episode)
         captured, capture_errors = [], []
-        due = self.visualizer is not None and self.visualizer.due(request['step'])
         def capture(payload):
             captured.append(payload)
         # Opt in to nonfatal diagnostic construction errors; no policy retry.
@@ -304,7 +318,8 @@ class InferenceService:
                 if capture_errors or len(captured) != 1:
                     raise ValueError('Diagnostic capture failed: ' + (', '.join(capture_errors) or 'expected one payload'))
                 visualization = self.visualizer.submit(captured[0], request, action,
-                                                        self.policy.action_config, observation)
+                                                        self.policy.action_config, observation,
+                                                        sensor_observation=sensor_observation)
                 self.visualization_capture_error = None
             except Exception as exc:
                 LOG.warning('Online visualization skipped: %s', exc)

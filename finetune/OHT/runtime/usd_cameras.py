@@ -2,7 +2,7 @@
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from ..data.geometry import pose_matrix
+from ..data.geometry import pose_matrix, transform_matrix
 from .isaaclab_runtime import IsaacLabRuntime
 from .joint_executor import numpy_value
 
@@ -33,6 +33,35 @@ def projection_intrinsics(params, width, height):
     if not np.isfinite(matrix).all() or matrix[0, 0] <= 0 or matrix[1, 1] <= 0:
         raise ValueError('Invalid pinhole projection from camera_params')
     return matrix
+
+
+def render_camera_matrix(params, metres_per_unit):
+    """Recover render-time OpenGL camera->world in metres.
+
+    Replicator cameraViewTransform multiplies row vectors from world to camera:
+    its published example for a camera at scene X=100 has -100 in row four.
+    Transpose BEFORE inverting to obtain our column-vector camera->world frame.
+    The view translation is in scene units; Z-depth is already in metres.
+    See NVIDIA's CameraParams annotator example, not the ambiguously worded
+    camera-to-world description in some versions of its API documentation.
+    """
+    if not isinstance(params, dict) or params.get('cameraViewTransform') is None:
+        raise ValueError('camera_params has no cameraViewTransform')
+    units = float(metres_per_unit)
+    reported_units = float(params.get('metersPerSceneUnit', units))
+    if (not np.isfinite([units, reported_units]).all() or min(units, reported_units) <= 0 or
+            not np.isclose(units, reported_units, rtol=1e-5, atol=1e-10)):
+        raise ValueError('camera_params scene units disagree with the USD stage')
+    view = np.asarray(params['cameraViewTransform'], np.float64)
+    if view.size != 16:
+        raise ValueError('cameraViewTransform must contain 16 values')
+    # Reject singular, reflected, scaled and non-affine matrices before they can
+    # masquerade as a valid Rotation.from_matrix result. Never guess axes from
+    # how near the pose is to the robot or hard-code an orientation correction.
+    view = transform_matrix(view.reshape(4, 4).T, 'cameraViewTransform')
+    world_from_camera = np.linalg.inv(view)
+    world_from_camera[:3, 3] *= reported_units
+    return transform_matrix(world_from_camera, 'render camera pose')
 
 
 def select_camera_paths(prims, mapping):
@@ -81,6 +110,7 @@ class ReplicatorCamera:
         self.width, self.height = width, height
         self.product, self.annotators = None, {}
         self.body_index, self.body_from_camera = None, None
+        self.pose_source, self.pose_diagnostics = None, {}
         if str(UsdGeom.Camera(prim).GetProjectionAttr().Get()) != 'perspective':
             raise ValueError(f'{name}: only perspective USD cameras are supported')
         robot = env.scene['robot']
@@ -125,16 +155,37 @@ class ReplicatorCamera:
         return projection_intrinsics(self.annotators['camera_params'].get_data(), self.width, self.height)
 
     def pose(self, runtime):
-        if self.body_index is None:
-            world_from_camera = self.usd_matrix(self.prim)
-        else:
-            data = runtime.env.scene['robot'].data
-            position = numpy_value(data.body_pos_w)[0, self.body_index]
-            rotation = runtime._wxyz(numpy_value(data.body_quat_w)[0, self.body_index])
-            world_from_camera = pose_matrix(position, rotation[[1, 2, 3, 0]]) @ self.body_from_camera
+        # Use the same render-time extrinsic family as recorded OHT observations.
+        # Static USD transforms can disagree with the actual rendered camera,
+        # and a valid wrist view already contains its complete mounted offset.
+        source, reason = 'camera_params', None
+        try:
+            annotator = getattr(self, 'annotators', {}).get('camera_params')
+            params = None if annotator is None else annotator.get_data()
+            world_from_camera = render_camera_matrix(params, getattr(self, 'metres_per_unit', 1.))
+        except (ValueError, TypeError, OverflowError, np.linalg.LinAlgError, RuntimeError) as exc:
+            reason = f'{type(exc).__name__}: {exc}'
+            if self.body_index is None:
+                source = 'usd'
+                world_from_camera = self.usd_matrix(self.prim)
+            else:
+                source = 'physics_offset'
+                data = runtime.env.scene['robot'].data
+                position = numpy_value(data.body_pos_w)[0, self.body_index]
+                rotation = runtime._wxyz(numpy_value(data.body_quat_w)[0, self.body_index])
+                world_from_camera = pose_matrix(position, rotation[[1, 2, 3, 0]]) @ self.body_from_camera
         position = world_from_camera[:3, 3] - runtime._origin()
         quaternion = Rotation.from_matrix(world_from_camera[:3, :3]).as_quat()[[3, 0, 1, 2]]
-        return np.r_[position, quaternion].astype(np.float32)
+        pose = np.r_[position, quaternion].astype(np.float32)
+        previous_source = getattr(self, 'pose_source', None)
+        self.pose_source = source
+        self.pose_diagnostics = dict(source=source, fallback_reason=reason,
+                                     camera_pose_wxyz=pose.tolist(),
+                                     frame='env-origin-relative OpenGL camera-to-world')
+        if previous_source != source and getattr(self, 'name', None):
+            suffix = '' if reason is None else f' fallback={reason}'
+            print(f'[BridgeVLA] camera {self.name} pose_source={source}{suffix}', flush=True)
+        return pose
 
     def detach(self):
         """Release graph consumers while every camera's render product still exists."""

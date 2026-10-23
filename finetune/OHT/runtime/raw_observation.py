@@ -1,5 +1,6 @@
 """IsaacLab metric Z-depth/OpenGL poses -> checkpoint-bound prepared observations."""
 from copy import deepcopy
+import logging
 from pathlib import PurePosixPath
 import numpy as np
 
@@ -13,6 +14,7 @@ from .transport import unpack_observation
 
 RAW_FORMAT = RAW_OBSERVATION_FORMAT
 OPENGL_TO_OPTICAL = np.diag([1., -1., -1., 1.])
+LOG = logging.getLogger(__name__)
 
 
 def data_profiles(policy):
@@ -41,7 +43,7 @@ def raw_schema(policy):
                     for name, config in data_profiles(policy).items()})
 
 
-def decode_raw(packed, policy, previous=None):
+def decode_raw(packed, policy, previous=None, *, sensor_callback=None):
     """Return observation + pending causal gripper state; caller commits on success."""
     try:
         if not isinstance(packed, dict) or set(packed) != {'task', 'data_profile', 'tensors'}:
@@ -93,6 +95,14 @@ def decode_raw(packed, policy, previous=None):
             if spec.get('round_to_mm', False):
                 depth = np.round(depth * 1000).astype(np.float32) / 1000
             result.update(camera_observation(camera, rgb, depth, values[f'{camera}_pose'], config))
-        return validate_observation(result, config), (measured, binary)
+        result = validate_observation(result, config)
+        if sensor_callback is not None:
+            # Reuse this validated decode before resize/rounding. Diagnostics
+            # never feed back into the policy and must not reject an action.
+            try:
+                sensor_callback(values, config, tcp)
+            except Exception:
+                LOG.warning('Raw sensor visualization snapshot skipped', exc_info=True)
+        return result, (measured, binary)
     except (ValueError, TypeError, KeyError, OverflowError, np.linalg.LinAlgError) as exc:
         raise APIError(422, 'invalid_observation', str(exc)) from exc

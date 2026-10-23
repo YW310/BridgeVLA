@@ -72,9 +72,17 @@ policy 默认按 waypoint 执行：固定本次解码的绝对目标，先保持
 
 ### 在线可视化
 
-正常启动 server 和 client 后，浏览器打开 **[http://109.105.46.126:8004/visualization](http://109.105.46.126:8004/visualization)**。页面每秒更新，显示最近一次采样推理的 coarse/refine 三视图 RGB、预测 heatmap、动作 TCP（红色）和热图 TCP（青色），以及可用的 Target/Reference prior。在线图不使用 GT。
+正常启动 server 和 client 后，浏览器打开 **[http://109.105.46.126:8004/visualization](http://109.105.46.126:8004/visualization)**。页面每秒检查最新采样，包含以下内容，均来自同一次请求，不使用 GT：
 
-server 默认 `--visualize-every 10`，每个 episode 的第 0、10、20…步采集；改为 `1` 可逐步采集，`0` 关闭。导出复用本次模型前向，CPU 拼图/写盘异步进行，队列满时跳过可视化采样。默认 `--visualize-keep 100`，每次 server 启动在 `<output-dir>/visualizations/run-<时间>-<ID>/` 下保留最近 100 份 PNG/NPZ/JSON。采集诊断仍有 GPU→CPU 拷贝开销，按耗时调整间隔。
+- **交互 3D**：多相机 RGB-D 重建的彩色点云、相机位置/视锥、当前 TCP（绿色）、实际动作 waypoint（红色）和热图 waypoint（青色）。拖动旋转，右键或 Shift 拖动平移，滚轮缩放；可切换相机点云、点大小、重置视角或暂停刷新。更新数据时保留当前观察角度。
+- **原始 sensor 图像**：各相机传入的原分辨率 RGB 和米制深度显示图，叠加相同 waypoint 的透视投影。超出视野、在相机后方、被深度遮挡或深度无效时显示对应状态，不将点硬裁到边缘。原图和数值深度可下载 NPZ。
+- **模型三视图**：原有 coarse/refine RGB、预测 heatmap、动作/热图 TCP 投影和可用的 Target/Reference prior。
+
+原生 IsaacLab 客户端使用 raw RGB-D 协议，sensor 面板保留传感器分辨率，不使用模型缩采样图冒充原图；prepared 协议只能显示已处理的观测，页面会标记 `prepared_observation`。3D 使用 env-origin-relative world 米制坐标，每份快照最多 24,000 点，按相机均衡采样；它用于观察本次观测和预测，不表示碰撞规划路径。relative EEF 先还原绝对目标；joint 模式仅有实测 TCP 和辅助热图点，不伪造关节目标的 FK。
+
+3D 的 waypoint 标记置前显示，便于从点云中定位；是否被遮挡以原始相机面板的投影状态为准。深度颜色按每相机 2–98% 分位拉伸，数值深度以 NPZ 中的米制数组为准。
+
+server 默认 `--visualize-every 10`，每个 episode 的第 0、10、20…步采集；改为 `1` 可逐步采集，`0` 关闭。导出复用本次模型前向，CPU 拼图/写盘异步进行，队列满时跳过可视化采样。默认 `--visualize-keep 100`，每次 server 启动在 `<output-dir>/visualizations/run-<时间>-<ID>/` 下保留最近 100 份快照，每份含模型 PNG/NPZ、`sensors.png`、`sensors.npz`、`scene.json` 和 `prediction.json`。原始 RGB-D 增加磁盘用量，采集仍有 CPU 拷贝和 GPU→CPU 传输开销，可按耗时调大间隔或减少保留份数。网页和 3D 查看器无需外网资源。
 
 带窗口运行 client 时，TCP 标记默认开启：绿色为实测 TCP 和轨迹，红色为本次解码后的绝对 EEF 目标及目标轨迹，坐标轴表示姿态。使用 `--no-visualize` 关闭，`--visualize-history 200` 控制轨迹长度；headless 自动跳过。相对 EEF 只解码一次，joint 模式仅绘制实测 TCP，不伪造目标 FK。标记在采集 RGB-D 前清除、快照完成后恢复；`run.json.visualization` 记录显示后端与可用状态。若 SDK 缺少 debug-draw，客户端提示后继续执行，浏览器热图仍可使用。
 
@@ -101,7 +109,8 @@ HTTP `/predict` 的采样响应包含 `visualization` 状态/文件链接，不�
 | `--max-substeps` | 仅用于 streaming，默认 1；dense GT 必须为 1，waypoint 使用独立的 max-steps 上限 |
 | `--max-translation / --max-rotation` | OSC 每轴物理限幅，默认 0.05 m / 0.15 rad，限幅后再除以控制器尺度 |
 | `--dry-run` | 可选：只保存启动诊断，不执行策略动作 |
-| `--log-interval` | 默认 10；1 为每步打印，0 关闭 |
+| `--keep-open-on-error` | 有窗口运行时，episode 失败后保存日志、停止控制并保留画面；关窗或 Ctrl+C 后退出，仍返回错误码 1。headless 不等待 |
+| `--log-interval` | 默认 10；1 为每步打印，0 关闭周期日志；waypoint 失败始终打印目标、阶段、物理步数、夹爪状态及最终误差 |
 | `--visualize / --no-visualize` | 默认显示 GUI 中的 TCP、EEF 目标和轨迹；与服务端 heatmap 开关独立 |
 | `--visualize-history` | 默认 200，GUI 中每条轨迹保留的点数 |
 | `--task-import module` | 额外导入自有任务注册模块，可重复 |
@@ -180,11 +189,13 @@ python tools/smoke_oht_vla_server.py \
 | 服务端 `info.json / requests.jsonl` | checkpoint、模型/契约、请求状态及分段耗时 |
 | 客户端 `run.json / control_diagnostics.json` | 实际 USD、TCP 变换、控制尺度、关节顺序、夹爪标定 |
 | 客户端 `episode_*.json / summary.json` | 预测、实际命令、执行前后位姿及误差、stop_reason、成功统计 |
+| 每步 `camera_observation` | 发给策略的相机位姿、K、原始分辨率与外参来源；USD 分支优先用有效的 `cameraViewTransform`，不可用时回退 USD/实时物理位姿 |
 | 每步 `client_timing_ms` | `capture` 相机/状态采集，`pack` 数组/Base64 打包，`serialize` JSON 编码，`http` 完整 HTTP 往返及回包解析，`predict` 后台预测调用总耗时，`request` 主线程等待预测耗时（含刷新），`execute` 控制执行，`total` 该步总耗时；单位均为 ms，字段包含关系不能直接相加 |
 | 每步 `timing_ms` | 服务端 `decode / prepare / policy / total`，与客户端计时分别保留；`--log-interval 1` 可逐步打印两者 |
-| 每步 `execution` | waypoint 状态、approach/gripper 物理步数、固定目标、夹爪状态与最终误差；streaming 没有此字段 |
+| 每步 `execution` | waypoint 状态、approach/gripper 物理步数、固定目标、夹爪状态与最终误差；`joint_diagnostics` 记录实际关节位置、硬/软限位及余量，缺失的硬限位为 null，不以软限位代替；streaming 没有此字段 |
 | `stop_reason=max_steps` | 已达到策略/关键点请求数上限；物理控制步数看 commands 和 execution.steps |
-| `waypoint_stalled / waypoint_timeout` | 目标未完成，保留已执行命令并停止后续预测；不能只增加模型请求数绕过 |
+| `waypoint_stalled / waypoint_timeout` | 目标未完成，保留已执行命令并停止后续预测；查看终端 `waypoint stopped` 的 step、phase、errors，以及 episode 最后一条 action.execution；默认日志间隔不会隐藏失败摘要 |
+| 输出停止摘要后窗口关闭 | 默认由客户端在保存失败记录后主动关闭环境并返回 1；有窗口检查时在运行命令增加 `--keep-open-on-error`，不会继续推进物理或请求策略 |
 | 运动异常或长期限幅 | 对比 `measured_before/after` 与 `errors_before/after`，区分目标跳变与执行跟踪问题；不要仅翻转夹爪符号 |
 | HTTP 409 / 429 / 503 | 分别检查模型/会话冲突、服务 busy、服务未就绪；请求结果不确定时不重发旧动作，待空闲后重置 episode |
 | 退出时 `Invalid NodeObj` | 区分相机清理错误与运行期间错误，检查 episode 是否已完成；其他 cleanup warning 保留排查 |

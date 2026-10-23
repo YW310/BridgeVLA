@@ -17,8 +17,8 @@ from .runtime.http_client import BridgeVLAClient
 from .runtime.isaaclab_bridge import IsaacLabBridge
 from .runtime.joint_executor import JointPositionExecutor
 from .runtime.task_runtime import TaskRuntime, task_settings
-from .runtime.control_diagnostics import control_report
-from .runtime.policy_worker import PolicyWorker, refresh_while_waiting
+from .runtime.control_diagnostics import control_report, joint_report
+from .runtime.policy_worker import PolicyWorker, refresh_while_waiting, keep_open_after_error
 from .runtime.live_markers import LiveMarkers
 from .runtime.waypoint_executor import WaypointExecutor, WaypointOptions
 
@@ -128,7 +128,10 @@ def main(argv=None):
     parser.add_argument('--ee-pose-source', choices=('body', 'controller'), default='controller',
                         help='Native raw EE measurement: controller applies body_offset (OHT recorded TCP); body reads the bare link')
     parser.add_argument('--dry-run', action='store_true', help='Save control diagnostics and exit without policy predictions or env.step')
-    parser.add_argument('--log-interval', type=int, default=10, help='Print first/every N policy action and tracking errors; 0 disables')
+    parser.add_argument('--keep-open-on-error', action='store_true',
+                        help='Keep the GUI open after a recorded rollout error, without more physics or policy requests')
+    parser.add_argument('--log-interval', type=int, default=10,
+                        help='Print first/every N action; 0 disables periodic logs. Failed waypoints always print diagnostics')
     display = parser.add_mutually_exclusive_group()
     display.add_argument('--visualize', dest='visualize', action='store_true', default=True,
                          help='Show measured TCP, resolved EEF target and trajectories in the GUI (default)')
@@ -343,6 +346,7 @@ def _run(args, reference_args):
                    action_spec=client.info['action_spec'], data_profile=profile, task_settings=settings,
                    initialization=args.initialization, score=args.score, runtime_factory=runtime_factory,
                    policy_wait='background_http_render_only' if replay is None else None,
+                   keep_open_on_error=args.keep_open_on_error,
                    visualization=markers.info,
                    isaaclab_root=args.isaaclab_root,
                    env_id=args.env_id, env_config=args.env_config, ee_link=getattr(reference, 'ee_link', args.ee_link),
@@ -416,6 +420,13 @@ def _run(args, reference_args):
                         raise RuntimeError('Simulation application stopped')
                     step_started = perf_counter()
                     measured = bridge.capture()
+                    camera_observation = {
+                        name: dict(pose_wxyz=measured[f'{name}_pose'].tolist(),
+                                   intrinsics=measured[f'{name}_intrinsics'].tolist(),
+                                   image_size=list(measured[f'{name}_rgb'].shape[:2]),
+                                   pose_source=getattr(camera, 'pose_source', 'runtime'),
+                                   pose_diagnostics=deepcopy(getattr(camera, 'pose_diagnostics', None)))
+                        for name, camera in bridge.cameras.items()}
                     markers.update(bridge.measured_state(measured), bridge.last_target, client.action_config['mode'])
                     captured = perf_counter()
                     timestamp = int(env.common_step_counter) * float(env.step_dt)
@@ -447,6 +458,7 @@ def _run(args, reference_args):
                     row['actions'].append(dict(step=step, timestamp=timestamp, action=action.tolist(),
                                                target=bridge.last_target, commands=commands,
                                                measured_before=before, measured_after=after,
+                                               camera_observation=camera_observation,
                                                errors_before=errors_before, errors_after=errors_after,
                                                action_source=('gt_keypoint' if args.replay_targets == 'keypoints' else 'gt_trajectory')
                                                if replay is not None else 'policy',
@@ -454,6 +466,7 @@ def _run(args, reference_args):
                                                timing_ms=response['timing_ms'], client_timing_ms=client_timing,
                                                visualization=response.get('visualization')))
                     if execution is not None:
+                        execution['joint_diagnostics'] = joint_report(bridge, after)
                         row['actions'][-1]['execution'] = execution
                     if args.log_interval and (step == 0 or (step + 1) % args.log_interval == 0):
                         print(f'[BridgeVLA] step={step} action={action.tolist()} target={bridge.last_target} '
@@ -472,6 +485,7 @@ def _run(args, reference_args):
                     if execution is not None and not execution['completed']:
                         row['stop_reason'] = 'waypoint_' + execution['status']
                         row['error'] = execution.get('error') or f'Waypoint did not complete: {execution["status"]}'
+                        print(f'[BridgeVLA] waypoint stopped: step={step} execution={execution}', flush=True)
                         break
                 if replay is not None and row['stop_reason'] == 'max_steps' and row['steps'] == replay.length:
                     row['stop_reason'] = 'trajectory_end'
@@ -494,7 +508,12 @@ def _run(args, reference_args):
                   f'stop_reason={row["stop_reason"]}', flush=True)
             if 'error' in row:
                 break
-        return 1 if any('error' in row for row in records) else 0
+        failed = any('error' in row for row in records)
+        if failed and args.keep_open_on_error:
+            if worker is not None:
+                worker.close()
+            keep_open_after_error(reference, env)
+        return 1 if failed else 0
     finally:
         if worker is not None:
             worker.close()

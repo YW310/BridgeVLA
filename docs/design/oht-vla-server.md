@@ -60,7 +60,7 @@ python -m finetune.OHT.vla_server \
 | `GET /model_info` | 返回模型标识、API 版本、相机名、观测字段/shape/dtype、数据契约标识及 checkpoint 输出描述 |
 | `POST /reset` | 清除当前 episode 的策略/predictor 状态，设置新的 episode 标识 |
 | `POST /predict` | 解码、验证当前观测，调用一次 Policy，返回一次模型输出 |
-| `GET /visualization` | 自动更新的在线预测 RGB/heatmap 页面 |
+| `GET /visualization` | 自动更新的交互 3D、原始 RGB-D/waypoint 投影及模型 heatmap 页面 |
 | `GET /visualization/latest` | 最近完成的可视化、writer 状态和采样信息 |
 | `GET /visualization/files/{entry_id}/{filename}` | 指定采样的 PNG/NPZ/JSON；内部生成 ID 和文件名白名单 |
 
@@ -170,6 +170,8 @@ finetune/OHT/
     http_client.py              # 严格会话校验；控制请求不重试
     policy_worker.py            # 客户端串行 HTTP；主线程 render-only 等待
     online_visualization.py     # 同次前向无 GT 诊断、限长 CPU writer 和浏览器页面
+    online_viewer.py            # 无外部资源的交互 3D 与 sensor/heatmap 网页
+    sensor_visualization.py     # 原始/已处理观测快照、透视投影和限点数 3D 导出
     live_markers.py             # GUI TCP/目标轨迹；传感器采集边界隔离
     waypoint_executor.py        # 固定目标到位、夹爪稳定、停滞/超时状态机
     trajectory_initialization.py # policy 记录初态与训练标定校验

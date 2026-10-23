@@ -14,6 +14,57 @@ def serial(value):
     return numpy_value(value).tolist()
 
 
+def joint_report(bridge, state=None):
+    """Read actual articulation limits; never treat soft margins as hard stops.
+
+    Missing/custom SDK fields stay unavailable. Diagnostic failures must not
+    replace the original waypoint result or issue additional control steps.
+    """
+    try:
+        robot = bridge.env.scene['robot']
+        _, ids = arm_ids(bridge.env, bridge.client.action_config)
+        positions = (numpy_value(robot.data.joint_pos)[0, ids] if state is None else
+                     np.asarray(state['joint_positions']))
+        positions = np.asarray(positions, np.float64)
+        if positions.shape != (6,) or not np.isfinite(positions).all():
+            raise ValueError('Expected six finite joint positions')
+        names = getattr(robot, 'joint_names', None)
+        names = [names[i] if names is not None else str(i) for i in ids]
+        threshold = .02
+
+        def limits_report(attributes):
+            for source in attributes:
+                value = getattr(robot.data, source, None)
+                if value is None:
+                    continue
+                bounds = numpy_value(value).astype(np.float64)
+                if bounds.ndim == 3:
+                    bounds = bounds[0]
+                if bounds.ndim != 2 or bounds.shape[1] != 2:
+                    raise ValueError(f'{source}: expected [joints,2] or [envs,joints,2]')
+                bounds = bounds[ids]
+                if np.isnan(bounds).any() or (bounds[:, 0] > bounds[:, 1]).any():
+                    raise ValueError(f'{source}: invalid joint limits')
+                lower, upper = positions - bounds[:, 0], bounds[:, 1] - positions
+
+                def finite_list(values):
+                    return np.where(np.isfinite(values), values, None).tolist()
+
+                return dict(source=source, position_bounds_rad=finite_list(bounds),
+                            lower_margin_rad=finite_list(lower), upper_margin_rad=finite_list(upper),
+                            near_lower=[name for name, margin in zip(names, lower) if margin <= threshold],
+                            near_upper=[name for name, margin in zip(names, upper) if margin <= threshold],
+                            outside=[name for name, lo, hi in zip(names, lower, upper) if min(lo, hi) < -1e-4])
+            return None
+
+        return dict(joint_ids=ids, joint_names=names, positions_rad=positions.tolist(),
+                    near_limit_threshold_rad=threshold,
+                    hard=limits_report(('joint_pos_limits', 'joint_limits')),
+                    soft=limits_report(('soft_joint_pos_limits',)))
+    except Exception as exc:
+        return dict(error=f'{type(exc).__name__}: {exc}')
+
+
 def gripper_report(env, torch, training=None):
     term = env.action_manager.get_term('gripper_action')
     cfg = getattr(term, 'cfg', None)
@@ -76,6 +127,7 @@ def control_report(bridge):
                          target_types=serial(getattr(getattr(cfg, 'controller_cfg', None), 'target_types', None)),
                          position_scale=serial(getattr(cfg, 'position_scale', None)),
                          orientation_scale=serial(getattr(cfg, 'orientation_scale', None)),
+                         joint_diagnostics=joint_report(bridge),
                          term_joint_ids=term_ids, observation_joint_ids=canonical_ids,
                          observation_joint_names=[env.scene['robot'].joint_names[i] for i in canonical_ids]
                          if hasattr(env.scene['robot'], 'joint_names') else None),

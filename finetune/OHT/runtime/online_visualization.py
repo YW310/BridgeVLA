@@ -91,7 +91,7 @@ class OnlineVisualizer:
     def due(self, step):
         return isinstance(step, (int, np.integer)) and step >= 0 and int(step) % self.every == 0
 
-    def submit(self, payload, request, action, options, observation):
+    def submit(self, payload, request, action, options, observation, *, sensor_observation=None):
         if self._closing.is_set():
             return dict(status='dropped', reason='closed')
         if not self._slots.acquire(blocking=False):
@@ -112,9 +112,22 @@ class OnlineVisualizer:
                         ('request_id', 'episode_id', 'step', 'timestamp', 'instruction', 'model_id')}
             raw_observation = request.get('observation', {})
             identity['task'] = raw_observation.get('task') if isinstance(raw_observation, dict) else None
+            if sensor_observation is None:
+                from .sensor_visualization import prepared_sensor_snapshot
+                sensor_observation = prepared_sensor_snapshot(observation)
+            if sensor_observation is not None:
+                # An export job owns only current sensor fields, never labels
+                # or arbitrary metadata supplied alongside an observation.
+                allowed = ('rgb', 'depth', 'intrinsics', 'world_from_optical', 'depth_kind', 'depth_limits')
+                sensor_observation = dict(
+                    source=sensor_observation['source'],
+                    cameras={name: {key: deepcopy(camera[key]) for key in allowed if key in camera}
+                             for name, camera in sensor_observation['cameras'].items()},
+                    **{key: deepcopy(sensor_observation[key]) for key in ('tcp_pose_xyzw',)
+                       if key in sensor_observation})
             current_tcp = observation.get('tcp_pose')
             job = (uuid.uuid4().hex, snapshot, identity, np.asarray(action).copy(), action_options(options),
-                   None if current_tcp is None else np.asarray(current_tcp).copy())
+                   None if current_tcp is None else np.asarray(current_tcp).copy(), sensor_observation)
             with self._lock:
                 if self._closing.is_set():
                     self._slots.release()
@@ -143,7 +156,7 @@ class OnlineVisualizer:
         if directory.exists():
             shutil.rmtree(directory)
 
-    def _write(self, entry_id, payload, request, action, options, current_tcp):
+    def _write(self, entry_id, payload, request, action, options, current_tcp, sensor_observation=None):
         action = validate_action(action, options)
         mode = options['mode']
         policy_pose = (action[:7] if mode == 'eef' else
@@ -185,6 +198,19 @@ class OnlineVisualizer:
                 record['stages'][name] = dict(png=png, arrays=f'/visualization/files/{entry_id}/{name}.npz',
                     policy_in_view=None if policy_tcp is None else [_inside(p, width, height) for p in stage['policy_pixels']],
                     heatmap_in_view=[_inside(p, width, height) for p in stage['heatmap_waypoint_pixels']])
+            record['sensors'], record['scene'] = None, None
+            if sensor_observation is not None:
+                try:
+                    from .sensor_visualization import export_sensor_scene
+                    record['sensors'], record['scene'] = export_sensor_scene(
+                        temporary, entry_id, sensor_observation, policy_pose, waypoint)
+                except Exception as exc:
+                    # A sensor diagnostic failure must still publish the
+                    # existing heatmaps and leave the predicted action intact.
+                    record['sensors'] = dict(source=sensor_observation.get('source'),
+                                             error=f'{type(exc).__name__}: {exc}')
+                    for filename in ('sensors.png', 'sensors.npz', 'scene.json'):
+                        (temporary / filename).unlink(missing_ok=True)
             (temporary / 'prediction.json').write_text(json.dumps(record, ensure_ascii=False, allow_nan=False), encoding='utf-8')
             temporary.rename(folder)
             self._entries.append(folder)
@@ -228,35 +254,6 @@ class OnlineVisualizer:
 
 
 def viewer_html():
-    """A static page whose dynamic text never becomes executable HTML."""
-    return '''<!doctype html><html><head><meta charset="utf-8"><title>OHT online predictions</title>
-<style>body{font:15px sans-serif;margin:24px;background:#171717;color:#eee}img{display:block;max-width:100%;margin:12px 0}
-a{color:#8fcfff}pre{white-space:pre-wrap}section{margin-bottom:24px}</style></head><body>
-<h1>OHT online policy predictions</h1><p>Same-forward RGB and heatmaps. Red: policy TCP; cyan: heatmap TCP.
-Heatmaps are auxiliary for relative EEF and joint policies. Joint actions have no inferred TCP.</p>
-<p id="status">Waiting for the next sampled inference...</p><pre id="metadata"></pre><div id="images"></div>
-<script>
-let current = null;
-async function refresh(){try{
- const response=await fetch('/visualization/latest',{cache:'no-store'});
- if(!response.ok)throw new Error('HTTP '+response.status);
- const state=await response.json();
- document.getElementById('status').textContent=state.enabled ?
-   'Writer: '+state.writer_status+' | dropped: '+state.dropped+(state.error?' | '+state.error:'')+
-   (state.capture_error?' | capture: '+state.capture_error:'') : 'Visualization is disabled'+(state.reason?' | '+state.reason:'');
- const item=state.latest;if(!item||item.entry_id===current)return;
- current=item.entry_id;
- document.getElementById('metadata').textContent=JSON.stringify({server:location.origin,model:item.model_id,
- task:item.task,request:item.request_id,episode:item.episode_id,step:item.step,timestamp:item.timestamp,
- instruction:item.instruction,action:item.predicted_action,policy_tcp:item.policy_tcp_world,
- heatmap_tcp:item.heatmap_waypoint_world,heatmap_is_auxiliary:item.heatmap_is_auxiliary},null,2);
- const root=document.getElementById('images');root.replaceChildren();
- for(const [name,path] of Object.entries(item.images)){
-  const section=document.createElement('section'),title=document.createElement('h2'),image=document.createElement('img');
-  title.textContent=name==='mvt1'?'Coarse stage':'Refine stage';image.src=path;image.alt=name+' prediction heatmaps';
-  section.append(title,image);root.append(section);
- }
- const link=document.createElement('a');link.href=item.prediction_url;link.textContent='Prediction JSON and array links';root.append(link);
-}catch(error){document.getElementById('status').textContent=String(error);}}
-refresh();setInterval(refresh,1000);
-</script></body></html>'''
+    """Serve the self-contained viewer without importing browser dependencies."""
+    from .online_viewer import viewer_html as render_viewer
+    return render_viewer()

@@ -3,6 +3,7 @@ from concurrent.futures import Future, wait
 import math
 from queue import Queue
 from threading import Thread
+from time import sleep
 
 
 class PolicyWorker:
@@ -101,3 +102,29 @@ def refresh_while_waiting(reference, env):
             reference._replicator_render_tick(env)
     if not app.is_running():
         raise RuntimeError('Simulation application stopped while waiting for policy')
+
+
+def keep_open_after_error(reference, env):
+    """Inspect a failed rollout without more physics or policy requests.
+
+    This runs on the simulator thread, after the caller has saved the failure
+    and closed its HTTP worker. Headless runs never wait for user interaction.
+    """
+    app = reference.simulation_app
+    sim = getattr(env, 'sim', None)
+    has_gui = getattr(sim, 'has_gui', None)
+    headless = bool(getattr(getattr(reference, 'args_cli', None), 'headless', False))
+    gui = bool(has_gui()) if callable(has_gui) else not headless
+    if headless or not gui or not app.is_running():
+        return
+    print('[BridgeVLA] rollout stopped; keeping the window open for inspection. '
+          'No further control steps or policy requests. Close the window or press Ctrl+C to exit.', flush=True)
+    try:
+        while app.is_running():
+            refresh_while_waiting(reference, env)
+            sleep(.05)
+    except KeyboardInterrupt:
+        pass
+    except Exception as exc:
+        if app.is_running():
+            print(f'[BridgeVLA] inspection ended: {type(exc).__name__}: {exc}', flush=True)

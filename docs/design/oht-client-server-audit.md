@@ -12,6 +12,7 @@
 | 完整场景与资产 | 参考 T1V4 在 `OSC-v2` ID 下显式实例化完整 V4 config；仅使用注册 ID 无法保证相同夹爪、控制器或资产。旧 run 未记录实际 USD，不能证明当时用错版本。 | 工作区已有 `--scene-preset oht-v4`，校验配置来源、完整 V4 类与实际 USD；不单独替换一个 USD。实际配置写入 run 与诊断报告。 |
 | EE 测量参考点 | 旧原生 runtime 固定读取裸 body；仓库 OHT 数据约定为已含控制器偏移的记录点，两者在非单位 `body_offset` 时不同。参考 JEPA helper 读取裸 body，不能直接据此覆盖 BridgeVLA 数据约定。 | 工作区已有 `--ee-pose-source controller/body`。原生 CLI 默认 controller，`link_to_tcp` 与 body_offset 分别只应用一次。真实 checkpoint 的记录点仍需用采集代码/数据验证。 |
 | 注册 Camera 位姿 | IsaacLab Camera 的 `update_latest_camera_pose=False` 默认返回初始化位姿；仅刷新图像不能保证移动相机外参更新。 | 原生 Camera runtime 打开位姿更新。USD 相机分支继续从实时物理 body 计算腕部位姿；用户旧 run 使用 USD，故该缺口尚不能解释那次运动。 |
+| USD/Replicator 外参来源 | 参考 `OnlineReplicatorCamera.pose` 优先使用 `camera_params.cameraViewTransform`，并记录过静态相机 USD 方向与记录外参约差 90°。此前原生 USD 分支未读取该字段，离线缓存评估与不采集相机的 GT replay 不覆盖此路径。 | 优先解析有效的渲染时 view 矩阵；无效时仍使用 USD 或实时物理 body × 相机局部变换。实际来源、请求时位姿和 K 记录在每步 `camera_observation`。不硬编码角度补偿。 |
 | 环境超时 | 参考 T1V4 在创建环境前关闭 `terminations.time_out`，我们的原生路径此前保留它，长 rollout 可能提前终止并自动 reset。 | 原生配置仅关闭命名为 `time_out` 的项，保留其他终止条件；客户端 `max_steps` 控制策略请求上限。`scene.timeout_disabled` 记录是否执行了此操作。 |
 | 动作协议验证 | 客户端此前从 `mode` 等字段恢复配置，没有完整验证 frame、四元数顺序、维度、参考点、单位和夹爪定义。正确的自有服务不会因此产生错位，但不兼容服务可能被误接受。 | `/model_info.action_spec` 必须与本地动作描述一致，在启动仿真前拒绝不兼容语义。 |
 | 夹爪命令与标定 | `+1/-1` 命令与配置一致，不代表配置的物理开闭方向与 checkpoint 标定一致。 | 分别记录 `verified` 与 `calibration_direction_matches`。实测命令对应目标之和的开闭方向与训练端点相反时，保存诊断并在 HTTP reset/predict 和控制 env.step 前退出；不自动反转。旧服务不提供端点时保持 null。 |
@@ -46,6 +47,19 @@
 持续限幅并不证明物理姿态没有变化，也不能单独证明 TCP/四元数有错。
 日志没有执行前后实测位姿或实际 USD，无法将上述现象归因为某一个配置错误。
 目标跳变也提示需要检查在线几何与模型预测本身，不能仅调整夹爪或延长训练。
+
+## 第二个 waypoint 停滞的新增证据
+
+2026-10-22 提供的 `episode_0000.json.tex` 是另一组两目标运行记录：
+
+- 第一个目标已完成，末端误差为 0.667 mm / 0.266°。初始夹爪校准为闭合，全部 108 个控制步均发送关爪，没有打开后抓取的过程；不能据此判断是否持有物体。
+- 第二个目标从实测位姿要求移动 0.760 m、旋转 179.74°。跟踪 269 步后仍差 111 mm / 43.57°，停止在 approach，尚未进入开爪阶段。此时保持关爪符合 waypoint 时序，不是把开爪命令编码反了。
+- 第四个记录关节接近 −2π 是限位线索；原日志没有实际硬限位、接触或 Jacobian，不能将它直接定为根因。新增 `execution.joint_diagnostics` 保留关节名称、硬/软限位来源和各端余量；缺少硬限位时为 null，不拿软限位冒充。
+- 本次为 `initialization=env-reset`。参考脚本有开爪初始化、记录关节恢复等路径；未证明两次机器人和物体初态相同。用户明确当前版本 GT replay 尚未重测，历史通过不能作为当前排除项。
+
+参考实际执行 `raw_actions` 动作块，`raw_key_actions` 只用于显示；默认 OSC 并未启用规划器。采集说明中的长距离段由 cuRobo/PD 执行，因此不能用“参考可以运行”证明稀疏关键点的直接 OSC 路径等价。76 cm / 180° 也可能是合法的抓取到释放终点，不能仅按跳变大小认定模型输出错误。
+
+下一次对照优先核对渲染外参来源，再按同一记录初态比较 dense GT、GT keypoints 和 policy。腕部 view 矩阵无效时，参考还存在直接返回祖先 link 位姿的采集回退；是否影响当前数据，需要同帧记录外参与现场 link/相机位姿对齐，不能无条件删除相机局部变换。CPU 合成验证不能替代真实服务器复测。
 
 ## 仍需在仿真服务器验证
 
