@@ -17,7 +17,8 @@ def pack_observation(observation):
         dtype = DTYPES.get(value.dtype.name)
         if dtype is None:
             raise ValueError(f"Unsupported observation dtype {value.dtype}")
-        value = np.ascontiguousarray(value, dtype=dtype)
+        shape = value.shape
+        value = np.ascontiguousarray(value, dtype=dtype).reshape(shape)
         packed[name] = dict(dtype=value.dtype.name, shape=list(value.shape),
                             data=base64.b64encode(value.tobytes()).decode("ascii"))
     return packed
@@ -30,7 +31,7 @@ def unpack_observation(packed):
     for name, spec in packed.items():
         dtype = DTYPES.get(spec.get("dtype"))
         shape = spec.get("shape")
-        if dtype is None or not isinstance(shape, list) or not 1 <= len(shape) <= 4:
+        if dtype is None or not isinstance(shape, list) or not 0 <= len(shape) <= 4:
             raise ValueError("Invalid tensor dtype/shape")
         if any(type(v) is not int or v <= 0 for v in shape):
             raise ValueError("Tensor dimensions must be positive integers")

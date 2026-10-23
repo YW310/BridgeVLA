@@ -20,6 +20,7 @@
 | [论文 survey](research/object-centric-policy-memory.md) | 原论文、监督前提、方法边界和设计依据 |
 | [O2 操作指南](guides/object-conditioning.md) | 所有现有 O2 模式的配置、训练、闭环准入与诊断；每项操作只维护一次 |
 | [项目审查与代码索引](reference/code-map.md) | 对应函数、配置、已确认运行风险与验收清单，不重复设计正文 |
+| [关键目标 + 连续 chunk baseline](design/key-goal-action-chunk-baseline.md) | V4 数据、joint/frozen_key 训练、评估与 HTTP/客户端执行；沿用 Gemma 前缀层冻结，联合训练后续层与动作头 |
 
 `guides/` 维护环境、数据和运行说明，`experiments/` 只保留历史结果；设计与 survey 各一份。
 原 O2 分篇正文已合并，不另保留命令副本；实际运行以当前脚本和配置为准。

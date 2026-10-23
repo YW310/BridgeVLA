@@ -44,7 +44,18 @@ def main(argv=None):
         if args.epochs < 1 or config.get("epochs") is None:
             parser.error("--epochs requires an epoch-budget config and a positive total epoch count")
         config["epochs"] = args.epochs
-    dataset = OHTDataset(args.replay, "train", config["mode"], args.role_cache, config["point_count"], resolve_action(config))
+    chunk_enabled = config.get('chunk_policy', {}).get('enabled', False)
+    if chunk_enabled:
+        from .data.chunk_dataset import OHTChunkDataset
+        from .chunk_config import chunk_settings
+        if args.role_cache:
+            parser.error('Chunk baseline does not use role caches')
+        dataset = OHTChunkDataset(args.replay, 'train')
+        chunk_settings(config, dataset.contract)
+        if not args.validate_only and not (args.init_checkpoint or args.resume):
+            parser.error('Chunk training requires --init-checkpoint with a trained EEF model, or --resume')
+    else:
+        dataset = OHTDataset(args.replay, "train", config["mode"], args.role_cache, config["point_count"], resolve_action(config))
     rank, local_rank = int(os.environ.get("RANK", 0)), int(os.environ.get("LOCAL_RANK", 0))
     world = int(os.environ.get("WORLD_SIZE", 1))
     plan = resolve_training_plan(config, len(dataset), world)
@@ -106,10 +117,14 @@ def main(argv=None):
         print(json.dumps(dict(mode=config["mode"], samples=len(dataset),
                               resume_step=step, **plan)), flush=True)
         print(json.dumps(dict(freeze_vision_tower=config.get("freeze_vision_tower", False),
+                              freeze_language_model=config.get("freeze_language_model", False),
                               freeze_gemma_prefix_layers=config.get("freeze_gemma_prefix_layers", 0),
                               freeze_multimodal_projector=config.get("freeze_multimodal_projector", False),
                               trainable_parameters=sum(p.numel() for p in agent._net_mod.parameters() if p.requires_grad),
                               frozen_parameters=sum(p.numel() for p in agent._net_mod.parameters() if not p.requires_grad))), flush=True)
+        if chunk_enabled:
+            write_json(output / 'trainable_parameters.json',
+                       [name for name, parameter in agent._net_mod.named_parameters() if parameter.requires_grad])
     try:
         with TensorBoardLogger(output / "tensorboard", rank=rank, backend=args.log_backend,
                                flush_secs=args.tensorboard_flush_secs,

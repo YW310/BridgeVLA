@@ -16,6 +16,9 @@ from .action_modes import action_options, action_size, resolve_action, apply_eef
 
 
 def open_loop(policy, replay, split="val", limit=None, *, progress=None, visualizer=None):
+    if getattr(policy, 'chunk_settings', None) is not None:
+        from .chunk_eval import open_loop_chunk
+        return open_loop_chunk(policy, replay, split, limit, progress=progress, visualizer=visualizer)
     def report(stage, **details):
         if progress is not None:
             progress.update(stage, **details)

@@ -143,6 +143,10 @@ class InferenceService:
             versions=versions, request_id_history=4096,
         )
         write_json(self.output_dir / "info.json", self.metadata)
+        if getattr(self.policy, 'chunk_settings', None) is not None:
+            from .chunk_protocol import chunk_spec
+            self.metadata['chunk_spec'] = chunk_spec(self.policy.chunk_settings, self.policy.contract)
+            write_json(self.output_dir / 'info.json', self.metadata)
         with self.lock:
             self.ready = True
         LOG.info("BridgeVLA ready: checkpoint=%s model_id=%s", self.checkpoint, self.model_id)
@@ -153,12 +157,18 @@ class InferenceService:
             return
         from ..data.dataset import OHTDataset
         from .predicted_wrapper import policy_observation
-        dataset = OHTDataset(replay, split, action_config=self.policy.action_config)
+        if getattr(self.policy, 'chunk_settings', None) is not None:
+            from ..data.chunk_dataset import OHTChunkDataset
+            dataset = OHTChunkDataset(replay, split)
+        else:
+            dataset = OHTDataset(replay, split, action_config=self.policy.action_config)
         if dataset.contract["sha256"] != self.policy.contract["sha256"]:
             raise ValueError("Warmup replay differs from the checkpoint data contract")
         sample = dataset[index]
         current = policy_observation(sample, self.policy.contract["data_config"]["cameras"],
                                      self.policy.action_config)
+        if getattr(self.policy, 'chunk_settings', None) is not None:
+            current.update({name: sample[name] for name in ('tcp_pose', 'joint_positions', 'gripper_open01')})
         self.policy.act(current, sample["goal"], 0)
         self.policy.reset()
 
@@ -243,6 +253,9 @@ class InferenceService:
                     if "action" in response:
                         row["action_summary"] = dict(length=len(response["action"]),
                                                      minimum=min(response["action"]), maximum=max(response["action"]))
+                    if 'chunk_spec' in response:
+                        row['chunk_summary'] = dict(horizon=len(response['actions']),
+                                                    action_dt=response['chunk_spec']['action_dt'])
                     if 'visualization' in response:
                         row['visualization'] = response['visualization']
                 self.logger.info(json.dumps(row, allow_nan=False))
@@ -258,6 +271,9 @@ class InferenceService:
             self.request_ids.remove(self.recent_ids.popleft())
 
     def _predict(self, request, started, decode_ms):
+        expected_schema = self.metadata.get('chunk_spec', {}).get('schema')
+        if request.get('prediction_schema') != expected_schema:
+            raise APIError(422, 'prediction_schema_mismatch', 'Acknowledge the advertised chunk schema before predicting')
         episode = request["episode_id"]
         if self.failed:
             raise APIError(409, "episode_failed", "Use /reset with a new episode ID after a failed inference")
@@ -309,8 +325,14 @@ class InferenceService:
         # Opt in to nonfatal diagnostic construction errors; no policy retry.
         capture.on_error = lambda exc: capture_errors.append(type(exc).__name__)
         extra = {'visualization_callback': capture} if due else {}
-        action = validate_action(self.policy.act(observation, request["instruction"], request["step"], **extra),
-                                 self.policy.action_config)
+        prediction = self.policy.act(observation, request['instruction'], request['step'], **extra)
+        chunk = self.metadata.get('chunk_spec')
+        if chunk is not None:
+            from .chunk_protocol import validate_prediction
+            prediction = validate_prediction(prediction, chunk)
+            action = prediction['actions'][0]
+        else:
+            action = validate_action(prediction, self.policy.action_config)
         policy_ms = (perf_counter() - stamp)*1000
         visualization = None
         if due:
@@ -335,6 +357,13 @@ class InferenceService:
                     action=action.tolist(), action_spec=action_descriptor(self.policy.action_config),
                     timing_ms=dict(decode=decode_ms, prepare=prepare_ms, policy=policy_ms,
                                    total=(perf_counter() - started)*1000))
+        if chunk is not None:
+            response.pop('action')
+            response.update(chunk_spec=chunk, key_action=prediction['key_action'].tolist(),
+                            actions=prediction['actions'].tolist(), time_offsets=prediction['time_offsets'].tolist())
+            if visualization is not None:
+                # The first executed target is used by existing heatmap/sensor diagnostics.
+                response['chunk_visualization'] = dict(key_action=response['key_action'], actions=response['actions'])
         if visualization is not None:
             response['visualization'] = visualization
         return response

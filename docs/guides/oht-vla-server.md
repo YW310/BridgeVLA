@@ -30,6 +30,8 @@ GPU_ID=1 bash finetune/OHT/vla_server.sh \
 
 命令行参数优先于对应环境变量。服务使用单进程、单模型，不用 `torchrun`；多个模型分别使用不同端口和日志目录。
 
+V4 chunk checkpoint 使用同一启动入口，训练与离线评估见 [V4 说明](../../finetune/OHT/README.md#v4关键目标--连续-chunk-训练与评估)。`/model_info.chunk_spec` 声明 K、dt 和建议 H；新版客户端会确认 chunk schema，旧单动作客户端不能将其当作关键目标执行。
+
 ## 分机部署：VLA server 与 IsaacLab client
 
 在 **IsaacLab 仿真服务器**检查连接：
@@ -58,7 +60,7 @@ python /home/yiwei/BridgeVLA/tools/oht_bridgevla_client.py \
   --env-id Isaac-Deploy-Reach-UR16e-DualEE-AllScene-OSC-v2 \
   --scene-preset oht-v4 --camera-source usd \
   --ee-pose-source controller \
-  --execution-mode waypoint \
+  --execution-mode auto \
   --episodes 1 --max-steps 20 \
   --output logs/bridgevla-v4-run-01 \
   --headless --device cuda:0
@@ -104,7 +106,9 @@ HTTP `/predict` 的采样响应包含 `visualization` 状态/文件链接，不�
 | `--camera-source` | `usd` 使用现有 USD 相机；`sensors` 使用注册 Camera；`auto` 优先完整注册相机。必须提供 checkpoint 所需全部视角 |
 | `--camera-map file.json` | checkpoint 相机名→sensor 名/USD prim 名或精确路径的完整映射 |
 | `--data-profile` | 任务无法唯一匹配时，从 `/model_info.raw_observation.data_profiles` 显式选择 |
-| `--execution-mode` | 默认 auto：policy/GT 关键点采用 waypoint，逐帧 GT 采用 streaming；streaming 是显式的逐步执行兼容模式 |
+| `--execution-mode` | 默认 auto：单关键点采用 waypoint，V4 chunk 采用 chunk，逐帧 GT 采用 streaming |
+| `--chunk-execute-horizon` | V4 可覆盖本次执行 H，必须在 1..K 内；其余后缀丢弃后重新观察 |
+| `--chunk-max-tracking-translation/rotation` | V4 跟踪误差上限，默认 0.10 m / 0.5 rad；超限停止并记录 |
 | `--waypoint-max-steps` | 默认 600，每个关键点允许的物理控制步上限 |
 | `--max-substeps` | 仅用于 streaming，默认 1；dense GT 必须为 1，waypoint 使用独立的 max-steps 上限 |
 | `--max-translation / --max-rotation` | OSC 每轴物理限幅，默认 0.05 m / 0.15 rad，限幅后再除以控制器尺度 |

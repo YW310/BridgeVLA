@@ -35,6 +35,7 @@ details{border-top:1px solid #293947;margin-top:16px;padding-top:12px}summary{cu
 </style></head><body>
 <header><h1>BridgeVLA <span style="color:#728da6">/</span> OHT live predictions</h1>
 <p>One inference snapshot: reconstructed sensor geometry, camera images and virtual-view heatmaps. Predictions only; no ground-truth targets.</p>
+<p>Chunk snapshots: purple is the predicted path; red is the advertised execution prefix. Client overrides and actual executed motion are recorded in client logs.</p>
 <div class="toolbar"><button id="pause" type="button" aria-pressed="false">Pause updates</button><span id="snapshot" class="badge">No snapshot yet</span><span id="status" role="status">Waiting for the next sampled inference...</span></div></header>
 <main>
 <section class="panel"><div class="section-title"><h2>Interactive 3D scene</h2><span id="scene-source">Sensor RGB-D · world coordinates · metres</span></div>
@@ -96,6 +97,7 @@ class SceneViewer{
    else if(finite3(position)&&frustum.length>=4){for(let i=0;i<4;i++){line(position,frustum[i],color);line(frustum[i],frustum[(i+1)%4],color);}}
   }
   for(const marker of scene.markers||[]){if(!finite3(marker.position))continue;const color=rgb(marker.color||'#eeeeee');vertex(markers,marker.position,color);const length=this.radius*.018;for(let i=0;i<3;i++){const delta=[0,0,0];delta[i]=length;line(sub(marker.position,delta),add(marker.position,delta),color);}}
+  for(const trajectory of scene.trajectories||[]){const positions=trajectory.positions||[],color=rgb(trajectory.color||'#d4a8ff');for(let i=1;i<positions.length;i++)if(finite3(positions[i-1])&&finite3(positions[i]))line(positions[i-1],positions[i],color);}
   for(const [name,data] of Object.entries({points,lines,markers})){gl.bindBuffer(gl.ARRAY_BUFFER,this.buffers[name]);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(data),gl.STATIC_DRAW);this.counts[name]=data.length/6;}
  }
  drawSoon(){if(this.dirty)return;this.dirty=true;requestAnimationFrame(()=>{this.dirty=false;this.draw();});}

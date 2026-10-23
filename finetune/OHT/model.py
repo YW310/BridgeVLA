@@ -5,6 +5,9 @@ from .action_modes import resolve_action, action_options
 
 
 def build_agent(config, contract, device, pretrain_path=None, training=True, distributed=False):
+    if config.get('chunk_policy', {}).get('enabled'):
+        from .chunk_model import build_chunk_agent
+        return build_chunk_agent(config, contract, device, pretrain_path, training, distributed)
     import torch
     from bridgevla.mvt.config import get_cfg_defaults
     from bridgevla.mvt.mvt import MVT
@@ -62,6 +65,8 @@ def build_agent(config, contract, device, pretrain_path=None, training=True, dis
             parameter.requires_grad = False
         if config.get("freeze_multimodal_projector") and "multi_modal_projector" in name:
             parameter.requires_grad = False
+        if config.get("freeze_language_model") and "language_model" in name:
+            parameter.requires_grad = False
         if "language_model" in name and ".layers." in name:
             layer = name.split(".layers.", 1)[1].split(".", 1)[0]
             if layer.isdigit() and int(layer) < prefix_layers:
@@ -116,6 +121,9 @@ def load_weights(agent, checkpoint, initialize=False):
     import torch
     if isinstance(checkpoint, (str, bytes)) or hasattr(checkpoint, "__fspath__"):
         checkpoint = torch.load(checkpoint, map_location="cpu", weights_only=False)
+    if getattr(agent, 'is_chunk_agent', False):
+        from .chunk_model import load_chunk_weights
+        return load_chunk_weights(agent, checkpoint, initialize)
     state = checkpoint["model_state"]
     state = {key.removeprefix("module."): value for key, value in state.items()}
     current_action = action_options(getattr(agent, "oht_action_config", None))

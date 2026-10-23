@@ -4,7 +4,9 @@
 
 本目录提供 OHT 数据审计、观测/动作缓存、baseline、内部 T/R role queries、可选外部 predicted objects、训练、推理服务和评估入口。命令均从 **BridgeVLA 仓库根目录** 执行。设计背景见 [迁移方案](../../docs/design/oht-data-migration.md)。
 
-完整重建 replay 和对象预览见[完整重新生成 replay](#完整重新生成-replay)。原始数据未变时可复用已有 audit，直接从构建步骤开始。
+下一版 [关键目标 + 连续 action chunk baseline](../../docs/design/key-goal-action-chunk-baseline.md) 已接通 V4 数据、联合/冻结关键目标两种训练、离线评估、HTTP 与客户端执行，见 [V4 训练与评估](#v4关键目标--连续-chunk-训练与评估)。默认沿用 full 的 Gemma 前缀层冻结，联合训练其后续层、关键目标头和 decoder。单关键点配置仍使用原路径；旧 checkpoint 用于初始化关键目标模型，不能直接 resume 成 chunk 策略。真实 CUDA/IsaacLab 验收待运行。
+
+新连续数据使用 [V4 完整重建](#v4完整重建关键目标与连续-chunk)；现有单关键点 replay 和对象预览见[完整重新生成 replay](#完整重新生成-replay)。原始数据未变时可复用已有 audit，直接从构建步骤开始。
 
 已用合成 OHT 数据完成 CPU 集成验证，包括真实 Parquet、MP4 解码、深度点云、真实 Agent 更新及 HTTP 请求。真实 v423 数据、完整 CUDA 模型和 IsaacLab 闭环尚未验证。
 
@@ -91,7 +93,7 @@ point_cloud_filter:
 
 仓库配置更新不会修改此前复制的 `dataset-calibrated.yaml`。构建始终读取 `--config` 指定的文件；请同步所需字段，保留本地已有的正确值。
 
-当前 schema 为 `oht_bridgevla_v2`；下文的 `replay-source-v3` 只是新的输出目录名，不代表 schema 升级。旧缓存的几何或标签修复后，需要重建依赖的 teacher/预测缓存并重新训练，不能沿用旧 optimizer resume。
+现有单关键点缓存 schema 为 `oht_bridgevla_v2`，目录名 `replay-source-v3` 不代表 schema 升级。新连续 chunk 缓存使用独立 schema `oht_bridgevla_v4`，建议目录名 `replay-source-v4`。几何、标签或 schema 改变后不能沿用旧 optimizer resume；旧 teacher/预测缓存也不能仅改 hash 后绑定新缓存。
 
 数据方提供的 frame 965 腕部投影参考值为原图 `(313.0, 378.6)`，在默认 4 倍步长缓存中应约为 `(78.25, 94.65)`。本地没有该原始样本，仍需在服务器复核多帧、多相机，不以“落在图内”代替几何对齐验证。
 
@@ -118,9 +120,115 @@ depth:
 
 读取器检查实际像素格式，保留 12-bit 数值及视频 PTS；旧 PyAV 的 gray12le 数组兼容路径直接读取含行 padding 的 uint16 平面。仍兼容浮点 NPY（metric）、整数 PNG/TIFF（scaled_integer）和显式指定通道/scale/offset 的旧 linear_channel 编码。普通可视化视频不能据此当作米制深度。
 
+### V4：完整重建关键目标与连续 chunk
+
+V4 从原始 Parquet 和 RGB-D 视频重新生成全部所选输入帧，不复制或复用 V3 的观测 NPZ。原始数据不需重新采集；已有有效 audit 可复用，以保持相同 episode/场景划分。输出目录必须尚不存在。
+
+~~~bash
+python tools/build_oht_replay.py \
+  --root /common-data-32t/data/robot_data/oht_curobo_pd_v423 \
+  --manifest /data/oht/audit-seed0.json \
+  --config finetune/OHT/configs/dataset.yaml \
+  --output /data/oht/replay-source-v4 \
+  --replay-version 4 \
+  --chunk-horizon 16 --action-frame-stride 1 \
+  --sample-stride 10 --visualize-every 100
+
+python tools/validate_oht_replay.py \
+  --replay /data/oht/replay-source-v4 --workers 4
+~~~
+
+`--root` 指原始四任务数据的父目录，不是 `replay-source-v3`。若之前使用本地标定 YAML，继续用已核查的文件替换 `--config`，不要丢掉本地标定。
+
+| 参数 / 字段 | V4 含义 |
+| --- | --- |
+| `--chunk-horizon 16` | 每个输入最多监督 16 个未来实测目标 |
+| `--action-frame-stride 1` | 每个动作前进 1 个原始帧，与输入采样步长分开 |
+| `--action-dt` | 可选，显式期望动作时间间隔；省略时从原始时间戳推导并固定整个缓存的间隔 |
+| `--sample-stride 10` | 输入观测每隔 10 帧抽样，另保留非终帧关键事件；不是动作的 dt |
+| `--visualize-every 100` | 每个 episode 的首个及每隔 100 个样本保存基础 PNG；不改变数据标签 |
+| `--object-cloud-config ...` | 可选，沿用原有近似对象点云和 HTML 诊断导出；不是训练 role teacher |
+
+V4 同时保存下一关键目标和未来连续轨迹，动作取实测 TCP/关节/夹爪，不使用原始动作命令或关键点间直线插值。目标时间为 `t+dt ... t+K*dt`；实际 `dt`、stride、K、标定、audit 和索引摘要写入 contract。不同 episode 的采样率不匹配时构建失败，时间缺口或粗采样丢失完整夹爪切换的窗口会跳过并记录原因。`--action-timestamp-atol/rtol` 可设时间检查容差；不能用放宽容差掩盖不同采样率。
+
+最后关键点之后的尾段、无夹爪切换的 episode 也生成有效连续样本。没有下一关键目标时 `key_valid=false`；episode 尾部不足 K 项使用 `action_valid` 屏蔽，不复制最后帧充当真实停留。真实静止、旋转和夹爪动作保持原数据时序。
+
+~~~text
+replay-source-v4/
+  contract.json
+  samples.jsonl
+  complete.json
+  observations/<task>/<episode>/<frame>.npz
+  targets/<task>/<episode>/<frame>.npz
+  preview/                                  # 启用预览时
+~~~
+
+观测包含实测 `tcp_pose`、`joint_positions` 和 `gripper_open01`；独立 targets NPZ 保存 `key_action/key_joint_action/key_valid/key_frame`、`action_chunk[K,8]`、`joint_chunk[K,7]`、`action_frames`、`action_timestamps` 和 `action_valid`。位置是 world 米、TCP 四元数是 xyzw、夹爪 1 开 0 关。每个 payload 都有独立哈希，完整校验会检查观测、目标、mask、时间、边界和组划分。
+
+构建进度写 stderr，包含当前 episode、样本数、跳过窗口数、实际 dt 和耗时；`--quiet` 隐藏进度。`complete.json` 记录各划分数量、原始 dt 统计与跳过原因。失败目录不写完成标记；重跑使用新的目录。
+
+读取入口为 `OHTChunkDataset`，batch 中 chunk 为 `[B,1,K,8]`，历史轴与未来轴分开。V4 必须使用下方的 chunk 配置；单关键点配置和旧 role-cache 工具仍拒绝 V4。构建时的基础预览显示当前 TCP 与有效下一关键目标；预测 chunk 图在训练、离线评估和在线服务中生成。
+
+### V4：关键目标 + 连续 chunk 训练与评估
+
+先准备一个已训练的绝对 EEF 关键目标 checkpoint，其解析后的相机、TCP、夹爪、图像尺寸及数据 profile 必须与新 V4 一致。默认沿用 OHT full 的冻结规则：冻结 Gemma 前 6 层、视觉编码器和 multimodal projector；联合训练后续 Gemma 层、关键目标头和 chunk decoder。chunk 分支只读取当前观测、实测 proprioception 和预测关键目标；GT 裁剪仅用于独立的关键目标监督分支。
+
+~~~bash
+python -m finetune.OHT.train \
+  --config finetune/OHT/configs/oht_chunk_v4_8x40.yaml \
+  --replay /data/oht/replay-source-v4 --validate-only
+
+GPUS_PER_NODE=8 bash finetune/OHT/train_8x40.sh \
+  --config finetune/OHT/configs/oht_chunk_v4_8x40.yaml \
+  --replay /data/oht/replay-source-v4 \
+  --init-checkpoint /home/yiwei/project/BridgeVLA/finetune/OHT/runs/baseline-eef-8gpu-s0/model_last.pth \
+  --log-dir /data/oht/runs --exp-id key-chunk-v4-s0
+~~~
+
+`--init-checkpoint` 替换为实际旧 EEF 模型；新 chunk decoder 随机初始化并训练。新 run 继续使用时间戳目录、epoch、全局 batch、AdamW、TensorBoard 和模型保存机制。`trainable_parameters.json` 列出可训练层。全局刚体增强关闭，避免破坏实测关节与 TCP 的关系。
+
+~~~yaml
+freeze_language_model: false         # 使用下方的按层数冻结
+freeze_gemma_prefix_layers: 6        # 冻结索引 0..5；可按需要调整
+freeze_multimodal_projector: true
+freeze_vision_tower: true
+chunk_policy:
+  enabled: true
+  stage: joint                      # frozen_key 则冻结整个关键目标网络
+  key_loss_weight: 1.0
+~~~
+
+联合损失为 `chunk_loss + key_loss_weight * key_loss`；key loss 沿用关键目标的 heatmap、旋转和夹爪监督，只计算 `key_valid=true` 的样本。每批先计算独立的 GT 监督分支，再通过预测目标裁剪提取 chunk 条件；两条路径共享模型权重，GT 特征不会送入 decoder。关键目标的离散解码及裁剪位置保持 detach；chunk loss 可沿预测分支更新未冻结的 Gemma 后续层，但不穿过 argmax。冻结模块保持 eval，BatchNorm 运行统计固定，仿射参数仍遵循冻结规则。`lm_head/embed_tokens` 沿用原有冻结规则；若显式设置 `freeze_language_model=true`，则覆盖层数设置并冻结整个语言模型。
+
+可在派生配置中将 `stage` 改为 `frozen_key` 做对照。从 frozen_key 切换到 joint，或改变冻结策略时，使用 `--init-checkpoint` 新建 run，不复用旧优化器；仅阶段/key loss 权重变化时保留已训练的 decoder 权重。相同配置才能 `--resume`。两种阶段共用 V4 数据，无需因此重新构建。
+
+新配置默认 K=16、建议执行 H=4。可将模型 K 减小到 cache horizon 以内做对照，无需重建同一 V4 数据；超过监督 horizon 则拒绝训练。TensorBoard 记录总损失、关键目标各项损失、masked chunk 位置/旋转/夹爪损失，以及预测关键目标热图和 chunk 的 XY/XZ/YZ 预测与实测未来路径。预测条件复用逐样本部署路径；joint 还增加一次有效关键目标子批的监督 forward，吞吐和显存需在实际 GPU 上测量。
+
+训练会打印实际 run 目录。将该目录填写为环境变量后执行：
+
+~~~bash
+CHUNK_RUN=/data/oht/runs/实际训练目录
+python -u -m finetune.OHT.eval open-loop \
+  --checkpoint "$CHUNK_RUN/model_last.pth" \
+  --replay /data/oht/replay-source-v4 --split val \
+  --output /data/oht/eval/key-chunk-v4-val.json
+
+GPU_ID=1 bash finetune/OHT/vla_server.sh \
+  --model-path "$CHUNK_RUN/model_last.pth" \
+  --device cuda:0 --host 0.0.0.0 --port 8004
+~~~
+
+离线评估按未来 offset 报告位置、旋转、夹爪和样本数量，关键目标误差独立统计；默认导出路径 PNG/NPZ 和预测热图。它仍不是任务成功率。
+
+实时客户端沿用 [IsaacLab 启动命令](../../docs/guides/oht-vla-server.md#isaaclab-实时-rgb-d-客户端)。`--execution-mode auto` 会根据 `/model_info.chunk_spec` 选择 chunk 执行；可增加 `--chunk-execute-horizon 4` 覆盖 H。`--max-steps` 仍为策略请求次数，日志另记每次消费的动作数量和控制步数。
+
+响应 schema 为 `bridgevla_oht_eef_chunk_v1`，返回 `key_action`、`actions[K,8]`、`time_offsets`；不返回单动作 `action`。请求需通过 `prediction_schema` 确认输出格式，新版客户端和 smoke 工具自动处理。客户端校验身份、K、dt 和坐标，再按时间消费前缀并丢弃后缀。夹爪按各 tick 切换，不等待远处关键点到位。当前要求 action_dt 为仿真 control dt 的整数倍，网络等待时只刷新窗口、不推进物理。
+
+默认跟踪误差上限为 0.10 m / 0.5 rad，可通过 `--chunk-max-tracking-translation/rotation` 设置；超限停止并写日志，不反复执行不可达目标。在线页面显示关键目标热图、首个动作投影和 3D chunk 路径；红色前缀按服务端建议 H 绘制，客户端覆盖 H 后以本地执行日志为准。该版本不包含碰撞规划。
+
 ### 完整重新生成 replay
 
-使用当前仓库配置，从原始 RGB-D 重新生成 replay、近似对象点云和预览。已有有效的 `/data/oht/audit-seed0.json` 可直接复用；输出目录 `/data/oht/replay-source-v3` 必须尚不存在。再次重建时更换新目录名，保留旧结果用于对照。
+以下为现有单关键点版本。使用当前仓库配置，从原始 RGB-D 重新生成 replay、近似对象点云和预览。已有有效的 `/data/oht/audit-seed0.json` 可直接复用；输出目录 `/data/oht/replay-source-v3` 必须尚不存在。再次重建时更换新目录名，保留旧结果用于对照。
 
 ~~~bash
 python tools/build_oht_replay.py \

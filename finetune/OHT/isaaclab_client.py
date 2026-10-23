@@ -148,8 +148,11 @@ def main(argv=None):
     parser.add_argument('--episodes', type=int, help='Default: 20 policy episodes, or one replay of the selected trajectory')
     parser.add_argument('--max-steps', type=int, help='Default: 500 policy requests, or all remaining replay transitions')
     parser.add_argument('--max-substeps', type=int, default=1, help='Streaming control steps per target; waypoint uses waypoint-max-steps')
-    parser.add_argument('--execution-mode', choices=('auto', 'waypoint', 'streaming'), default='auto',
+    parser.add_argument('--execution-mode', choices=('auto', 'waypoint', 'streaming', 'chunk'), default='auto',
                         help='auto: waypoint for policy/GT keypoints, streaming for dense GT replay')
+    parser.add_argument('--chunk-execute-horizon', type=int, help='Override advertised H; requests still return K actions')
+    parser.add_argument('--chunk-max-tracking-translation', type=float, default=.10)
+    parser.add_argument('--chunk-max-tracking-rotation', type=float, default=.5)
     parser.add_argument('--waypoint-max-steps', type=int, default=600)
     parser.add_argument('--waypoint-position-tolerance', type=float, default=.005)
     parser.add_argument('--waypoint-rotation-tolerance', type=float, default=.05)
@@ -178,6 +181,7 @@ def main(argv=None):
     initial_options = [option.split('=', 1)[0] for option in argv if option.startswith('--initial-state-')]
     if initial_options and (args.mode != 'policy' or not args.initial_state_root):
         raise ValueError('initial-state options require --mode policy and --initial-state-root')
+    args.execution_auto = args.execution_mode == 'auto'
     if args.execution_mode == 'auto':
         args.execution_mode = 'streaming' if args.mode == 'replay' and args.replay_targets == 'frame' else 'waypoint'
     if args.mode == 'replay' and args.execution_mode != ('waypoint' if args.replay_targets == 'keypoints' else 'streaming'):
@@ -266,6 +270,12 @@ def _run(args, reference_args):
               f'actions={min(args.max_steps, replay.length)} HTTP=disabled', flush=True)
     else:
         client = BridgeVLAClient(args.server, args.timeout)
+        if getattr(client, 'chunk_spec', None) is not None:
+            if not args.execution_auto and args.execution_mode != 'chunk':
+                raise ValueError('Chunk checkpoint requires --execution-mode auto or chunk')
+            args.execution_mode = 'chunk'
+        elif args.execution_mode == 'chunk' or args.chunk_execute_horizon is not None:
+            raise ValueError('Chunk execution options require a chunk checkpoint')
     profile = client.profile(args.task, args.data_profile)
     if args.initial_state_root:
         from .runtime.trajectory_initialization import InitialState
@@ -329,6 +339,11 @@ def _run(args, reference_args):
                                 max_substeps=args.max_substeps, max_translation=args.max_translation,
                                 max_rotation=args.max_rotation, joint_executor=joint, visualizer=markers)
         waypoint = WaypointExecutor(bridge, **waypoint_options) if args.execution_mode == 'waypoint' else None
+        chunk_executor = None
+        if args.execution_mode == 'chunk':
+            from .runtime.chunk_executor import ChunkExecutor
+            chunk_executor = ChunkExecutor(bridge, client.chunk_spec, args.chunk_execute_horizon,
+                                            args.chunk_max_tracking_translation, args.chunk_max_tracking_rotation)
         if waypoint is not None and joint is not None and not callable(getattr(joint, 'step', None)):
             raise ValueError('Waypoint joint execution requires a single-step executor exposing step(target); '
                              'use the built-in JointPositionExecutor or select streaming explicitly')
@@ -344,6 +359,8 @@ def _run(args, reference_args):
                    motion_path='direct_target_tracking_no_collision_planner',
                    model_id=client.info['model_id'], contract_sha256=client.info['contract_sha256'],
                    action_spec=client.info['action_spec'], data_profile=profile, task_settings=settings,
+                   chunk_spec=getattr(client, 'chunk_spec', None),
+                   chunk_execute_horizon=chunk_executor.horizon if chunk_executor else None,
                    initialization=args.initialization, score=args.score, runtime_factory=runtime_factory,
                    policy_wait='background_http_render_only' if replay is None else None,
                    keep_open_on_error=args.keep_open_on_error,
@@ -441,9 +458,10 @@ def _run(args, reference_args):
                     # Also guard a reply that completed just as the user closed the window.
                     if not reference.simulation_app.is_running():
                         raise RuntimeError('Simulation application stopped before executing policy action')
-                    commands = (waypoint.execute(action, measured, after_step) if waypoint is not None else
+                    executor = chunk_executor if chunk_executor is not None else waypoint
+                    commands = (executor.execute(action, measured, after_step) if executor is not None else
                                 bridge.execute(action, measured, after_step))
-                    execution = waypoint.last_result if waypoint is not None else None
+                    execution = executor.last_result if executor is not None else None
                     executed = perf_counter()
                     before = bridge.measured_state(measured)
                     after = bridge.measured_state()
@@ -483,7 +501,7 @@ def _run(args, reference_args):
                         row['stop_reason'] = 'environment_done'
                         break
                     if execution is not None and not execution['completed']:
-                        row['stop_reason'] = 'waypoint_' + execution['status']
+                        row['stop_reason'] = ('chunk_' if chunk_executor else 'waypoint_') + execution['status']
                         row['error'] = execution.get('error') or f'Waypoint did not complete: {execution["status"]}'
                         print(f'[BridgeVLA] waypoint stopped: step={step} execution={execution}', flush=True)
                         break

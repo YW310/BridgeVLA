@@ -33,7 +33,14 @@ def smoke(server, replay, *, split="val", index=0, timeout=60., episode_id=None)
     if info["api_version"] != API_VERSION or info["observation_format"] != OBSERVATION_FORMAT:
         raise ValueError("Server does not support the prepared BridgeVLA /predict API")
     replay = Path(replay)
-    contract = load_contract(replay)
+    schema = json.loads((replay / 'contract.json').read_text(encoding='utf-8')).get('schema')
+    if schema == 'oht_bridgevla_v4':
+        from finetune.OHT.data.chunk_dataset import load_chunk_contract
+        contract = load_chunk_contract(replay)
+        if 'chunk_spec' not in info:
+            raise ValueError('V4 smoke requires a chunk checkpoint/server')
+    else:
+        contract = load_contract(replay)
     if info["contract_sha256"] != contract["sha256"]:
         raise ValueError("Server checkpoint and smoke replay contracts differ")
     rows = [row for row in read_jsonl(replay / "samples.jsonl") if row["split"] == split]
@@ -53,6 +60,8 @@ def smoke(server, replay, *, split="val", index=0, timeout=60., episode_id=None)
     request = dict(**identity, request_id=episode_id + "-0", step=0, timestamp=0.,
                    instruction=row["goal"], observation_format=OBSERVATION_FORMAT,
                    observation=pack_observation(observation))
+    if 'chunk_spec' in info:
+        request['prediction_schema'] = info['chunk_spec']['schema']
     body_size = len(json.dumps(request, allow_nan=False).encode("utf-8"))
     if body_size > info["max_request_bytes"]:
         raise ValueError("Smoke request exceeds server max_request_bytes")
@@ -62,6 +71,11 @@ def smoke(server, replay, *, split="val", index=0, timeout=60., episode_id=None)
         raise ValueError("Stale/mismatched prediction response")
     if response.get("action_spec") != info["action_spec"]:
         raise ValueError("Prediction output description changed")
+    if 'chunk_spec' in info:
+        from finetune.OHT.runtime.chunk_protocol import validate_prediction
+        if response.get('chunk_spec') != info['chunk_spec']:
+            raise ValueError('Chunk output description changed')
+        validate_prediction(response, info['chunk_spec'])
     return dict(sample_id=row["id"], task=row["task"], instruction=row["goal"], **response)
 
 

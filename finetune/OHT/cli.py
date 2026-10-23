@@ -55,6 +55,15 @@ def main(argv=None):
     for key in ("root", "manifest", "config", "output"):
         p.add_argument("--" + key, required=True)
     p.add_argument("--sample-stride", type=int, default=10)
+    p.add_argument("--replay-version", type=int, choices=(3, 4), default=3,
+                   help="3: existing single-keypoint cache; 4: fully rebuilt observations + timed chunks")
+    p.add_argument("--chunk-horizon", type=int, help="V4 future action count (default: 16)")
+    p.add_argument("--action-frame-stride", type=int, help="V4 raw frames per action target (default: 1)")
+    p.add_argument("--action-dt", type=float,
+                   help="V4 expected action interval in seconds; otherwise infer from raw timestamps")
+    p.add_argument("--action-timestamp-atol", type=float, help="V4 timestamp absolute tolerance (default: 1e-5)")
+    p.add_argument("--action-timestamp-rtol", type=float, help="V4 timestamp relative tolerance (default: 1e-4)")
+    p.add_argument("--quiet", action="store_true", help="Hide V4 build progress on stderr")
     p.add_argument("--object-cloud-config", help="Optional build-time object-cloud YAML (source/default_size/objects)")
     _visualization_arguments(p)
     p = sub.add_parser("validate")
@@ -113,23 +122,46 @@ def main(argv=None):
         print(json.dumps({k: result[k] for k in ("valid_episodes", "invalid_episodes", "split_counts", "missing_tasks")}))
         return 1 if result["invalid_episodes"] else 0
     if args.command == "build":
-        count = build(args.root, args.manifest, read_config(args.config), args.output, args.sample_stride,
+        chunk_config = {key: value for key, value in (
+            ('horizon', args.chunk_horizon), ('frame_stride', args.action_frame_stride),
+            ('action_dt', args.action_dt), ('timestamp_atol', args.action_timestamp_atol),
+            ('timestamp_rtol', args.action_timestamp_rtol)) if value is not None}
+        if args.replay_version != 4 and chunk_config:
+            parser.error('Chunk options require --replay-version 4')
+        builder, extra = build, {}
+        if args.replay_version == 4:
+            from .data.chunk_replay import build as build_chunk_replay
+            builder, extra = build_chunk_replay, dict(chunk_config=chunk_config, progress=not args.quiet)
+        count = builder(args.root, args.manifest, read_config(args.config), args.output, args.sample_stride,
                       visualize_every=args.visualize_every, visualize_output_dir=args.visualize_output_dir,
-                      object_cloud_config=read_config(args.object_cloud_config) if args.object_cloud_config else None)
+                      object_cloud_config=read_config(args.object_cloud_config) if args.object_cloud_config else None,
+                      **extra)
         print(f"Built {count} OHT transitions")
     elif args.command == "validate":
         if args.workers < 1:
             parser.error("--workers must be a positive integer")
         if not args.quiet:
             print("[OHT validate] loading replay contract and sample index", file=sys.stderr, flush=True)
-        contract = load_contract(args.replay)
+        schema = json.loads((Path(args.replay) / 'contract.json').read_text(encoding='utf-8')).get('schema')
+        chunk = schema == 'oht_bridgevla_v4'
+        if chunk:
+            if args.mode != 'baseline' or args.role_cache:
+                parser.error('V4 chunk validation currently supports baseline without role caches')
+            from .data.chunk_dataset import OHTChunkDataset, load_chunk_contract
+            contract = load_chunk_contract(args.replay)
+        else:
+            contract = load_contract(args.replay)
         counts = {}
         available = {row["split"] for row in read_jsonl(Path(args.replay) / "samples.jsonl")}
         for split in sorted(available):
-            data = OHTDataset(args.replay, split, args.mode, args.role_cache, args.point_count)
+            data = (OHTChunkDataset(args.replay, split) if chunk else
+                    OHTDataset(args.replay, split, args.mode, args.role_cache, args.point_count))
             counts[split] = data.validate_all(
                 workers=args.workers, progress=None if args.quiet else _validation_progress(split))
-        print(json.dumps(dict(valid=True, samples=counts, contract=contract["sha256"])))
+        result = dict(valid=True, samples=counts, contract=contract['sha256'])
+        if chunk:
+            result.update(replay_version=4, chunk=contract['chunk'])
+        print(json.dumps(result))
     elif args.command == "diagnose-geometry":
         if bool(args.object_root) != bool(args.object_manifest) or (args.object_root and not args.html):
             raise ValueError("Use --object-root and --object-manifest together with --html")

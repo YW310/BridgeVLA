@@ -32,6 +32,14 @@ def load(path, visited=None):
         raise ValueError("Vector actions require transform_augmentation=false: robot states cannot be independently augmented")
     validate_training_settings(config)
     visualization_settings(config)
+    for name in ('freeze_vision_tower', 'freeze_multimodal_projector', 'freeze_language_model'):
+        if name in config and type(config[name]) is not bool:
+            raise ValueError(f'{name} must be boolean')
+    prefix = config.get('freeze_gemma_prefix_layers', 0)
+    if type(prefix) is not int or prefix < 0:
+        raise ValueError('freeze_gemma_prefix_layers must be a nonnegative integer')
+    from .chunk_config import chunk_settings
+    chunk_settings(config)
     for key in ("point_count",):
         if not isinstance(config.get(key), int) or config[key] < 1:
             raise ValueError(f"{key} must be a positive integer")

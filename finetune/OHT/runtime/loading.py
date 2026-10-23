@@ -22,7 +22,8 @@ def load_policy(path, device="cuda:0", pretrain_path=None, predictor=None, prove
     expected = contents.pop("sha256")
     if expected != digest(contents):
         raise ValueError("Checkpoint OHT contract checksum mismatch")
-    if contract.get("schema") != SCHEMA:
+    chunk = config.get('chunk_policy', {}).get('enabled', False)
+    if contract.get("schema") != ('oht_bridgevla_v4' if chunk else SCHEMA):
         raise ValueError("Legacy OHT checkpoint data contract; rebuild replay and retrain with corrected source metadata")
     validate_data_config(contract["data_config"], resolved=True)
     wrapper = None

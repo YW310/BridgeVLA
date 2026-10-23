@@ -108,6 +108,12 @@ class OnlineVisualizer:
                                           for key in ARRAY_FIELDS if key in source}
                                     for name, source in stages.items()},
                             heatmap_waypoint_world=np.asarray(payload['heatmap_waypoint_world']).copy())
+            if 'chunk' in payload:
+                from .chunk_protocol import validate_prediction
+                chunk = payload['chunk']
+                validated = validate_prediction(chunk, chunk['spec'])
+                snapshot['chunk'] = dict(spec=dict(chunk['spec']), actions=validated['actions'].copy(),
+                                         key_action=validated['key_action'].copy())
             identity = {key: request.get(key) for key in
                         ('request_id', 'episode_id', 'step', 'timestamp', 'instruction', 'model_id')}
             raw_observation = request.get('observation', {})
@@ -171,8 +177,17 @@ class OnlineVisualizer:
             record = dict(entry_id=entry_id, **request, label_free=True, action_spec=action_descriptor(options),
                           predicted_action=action.tolist(), policy_tcp_world=None if policy_tcp is None else policy_tcp.tolist(),
                           policy_pose_xyzw=None if policy_pose is None else policy_pose.tolist(),
-                          heatmap_waypoint_world=waypoint.tolist(), heatmap_is_auxiliary=mode != 'eef',
+                          heatmap_waypoint_world=waypoint.tolist(), heatmap_is_auxiliary=mode != 'eef' or 'chunk' in payload,
                           prediction_url=f'/visualization/files/{entry_id}/prediction.json', images={}, stages={})
+            if 'chunk' in payload:
+                from ..chunk_visualization import path_panel
+                chunk = payload['chunk']
+                path_panel(chunk['actions']).save(temporary / 'chunk.png')
+                np.savez_compressed(temporary / 'chunk.npz', actions=chunk['actions'], key_action=chunk['key_action'])
+                record['chunk'] = dict(spec=chunk['spec'], actions=chunk['actions'].tolist(),
+                    key_action=chunk['key_action'].tolist(), png=f'/visualization/files/{entry_id}/chunk.png',
+                    arrays=f'/visualization/files/{entry_id}/chunk.npz')
+                record['images']['chunk'] = record['chunk']['png']
             for name, source in payload['stages'].items():
                 stage = dict(source)
                 rgb, maps, projection = stage['rgb'], stage['heatmap'], stage['world_to_pixel']
@@ -191,7 +206,7 @@ class OnlineVisualizer:
                 stage['heatmap_waypoint_pixels'] = projection @ np.r_[waypoint, 1.]
                 if policy_tcp is not None:
                     stage['policy_pixels'] = projection @ np.r_[policy_tcp, 1.]
-                _montage(stage, name, mode != 'eef').save(temporary / f'{name}.png')
+                _montage(stage, name, mode != 'eef' or 'chunk' in payload).save(temporary / f'{name}.png')
                 np.savez_compressed(temporary / f'{name}.npz', **stage)
                 png = f'/visualization/files/{entry_id}/{name}.png'
                 record['images'][name] = png
@@ -204,6 +219,18 @@ class OnlineVisualizer:
                     from .sensor_visualization import export_sensor_scene
                     record['sensors'], record['scene'] = export_sensor_scene(
                         temporary, entry_id, sensor_observation, policy_pose, waypoint)
+                    if 'chunk' in payload:
+                        scene_path = temporary / 'scene.json'
+                        scene = json.loads(scene_path.read_text(encoding='utf-8'))
+                        chunk = payload['chunk']
+                        positions = chunk['actions'][:, :3].tolist()
+                        origin = sensor_observation.get('tcp_pose_xyzw')
+                        if origin is not None:
+                            positions.insert(0, np.asarray(origin)[:3].tolist())
+                        prefix = chunk['spec']['execute_horizon'] + (1 if origin is not None else 0)
+                        scene['trajectories'] = [dict(positions=positions, color='#d4a8ff'),
+                            dict(positions=positions[:prefix], color='#ff5965')]
+                        scene_path.write_text(json.dumps(scene, allow_nan=False), encoding='utf-8')
                 except Exception as exc:
                     # A sensor diagnostic failure must still publish the
                     # existing heatmaps and leave the predicted action intact.

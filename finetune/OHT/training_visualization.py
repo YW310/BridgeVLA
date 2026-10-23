@@ -38,6 +38,9 @@ def _first_text(value):
 def record_visualization(payload, *, step, output, settings, batch, logger):
     if not payload:
         raise RuntimeError("Training visualization was requested but the agent returned no image payload")
+    if payload.get('chunk'):
+        from .chunk_visualization import record
+        return record(payload, step, output, settings, logger)
     from ..RLBench.training_visualization import record_training_visualization
     directory = Path(settings["output_dir"])
     if not directory.is_absolute():

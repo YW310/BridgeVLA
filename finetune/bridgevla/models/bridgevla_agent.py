@@ -1257,7 +1257,10 @@ class RVTAgent:
         reset_gradients: bool = True,
         step_optimizer: bool = True,
         return_visualization: bool = False,
+        return_loss: bool = False,
     ) -> dict:
+        if return_loss and not backprop:
+            raise ValueError('return_loss requires backprop=True to construct the supervised loss')
         assert replay_sample["rot_grip_action_indicies"].shape[1:] == (1, 4)
         assert replay_sample["ignore_collisions"].shape[1:] == (1, 1)
         assert replay_sample["gripper_pose"].shape[1:] == (1, 7)
@@ -1655,6 +1658,14 @@ class RVTAgent:
                         + base_collision_loss
                     )
 
+
+            if return_loss:
+                # The OHT joint container owns backward/optimizer/DDP. This
+                # branch computes the unchanged key-action objective only.
+                return dict(loss=total_loss, trans_loss=trans_loss.detach().item(),
+                            rot_loss_x=rot_loss_x.detach().item(), rot_loss_y=rot_loss_y.detach().item(),
+                            rot_loss_z=rot_loss_z.detach().item(), grip_loss=grip_loss.detach().item(),
+                            collision_loss=collision_loss.detach().item())
 
             if reset_gradients:
                 self.zero_grad()
@@ -2473,6 +2484,7 @@ class RVTAgent:
         self, step: int, observation: dict, deterministic=False,
         visualize=False, visualize_save_dir="", return_gembench_action=False,
         visualization_callback=None,
+        context_with_grad=False,
     ) -> ActResult:
         oracle_points, oracle_valid, oracle_slots = (
             self._select_oracle_prior_points(observation, allow_missing=True)
@@ -2593,23 +2605,26 @@ class RVTAgent:
         nc = self._net_mod.num_img
         h = w = self._net_mod.img_size
         dyn_cam_info = None
-        out = self._network(
-            pc=pc,
-            img_feat=img_feat,
-            img_aug=0,  # no img augmentation while acting
-            oracle_compute_base=(
-                self.heatmap_action_anchor
-                or self.bridgevla_aligned_objects
-            ),
-            **self._oracle_network_kwargs(
-                oracle_points,
-                (torch.zeros_like(oracle_valid)
-                 if self.bridgevla_aligned_objects else oracle_valid),
-                relation_state,
-            ),
-            language_goal=language_goal,
-            **self._network_extra_inputs(observation),
-        )
+        # Retain inference routing and no-grad action decoding; OHT joint
+        # training may retain the neural feature graph captured by its hook.
+        with torch.set_grad_enabled(context_with_grad):
+            out = self._network(
+                pc=pc,
+                img_feat=img_feat,
+                img_aug=0,  # no img augmentation while acting
+                oracle_compute_base=(
+                    self.heatmap_action_anchor
+                    or self.bridgevla_aligned_objects
+                ),
+                **self._oracle_network_kwargs(
+                    oracle_points,
+                    (torch.zeros_like(oracle_valid)
+                     if self.bridgevla_aligned_objects else oracle_valid),
+                    relation_state,
+                ),
+                language_goal=language_goal,
+                **self._network_extra_inputs(observation),
+            )
         bridgevla_alignment_elements = {}
         if self.bridgevla_aligned_objects:
             aligned_points, aligned_valid, bridgevla_alignment_elements = (

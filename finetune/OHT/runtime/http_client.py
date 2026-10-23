@@ -22,6 +22,10 @@ class BridgeVLAClient:
         self.action_config = action_options({key: value for key, value in spec.items() if key in DEFAULTS})
         if spec != action_descriptor(self.action_config):
             raise ValueError('Unsupported action_spec: frame, quaternion order, units, size and gripper must match BridgeVLA semantics')
+        self.chunk_spec = self.info.get('chunk_spec')
+        if self.chunk_spec is not None:
+            from .chunk_protocol import validate_spec
+            validate_spec(self.chunk_spec)
         self.episode, self.step, self.timestamp, self.instruction = None, 0, -1., None
         self.uncertain = False
 
@@ -84,6 +88,8 @@ class BridgeVLAClient:
         request = dict(**self._identity(self.episode), step=self.step, timestamp=float(timestamp),
                        instruction=instruction, observation_format=RAW_FORMAT,
                        observation=dict(task=task, data_profile=data_profile, tensors=pack_observation(tensors)))
+        if self.chunk_spec is not None:
+            request['prediction_schema'] = self.chunk_spec['schema']
         timing = {'pack': (perf_counter() - started) * 1000}
         # Timeout, cancellation or a malformed reply leaves execution uncertain.
         self.uncertain = True
@@ -92,7 +98,15 @@ class BridgeVLAClient:
         if (response.get('step') != request['step'] or response.get('timestamp') != request['timestamp']
                 or response.get('action_spec') != self.info['action_spec']):
             raise ValueError('Stale or mismatched policy response')
-        action = validate_action(response['action'], self.action_config)
+        if self.chunk_spec is not None:
+            from .chunk_protocol import validate_prediction
+            if response.get('chunk_spec') != self.chunk_spec or 'action' in response:
+                raise ValueError('Mismatched chunk response specification')
+            action = validate_prediction(response, self.chunk_spec)['actions']
+        else:
+            if 'chunk_spec' in response:
+                raise ValueError('Unexpected chunk response from a single-action model')
+            action = validate_action(response['action'], self.action_config)
         self.step += 1
         self.timestamp, self.instruction, self.uncertain = timestamp, instruction, False
         # Local diagnostics; preserve the server's timing_ms unchanged.

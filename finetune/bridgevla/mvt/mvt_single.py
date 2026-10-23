@@ -775,6 +775,9 @@ class MVT(nn.Module):
             out = {}
 
         out.update({"trans": trans})
+        if getattr(self, 'oht_return_chunk_tokens', False):
+            out['oht_chunk_tokens'] = x.reshape(bs, self.num_img, self.vlm_dim, *x.shape[-2:]).permute(
+                0, 1, 3, 4, 2).reshape(bs, -1, self.vlm_dim)
 
         if object_slot_output is not None:
             out.update({

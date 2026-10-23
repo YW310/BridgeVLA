@@ -10,6 +10,10 @@ def observation_schema(policy):
     data = policy.contract["data_config"]
     height, width = map(int, data["image_size"])
     fields = {"low_dim_state": dict(dtype="float32", shape=[4])}
+    if getattr(policy, 'chunk_settings', None) is not None:
+        fields.update(tcp_pose=dict(dtype='float32', shape=[7]),
+                      joint_positions=dict(dtype='float32', shape=[6]),
+                      gripper_open01=dict(dtype='float32', shape=[]))
     widths = {"tcp_pose": 7, "joint_positions": 6}
     for name in state_fields(policy.action_config):
         fields[name] = dict(dtype="float32", shape=[widths[name]])

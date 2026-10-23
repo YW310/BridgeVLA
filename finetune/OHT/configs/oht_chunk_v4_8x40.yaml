@@ -1,0 +1,22 @@
+extends: oht_full_8x40.yaml
+exp_id: oht-key-chunk-v4
+# Reuse OHT full's layer-count freezing; train later Gemma layers and both heads.
+freeze_vision_tower: true
+freeze_multimodal_projector: true
+freeze_language_model: false
+freeze_gemma_prefix_layers: 6
+agent:
+  transform_augmentation: false
+chunk_policy:
+  enabled: true
+  stage: joint
+  key_loss_weight: 1.0
+  horizon: 16
+  execute_horizon: 4
+  hidden_dim: 256
+  layers: 2
+  heads: 4
+  dropout: 0.0
+  position_scale: 0.25
+  rotation_weight: 1.0
+  gripper_weight: 1.0

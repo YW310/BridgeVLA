@@ -33,6 +33,8 @@ def decode_request(raw, operation):
     common = {"api_version", "request_id", "episode_id", "model_id", "contract_sha256"}
     required = common | ({"step", "timestamp", "instruction", "observation_format", "observation"}
                          if operation == "predict" else set())
+    if operation == 'predict' and isinstance(value, dict) and 'prediction_schema' in value:
+        required.add('prediction_schema')
     if not isinstance(value, dict) or set(value) != required:
         raise APIError(422, "invalid_request", f"Expected exactly these fields: {sorted(required)}")
     if value["api_version"] != API_VERSION:
@@ -40,6 +42,8 @@ def decode_request(raw, operation):
     for key in common - {"api_version"}:
         text(value[key], key)
     if operation == "predict":
+        if 'prediction_schema' in value:
+            text(value['prediction_schema'], 'prediction_schema')
         text(value["instruction"], "instruction", 4096)
         if type(value["step"]) is not int or value["step"] < 0:
             raise APIError(422, "invalid_request", "step must be a nonnegative integer")

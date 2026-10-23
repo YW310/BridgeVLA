@@ -151,6 +151,9 @@ def load_contract(root):
     if expected != digest(value) or complete["contract_sha256"] != expected:
         raise ValueError("Replay contract checksum mismatch")
     if contract.get("schema") != SCHEMA:
+        if contract.get("schema") == "oht_bridgevla_v4":
+            raise ValueError("V4 contains key goals and continuous chunks; use OHTChunkDataset/validate. "
+                             "The single-keypoint trainer and role-cache tools do not support V4 yet")
         raise ValueError("Unsupported replay schema; rebuild v1 caches with corrected depth/EE/gripper metadata (raw data and audit can be reused)")
     # Require an explicit raw-camera convention before reusing a cache for
     # training/teacher generation. Old v423 XYZ cannot be fixed by relabelling.

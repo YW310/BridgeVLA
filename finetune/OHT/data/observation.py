@@ -129,6 +129,11 @@ def validate_observation(observation, config):
     bounds = np.asarray(config["scene_bounds"])
     supported = False
     expected = {"low_dim_state"}
+    if "gripper_open01" in observation:
+        opening = array(observation["gripper_open01"], (), "measured gripper_open01")
+        if not 0 <= float(opening) <= 1:
+            raise ValueError("Measured gripper_open01 must be in [0,1]")
+        expected.add("gripper_open01")
     for name, state_width in (("joint_positions", 6), ("tcp_pose", 7)):
         if name in observation:
             state = array(observation[name], (state_width,), name)

@@ -77,6 +77,9 @@ def decode_raw(packed, policy, previous=None, *, sensor_callback=None):
         last_measured, last_state = previous if previous is not None else (None, None)
         binary = gripper_step(measured, last_measured, last_state, grip)
         result = dict(low_dim_state=low_dim(measured, binary_state=binary))
+        if getattr(policy, 'chunk_settings', None) is not None:
+            result.update(tcp_pose=tcp.astype(np.float32), joint_positions=joints.astype(np.float32),
+                          gripper_open01=np.asarray(measured, dtype=np.float32))
         for name in state_fields(policy.action_config):
             result[name] = (joints if name == 'joint_positions' else tcp).astype(np.float32)
         # Input axes are fixed by this wire format, independent of recorded-pose conventions.
