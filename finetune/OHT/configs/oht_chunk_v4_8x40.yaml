@@ -9,6 +9,7 @@ agent:
   transform_augmentation: false
 chunk_policy:
   enabled: true
+  # Joint key supervision allows starting without a task-trained EEF checkpoint.
   stage: joint
   key_loss_weight: 1.0
   horizon: 16

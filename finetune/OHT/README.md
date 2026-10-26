@@ -273,7 +273,21 @@ python tools/export_oht_replay_viewer.py \
 
 ### V4：关键目标 + 连续 chunk 训练与评估
 
-先准备一个已训练的绝对 EEF 关键目标 checkpoint，其解析后的相机、TCP、夹爪、图像尺寸及数据 profile 必须与新 V4 一致。默认沿用 OHT full 的冻结规则：冻结 Gemma 前 6 层、视觉编码器和 multimodal projector；联合训练后续 Gemma 层、关键目标头和 chunk decoder。chunk 分支只读取当前观测、实测 proprioception 和预测关键目标；GT 裁剪仅用于独立的关键目标监督分支。
+默认 `stage: joint` 可不加载已训练的 OHT EEF checkpoint，直接联合学习关键目标和 chunk；也可用兼容 EEF checkpoint 初始化。`stage: frozen_key` 冻结整个关键目标网络，仍要求 `--init-checkpoint` 或 `--resume`。默认冻结 Gemma 前 6 层、视觉编码器和 multimodal projector，训练后续 Gemma 层、关键目标头和 chunk decoder。chunk 分支只读取当前观测、实测 proprioception 和预测关键目标；GT 裁剪仅用于独立的关键目标监督分支。
+
+已生成 `bridgevla-seg-v4-run01` 时，在仓库根目录直接训练，无需 EEF checkpoint：
+
+~~~bash
+OUT=/common-data-32t/data/robot_data/oht_curobo_pd_v423-seg/bridgevla-seg-v4-run01
+GPUS_PER_NODE=8 bash finetune/OHT/train_8x40.sh \
+  --config finetune/OHT/configs/oht_chunk_v4_8x40.yaml \
+  --replay "$OUT/replay-source-v4" \
+  --log-dir "$OUT/runs" --exp-id oht-seg-v4-joint-s0
+~~~
+
+`OUT` 改为实际生成目录（含 `/media/34.92` 等实际挂载前缀）。未传 `--init-checkpoint` / `--pretrain-path` 时使用 PaliGemma 基础模型，BridgeVLA 热图/动作头和 chunk decoder 从新初始化训练；可增加 `--pretrain-path /path/to/BridgeVLA-pretrain` 加载热图预训练资源。该参数不是 PaliGemma 普通模型目录。跳过 EEF checkpoint 仍需完整可访问或已缓存的 PaliGemma 模型及 processor；离线缓存完整时在启动前设置 `HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1`。启动打印 `Chunk initialization: stage=joint source=paligemma_base` 或 `bridgevla_pretrain`。这种初始化的早期预测裁剪尚不准确，关键目标 GT 分支仍独立训练；不能据此保证与已训练 EEF 初始化相同的收敛速度或闭环性能。分割角色标签仍未接入此 chunk baseline。
+
+数据校验及可选的兼容 EEF 权重初始化命令如下：
 
 ~~~bash
 python -m finetune.OHT.train \
@@ -287,7 +301,7 @@ GPUS_PER_NODE=8 bash finetune/OHT/train_8x40.sh \
   --log-dir /common-data-32t/data/robot_data/oht_curobo_pd_v423/runs --exp-id key-chunk-v4-s0
 ~~~
 
-`--init-checkpoint` 替换为实际旧 EEF 模型；新 chunk decoder 随机初始化并训练。新 run 继续使用时间戳目录、epoch、全局 batch、AdamW、TensorBoard 和模型保存机制。`trainable_parameters.json` 列出可训练层。全局刚体增强关闭，避免破坏实测关节与 TCP 的关系。
+可选的 `--init-checkpoint` 替换为实际旧 EEF 模型，其解析后的相机、TCP、夹爪、图像尺寸及 data profiles 必须与新 V4 一致；新 chunk decoder 随机初始化。joint 不传该参数时按上一命令联合训练。新 run 继续使用时间戳目录、epoch、全局 batch、AdamW、TensorBoard 和模型保存机制。`trainable_parameters.json` 列出可训练层。全局刚体增强关闭，避免破坏实测关节与 TCP 的关系。
 
 ~~~yaml
 freeze_language_model: false         # 使用下方的按层数冻结

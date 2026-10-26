@@ -154,7 +154,7 @@ joint 优化 `chunk_loss + key_loss_weight * key_loss`，默认权重 1.0。没�
 | 5. 执行器（已接通） | `runtime/chunk_executor.py`、`isaaclab_client.py` | 固定 dt 消费前缀、夹爪时序、跟踪异常停止；真实仿真待验收 |
 | 6. 评估与可视化（已接通） | TensorBoard、离线 PNG/NPZ、在线 3D | 关键目标热图、预测 chunk 与默认前缀；客户端日志记录真实执行 |
 
-当前配置为 `configs/oht_chunk_v4_8x40.yaml`，继承 full 8x40 的 AdamW/epoch/logging，默认 joint；可训练参数名单写入 run。K 可以小于等于 cache 的监督 horizon，因此同一 V4 数据可做 K=1 对照。旧关键目标 checkpoint 用 `--init-checkpoint` 初始化 encoder，要求已解析的 data profiles/标定一致；相同阶段及冻结策略的 chunk checkpoint 才可 resume。
+当前配置为 `configs/oht_chunk_v4_8x40.yaml`，继承 full 8x40 的 AdamW/epoch/logging，默认 joint；可训练参数名单写入 run。joint 可不传 EEF checkpoint：使用 PaliGemma 基础资源或可选的 `--pretrain-path` 热图预训练，关键目标由独立 GT 分支从新学习，chunk 仍使用预测目标裁剪，训练初始化不引入 GT 条件。frozen_key 仍要求已训练 checkpoint。K 可以小于等于 cache 的监督 horizon，因此同一 V4 数据可做 K=1 对照。可选的旧关键目标 checkpoint 用 `--init-checkpoint` 初始化 encoder，要求已解析的 data profiles/标定一致；相同阶段及冻结策略的 chunk checkpoint 才可 resume。
 
 当前预测条件按样本复用原部署 `act` 路径，以保持裁剪/旋转推理一致，尚未实现 backbone 批量推理优化。同步网络等待期间暂停物理时间。首版执行器要求 action_dt 为 control dt 的整数倍；不以浮点四舍五入改变动作时间。超出默认 0.10 m / 0.5 rad 跟踪误差或已越过已知硬限位时停止，不无限等待。
 

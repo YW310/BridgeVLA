@@ -51,9 +51,11 @@ def main(argv=None):
         if args.role_cache:
             parser.error('Chunk baseline does not use role caches')
         dataset = OHTChunkDataset(args.replay, 'train')
-        chunk_settings(config, dataset.contract)
-        if not args.validate_only and not (args.init_checkpoint or args.resume):
-            parser.error('Chunk training requires --init-checkpoint with a trained EEF model, or --resume')
+        settings = chunk_settings(config, dataset.contract)
+        if (settings['stage'] == 'frozen_key' and not args.validate_only
+                and not (args.init_checkpoint or args.resume)):
+            parser.error('frozen_key chunk training requires --init-checkpoint with a trained EEF model, '
+                         'or --resume; use chunk_policy.stage=joint to train without an EEF checkpoint')
     else:
         dataset = OHTDataset(args.replay, "train", config["mode"], args.role_cache, config["point_count"], resolve_action(config))
     rank, local_rank = int(os.environ.get("RANK", 0)), int(os.environ.get("LOCAL_RANK", 0))
@@ -83,6 +85,10 @@ def main(argv=None):
                                    distributed=dist if world > 1 else None)
     if rank == 0:
         print(f"Run directory: {output}", flush=True)
+        if chunk_enabled:
+            source = ('resume' if args.resume else 'checkpoint' if args.init_checkpoint
+                      else 'bridgevla_pretrain' if args.pretrain_path else 'paligemma_base')
+            print(f"Chunk initialization: stage={settings['stage']} source={source}", flush=True)
     if world > 1:
         dist.barrier()
     remaining_draws = target_steps * accumulation * config["batch_size"]

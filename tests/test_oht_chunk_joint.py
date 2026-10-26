@@ -1,11 +1,13 @@
 """Joint key/chunk gradients with the real agent and a small renderer/VLM stand-in."""
 import copy
+import json
 from pathlib import Path
 
 import numpy as np
 import pytest
 import torch
 from torch import nn
+import yaml
 
 from tests.test_oht_chunk_replay import chunk_fixture, replay_fixture  # noqa: F401
 from tests.test_oht_action_modes import TinyMVT
@@ -79,6 +81,76 @@ def mixed_batch(data):
     samples = [data[first], data[last]]
     samples[1]['key_action'][:] = float('nan')
     return collate_chunk(samples)
+
+
+@pytest.mark.parametrize('pretrain', [None, '/local/bridgevla-pretrain'])
+def test_cli_joint_without_eef_checkpoint_trains_and_saves_both_heads(
+        chunk_fixture, tmp_path, monkeypatch, capsys, pretrain):
+    from finetune.OHT import train
+    from bridgevla.mvt import mvt
+    from torch.utils.data import DataLoader
+
+    config = settings_config()
+    config['chunk_policy']['stage'] = 'joint'
+    config.update(batch_size=2, num_workers=0, global_batch_size=2,
+                  epochs=1, train_iter=2, checkpoint_every_epochs=1)
+    config['train_visualization']['enabled'] = False
+    path = tmp_path / 'joint.yaml'
+    path.write_text(yaml.safe_dump(config), encoding='utf-8')
+    output = tmp_path / 'run'
+    captured = {}
+
+    def build(settings, contract, device, pretrain_path, **kwargs):
+        captured['pretrain'] = pretrain_path
+        agent = build_agent(settings, contract, torch.device('cpu'), pretrain_path, **kwargs)
+        captured['before'] = copy.deepcopy(model_state(agent))
+        return agent
+
+    def unexpected_checkpoint(*args, **kwargs):
+        raise AssertionError('No task checkpoint should be loaded')
+
+    monkeypatch.setattr(mvt, 'MVT', JointMVT)
+    monkeypatch.setattr(torch.cuda, 'is_available', lambda: True)
+    monkeypatch.setattr(torch.cuda, 'set_device', lambda device: None)
+    monkeypatch.setattr(torch.utils.data, 'DataLoader', lambda *args, **kwargs:
+                        DataLoader(*args, **dict(kwargs, pin_memory=False)))
+    monkeypatch.setattr(train, 'to_device', lambda batch, device: batch)
+    monkeypatch.setattr(train, 'build_agent', build)
+    monkeypatch.setattr(train, 'load_weights', unexpected_checkpoint)
+    for name in ('RANK', 'LOCAL_RANK', 'WORLD_SIZE'):
+        monkeypatch.delenv(name, raising=False)
+    args = ['--config', str(path), '--replay', str(chunk_fixture.root),
+            '--output', str(output), '--log-backend', 'none']
+    if pretrain:
+        args += ['--pretrain-path', pretrain]
+    assert train.main(args) == 0
+    assert captured['pretrain'] == pretrain
+    metrics = json.loads((output / 'metrics.jsonl').read_text().strip())
+    assert metrics['key_valid_samples'] > 0
+    assert np.isfinite(metrics['total_loss'])
+    checkpoint = torch.load(output / 'model_last.pth', weights_only=False)
+    assert checkpoint['optimizer_step'] == 1
+    for name in ('encoder.trans', 'encoder.feat', 'decoder.head.weight'):
+        assert not torch.equal(checkpoint['model_state'][name], captured['before'][name]), name
+    assert torch.equal(checkpoint['model_state']['encoder.mvt1.model.vision_tower.0.weight'],
+                       captured['before']['encoder.mvt1.model.vision_tower.0.weight'])
+    assert f"stage=joint source={'bridgevla_pretrain' if pretrain else 'paligemma_base'}" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize('pretrain', [None, '/local/bridgevla-pretrain'])
+def test_cli_frozen_key_still_requires_trained_checkpoint(chunk_fixture, tmp_path, capsys, pretrain):
+    from finetune.OHT.train import main
+    path = tmp_path / 'frozen.yaml'
+    config = settings_config()
+    config['train_visualization']['enabled'] = False
+    path.write_text(yaml.safe_dump(config), encoding='utf-8')
+    args = ['--config', str(path), '--replay', str(chunk_fixture.root), '--log-backend', 'none']
+    if pretrain:
+        args += ['--pretrain-path', pretrain]
+    with pytest.raises(SystemExit) as error:
+        main(args)
+    assert error.value.code == 2
+    assert 'frozen_key chunk training requires --init-checkpoint' in capsys.readouterr().err
 
 
 @pytest.mark.parametrize('prefix', [0, 2, 6])
