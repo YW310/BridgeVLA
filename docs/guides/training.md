@@ -165,6 +165,10 @@ SSH 端口转发：
 仍会继续工作。TensorBoard 默认每 10 秒刷新一次，可通过
 `--tensorboard_flush_secs` 调整。
 
+使用 `configs/rlbench_o2_internal_slots_refine.yaml` 时，终端同时打印 coarse/MVT2 的 diversity 权重、有效角色视角、成对可见视角、重叠排除点和最终监督点数，便于解释 `diversity loss=0`。T/R 图使用固定 `[0,1]` 色标，并显示峰值、cosine 和平均绝对差，避免逐图拉伸放大弱响应。诊断字段和零 loss 的判断见 [T/R 分离监督](object-conditioning.md#tr-分离监督与日志)。
+
+该配置开启 `refine_heatmap_residual`：完整 coarse 角色图经 XYZ 重投影，编码为对齐 refine patch 网格的空间 tokens，与 VLM 输出融合并预测零初始化残差。无需重建 replay；从原双 query checkpoint 使用 `--init_checkpoint`，旧 optimizer 不能直接恢复。坐标对齐、有效性与 checkpoint 要求见[完整热图输入](object-conditioning.md#完整热图输入与残差细化)。
+
 需要切换回 W&B 在线记录时：
 
     GPUS_PER_NODE=2 bash train_8x40.sh [其他参数] --log_backend wandb --wandb_project BridgeVLA

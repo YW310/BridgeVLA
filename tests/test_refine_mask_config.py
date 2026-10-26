@@ -51,6 +51,7 @@ class RefineMaskConfigTest(unittest.TestCase):
         self.assertEqual(cfg.rvt.object_slot_mask_loss_weight, 1.)
         self.assertEqual(cfg.rvt.object_slot_null_loss_weight, .25)
         self.assertTrue(cfg.object_conditioning.refine_local_query)
+        self.assertTrue(cfg.object_conditioning.refine_heatmap_residual)
         self.assertTrue(cfg.train_visualization.enabled)
         self.assertEqual(cfg.train_visualization.interval, 100)
         self.assertTrue(cfg.train_visualization.tensorboard)
@@ -68,10 +69,12 @@ class RefineMaskConfigTest(unittest.TestCase):
             object_conditioning_preserve_role_tokens=True,
             object_conditioning_refine_role_masks=True,
             object_conditioning_refine_local_query=True,
+            object_conditioning_refine_heatmap_residual=True,
         )
         ablation = cfg.clone()
         ablation.merge_from_list(['object_conditioning.refine_local_query', 'False',
-                                  'object_conditioning.refine_role_masks', 'False'])
+                                  'object_conditioning.refine_role_masks', 'False',
+                                  'object_conditioning.refine_heatmap_residual', 'False'])
         self.assertFalse(ablation.object_conditioning.refine_role_masks)
         self.assertEqual(ablation.object_slots, cfg.object_slots)
 
@@ -81,7 +84,7 @@ class RefineMaskConfigTest(unittest.TestCase):
             call = next(node for node in ast.walk(tree) if isinstance(node, ast.Call)
                         and isinstance(node.func, ast.Name) and node.func.id == 'MVT')
             args = {item.arg: ast.unparse(item.value) for item in call.keywords}
-            for flag in ('refine_role_masks', 'refine_local_query', 'refine_mask_detach'):
+            for flag in ('refine_role_masks', 'refine_local_query', 'refine_heatmap_residual', 'refine_mask_detach'):
                 self.assertEqual(args['object_conditioning_' + flag],
                                  'exp_cfg.object_conditioning.' + flag)
         model = _model(refine_role_masks=True, refine_local_query=True, refine_mask_detach=True)

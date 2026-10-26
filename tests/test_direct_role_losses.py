@@ -68,7 +68,10 @@ class DirectRoleLossTest(unittest.TestCase):
         known = torch.ones(1, 2).bool()
         losses = _agent().losses(stage, torch.ones(1, 2).bool(), present, known)
         self.assertEqual(set(losses), {'mask', 'mask_bce', 'mask_dice',
-                                       'role', 'objectness', 'presence', 'diversity', 'diversity_pixels'})
+                                       'role', 'objectness', 'presence', 'diversity', 'diversity_pixels',
+                                       'diversity_visibility_available', 'diversity_teacher_role_views',
+                                       'diversity_visible_role_views', 'diversity_paired_views',
+                                       'diversity_overlap_pixels'})
         for name in ('role', 'objectness', 'diversity'):
             self.assertEqual(losses[name].item(), 0)
             self.assertTrue(losses[name].requires_grad)

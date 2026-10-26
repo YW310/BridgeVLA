@@ -66,6 +66,60 @@ class RefineLocalQueryTest(unittest.TestCase):
         self.assertTrue(result['refine_query_active'].all())
         self.assertFalse(result['reference_is_null'].item())
 
+    def test_correct_coarse_geometry_constrains_each_role_in_each_refine_view(self):
+        head, features, _, _, packet = self._inputs(point_support=False)
+        rgb = torch.full((1, 3, 3, 64, 64), .5)
+        xyz = torch.full_like(rgb, .25)
+        xyz[0, 0, 0, :, :32] = -.6
+        xyz[0, 0, 0, :, 32:] = .6
+        xyz[0, 1, 0] = -.6  # Only Target surfaces in this projection.
+        xyz[0, 2, 0] = .6   # Only Reference surfaces in this projection.
+        packet['prior'] = torch.zeros(1, 3, 2, 64, 64)
+        packet['geometry'] = torch.tensor([
+            [-.6, .25, .25, .6, .25, .25] + [.04] * 6 + [1.2, 0., 0.] + [1., 1.]])
+        # Force an ambiguous readout: local output must still honor the
+        # correctly transported coarse geometry, not occupy every depth pixel.
+        with torch.no_grad():
+            head.query.weight.zero_()
+            head.query.bias.zero_()
+            head.role_embedding.zero_()
+        result = head(features, rgb, xyz, packet)
+        self.assertTrue(result['valid'].all())
+        self.assertGreater(result['prior'][0, 0, 0, :, :32].sum(), 0)
+        self.assertGreater(result['prior'][0, 0, 1, :, 32:].sum(), 0)
+        self.assertEqual(result['prior'][0, 0, 0, :, 32:].count_nonzero().item(), 0)
+        self.assertEqual(result['prior'][0, 0, 1, :, :32].count_nonzero().item(), 0)
+        self.assertEqual(result['prior'][0, 1, 1].count_nonzero().item(), 0)
+        self.assertEqual(result['prior'][0, 2, 0].count_nonzero().item(), 0)
+        self.assertTrue(packet['role_token_valid'].all())
+        self.assertFalse(result['reference_is_null'].item())
+
+    def test_actual_policy_and_training_payload_use_role_specific_gated_maps(self):
+        from test_refine_role_masks import RefineRoleMaskTest
+        from bridgevla.models.oracle_prior import build_training_visualization_payload
+        from bridgevla.mvt import mvt_single
+        helper, module, _, options, _ = RefineRoleMaskTest()._policy_inputs()
+        head = RoleConditionedRefineMaskHead(4, 8, hidden_dim=8, local_query=True)
+        options['refine_role_mask_head'] = head
+        packet = options['inherited_object_roles']
+        packet['prior'] = torch.zeros(1, 3, 2, 16, 16)
+        packet['geometry'] = torch.tensor([[-.7] * 3 + [.7] * 3 + [.04] * 6 + [1.4] * 3 + [1., 1.]])
+        with torch.no_grad():
+            options['img'][:, :, :3] = -.7
+            options['img'][:, 0, :3, :, 8:] = .7
+            options['img'][:, 2, :3] = .7
+        module.eval()
+        with mock.patch.object(mvt_single, 'select_feat_from_hm', helper._sample, create=True):
+            out = module(**options)
+        self.assertEqual(out['object_slot_prior'][0, 1, 1].count_nonzero().item(), 0)
+        self.assertEqual(out['object_refine_role_pixel_valid'][0, 1, 1].count_nonzero().item(), 0)
+        self.assertTrue(out['object_slot_role_token_valid'].all())
+        self.assertFalse(out['object_slot_reference_is_null'].item())
+        payload = build_training_visualization_payload(
+            dict(out, mvt1_ori_img=options['img']), torch.zeros(1, 256, 3),
+            num_views=3, height=16, width=16, stage_two=False)
+        self.assertEqual(payload['mvt1']['slot_reference_pred'][1].count_nonzero().item(), 0)
+
     def test_crop_external_reference_keeps_global_token_and_does_not_select_distractor(self):
         head, features, rgb, xyz, packet = self._inputs(point_support=False)
         self._enable_update(head)

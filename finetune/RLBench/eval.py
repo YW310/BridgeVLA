@@ -107,12 +107,19 @@ def _validate_role_feature_checkpoint(checkpoint, conditioning_cfg, source,
     # not change inference and is deliberately excluded from this comparison.
     for flag in ('shared_action_features', 'use_context',
                  'inherit_coarse_roles', 'preserve_role_tokens', 'refine_role_masks',
-                 'refine_local_query'):
+                 'refine_local_query', 'refine_heatmap_residual'):
         if bool(stored.get(flag, False)) != bool(getattr(conditioning_cfg, flag, False)):
             raise RuntimeError(
                 f'Object conditioning {flag} differs from checkpoint {source}; '
                 'evaluate with its saved exp_cfg.yaml, or train the changed '
                 'routing from --init_checkpoint first.'
+            )
+    if bool(getattr(conditioning_cfg, 'refine_heatmap_residual', False)):
+        from bridgevla.models.refine_role_masks import HEATMAP_FUSION_VERSION
+        if stored.get('refine_heatmap_fusion') != HEATMAP_FUSION_VERSION:
+            raise RuntimeError(
+                f'Refine heatmap fusion differs from checkpoint {source}; '
+                f'expected {HEATMAP_FUSION_VERSION}. Use the matching architecture/checkpoint.'
             )
 
 
@@ -175,6 +182,7 @@ def load_agent(
         object_conditioning_preserve_role_tokens=exp_cfg.object_conditioning.preserve_role_tokens,
         object_conditioning_refine_role_masks=exp_cfg.object_conditioning.refine_role_masks,
         object_conditioning_refine_local_query=exp_cfg.object_conditioning.refine_local_query,
+        object_conditioning_refine_heatmap_residual=exp_cfg.object_conditioning.refine_heatmap_residual,
         object_conditioning_refine_mask_detach=exp_cfg.object_conditioning.refine_mask_detach,
         object_slots_enabled=exp_cfg.object_slots.enabled,
         object_slot_num_slots=exp_cfg.object_slots.num_slots,
@@ -1021,6 +1029,8 @@ def _eval(args):
                     / "bridgevla" / "mvt" / "mvt.py",
                     Path(__file__).parents[1]
                     / "bridgevla" / "models" / "refine_role_masks.py",
+                    Path(__file__).parents[1]
+                    / "bridgevla" / "models" / "heatmap_transport.py",
                     Path(__file__).parents[1] / "bridgevla" / "libs"
                     / "YARR" / "yarr" / "utils" / "rollout_generator.py",
                 ),

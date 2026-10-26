@@ -247,6 +247,12 @@ def internal_slot_stage_diagnostics(
         for key in ('refine_query_active', 'refine_point_hint_valid',
                     'refine_query_update_norm'):
             result[key] = stage_output['object_' + key][0].detach().cpu().tolist()
+    if 'object_refine_projected_prior' in stage_output:
+        result['mask_source'] = 'coarse_heatmap_residual'
+        result['projection_coverage'] = float(
+            stage_output['object_refine_projection_valid'][0].float().mean().cpu())
+        result['residual_abs_mean'] = float(
+            stage_output['object_refine_residual_logits'][0].detach().abs().mean().cpu())
     if direct:
         result['predictor_type'] = 'role_queries'
         # These are scores/validity gates, not calibrated object probabilities.

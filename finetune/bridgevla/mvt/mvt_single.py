@@ -807,6 +807,11 @@ class MVT(nn.Module):
                 out['object_slot_masks_refined'] = True
                 out['object_refine_mask_logits'] = object_slot_output['refine_mask_logits']
                 out['object_refine_pixel_valid'] = object_slot_output['refine_pixel_valid']
+                if 'refine_role_pixel_valid' in object_slot_output:
+                    out['object_refine_role_pixel_valid'] = object_slot_output['refine_role_pixel_valid']
+                if object_slot_output.get('heatmap_residual', False):
+                    for name in ('refine_projected_prior', 'refine_projection_valid', 'refine_residual_logits'):
+                        out['object_' + name] = object_slot_output[name]
             if object_slot_output.get('queries_refined', False):
                 out['object_slot_queries_refined'] = True
                 for key in ('refine_query_active', 'refine_point_hint_valid',

@@ -1227,6 +1227,13 @@ def build_training_visualization_payload(
             slot_gt = stage_output['object_slot_target_prior'][0]
             stage_payload['slot_target_gt'] = slot_gt[:, 0]
             stage_payload['slot_reference_gt'] = slot_gt[:, 1]
+        if 'object_refine_projected_prior' in stage_output:
+            projected = stage_output['object_refine_projected_prior'][0]
+            known = stage_output['object_refine_projection_valid'][0]
+            stage_payload['target_prior'] = projected[:, 0]
+            stage_payload['reference_prior'] = projected[:, 1]
+            stage_payload['target_projection_valid'] = known[:, 0]
+            stage_payload['reference_projection_valid'] = known[:, 1]
         if 'oracle_relation_anchor' in stage_output:
             relation_anchor = stage_output[
                 'oracle_relation_anchor'

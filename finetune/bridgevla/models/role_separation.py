@@ -45,18 +45,22 @@ def visible_role_support(points, role_valid, rendered_xyz, project):
 
 def role_separation_loss(probabilities, teacher, role_valid, visible_support=None,
                          role_present=None, role_present_known=None, pixel_valid=None,
-                         logits=None):
+                         logits=None, assignment_valid=None):
     """Suppress a role on the other role's verified, nonoverlapping anchors.
 
     Missing surface checks yield zero (not Gaussian-as-visibility guesses).
-    Both roles must have valid visible anchors in the view. Overlap in either
-    projected teacher support is unknown for exclusivity, so is ignored. The
-    background, occluded points, crop-external roles and NULL are not negatives.
+    A verified surface for one role is a negative for the other known,
+    exclusive role even if that other object is outside the crop/occluded.
+    assignment_valid retains global role validity before stage/view filtering.
+    Overlapping projected footprints, unknown background and NULL are ignored.
     Raw masks are used so learned NULL cannot suppress this loss. Pass logits
     when available for stable BCE gradients even for saturated predictions.
     """
     zero = torch.nan_to_num(probabilities).sum() * 0.
-    empty = dict(loss=zero, supervised_pixels=zero.detach())
+    empty = dict(loss=zero, supervised_pixels=zero.detach(),
+                 visibility_available=zero.detach(), teacher_role_views=zero.detach(),
+                 visible_role_views=zero.detach(), paired_views=zero.detach(),
+                 overlap_pixels=zero.detach())
     if visible_support is None:
         return empty
     if probabilities.ndim != 5 or probabilities.shape[2] != 2:
@@ -78,6 +82,13 @@ def role_separation_loss(probabilities, teacher, role_valid, visible_support=Non
         target = pool(torch.nan_to_num(target, nan=0., posinf=0., neginf=0.)).masked_fill(invalid, float('nan'))
         visible = pool(visible.float()).bool()
     supervised = role_supervision_mask(target, role_valid, role_present, role_present_known)
+    assigned = role_valid if assignment_valid is None else assignment_valid
+    if assigned.shape != (batch, 2):
+        raise ValueError('assignment_valid must have shape [B,2]')
+    assigned = assigned.detach().to(device=probabilities.device).bool()
+    if role_present is not None:
+        assigned = assigned & role_present.to(assigned.device).bool()
+        assigned = assigned & role_present_known.to(assigned.device).bool()
     if pixel_valid is not None:
         if pixel_valid.shape != (batch, views, height, width):
             raise ValueError('pixel_valid must have shape [B,V,H,W] at prediction resolution')
@@ -85,8 +96,19 @@ def role_separation_loss(probabilities, teacher, role_valid, visible_support=Non
     visible = visible & supervised[..., None, None] & torch.isfinite(target) & target.gt(0)
     paired = visible.any(dim=(-2, -1)).all(dim=2)
     other = visible.flip(2)
-    negative = other & torch.isfinite(target) & target.eq(0) & paired[:, :, None, None, None]
+    candidates = other & assigned[:, None, :, None, None]
+    negative = candidates & torch.isfinite(target) & target.eq(0)
     count = negative.sum().to(probabilities.dtype)
+    # Detached counts explain zero losses without altering the objective.
+    empty.update(
+        visibility_available=zero.detach().new_tensor(1.),
+        teacher_role_views=supervised.sum().to(probabilities.dtype).detach(),
+        visible_role_views=visible.any(dim=(-2, -1)).sum().to(probabilities.dtype).detach(),
+        paired_views=paired.sum().to(probabilities.dtype).detach(),
+        overlap_pixels=(candidates & torch.isfinite(target) & target.gt(0)
+                        ).sum().to(probabilities.dtype).detach(),
+        supervised_pixels=count.detach(),
+    )
     if not negative.any():
         return empty
     if logits is not None and logits.shape != probabilities.shape:
@@ -97,4 +119,4 @@ def role_separation_loss(probabilities, teacher, role_valid, visible_support=Non
     # BCE against zero supplies a gradient even when both maps collapse high.
     loss = (F.softplus(selected).mean() if logits is not None else
             -torch.log1p(-selected.clamp(0, 1 - 1e-6)).mean())
-    return dict(loss=loss, supervised_pixels=count.detach())
+    return dict(empty, loss=loss)

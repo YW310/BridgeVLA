@@ -309,18 +309,20 @@ ORACLE_DEBUG=0 SAVE_VIDEO=0 VISUALIZE=0 bash eval.sh
 ### 条件化 refine masks（opt-in）
 
 `rlbench_o2_internal_slots_refine.yaml` 使用两个固定 T/R queries（`predictor_type: role_queries, num_slots: 2`），不做无序匹配或 slot 混合。
-coarse maps 直接监督，关闭额外 mixed-map；coarse/refine 分别加入可见表面上的 T/R 分离 loss。继承 coarse 角色/token/NULL/几何，新增轻量局部 head：
-coarse T/R query + refine VLM/RGB/XYZ + 投影/几何空间偏置 → 一层局部 cross-attention → 更新的 T/R tokens 与 maps → 原 anchor → 完整动作。不重选角色，不增加 VLM 前向。
+coarse maps 直接监督，关闭额外 mixed-map；coarse/refine 分别加入可见表面上的 T/R 分离 loss。当前配置开启 `refine_heatmap_residual: True`：继承 coarse 角色/token/NULL/几何，完整 coarse 热图经 XYZ 重投影后生成空间 tokens，与 refine VLM 输出融合并预测残差；不重选角色，不增加 VLM 前向。
 已有 semantic buffer 不重写；当前 Gaussian 点投影只能作弱监督，loss 屏蔽空视图、无效几何及 teacher footprint 外未知像素。
+coarse 的预测点提示、变换到 crop 的中心/spread、T/R token 和 Reference NULL 继续为局部 query 提供条件；GT 只进入辅助监督。旧的直接 mask 读出模式（`refine_heatmap_residual: False`）将 query 的**逐角色、逐视角空间支持**同步用于最终 mask，以限制跨角色表面响应。当前残差模式则以完整重投影热图作为空间基底，保留原有角色 token 路径，不依靠一个新 query 解码器从零恢复 coarse 定位。
 局部 query 要求可靠 coarse token，以及点提示或变换后几何附近的真实 rendered XYZ；几何近邻可恢复点提示失效的局部条件，但不是实例身份认证。
-没有局部证据时 token 原样保留、局部 map 为零，Reference 不会改成 NULL。新增 token 更新和输出空间偏置均零初始化，整个新模式并不保证等同旧路径；闭环收益待验收。
+没有局部 query 证据时全局角色 token 原样保留，Reference 不会改成 NULL。旧直接 mask 模式此时输出零局部 map；残差模式使用下述重投影基底和弱先验。局部 query 更新及热图残差输出零初始化；闭环收益待验收。
 
 ```bash
 cd finetune/RLBench
-GPUS_PER_NODE=2 bash train_8x40.sh \
+GPUS_PER_NODE=8 bash train_8x40.sh \
   --exp_cfg_path configs/rlbench_o2_internal_slots_refine.yaml \
   --train_replay_storage_dir "$SEMANTIC_BUFFER" \
   --init_checkpoint "$BASE_CHECKPOINT" \
+  --exp_note heatmap_tokens_s0 \
+  --save_optimizer_state \
   --exp_cfg_opts "seed 0"
 ```
 
@@ -331,21 +333,66 @@ GPUS_PER_NODE=2 bash train_8x40.sh \
 `object_conditioning.refine_role_masks` / `refine_local_query` 全局默认 False，当前 refine YAML 开启二者；后者依赖前者。
 `refine_mask_detach True` 只切断 maps 的 action 梯度，更新后的 token 仍进入 anchor，分割监督仍保留；不是整个局部 query 的梯度隔离。
 `rvt.object_refine_mask_loss_weight` 控制局部 BCE/Dice（默认 1.0）。当前 refine YAML 的 `rvt.object_slot_diversity_loss_weight` 和 `rvt.object_refine_diversity_loss_weight` 均为 0.01，分别控制 coarse/refine 分离项。新 mask 接收 action 梯度的默认值为 joint；这些权重不是已验证最优设置。
-对照只改开关：`refine_local_query=False, refine_role_masks=False` 为继承提示；`False, True` 为旧静态 mask head；`True, True` 为局部 query。保持初始化来源、冻结范围和预算相同。
+旧路径对照先设 `refine_heatmap_residual=False`：`refine_local_query=False, refine_role_masks=False` 为继承提示；`False, True` 为旧静态 mask head；`True, True` 为局部 query。当前新增残差模式保留后两项为 True、设 `refine_heatmap_residual=True`。保持初始化来源、冻结范围和预算相同；切换模式用权重初始化，不恢复不同架构的 optimizer。
 同为双 query 的静态 head checkpoint 可用 `--init_checkpoint` 保留旧权重、补建零初始化更新分支；不能用旧 optimizer resume，评估不能跳过新开关的 checkpoint 检查。
 评估使用训练保存的配置、`ORACLE_PROVIDER=none`。JSON 标注 `role_source=coarse`、`mask_source=refine`、`query_source=coarse_conditioned_refine`，并记录 point-hint validity、query active、token update norm，便于做 token 置空/打乱干预对照。
 单步 smoke 可在 opts 中加入 `tasks place_cups bs 1 global_batch_size 1 num_workers 0 max_optimizer_steps 1`。
 OHT `role_queries` 可在 `object` 中设置同名 `refine_role_masks` / `refine_local_query` / `refine_mask_detach`；refine head 默认关闭，不修改 baseline 或控制器。`role_loss.refine_map` 控制局部 BCE/Dice，`role_loss.diversity` / `role_loss.refine_diversity` 分别控制 coarse/refine 分离项。
 
+#### 完整热图输入与残差细化
+
+`refine_heatmap_residual` 全局默认 False，旧实验按其保存配置加载；当前 refine YAML 显式开启。流程为：
+
+```text
+coarse 原始 T/R 概率 + coarse 渲染 XYZ
+              ↓ x_coarse = x_refine / scale + crop_center
+refine 表面点查询 coarse 各视角，检查 frustum 与 XYZ 一致性
+              ↓ 平均融合可靠视角，保留原始响应强弱
+T/R 投影热图 + 各自有效性 + refine XYZ + UV/视角位置
+              ↓ 按 refine VLM 图像 patch 网格生成空间 tokens
+同视角图像 tokens cross-attend 热图 tokens，保留逐 patch 对齐连接
+              ↓ 融合 RGB/XYZ 局部细节，保留全局 T/R 语义 tokens
+零初始化的局部残差 → 最终 T/R map → 原动作 adapter/anchor
+```
+
+无需重新生成 replay。XYZ 来自同一观测的已有渲染通道，不使用 GT 对象坐标；不是 resize coarse 二维图，也不把彩色热图画入 VLM RGB。重投影对每个 refine 表面点查询 coarse，使用一个 coarse 像素 pitch 的 XYZ 容差排除其他/遮挡表面；按 8192 点分块限制临时显存，不做 top-K 截断或逐图峰值归一化。空间热图传递与旧点提示一样 detach，coarse 仍通过原有动作/角色 loss 及 token/几何路径训练。
+
+空间 token 在重投影后生成，不直接裁剪 coarse tokens。每个 patch 分别保留 T/R 的已知像素平均概率与覆盖率，附加 refine XYZ、UV 和视角位置；未知区域不参与概率平均或作为 attention 的 key。各视角独立融合，全未知视角不产生 token 更新。融合位于 VLM 输出后，RGB 输入和原细节 CNN 不变；已删除被替代的 `prior_half` 热图 CNN 分支。
+
+在可靠投影区域，`L_refine = logit(clamp(P_projected, 1e-4, 1-1e-4)) + ΔL`。残差输出层零初始化，初始化时继承该裁剪范围内的概率。Reference 的 coarse 非 NULL mass 在最终输出应用一次。未知投影以 `1e-4` 弱先验开始，真实 GT 可训练局部恢复，不生成空 mask 标签；无有效深度或语义角色不可用时不输出空间响应。保留全局角色 token、Gemma 按层冻结、vision tower 和 projector 策略。
+
+PNG/TensorBoard 增加 `Target prior / Reference prior` 和 `T/R projection valid`，均处于 refine 坐标；可直接对比输入先验与最终预测。额外标量为 `train/object_refine_projection_coverage` 和 `train/object_refine_residual_abs_mean`。初始化后首个残差应为 0（若从同模式已训练权重初始化则按其状态），有效性为 0 的位置需结合弱先验看待。推理诊断记录 `mask_source=coarse_heatmap_residual`。
+
+新增 `heatmap_tokens` 和 `residual_output` 随 refine head 训练。从原双 query/静态 head checkpoint 使用 `--init_checkpoint` 保留兼容权重并初始化新分支；旧 optimizer 不能直接恢复。checkpoint 保存 `refine_heatmap_fusion=spatial_tokens_v1`，训练恢复和评估会校验。早期含 `prior_half` 的 CNN 原型权重与本版不兼容，不会静默丢弃；请从原双 query checkpoint 初始化。闭环收益、CUDA 显存和吞吐需在服务器验证。
+
 #### T/R 分离监督与日志
 
 固定 query 顺序不能防止两张图学成相同响应。role-query 路径的 diversity 使用交叉角色负例 BCE：在 Reference 的可靠表面点抑制 Target 响应，反向同理。它与旧无序 slots 的 cosine diversity 不同。
 
-监督点来自 GT 角色点云，必须在当前 coarse cube/refine crop 内，投影到图像范围内，并与该像素的 rendered XYZ 在一个像素 pitch 的距离内一致。同一视角两种角色均需有效且有可见点；NULL、unknown、缺失几何、无深度、遮挡、crop 外，以及两种 teacher 投影 footprint 重叠的区域不产生负例。低分辨率监督使用 max pooling 保留重叠，不能通过降采样抹掉另一角色的支持。使用未乘 NULL 的原始 mask logits，避免借助 NULL 概率规避惩罚。
+监督点来自 GT 角色点云，必须在当前 coarse cube/refine crop 内，投影到图像范围内，并与该像素的 rendered XYZ 在一个像素 pitch 的距离内一致。只需来源角色有可靠可见点，被抑制角色具有有效的全局角色标注；例如 Reference 在 crop 外，已确认的 Target 表面仍是 Reference 的负例。不再要求 T/R 同视角可见。NULL、unknown、缺失角色标注、无有效来源表面，以及两种 teacher footprint 重叠的区域不产生负例；这不把整张 crop 伪造为空 Reference GT。低分辨率监督使用 max pooling 保留重叠，不能通过降采样抹掉另一角色的支持。使用未乘 NULL 的原始 mask logits，避免借助 NULL 概率规避惩罚，也不以预测 mask 的空间门控屏蔽训练监督。
 
 GT 可见点仅在策略前向后附加为 loss 标签，不进入 query、anchor 或继承 packet。该检查只是采样表面的几何近似，不能认证实例身份，也不能恢复不可见表面；错误或过稀的角色标注仍需排查。若任务允许 T/R 指向同一物体的不同区域，应关闭这两项或提供明确互斥的角色标注，不能假定所有角色都互斥。
 
 日志分别记录 `object_slot_diversity_loss` / `object_refine_diversity_loss`、对应的 `*_diversity_loss_weight` 和 `*_diversity_supervised_pixels`。像素数为 0 时该项为可反传的 0；不应为得到非零曲线而把不可见区域当成负例。像素数非零但 loss 很小，才表示这些被监督点上的跨角色响应已受到抑制；不代表整张图或 token 已完全分离。
+
+针对 `rlbench_o2_internal_slots_refine.yaml`，TensorBoard 和终端还输出以下诊断，前缀分别为 `object_slot_diversity_`（coarse）和 `object_refine_diversity_`（MVT2）。统计来自 rank 0 当前 batch；梯度累积时是各 microbatch 的平均值，不是所有 GPU 的总数。
+
+| 字段后缀 | 解读 |
+| --- | --- |
+| `visibility_available` | 是否附加了 GT 可见表面检查；为 0 时不构造交叉负例 |
+| `teacher_role_views` | 通过几何有效性、存在/known 及非空投影检查的角色/视角数量 |
+| `visible_role_views` | 在当前 rendered XYZ 上确有匹配表面点的角色/视角数量 |
+| `paired_views` | 同一视角 T/R 都有有效可见点的样本/视角数量；仅作诊断，为 0 不再导致跳过整个分离 loss |
+| `overlap_pixels` | 可用的另一角色表面点中，因落入自身 teacher footprint 而不能作为交叉负例的点数（按角色方向计数） |
+| `supervised_pixels` | 最终可用的交叉角色负例数量；为 0 时 loss 为 0 |
+
+MVT2 裁剪只包含 Target、Reference 在 crop 外时，`paired_views=0` 可以是正常现象，但不能作为 Ref 复制 Target 响应而不受惩罚的理由：只要全局 Ref 标注可靠，Target 可见表面就应产生 Ref 负例，`supervised_pixels` 可以非零。footprint 重叠、未知角色或无可靠表面仍可能没有互斥监督；不要把所有重叠强行视作错误。终端使用有效数字格式输出 loss，避免微小非零值被固定小数位显示为 0。`loss_weight=0` 只表示该项不进入总损失，不代表计算出的原始 loss 必然为 0。
+
+此前直接 mask 读出路径的局部 query 只约束注意力候选区，最终 mask 却只乘整张图的 depth validity，导致正确 coarse 几何未必约束输出；此外，一个视角 active 就会让该角色在所有视角读出 mask。该旧模式现已将 query 的逐角色/视角支持同步用于策略 mask，原始 logits 仍在有效 GT 表面接受正负监督；同一旧权重在修复代码下的 map 可能变化，应重新评估。当前新增残差模式的参数与迁移规则见上节。
+
+训练 PNG/TensorBoard 中 T/R GT、pred 和 prior 使用相同固定 `[0,1]` 色标；动作热图和 relation anchor 仍按视角显示对比度。图中注明色标，并显示各视角 T/R 峰值、cosine 和平均绝对差；对应标量位于 `train_visualization/mvt2/roles/view_N/`（coarse 为 `mvt1`），随图像记录间隔写入。cosine 只比较响应形状，不是身份正确率：例如 Reference 仅有 0.01 的弱响应，也可能与 Target 有很高 cosine；必须结合峰值、GT 和监督计数判断。Reference pred 显示策略实际使用、已乘非 NULL mass 的 map，分离 loss 使用未乘 NULL 的 logits，两者用途不同。
+
+旧版固定 T/R 路径曾将 diversity 直接置零；当前配置已分别设为 0.01。已启动的 Python 训练进程不会自动加载代码/YAML 更新。启动新实验时检查开头的 `T/R separation` 摘要及上述日志，评估旧实验仍沿用其保存配置。
 
 不需要重建已有有效 semantic buffer/teacher cache，也不增加模型参数。新 loss 需要重新训练才影响预测，修改评估配置不会修复旧 checkpoint。旧实验评估仍使用保存的配置；新实验使用新输出目录及上述配置，按原初始化流程训练。消融时同时将两项权重设为 0，其余初始化、冻结范围和预算保持一致。
 

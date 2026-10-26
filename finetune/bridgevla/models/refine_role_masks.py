@@ -9,6 +9,75 @@ import torch.nn.functional as F
 from .object_conditioning import role_supervision_mask
 
 
+HEATMAP_FUSION_VERSION = 'spatial_tokens_v1'
+
+
+class RefineHeatmapTokenFusion(nn.Module):
+    """Fuse aligned heatmap patches into post-VLM image tokens, per view.
+
+    Patch coordinates/XYZ belong to the rendered refine crop, never the
+    original coarse image. T/R remain separate channels; known zero scores
+    differ from unknown projection. An empty view contributes no update.
+    """
+
+    def __init__(self, channels):
+        super().__init__()
+        # T/R probabilities, T/R coverage, XYZ, UV and view coordinate.
+        self.encode = nn.Sequential(nn.Linear(10, channels), nn.GELU(),
+                                    nn.Linear(channels, channels))
+        self.position = nn.Linear(6, channels)
+        self.image_norm = nn.LayerNorm(channels)
+        self.guide_norm = nn.LayerNorm(channels)
+        self.query = nn.Linear(channels, channels)
+        self.key = nn.Linear(channels, channels)
+        self.value = nn.Linear(channels, channels)
+        self.output = nn.Linear(channels, channels)
+
+    @staticmethod
+    def patch_inputs(probabilities, valid, xyz, support, size):
+        """Pool onto the exact image-token grid without treating unknown as 0."""
+        batch, views, _, height, width = xyz.shape
+
+        def pool(value):
+            return F.adaptive_avg_pool2d(value.reshape(batch * views, -1, height, width), size)
+
+        coverage = pool(valid.float())
+        scores = pool(probabilities * valid) / coverage.clamp_min(1e-6)
+        depth = pool(support[:, :, None].float())
+        positions = pool(xyz) / depth.clamp_min(1e-6)
+        ph, pw = size
+        y, x = torch.meshgrid(
+            (torch.arange(ph, device=xyz.device, dtype=xyz.dtype) + .5) * (2. / ph) - 1,
+            (torch.arange(pw, device=xyz.device, dtype=xyz.dtype) + .5) * (2. / pw) - 1,
+            indexing='ij')
+        uv = torch.stack((x, y))[None].expand(batch * views, -1, -1, -1)
+        view = (torch.arange(views, device=xyz.device, dtype=xyz.dtype) + .5) * (2. / views) - 1
+        view = view[None, :, None, None, None].expand(batch, views, 1, ph, pw)
+        position = torch.cat((positions, uv, view.reshape(batch * views, 1, ph, pw)), dim=1)
+        inputs = torch.cat((scores, coverage, position), dim=1).flatten(2).transpose(1, 2)
+        return inputs, coverage.any(dim=1).flatten(1), depth.gt(0).flatten(1)
+
+    def forward(self, images, probabilities, valid, xyz, support):
+        # Spatial guides are predictions/observations, not a second GT path.
+        inputs, known, depth = self.patch_inputs(
+            probabilities.detach(), valid.detach(), xyz.detach(), support, images.shape[-2:])
+        inputs = inputs.to(images.dtype)
+        spatial = self.position(inputs[..., 4:])
+        guide = self.guide_norm(self.encode(inputs) + spatial)
+        image_tokens = images.flatten(2).transpose(1, 2)
+        queries = self.query(self.image_norm(image_tokens) + spatial)
+        scores = torch.bmm(queries, self.key(guide).transpose(1, 2)) / math.sqrt(images.shape[1])
+        # Avoid NaNs for all-unknown crops, including mixed-precision runs.
+        weights = scores.float().masked_fill(~known[:, None], -torch.finfo(torch.float32).max).softmax(-1)
+        weights = weights * known[:, None]
+        weights = weights / weights.sum(-1, keepdim=True).clamp_min(1e-6)
+        attended = torch.bmm(weights.to(images.dtype), self.value(guide))
+        # Aligned skip preserves each patch location; attention supplies context.
+        update = self.output(attended + guide * known[..., None])
+        update = update * (known.any(-1, keepdim=True) & depth)[..., None]
+        return images + update.transpose(1, 2).reshape_as(images)
+
+
 class CoarseConditionedLocalQuery(nn.Module):
     """Two independent role queries read current, spatially supported features.
 
@@ -95,7 +164,7 @@ class CoarseConditionedLocalQuery(nn.Module):
         attention = attention / attention.sum(dim=-1, keepdim=True).clamp_min(1e-6)
         local = torch.einsum('brn,bnd->brd', attention, self.value(values))
         delta = self.token_expand(local) * active[..., None]
-        return tokens + delta, bias, active, delta
+        return tokens + delta, bias, active, delta, evidence
 
 
 class RoleConditionedRefineMaskHead(nn.Module):
@@ -107,7 +176,8 @@ class RoleConditionedRefineMaskHead(nn.Module):
     Global geometry/NULL are never reselected.
     """
 
-    def __init__(self, feature_channels, role_token_dim, hidden_dim=32, *, local_query=False):
+    def __init__(self, feature_channels, role_token_dim, hidden_dim=32, *, local_query=False,
+                 heatmap_residual=False):
         super().__init__()
         if min(feature_channels, role_token_dim) <= 0 or hidden_dim < 2:
             raise ValueError('refine mask dimensions must be positive, hidden_dim >= 2')
@@ -126,6 +196,12 @@ class RoleConditionedRefineMaskHead(nn.Module):
         nn.init.zeros_(self.edge_keys.bias)
         self.local_query = (CoarseConditionedLocalQuery(role_token_dim, hidden_dim)
                             if local_query else None)
+        self.heatmap_residual = bool(heatmap_residual)
+        if self.heatmap_residual:
+            self.heatmap_tokens = RefineHeatmapTokenFusion(hidden_dim)
+            self.residual_output = nn.Conv2d(hidden_dim + 2, 2, 1)
+            nn.init.zeros_(self.residual_output.weight)
+            nn.init.zeros_(self.residual_output.bias)
 
     def forward(self, features, rgb, xyz, packet, *, detach_action=False):
         if rgb.ndim != 5 or rgb.shape != xyz.shape or rgb.shape[2] != 3:
@@ -143,9 +219,20 @@ class RoleConditionedRefineMaskHead(nn.Module):
                                 torch.nan_to_num(rgb, nan=0., posinf=0., neginf=0.), 0.)
         details = torch.cat((clean_rgb, clean_xyz, support[:, :, None].to(rgb.dtype)), dim=2)
         half = self.detail_half(details.reshape(batch * views, 7, height, width).to(features.dtype))
+        projected = projected_valid = None
+        if self.heatmap_residual:
+            projected = packet['projected_role_probabilities'].detach().to(device=features.device, dtype=torch.float32)
+            projected_valid = packet['projected_role_valid'].detach().to(device=features.device).bool()
+            expected = (batch, views, 2, height, width)
+            if projected.shape != expected or projected_valid.shape != expected:
+                raise ValueError('projected role maps/validity must match [B,V,2,H,W]')
+            projected_valid = projected_valid & torch.isfinite(projected) & support[:, :, None]
+            projected = torch.where(projected_valid, projected.clamp(0, 1), 0.)
         quarter = self.detail_quarter(half)
-        semantic = F.interpolate(self.semantic(features), size=quarter.shape[-2:],
-                                 mode='bilinear', align_corners=False)
+        semantic = self.semantic(features)
+        if self.heatmap_residual:
+            semantic = self.heatmap_tokens(semantic, projected, projected_valid, clean_xyz, support)
+        semantic = F.interpolate(semantic, size=quarter.shape[-2:], mode='bilinear', align_corners=False)
         dense = self.fuse(torch.cat((semantic, quarter), dim=1))
         query_state = None
         if self.local_query is not None:
@@ -157,16 +244,36 @@ class RoleConditionedRefineMaskHead(nn.Module):
         keys = keys.reshape(batch, views, -1, *half.shape[-2:])
         query = self.query(tokens.to(features.dtype)) + self.role_embedding[None]
         logits = torch.einsum('brd,bvdhw->bvrhw', query, keys) / math.sqrt(query.shape[-1])
+        if self.heatmap_residual:
+            residual_input = torch.cat((keys, logits.to(keys.dtype)), dim=2)
+            logits = self.residual_output(residual_input.reshape(batch * views, -1, *half.shape[-2:]))
         logits = F.interpolate(logits.reshape(batch * views, 2, *half.shape[-2:]),
                                size=(height, width), mode='bilinear', align_corners=False)
         logits = logits.reshape(batch, views, 2, height, width).float()
-        logits = logits + self.bias[None, None, :, None, None]
-        if query_state is not None:
-            logits = logits + self.local_query.spatial_gain * query_state[1]
-        probabilities = logits.sigmoid() * support[:, :, None]
-        valid = packet['valid'].bool() & packet['role_token_valid'].bool()
-        if query_state is not None:
+        residual = None
+        if self.heatmap_residual:
+            residual = logits
+            # Unknown projection starts near-dark but remains trainable from
+            # actual GT/action losses. It is not a fabricated background label.
+            base = torch.where(projected_valid, projected, 1e-4)
+            logits = torch.logit(base.clamp(1e-4, 1 - 1e-4)) + residual
+        else:
+            logits = logits + self.bias[None, None, :, None, None]
+            if query_state is not None:
+                logits = logits + self.local_query.spatial_gain * query_state[1]
+        role_support = support[:, :, None].expand(-1, -1, 2, -1, -1)
+        if query_state is not None and not self.heatmap_residual:
+            # Use the same role/view-specific support as query attention.
+            # A role active in one view must not occupy unrelated surfaces in
+            # every other view merely because those pixels have valid depth.
+            role_support = role_support & query_state[4]
+        probabilities = logits.sigmoid() * role_support
+        if self.heatmap_residual:
+            valid = packet['role_token_valid'].bool()
+        elif query_state is not None:
             valid = query_state[2]
+        else:
+            valid = packet['valid'].bool() & packet['role_token_valid'].bool()
         valid = valid & support.any(dim=(1, 2, 3))[:, None]
         non_null = 1 - packet['reference_null_probability']
         valid = torch.stack((valid[:, 0], valid[:, 1] & non_null.gt(1e-6)), dim=1)
@@ -177,14 +284,20 @@ class RoleConditionedRefineMaskHead(nn.Module):
         if detach_action:
             prior = prior.detach()
         result = dict(packet)
+        if self.heatmap_residual:
+            projected_prior = torch.stack((projected[:, :, 0],
+                                           projected[:, :, 1] * non_null[:, None, None, None]), dim=2)
+            result.update(heatmap_residual=True, refine_projected_prior=projected_prior,
+                          refine_projection_valid=projected_valid,
+                          refine_residual_logits=residual)
         if query_state is not None:
             result.update(role_tokens=tokens, queries_refined=True,
-                          refine_query_active=valid,
+                          refine_query_active=query_state[2],
                           refine_point_hint_valid=packet['valid'].bool(),
                           refine_query_update_norm=query_state[3].detach().norm(dim=-1))
         result.update(prior=prior, prior_logits=torch.logit(prior.clamp(1e-5, 1 - 1e-5)),
                       valid=valid, masks_refined=True, refine_mask_logits=logits,
-                      refine_pixel_valid=support)
+                      refine_pixel_valid=support, refine_role_pixel_valid=role_support)
         return result
 
 

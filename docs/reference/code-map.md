@@ -60,7 +60,7 @@ RVTAgent.update/act
 | `rlbench_o2_semantic_gt_joint.yaml` | opt-in shared action + instruction，先做 GT 对照 |
 | `rlbench_o2_internal_slots_joint.yaml` | 6 个无序 slots，soft roles/geometry + joint training；GT 准入后实验 |
 | `rlbench_o2_internal_slots_cross_scale.yaml` | 同 joint 预算，6 无序 slots，显式启用 mixed supervision / inheritance / token preservation |
-| `rlbench_o2_internal_slots_refine.yaml` | 2 固定 T/R queries + coarse-conditioned 局部 query + mask 读出；microbatch 24 / effective batch 192，projector 冻结 |
+| `rlbench_o2_internal_slots_refine.yaml` | 2 固定 T/R queries；coarse 热图经 XYZ 重投影形成 refine 空间 tokens，与 VLM 输出融合并预测零初始化残差；microbatch 24 / effective batch 192，projector 冻结 |
 | `rlbench_o2_role_queries.yaml` | 2 有序 T/R queries；直接角色图 + Reference NULL loss，本步继承/token 保留；与 6-slot 跨尺度路线分开消融 |
 
 默认旧配置不切换新路由；数值与闭环收益须在目标环境验收。

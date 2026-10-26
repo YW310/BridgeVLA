@@ -15,6 +15,8 @@ _COLUMNS = (
     ('slot_reference_pred', 'Slot Reference pred'),
     ('target_prior', 'Target prior'),
     ('reference_prior', 'Reference prior'),
+    ('target_projection_valid', 'T projection valid'),
+    ('reference_projection_valid', 'R projection valid'),
     ('relation_anchor', 'Relation anchor'),
     ("input", "Input"),
     ("gt", "GT"),
@@ -27,12 +29,17 @@ _MAX_MONTAGE_HEIGHT = 1000
 _OUTER_PADDING = 8
 _CELL_GAP = 4
 _LABEL_WIDTH = 72
-_HEADER_HEIGHT = 52
+_HEADER_HEIGHT = 68
 _BORDER_COLOR = (70, 70, 70)
 _ORIGINAL_IMAGE_WEIGHT = 0.30
+_ROLE_MAP_KEYS = frozenset((
+    'slot_target_gt', 'slot_target_pred', 'slot_reference_gt',
+    'slot_reference_pred', 'target_prior', 'reference_prior',
+))
+_ROLE_STATS_LINE_HEIGHT = 14
 
 
-def _fit_cell_size(width: int, height: int, columns: int, rows: int):
+def _fit_cell_size(width: int, height: int, columns: int, rows: int, footer_height=0):
     '''Fit the complete montage on a typical TensorBoard/browser page.'''
     available_width = (
         _MAX_MONTAGE_WIDTH - 2 * _OUTER_PADDING - _LABEL_WIDTH
@@ -40,7 +47,7 @@ def _fit_cell_size(width: int, height: int, columns: int, rows: int):
     )
     available_height = (
         _MAX_MONTAGE_HEIGHT - 2 * _OUTER_PADDING - _HEADER_HEIGHT
-        - max(rows - 1, 0) * _CELL_GAP
+        - max(rows - 1, 0) * _CELL_GAP - footer_height
     )
     scale = min(
         1.0,
@@ -84,6 +91,34 @@ def _normalize_heatmap(value: torch.Tensor) -> np.ndarray:
     maximum = array.max(axis=(-2, -1), keepdims=True)
     scale = maximum - minimum
     return np.where(scale > 0, (array - minimum) / np.maximum(scale, 1e-12), 0)
+
+
+def _display_heatmap(key: str, value: torch.Tensor) -> np.ndarray:
+    """Keep role response magnitudes comparable; action maps use contrast."""
+    if key in _ROLE_MAP_KEYS or key.endswith('_projection_valid'):
+        return np.clip(np.nan_to_num(value.detach().float().cpu().numpy(),
+                                     nan=0., posinf=0., neginf=0.), 0., 1.)
+    return _normalize_heatmap(value)
+
+
+def role_map_diagnostics(stage_payload):
+    """Per-view scores of emitted role maps; not calibrated identity scores."""
+    if not all(key in stage_payload for key in ('slot_target_pred', 'slot_reference_pred')):
+        return []
+    target = _display_heatmap('slot_target_pred', stage_payload['slot_target_pred'])
+    reference = _display_heatmap('slot_reference_pred', stage_payload['slot_reference_pred'])
+    if target.ndim != 3 or reference.shape != target.shape:
+        raise ValueError('predicted role maps must have matching shape [V,H,W]')
+    results = []
+    for t, r in zip(target, reference):
+        denominator = float(np.linalg.norm(t) * np.linalg.norm(r))
+        results.append(dict(
+            target_peak=float(t.max()), reference_peak=float(r.max()),
+            cosine=(float(np.clip(np.sum(t * r) / denominator, 0., 1.))
+                    if denominator > 0 else None),
+            mean_absolute_gap=float(np.mean(np.abs(t - r))),
+        ))
+    return results
 
 
 def _input_images(value: torch.Tensor) -> np.ndarray:
@@ -140,7 +175,8 @@ def _stage_montage(
     column_order = (
         'input', 'gt', 'slot_target_gt', 'slot_target_pred',
         'slot_reference_gt', 'slot_reference_pred', 'target_prior',
-        'reference_prior', 'relation_anchor', 'prior', 'pred',
+        'reference_prior', 'target_projection_valid', 'reference_projection_valid',
+        'relation_anchor', 'prior', 'pred',
     )
     columns = tuple(
         (key, title_by_key[key])
@@ -157,12 +193,15 @@ def _stage_montage(
                 f"{key} must have shape {(view_count, height, width)}, "
                 f"got {tuple(value.shape)}"
             )
-        heatmaps[key] = _normalize_heatmap(value)
+        heatmaps[key] = _display_heatmap(key, value)
+
+    role_stats = role_map_diagnostics(stage_payload)
+    footer_height = len(role_stats) * _ROLE_STATS_LINE_HEIGHT
 
     label_width = _LABEL_WIDTH
     header_height = _HEADER_HEIGHT
     width, height = _fit_cell_size(
-        width, height, len(columns), view_count,
+        width, height, len(columns), view_count, footer_height,
     )
     montage = Image.new(
         "RGB",
@@ -170,7 +209,7 @@ def _stage_montage(
             2 * _OUTER_PADDING + label_width + len(columns) * width
             + max(len(columns) - 1, 0) * _CELL_GAP,
             2 * _OUTER_PADDING + header_height + view_count * height
-            + max(view_count - 1, 0) * _CELL_GAP,
+            + max(view_count - 1, 0) * _CELL_GAP + footer_height,
         ),
         color=(245, 245, 245),
     )
@@ -178,13 +217,17 @@ def _stage_montage(
     sample_text = f"step={step} task={task} goal={language_goal}"[:180]
     draw.text((_OUTER_PADDING + 4, _OUTER_PADDING + 2), sample_text,
               fill=(0, 0, 0))
+    legend = ('T/R maps + projection validity: fixed 0..1; action/anchor: per-view contrast'
+              if any(key in _ROLE_MAP_KEYS for key, _ in columns)
+              else 'Heatmaps: per-view contrast')
+    draw.text((_OUTER_PADDING + 4, _OUTER_PADDING + 18), legend, fill=(0, 0, 0))
     for column, (_, title) in enumerate(columns):
         x = (
             _OUTER_PADDING + label_width
             + column * (width + _CELL_GAP)
         )
         bounds = (
-            x, _OUTER_PADDING + 20,
+            x, _OUTER_PADDING + 36,
             x + width - 1, _OUTER_PADDING + header_height - 1,
         )
         draw.rectangle(bounds, fill=(232, 232, 232),
@@ -228,6 +271,13 @@ def _stage_montage(
                 (x, y, x + width - 1, y + height - 1),
                 outline=_BORDER_COLOR, width=2,
             )
+    footer_y = _OUTER_PADDING + header_height + view_count * height + max(view_count - 1, 0) * _CELL_GAP
+    for view_index, stats in enumerate(role_stats):
+        cosine = 'n/a' if stats['cosine'] is None else f"{stats['cosine']:.3f}"
+        text = (f"View {view_index}: T peak={stats['target_peak']:.3g} "
+                f"R peak={stats['reference_peak']:.3g} cosine={cosine} "
+                f"mean gap={stats['mean_absolute_gap']:.3g}")
+        draw.text((_OUTER_PADDING + 4, footer_y + view_index * _ROLE_STATS_LINE_HEIGHT), text, fill=(0, 0, 0))
     draw.rectangle(
         (0, 0, montage.width - 1, montage.height - 1),
         outline=_BORDER_COLOR, width=2,
@@ -274,6 +324,13 @@ def record_training_visualization(
                 step,
                 dataformats="HWC",
             )
+            for view_index, stats in enumerate(role_map_diagnostics(stage_payload)):
+                for name, value in stats.items():
+                    if value is not None:
+                        writer.add_scalar(
+                            f'train_visualization/{stage_name}/roles/view_{view_index}/{name}',
+                            value, step,
+                        )
     if write_tensorboard:
         writer.add_text(
             "train_visualization/sample",

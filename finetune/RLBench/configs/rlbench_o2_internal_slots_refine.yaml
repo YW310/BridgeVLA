@@ -46,6 +46,8 @@ object_conditioning:
   refine_role_masks: True
   # Update coarse-bound queries from observed refine features and spatial cues.
   refine_local_query: True
+  # XYZ reproject -> aligned heatmap patch tokens -> post-VLM fusion + zero-init residual.
+  refine_heatmap_residual: True
   # Detach only the refined maps at the action entrance for a gradient ablation.
   refine_mask_detach: False
 object_slots:

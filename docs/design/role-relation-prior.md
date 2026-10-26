@@ -198,7 +198,7 @@ q_T / q_R + instruction + 当前状态
 损失为 `L_action + λ_map(L_T + L_R) + λ_null L_NULL + λ_sep L_sep`；启用 refine mask head 时再加入 `λ_refine L_refine + λ_refine_sep L_refine_sep`。`λ_map` 复用 `rvt.object_slot_mask_loss_weight`，本模式不叠加 `supervise_mixed_role_maps`：
 
 - maps 使用 BCE/Dice 和有效 GT role maps；NULL 只用可靠 absence 标签。
-- 分离项在 GT 投影与当前 rendered XYZ 一致的表面点上，惩罚另一角色的响应；跳过重叠 footprint、遮挡、crop 外、unknown/NULL。分别由 `rvt.object_slot_diversity_loss_weight` / `rvt.object_refine_diversity_loss_weight` 控制，当前 role-query/refine 配置为 0.01。可见性只是采样几何近似；角色允许共享同一对象不同区域时需关闭分离项或明确互斥标注。日志同时报告参与监督的像素数，详见[配置与边界](../guides/object-conditioning.md#tr-分离监督与日志)。
+- 分离项在 GT 投影与当前 rendered XYZ 一致的表面点上，惩罚另一已知角色的响应；来源角色需可见，另一角色可以遮挡或位于 crop 外，但必须保留有效全局角色标注。不把 unknown/NULL、重叠 footprint 或未知背景当成负例。分别由 `rvt.object_slot_diversity_loss_weight` / `rvt.object_refine_diversity_loss_weight` 控制，当前 role-query/refine 配置为 0.01。可见性只是采样几何近似；角色允许共享同一对象不同区域时需关闭分离项或明确互斥标注。日志同时报告参与监督的像素数，详见[配置与边界](../guides/object-conditioning.md#tr-分离监督与日志)。
 - Reference token 由角色 query 产生；NULL mass 在 anchor 的语义条件分支只应用一次。
 - 没有可靠 Target absence 标签时不新增 Target NULL head；终止占位不参与角色 loss。
 - 复用 text pooling、soft geometry 与共享动作路由，保留 action 到 queries/maps/anchor 的梯度。
@@ -239,15 +239,20 @@ anchor 分开读取全局角色条件与局部空间支持；同时开启 token 
 `internal_slots_refine` 以两个固定 T/R queries 为 coarse 条件，关闭无序匹配和额外 mixed-map，保留可见表面 T/R 分离项，再增加 `RoleConditionedRefineMaskHead`：
 旧静态路径为 `q_r = W_q t_r^c + e_r`，`M_r^f = sigmoid(q_r^T K(D^f)/sqrt(d))`。
 `D^f` 融合当前 refine VLM 特征和 RGB/XYZ 的半/四分辨率 CNN 细节；不额外运行 VLM/SAM。
-当前 refine YAML 同时开启 `refine_local_query`：
+开启 `refine_local_query` 时，局部 token 更新为：
 `t_r^f = t_r^c + W_o CrossAttn(LN(t_r^c), D^f, XYZ^f; B_r)`，
 `L_r^f = q(t_r^f)^T K(D^f)/sqrt(d) + alpha B_r`。
+在旧直接 mask 模式（`refine_heatmap_residual=False`），query 的逐角色、逐视角 evidence 同时限制最终空间 mask；不能只约束 attention 后又在全部深度像素读出该角色。原始 logits 的 GT 辅助监督不受预测 evidence 门控。
 仅两个独立 query 读取下采样局部特征，不做角色间 self-attention；`W_o` 和 `alpha` 零初始化。
 `B_r` 来自归一化投影提示与变换后的中心/spread 距离，Reference 的 NULL mass 不作为空间位置强度重复注入。
 当前有效 XYZ 上的点提示或三倍 spread 近邻可提供局部证据；spread 下限为三个像素 pitch，不代表完整物体尺寸，也不认证身份。
-没有证据的角色保持 coarse token、局部 map 为零；有证据时更新 token 和 map 一起进入原 anchor/action，不增加 role/objectness/NULL selector，不重算 coarse 几何。
+没有 query 证据的角色保持 coarse token；旧直接 mask 模式下局部 map 为零。有证据时更新 token 和 map 一起进入原 anchor/action，不增加 role/objectness/NULL selector，不重算 coarse 几何。
 Reference NULL 空间质量只应用一次；`refine_mask_detach` 仅切断 maps 的 action 梯度，更新 token 仍可接收 action 梯度。
 当前 teacher 是稀疏高斯点投影：新增 BCE/Dice 只在有效角色/视角、有效 XYZ 与非零 teacher footprint 内计算，未知像素不作为背景；这不是密集实例分割监督。精细边界及闭环提升均未验证。
+
+当前 refine YAML 开启 `refine_heatmap_residual=True`。每个 refine 表面点通过 XYZ 逆变换查询 coarse 热图，融合观察到同一表面的视角；不做 top-K 截断、峰值归一化或二维 resize 替代坐标变换。重投影 T/R 概率、各自有效性、refine XYZ 和 UV/视角位置编码为同网格空间 tokens。每个视角的 VLM 输出 tokens 独立 cross-attend 热图 tokens，并保留逐 patch 对齐连接，再融合 RGB/XYZ 局部细节。未知投影不作为 key，全未知视角无 token 更新；全局角色 tokens 仍保留，不更改 VLM RGB 输入或冻结策略。
+
+输出为 `L_f = logit(clamp(P_projected, eps, 1-eps)) + ΔL`，`eps=1e-4`；残差层零初始化，NULL 空间质量最后应用一次。空间传递 detach，未知位置从弱先验开始，不作为负标签。`heatmap_tokens` 替代原型 `prior_half`，checkpoint 记录 `refine_heatmap_fusion=spatial_tokens_v1`；旧 optimizer 不能跨架构恢复。初始化与运行命令见[完整热图输入](../guides/object-conditioning.md#完整热图输入与残差细化)。
 
 #### 局部支持与坐标
 
@@ -284,6 +289,7 @@ Reference NULL 空间质量只应用一次；`refine_mask_detach` 仅切断 maps
 | `RVTAgent._object_slot_auxiliary_losses()` | opt-in 混合 map loss，跳过继承阶段的辅助重复 loss |
 | `cross_scale_roles.inherit_coarse_roles()` | 实际 crop 变换、逐视角 XYZ 支持与预测提示重投影 |
 | `refine_role_masks.RoleConditionedRefineMaskHead` / `refine_role_mask_losses()` | 两个继承角色的高分辨率局部读出；投影支持内弱监督 |
+| `heatmap_transport.reproject_role_heatmaps()` | 从观测 XYZ 查询完整 coarse 概率；遮挡检查、分块、多视角融合及投影有效性 |
 | `mvt.MVT.forward()` / `mvt_single.MVT.forward()` | 传预测 packet，绕过 refine selector；teacher 单独隔离 |
 | `OracleRelationAnchorFeatureAdapter.forward_with_anchor()` | opt-in token 保留，全局条件与局部几何分开 |
 

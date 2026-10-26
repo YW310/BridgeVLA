@@ -3,6 +3,15 @@
 from dataclasses import dataclass
 
 
+def format_training_metrics(metrics) -> str:
+    """Include separation support counts alongside losses in text logs."""
+    return ' '.join(
+        f'{key}={value:.6g}'
+        for key, value in metrics.items()
+        if 'loss' in key or '_diversity_' in key
+    )
+
+
 @dataclass(frozen=True)
 class BatchPlan:
     per_device_batch_size: int

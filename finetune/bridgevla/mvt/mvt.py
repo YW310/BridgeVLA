@@ -36,6 +36,7 @@ from bridgevla.models.oracle_prior import (
 from bridgevla.models.cross_scale_roles import inherit_coarse_roles
 from bridgevla.models.refine_role_masks import RoleConditionedRefineMaskHead
 from bridgevla.models.role_separation import visible_role_support
+from bridgevla.models.heatmap_transport import reproject_role_heatmaps
 
 class MVT(nn.Module):
     def __init__(
@@ -94,9 +95,14 @@ class MVT(nn.Module):
         object_conditioning_preserve_role_tokens=False,
         object_conditioning_refine_role_masks=False,
         object_conditioning_refine_local_query=False,
+        object_conditioning_refine_heatmap_residual=False,
         object_conditioning_refine_mask_detach=False,
     ):
         super().__init__()
+        if object_conditioning_refine_heatmap_residual and not (
+            object_conditioning_refine_role_masks and object_slot_predictor_type == 'role_queries'
+        ):
+            raise ValueError('refine_heatmap_residual requires refine masks and role_queries')
         if object_conditioning_refine_local_query and not object_conditioning_refine_role_masks:
             raise ValueError('refine_local_query requires refine_role_masks')
         if object_conditioning_refine_role_masks and not (
@@ -195,6 +201,7 @@ class MVT(nn.Module):
         del args['object_conditioning_preserve_role_tokens']
         del args['object_conditioning_refine_role_masks']
         del args['object_conditioning_refine_local_query']
+        del args['object_conditioning_refine_heatmap_residual']
         del args['object_conditioning_refine_mask_detach']
 
         self.rot_ver = rot_ver
@@ -221,6 +228,7 @@ class MVT(nn.Module):
         self.object_conditioning_preserve_role_tokens = bool(object_conditioning_preserve_role_tokens)
         self.object_conditioning_refine_role_masks = bool(object_conditioning_refine_role_masks)
         self.object_conditioning_refine_local_query = bool(object_conditioning_refine_local_query)
+        self.object_conditioning_refine_heatmap_residual = bool(object_conditioning_refine_heatmap_residual)
         self.object_conditioning_refine_mask_detach = bool(object_conditioning_refine_mask_detach)
         oracle_prior_channels = 2 if oracle_prior_relation else 1
         # for verifying the input
@@ -296,7 +304,8 @@ class MVT(nn.Module):
         )
         self.refine_role_mask_head = (
             RoleConditionedRefineMaskHead(self.mvt1.vlm_dim, object_slot_dim,
-                                         local_query=self.object_conditioning_refine_local_query)
+                                         local_query=self.object_conditioning_refine_local_query,
+                                         heatmap_residual=self.object_conditioning_refine_heatmap_residual)
             if self.object_conditioning_refine_role_masks else None
         )
 
@@ -753,6 +762,17 @@ class MVT(nn.Module):
                     lambda points: self.mvt1.get_pt_loc_on_img(points, dyn_cam_info=None),
                     sigma=oracle_prior_sigma,
                 )
+                if getattr(self, 'object_conditioning_refine_heatmap_residual', False):
+                    # Preserve raw conditional T/R scores; the inherited NULL
+                    # posterior is applied once by the refine head.
+                    projected = reproject_role_heatmaps(
+                        out['object_slot_mask_logits'].float().sigmoid(),
+                        out['mvt1_ori_img'][:, :, :3], img[:, :, :3],
+                        wpt_local_stage_one_noisy, self.st_sca,
+                        lambda points: self.mvt1.get_pt_loc_on_img(points, dyn_cam_info=None),
+                        out['object_slot_role_token_valid'])
+                    inherited_roles['projected_role_probabilities'] = projected['probabilities']
+                    inherited_roles['projected_role_valid'] = projected['valid']
             oracle_prior2 = self._build_oracle_instance_prior(
                 oracle_prior_points, oracle_prior_valid, False, out,
                 oracle_prior_sigma,

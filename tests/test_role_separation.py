@@ -28,6 +28,10 @@ def test_union_collapse_has_larger_loss_and_correct_cross_role_gradients():
     bad = role_separation_loss(collapsed.sigmoid(), teacher, valid, visible)
     assert bad['loss'] > good['loss'] + 4
     assert bad['supervised_pixels'] == 2
+    assert bad['visibility_available'] == 1
+    assert bad['teacher_role_views'] == bad['visible_role_views'] == 2
+    assert bad['paired_views'] == 1
+    assert bad['overlap_pixels'] == 0
     bad['loss'].backward()
     assert collapsed.grad[0, 0, 0, 6, 6] > 0
     assert collapsed.grad[0, 0, 1, 1, 1] > 0
@@ -35,14 +39,13 @@ def test_union_collapse_has_larger_loss_and_correct_cross_role_gradients():
     assert teacher.grad is None
 
 
-@pytest.mark.parametrize('case', ['missing_visibility', 'occluded_reference', 'invalid_role',
+@pytest.mark.parametrize('case', ['missing_visibility', 'invalid_role',
                                  'unknown', 'absent', 'overlap', 'no_depth', 'empty'])
 def test_untrusted_or_unavailable_pairs_create_no_negative_gradient(case):
     teacher, visible, valid = maps()
     present = known = torch.ones(1, 2, dtype=torch.bool)
     pixels = torch.ones(1, 1, 8, 8, dtype=torch.bool)
     if case == 'missing_visibility': visible = None
-    if case == 'occluded_reference': visible[:, :, 1] = False
     if case == 'invalid_role': valid[:, 1] = False
     if case == 'unknown': known = torch.tensor([[True, False]])
     if case == 'absent': present = torch.tensor([[True, False]])
@@ -54,6 +57,28 @@ def test_untrusted_or_unavailable_pairs_create_no_negative_gradient(case):
     assert result['loss'] == result['supervised_pixels'] == 0
     result['loss'].backward()
     assert logits.grad.count_nonzero() == 0
+
+
+def test_diagnostics_distinguish_missing_labels_visibility_crop_and_overlap():
+    teacher, visible, valid = maps()
+    probabilities = torch.full_like(teacher, .9, requires_grad=True)
+    missing = role_separation_loss(probabilities, teacher, valid)
+    assert missing['visibility_available'] == 0
+    no_label = role_separation_loss(probabilities, torch.zeros_like(teacher), valid, visible)
+    assert no_label['visibility_available'] == 1 and no_label['teacher_role_views'] == 0
+    occluded = role_separation_loss(probabilities, teacher, valid, torch.zeros_like(visible))
+    assert occluded['teacher_role_views'] == 2 and occluded['visible_role_views'] == 0
+    single = visible.clone()
+    single[:, :, 1] = False
+    cropped = role_separation_loss(probabilities, teacher, valid, single)
+    assert cropped['visible_role_views'] == 1 and cropped['paired_views'] == 0
+    assert cropped['supervised_pixels'] == 1 and cropped['loss'] > 0
+    overlap = teacher.amax(2, keepdim=True).expand_as(teacher).clone()
+    ambiguous = role_separation_loss(probabilities, overlap, valid, visible)
+    assert ambiguous['paired_views'] == 1 and ambiguous['overlap_pixels'] == 2
+    assert ambiguous['loss'] == ambiguous['supervised_pixels'] == 0
+    for result in (missing, no_label, occluded, cropped, ambiguous):
+        assert not any(value.requires_grad for key, value in result.items() if key != 'loss')
 
 
 def test_pooling_preserves_overlap_instead_of_inventing_exclusive_coarse_cells():
@@ -82,15 +107,61 @@ def test_saturated_wrong_logits_keep_nonzero_corrective_gradients():
     assert logits.grad[0, 0, 1, 1, 1] == .5
 
 
-def test_only_views_with_both_verified_roles_are_supervised():
+def test_one_visible_role_still_supervises_the_other_known_role():
     teacher, visible, valid = maps()
     teacher, visible = teacher.repeat(1, 2, 1, 1, 1), visible.repeat(1, 2, 1, 1, 1)
     visible[:, 1, 1] = False
     logits = torch.zeros_like(teacher, requires_grad=True)
     result = role_separation_loss(logits.sigmoid(), teacher, valid, visible, logits=logits)
-    assert result['supervised_pixels'] == 2
+    assert result['supervised_pixels'] == 3
     result['loss'].backward()
-    assert logits.grad[:, 1].count_nonzero() == 0
+    assert logits.grad[0, 1, 1, 1, 1] > 0  # Reference must not copy visible Target.
+    assert logits.grad[0, 1, 0].count_nonzero() == 0  # No visible Reference source.
+
+
+def test_crop_external_reference_gets_negative_on_target_with_global_assignment():
+    teacher, visible, assigned = maps()
+    teacher[:, :, 1] = 0  # No Reference projection in this crop.
+    visible[:, :, 1] = False
+    stage_valid = torch.tensor([[True, False]])
+    logits = torch.full_like(teacher, 5., requires_grad=True)
+    result = role_separation_loss(
+        logits.sigmoid(), teacher, stage_valid, visible,
+        role_present=assigned, role_present_known=assigned,
+        logits=logits, assignment_valid=assigned)
+    assert result['paired_views'] == 0
+    assert result['supervised_pixels'] == 1 and result['loss'] > 4
+    result['loss'].backward()
+    assert logits.grad[0, 0, 1, 1, 1] > 0
+    assert logits.grad.count_nonzero() == 1  # No fabricated full-crop absence mask.
+
+
+def test_actual_agent_does_not_erase_reference_assignment_when_stage_teacher_is_empty():
+    from test_direct_role_losses import _actual_agent_loss
+    from finetune.bridgevla.models.refine_role_masks import refine_role_mask_losses
+    teacher, visible, assigned = maps()
+    raw, local = torch.zeros_like(teacher, requires_grad=True), torch.zeros_like(teacher, requires_grad=True)
+    output = dict(object_slot_predictor_type='role_queries', object_slot_mask_logits=raw,
+                  object_slot_prior=raw.sigmoid(), object_slot_target_prior=teacher.clone(),
+                  object_slot_reference_null_probability=torch.tensor([.1]),
+                  object_role_visible_support=visible.clone(), object_slot_target_valid=assigned)
+    teacher[:, :, 1] = 0
+    visible[:, :, 1] = False
+    output['mvt2'] = dict(object_slot_roles_inherited=True, object_slot_masks_refined=True,
+                         object_slot_prior=local.sigmoid(), object_refine_mask_logits=local,
+                         object_slot_target_prior=teacher, object_role_visible_support=visible,
+                         object_slot_target_valid=torch.tensor([[True, False]]),
+                         object_refine_pixel_valid=torch.ones(1, 1, 8, 8).bool())
+    method = _actual_agent_loss()
+    method.__globals__['refine_role_mask_losses'] = refine_role_mask_losses
+    agent = SimpleNamespace(internal_object_slots_enabled=True, stage_two=True,
+                            _net_mod=SimpleNamespace(object_conditioning_supervise_mixed_role_maps=False))
+    result = MethodType(method, agent)(output, assigned, assigned, assigned)
+    assert result['refine_diversity_paired_views'] == 0
+    assert result['refine_diversity_pixels'] == 1 and result['refine_diversity'] > 0
+    result['refine_diversity'].backward()
+    assert local.grad[0, 0, 1, 1, 1] > 0
+    assert local.grad.count_nonzero() == 1
 
 
 def projection(points):
@@ -136,12 +207,14 @@ def test_agent_computes_coarse_and_refine_separation_with_live_raw_mask_gradient
     result = MethodType(method, agent)(output, valid, valid, valid)
     assert result['diversity'] > 0 and result['refine_diversity'] > 0
     assert result['diversity_pixels'] == result['refine_diversity_pixels'] == 2
+    assert result['diversity_paired_views'] == result['refine_diversity_paired_views'] == 1
     (result['diversity'] + result['refine_diversity']).backward()
     assert raw.grad[0, 0, 0, 6, 6] > 0 and local.grad[0, 0, 1, 1, 1] > 0
     assert null.grad is None  # This penalty cannot be evaded via predicted NULL.
 
 
-def test_outer_mvt_forward_checks_each_stage_frame_without_gt_action_conditioning():
+@pytest.mark.parametrize('dense_residual', [False, True])
+def test_outer_mvt_forward_checks_each_stage_frame_without_gt_action_conditioning(dense_residual):
     """Run the real outer forward with CPU render/VLM substitutes."""
     import ast
     from pathlib import Path
@@ -158,6 +231,9 @@ def test_outer_mvt_forward_checks_each_stage_frame_without_gt_action_conditionin
 
     namespace = dict(torch=torch, visible_role_support=visible_role_support,
                      mvt_utils=SimpleNamespace(trans_pc=transform, add_uni_noi=lambda x, _: x))
+    from finetune.bridgevla.models.heatmap_transport import reproject_role_heatmaps
+    namespace['reproject_role_heatmaps'] = reproject_role_heatmaps
+    namespace['inherit_coarse_roles'] = lambda *args, **kwargs: {}
     exec(compile(ast.Module(body=[forward], type_ignores=[]), str(source), 'exec'), namespace)
 
     calls = []
@@ -170,7 +246,9 @@ def test_outer_mvt_forward_checks_each_stage_frame_without_gt_action_conditionin
         assert 'object_role_visible_support' not in kwargs
         # The stage can receive GT only as a detached loss target, never as
         # role/action conditioning. Its policy output ignores that target.
-        return dict(trans=kwargs['img'][:, :, 3].clone())
+        return dict(trans=kwargs['img'][:, :, 3].clone(),
+                    object_slot_mask_logits=torch.full((1, 1, 2, 8, 8), .3),
+                    object_slot_role_token_valid=torch.ones(1, 2).bool())
 
     stage.get_pt_loc_on_img = lambda p, **_: projection(p)
 
@@ -192,7 +270,8 @@ def test_outer_mvt_forward_checks_each_stage_frame_without_gt_action_conditionin
                             oracle_adapter_translation_only=False,
                             oracle_prior_feature_adapter1=None, oracle_prior_feature_adapter2=None,
                             st_wpt_loc_aug=0, st_sca=1.5, st_wpt_loc_inp_no_noise=True,
-                            object_conditioning_inherit_coarse_roles=False,
+                            object_conditioning_inherit_coarse_roles=dense_residual,
+                            object_conditioning_refine_heatmap_residual=dense_residual,
                             oracle_relation_gated_adapter=True, refine_role_mask_head=None,
                             object_conditioning_refine_mask_detach=False)
     points = torch.tensor([[[[.25, .25, .5]], [[-.5, -.5, .25]]]])
@@ -210,3 +289,9 @@ def test_outer_mvt_forward_checks_each_stage_frame_without_gt_action_conditionin
     assert 'object_role_visible_support' not in without
     torch.testing.assert_close(result['trans'], without['trans'])
     torch.testing.assert_close(result['mvt2']['trans'], without['mvt2']['trans'])
+    if dense_residual:
+        projected = calls[1]['inherited_object_roles']
+        assert projected['projected_role_valid'].sum() == 4  # Two roles at two surfaces.
+        assert projected['projected_role_probabilities'].max() > .5
+        for key in ('projected_role_valid', 'projected_role_probabilities'):
+            torch.testing.assert_close(projected[key], calls[3]['inherited_object_roles'][key])

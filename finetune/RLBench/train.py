@@ -55,6 +55,7 @@ from utils.peract_utils_rlbench import (
 from training_utils import (
     build_batch_plan,
     freeze_for_oracle_adaptation,
+    format_training_metrics,
     optimizer_steps_per_epoch,
     resolve_training_epochs,
     should_disable_rgc_loss,
@@ -334,11 +335,7 @@ def train(
                     or iteration == training_iterations - 1
                 )
             ):
-                loss_text = ' '.join(
-                    f'{key}={value:.6f}'
-                    for key, value in metrics.items()
-                    if 'loss' in key
-                )
+                loss_text = format_training_metrics(metrics)
                 tqdm.tqdm.write(
                     f'[train] epoch={epoch} iter={iteration} '
                     f'step={step} {loss_text}'
@@ -498,11 +495,7 @@ def train_with_accumulation(
                     or optimizer_step_index == optimizer_steps - 1
                 )
             ):
-                loss_text = ' '.join(
-                    f'{key}={value:.6f}'
-                    for key, value in metrics.items()
-                    if 'loss' in key
-                )
+                loss_text = format_training_metrics(metrics)
                 tqdm.tqdm.write(
                     f'[train] epoch={epoch} optimizer_step={global_step} '
                     f'{loss_text}'
@@ -537,8 +530,12 @@ def save_agent(
         'preserve_role_tokens': bool(getattr(conditioning_model, 'object_conditioning_preserve_role_tokens', False)),
         'refine_role_masks': bool(getattr(conditioning_model, 'object_conditioning_refine_role_masks', False)),
         'refine_local_query': bool(getattr(conditioning_model, 'object_conditioning_refine_local_query', False)),
+        'refine_heatmap_residual': bool(getattr(conditioning_model, 'object_conditioning_refine_heatmap_residual', False)),
         'refine_mask_detach': bool(getattr(conditioning_model, 'object_conditioning_refine_mask_detach', False)),
     }
+    if checkpoint['object_conditioning']['refine_heatmap_residual']:
+        from bridgevla.models.refine_role_masks import HEATMAP_FUSION_VERSION
+        checkpoint['object_conditioning']['refine_heatmap_fusion'] = HEATMAP_FUSION_VERSION
     if semantic_contract is not None:
         checkpoint['semantic_contract'] = dict(semantic_contract)
     if optimizer_step is not None:
@@ -578,6 +575,7 @@ def load_training_checkpoint(agent, path, semantic_contract=None):
         'preserve_role_tokens': bool(getattr(model, 'object_conditioning_preserve_role_tokens', False)),
         'refine_role_masks': bool(getattr(model, 'object_conditioning_refine_role_masks', False)),
         'refine_local_query': bool(getattr(model, 'object_conditioning_refine_local_query', False)),
+        'refine_heatmap_residual': bool(getattr(model, 'object_conditioning_refine_heatmap_residual', False)),
         'refine_mask_detach': bool(getattr(model, 'object_conditioning_refine_mask_detach', False)),
     }
     stored_conditioning = checkpoint.get('object_conditioning', {})
@@ -589,12 +587,15 @@ def load_training_checkpoint(agent, path, semantic_contract=None):
     routing_keys = (
         'shared_action_features', 'use_context',
         'inherit_coarse_roles', 'preserve_role_tokens',
-        'refine_role_masks', 'refine_local_query',
+        'refine_role_masks', 'refine_local_query', 'refine_heatmap_residual',
     )
     routing_changed = any(
         bool(stored_conditioning.get(key, False)) != expected_conditioning[key]
         for key in routing_keys
     )
+    if expected_conditioning['refine_heatmap_residual']:
+        from bridgevla.models.refine_role_masks import HEATMAP_FUSION_VERSION
+        routing_changed |= stored_conditioning.get('refine_heatmap_fusion') != HEATMAP_FUSION_VERSION
     if routing_changed:
         raise RuntimeError(
             'Object conditioning changed; initialize with --init_checkpoint '
@@ -1049,6 +1050,17 @@ def experiment(cmd_args):
     )
     if local_rank == 0:
         print(f"dict(exp_cfg)={dict(exp_cfg)}")
+        if object_prior_mode == 'o2_internal_slots' and exp_cfg.object_slots.predictor_type == 'role_queries':
+            print(
+                'T/R separation: visibility-checked cross-role BCE; '
+                f'coarse_weight={exp_cfg.rvt.object_slot_diversity_loss_weight}; '
+                f'refine_weight={exp_cfg.rvt.object_refine_diversity_loss_weight}; '
+                f'refine_head={exp_cfg.object_conditioning.refine_role_masks}. '
+                f'heatmap_residual={exp_cfg.object_conditioning.refine_heatmap_residual}. '
+                'One visible role can supervise the other known role; '
+                'no exclusive visible anchors => zero loss.',
+                flush=True,
+            )
         print(f"BATCH_SIZE_TRAIN={BATCH_SIZE_TRAIN}")
         print(
             "Batch plan: "
@@ -1156,6 +1168,7 @@ def experiment(cmd_args):
         object_conditioning_preserve_role_tokens=exp_cfg.object_conditioning.preserve_role_tokens,
         object_conditioning_refine_role_masks=exp_cfg.object_conditioning.refine_role_masks,
         object_conditioning_refine_local_query=exp_cfg.object_conditioning.refine_local_query,
+        object_conditioning_refine_heatmap_residual=exp_cfg.object_conditioning.refine_heatmap_residual,
         object_conditioning_refine_mask_detach=exp_cfg.object_conditioning.refine_mask_detach,
         object_slots_enabled=exp_cfg.object_slots.enabled,
         object_slot_num_slots=exp_cfg.object_slots.num_slots,

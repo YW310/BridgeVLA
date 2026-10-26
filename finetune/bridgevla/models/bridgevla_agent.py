@@ -958,9 +958,14 @@ class RVTAgent:
                         stage_output['object_slot_target_prior'], teacher_valid,
                         stage_output.get('object_role_visible_support'), role_present, role_present_known,
                         pixel_valid=stage_output['object_refine_pixel_valid'],
-                        logits=stage_output['object_refine_mask_logits'])
+                        logits=stage_output['object_refine_mask_logits'],
+                        assignment_valid=oracle_valid)
                     sums['refine_diversity'] = sums.get('refine_diversity', 0.) + separation['loss']
                     sums['refine_diversity_pixels'] = sums.get('refine_diversity_pixels', 0.) + separation['supervised_pixels']
+                    for name in ('visibility_available', 'teacher_role_views',
+                                 'visible_role_views', 'paired_views', 'overlap_pixels'):
+                        key = 'refine_diversity_' + name
+                        sums[key] = sums.get(key, 0.) + separation[name]
                     refine_stage_count += 1
                 continue
             if stage_output.get('object_slot_predictor_type') == 'role_queries':
@@ -1003,9 +1008,13 @@ class RVTAgent:
                 separation = role_separation_loss(
                     probabilities, stage_output['object_slot_target_prior'], teacher_valid,
                     stage_output.get('object_role_visible_support'), role_present, role_present_known,
-                    logits=raw_logits)
+                    logits=raw_logits, assignment_valid=oracle_valid)
                 sums['diversity'] = sums['diversity'] + separation['loss']
                 sums['diversity_pixels'] = sums['diversity_pixels'] + separation['supervised_pixels']
+                for name in ('visibility_available', 'teacher_role_views',
+                             'visible_role_views', 'paired_views', 'overlap_pixels'):
+                    key = 'diversity_' + name
+                    sums[key] = sums.get(key, 0.) + separation[name]
                 raw_stage_count += 1
                 continue
             teacher_valid = oracle_valid
@@ -1746,6 +1755,18 @@ class RVTAgent:
                         'object_refine_diversity_supervised_pixels': object_slot_losses['refine_diversity_pixels'].item(),
                         'object_refine_diversity_loss_weight': self.object_refine_diversity_loss_weight,
                     })
+                for prefix, log_prefix in (('diversity_', 'object_slot_diversity_'),
+                                           ('refine_diversity_', 'object_refine_diversity_')):
+                    for name in ('visibility_available', 'teacher_role_views',
+                                 'visible_role_views', 'paired_views', 'overlap_pixels'):
+                        if prefix + name in object_slot_losses:
+                            loss_log[log_prefix + name] = object_slot_losses[prefix + name].item()
+                refine_output = out.get('mvt2', {})
+                if 'object_refine_residual_logits' in refine_output:
+                    loss_log['object_refine_residual_abs_mean'] = (
+                        refine_output['object_refine_residual_logits'].detach().abs().mean().item())
+                    loss_log['object_refine_projection_coverage'] = (
+                        refine_output['object_refine_projection_valid'].float().mean().item())
             if base_trans_loss is not None:
                 loss_log['trans_loss_base'] = base_trans_loss.item()
             if trans_loss_valid is not None:

@@ -33,6 +33,7 @@ def build_agent(config, contract, device, pretrain_path=None, training=True, dis
         object_conditioning_preserve_role_tokens=internal,
         object_conditioning_refine_role_masks=object_config.get("refine_role_masks", False),
         object_conditioning_refine_local_query=object_config.get("refine_local_query", False),
+        object_conditioning_refine_heatmap_residual=object_config.get("refine_heatmap_residual", False),
         object_conditioning_refine_mask_detach=object_config.get("refine_mask_detach", False),
         object_slots_enabled=internal,
         object_slot_predictor_type="role_queries" if internal else "slots",
