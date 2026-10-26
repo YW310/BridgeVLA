@@ -368,6 +368,7 @@ PNG/TensorBoard 增加 `Target prior / Reference prior` 和 `T/R projection vali
 #### T/R 分离监督与日志
 
 固定 query 顺序不能防止两张图学成相同响应。role-query 路径的 diversity 使用交叉角色负例 BCE：在 Reference 的可靠表面点抑制 Target 响应，反向同理。它与旧无序 slots 的 cosine diversity 不同。
+直接 query 的 mask BCE 使用原始 logits 计算，Reference 按 `sigmoid(Lr) * sigmoid(-Lnull)` 的真实输出计算稳定的对数概率，NULL BCE 也直接使用 logits。避免 sigmoid 后 clamp 在饱和区切断纠错梯度；没有改变标签、推理输出或参数结构。新建共享解码头的两张条件图在初始化时可能高度相似，需结合训练 step、峰值/差值及有效监督判断，不能仅凭 cosine 判定相同物体。
 
 监督点来自 GT 角色点云，必须在当前 coarse cube/refine crop 内，投影到图像范围内，并与该像素的 rendered XYZ 在一个像素 pitch 的距离内一致。只需来源角色有可靠可见点，被抑制角色具有有效的全局角色标注；例如 Reference 在 crop 外，已确认的 Target 表面仍是 Reference 的负例。不再要求 T/R 同视角可见。NULL、unknown、缺失角色标注、无有效来源表面，以及两种 teacher footprint 重叠的区域不产生负例；这不把整张 crop 伪造为空 Reference GT。低分辨率监督使用 max pooling 保留重叠，不能通过降采样抹掉另一角色的支持。使用未乘 NULL 的原始 mask logits，避免借助 NULL 概率规避惩罚，也不以预测 mask 的空间门控屏蔽训练监督。
 

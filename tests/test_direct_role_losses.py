@@ -62,6 +62,84 @@ def _direct_stage():
 
 
 class DirectRoleLossTest(unittest.TestCase):
+    @staticmethod
+    def _logit_prior(logits, null):
+        masks = logits.sigmoid()
+        return torch.stack((masks[:, :, 0],
+                            masks[:, :, 1] * (-null).sigmoid()[:, None, None, None]), dim=2)
+
+    def test_logit_loss_matches_emitted_map_bce_dice_and_gradients(self):
+        torch.manual_seed(14)
+        logits = torch.randn(2, 3, 2, 4, 4, requires_grad=True)
+        null = torch.randn(2, requires_grad=True)
+        prior = self._logit_prior(logits, null)
+        teacher = torch.rand_like(prior)
+        valid = torch.ones(2, 2).bool()
+        stable = mixed_role_map_losses(prior, teacher, valid,
+                                       conditional_logits=logits, reference_null_logit=null)
+        original = mixed_role_map_losses(prior, teacher, valid)
+        for key in stable:
+            torch.testing.assert_close(stable[key], original[key])
+        first = torch.autograd.grad(stable['mask'], (logits, null), retain_graph=True)
+        second = torch.autograd.grad(original['mask'], (logits, null))
+        for a, b in zip(first, second):
+            torch.testing.assert_close(a, b)
+
+    def test_wrong_saturated_masks_retain_positive_and_negative_correction_gradients(self):
+        for value in (-30., 30.):
+            with self.subTest(logit=value):
+                logits = torch.full((1, 1, 2, 2, 2), value, requires_grad=True)
+                null = torch.tensor([-30.], requires_grad=True)
+                prior = self._logit_prior(logits, null)
+                teacher = torch.zeros_like(prior)
+                teacher[0, 0, 0, 0, 0] = 1.
+                teacher[0, 0, 1, 1, 1] = 1.
+                losses = mixed_role_map_losses(prior, teacher, torch.ones(1, 2).bool(),
+                                               conditional_logits=logits, reference_null_logit=null)
+                losses['mask'].backward()
+                self.assertTrue(torch.isfinite(losses['mask']))
+                if value < 0:
+                    self.assertLess(logits.grad[0, 0, 0, 0, 0].item(), -.01)
+                    self.assertLess(logits.grad[0, 0, 1, 1, 1].item(), -.01)
+                else:
+                    self.assertGreater(logits.grad[0, 0, 0, 0, 1].item(), .01)
+                    self.assertGreater(logits.grad[0, 0, 1, 0, 1].item(), .01)
+
+    def test_actual_agent_routes_raw_logits_and_recovers_wrong_null_at_saturation(self):
+        stage = _direct_stage()
+        logits = torch.full_like(stage['object_slot_prior'], -30., requires_grad=True)
+        null = torch.tensor([30.], requires_grad=True)
+        stage.update(object_slot_mask_logits=logits,
+                     object_slot_reference_null_logit=null,
+                     object_slot_reference_null_probability=null.sigmoid(),
+                     object_slot_prior=self._logit_prior(logits, null))
+        losses = _agent().losses(stage, torch.ones(1, 2).bool(),
+                                  torch.ones(1, 2).bool(), torch.ones(1, 2).bool())
+        (losses['mask'] + losses['presence']).backward()
+        self.assertLess(logits.grad[0, 0, 0, 0, 0].item(), -.01)
+        self.assertLess(logits.grad[0, 0, 1, 1, 1].item(), -.01)
+        self.assertGreater(null.grad.item(), .1)
+
+    def test_saturated_null_absence_label_has_gradient_without_spatial_teacher(self):
+        null = torch.tensor([-30.], requires_grad=True)
+        loss = reference_null_loss(null.sigmoid(), torch.tensor([[True, False]]),
+                                   torch.ones(1, 2).bool(), logits=null)
+        loss.backward()
+        self.assertLess(null.grad.item(), -.9)
+
+    def test_stable_map_loss_keeps_empty_views_and_unknown_roles_unsupervised(self):
+        logits = torch.full((1, 2, 2, 2, 2), -30., requires_grad=True)
+        null = torch.tensor([30.], requires_grad=True)
+        prior = self._logit_prior(logits, null)
+        teacher = torch.zeros_like(prior)
+        teacher[:, 0, 0, 0, 0] = 1.
+        loss = mixed_role_map_losses(prior, teacher, torch.tensor([[True, False]]),
+                                     conditional_logits=logits, reference_null_logit=null)['mask']
+        loss.backward()
+        self.assertEqual(logits.grad[:, 1].count_nonzero().item(), 0)
+        self.assertEqual(logits.grad[:, :, 1].count_nonzero().item(), 0)
+        self.assertEqual(null.grad.count_nonzero().item(), 0)
+
     def test_direct_map_and_actual_null_posterior_have_gradients_without_slots(self):
         stage = _direct_stage()
         present = torch.tensor([[True, False]])

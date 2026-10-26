@@ -987,13 +987,21 @@ class RVTAgent:
                 if stage_valid is not None:
                     teacher_valid = teacher_valid & stage_valid.to(
                         device=predicted.device).bool()
+                direct_logits = {}
+                if ('object_slot_mask_logits' in stage_output
+                        and 'object_slot_reference_null_logit' in stage_output):
+                    direct_logits = dict(
+                        conditional_logits=stage_output['object_slot_mask_logits'],
+                        reference_null_logit=stage_output['object_slot_reference_null_logit'])
                 direct = mixed_role_map_losses(
                     predicted, stage_output['object_slot_target_prior'],
                     teacher_valid, role_present, role_present_known,
+                    **direct_logits,
                 )
                 null_loss = reference_null_loss(
                     stage_output['object_slot_reference_null_probability'],
                     role_present, role_present_known,
+                    logits=stage_output.get('object_slot_reference_null_logit'),
                 )
                 zero = (predicted.sum()
                         + stage_output['object_slot_reference_null_probability'].sum()) * 0.0
@@ -1083,6 +1091,7 @@ class RVTAgent:
             null_loss = reference_null_loss(
                 stage_output['object_slot_reference_null_probability'],
                 role_present, role_present_known,
+                logits=stage_output.get('object_slot_reference_null_logit'),
             )
             presence_loss = target_objectness_loss + null_loss
 

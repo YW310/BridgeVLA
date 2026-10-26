@@ -145,7 +145,7 @@ def pending_target_candidate_mask(
     return candidate_valid.bool() & ~(completed & suppress_completed)
 
 
-def reference_null_loss(probability, present=None, known=None):
+def reference_null_loss(probability, present=None, known=None, *, logits=None):
     """Supervise the actual NULL posterior, never geometric invalidity."""
     if present is None or known is None:
         return probability.sum() * 0.0
@@ -153,10 +153,13 @@ def reference_null_loss(probability, present=None, known=None):
     known = known.to(device=probability.device).bool()
     if present.shape != (probability.shape[0], 2) or known.shape != present.shape:
         raise ValueError('role presence and known masks must have shape [B,2]')
-    values = F.binary_cross_entropy(
-        probability.clamp(1e-6, 1 - 1e-6),
-        (~present[:, 1]).to(probability.dtype), reduction='none',
-    )
+    targets = (~present[:, 1]).to(probability.dtype)
+    if logits is None:
+        values = F.binary_cross_entropy(probability.clamp(1e-6, 1 - 1e-6), targets, reduction='none')
+    else:
+        if logits.shape != probability.shape:
+            raise ValueError('Reference NULL logits must match probabilities')
+        values = F.binary_cross_entropy_with_logits(logits.float(), targets.float(), reduction='none')
     weights = known[:, 1].to(values.dtype)
     return (values * weights).sum() / weights.sum().clamp_min(1)
 
@@ -187,16 +190,24 @@ def role_supervision_mask(target_masks, role_valid, role_present=None,
 
 
 def mixed_role_map_losses(probabilities, target_masks, role_valid,
-                          role_present=None, role_present_known=None):
+                          role_present=None, role_present_known=None, *,
+                          conditional_logits=None, reference_null_logit=None):
     """Supervise the soft T/R maps actually consumed by the policy.
 
     Empty teacher views, unavailable geometry and known absence are not
     background-only mask labels. Missing presence metadata does not discard
     otherwise valid geometry; NULL remains a separate posterior loss.
+    Direct queries supply raw logits for stable BCE on the actual emitted
+    probabilities T=sigmoid(Lt), R=sigmoid(Lr)*sigmoid(-Lnull).
     """
     if probabilities.ndim != 5 or probabilities.shape[2] != 2:
         raise ValueError('role probabilities must have shape [B,V,2,H,W]')
     batch, views, _, height, width = probabilities.shape
+    if (conditional_logits is None) != (reference_null_logit is None):
+        raise ValueError('conditional logits and Reference NULL logit must be provided together')
+    if conditional_logits is not None:
+        if conditional_logits.shape != probabilities.shape or reference_null_logit.shape != (batch,):
+            raise ValueError('conditional logits must match role maps and NULL logit must be [B]')
     if target_masks.ndim != 5 or target_masks.shape[:3] != (batch, views, 2):
         raise ValueError('teacher role maps must have shape [B,V,2,H,W]')
     target_masks = target_masks.detach().to(
@@ -213,9 +224,24 @@ def mixed_role_map_losses(probabilities, target_masks, role_valid,
         zero = probabilities.sum() * 0.0
         return {'mask': zero, 'bce': zero, 'dice': zero}
 
-    selected = probabilities[supervised].clamp(1e-6, 1 - 1e-6)
     targets = target_masks[supervised]
-    bce = F.binary_cross_entropy(selected, targets)
+    if conditional_logits is None:
+        selected = probabilities[supervised].clamp(1e-6, 1 - 1e-6)
+        bce = F.binary_cross_entropy(selected, targets)
+    else:
+        logits = conditional_logits.float()
+        log_conditional = F.logsigmoid(logits)
+        log_complement = F.logsigmoid(-logits)
+        null = reference_null_logit.float()[:, None, None, None]
+        log_probability = torch.stack((log_conditional[:, :, 0],
+                                       log_conditional[:, :, 1] + F.logsigmoid(-null)), dim=2)
+        # 1-a*b = (1-a) + a*(1-b); logaddexp avoids cancellation at 0/1.
+        log_negative = torch.stack((log_complement[:, :, 0],
+                                    torch.logaddexp(log_complement[:, :, 1],
+                                                    log_conditional[:, :, 1] + F.logsigmoid(null))), dim=2)
+        positive, negative = log_probability[supervised], log_negative[supervised]
+        bce = -(targets * positive + (1 - targets) * negative).mean()
+        selected = positive.exp()
     selected, targets = selected.flatten(1), targets.flatten(1)
     dice = 1.0 - (
         2.0 * (selected * targets).sum(dim=1) + 1.0
