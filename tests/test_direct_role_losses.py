@@ -12,6 +12,7 @@ from finetune.bridgevla.models.object_conditioning import (
     hungarian_role_slot_losses, mixed_role_map_losses, reference_null_loss,
     role_supervision_mask,
 )
+from finetune.bridgevla.models.role_separation import role_separation_loss
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -31,6 +32,7 @@ def _actual_agent_loss():
                  mixed_role_map_losses=mixed_role_map_losses,
                  reference_null_loss=reference_null_loss,
                  role_supervision_mask=role_supervision_mask)
+    scope['role_separation_loss'] = role_separation_loss
     exec(compile(ast.Module(body=[method], type_ignores=[]), str(path), 'exec'), scope)
     return scope[method.name]
 
@@ -66,7 +68,7 @@ class DirectRoleLossTest(unittest.TestCase):
         known = torch.ones(1, 2).bool()
         losses = _agent().losses(stage, torch.ones(1, 2).bool(), present, known)
         self.assertEqual(set(losses), {'mask', 'mask_bce', 'mask_dice',
-                                       'role', 'objectness', 'presence', 'diversity'})
+                                       'role', 'objectness', 'presence', 'diversity', 'diversity_pixels'})
         for name in ('role', 'objectness', 'diversity'):
             self.assertEqual(losses[name].item(), 0)
             self.assertTrue(losses[name].requires_grad)

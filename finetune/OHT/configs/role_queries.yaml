@@ -3,6 +3,8 @@ mode: role_queries
 role_loss:
   map: 1.0
   reference_null: 0.25
+  diversity: 0.01
+  refine_diversity: 0.01  # Effective only when object.refine_role_masks is enabled.
 object:
   rank: 16
   anchor_rank: 16

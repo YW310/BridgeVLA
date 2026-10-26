@@ -35,6 +35,7 @@ from bridgevla.models.oracle_prior import (
 )
 from bridgevla.models.cross_scale_roles import inherit_coarse_roles
 from bridgevla.models.refine_role_masks import RoleConditionedRefineMaskHead
+from bridgevla.models.role_separation import visible_role_support
 
 class MVT(nn.Module):
     def __init__(
@@ -653,6 +654,12 @@ class MVT(nn.Module):
         )
         if not self.object_slots_enabled:
             self._attach_oracle_instance_prior(out, oracle_prior1)
+        elif oracle_prior_points is not None and self.object_slot_predictor_type == 'role_queries':
+            # Training labels only: attach after policy forward and never put
+            # them in the inherited role packet or action conditioning.
+            out['object_role_visible_support'] = visible_role_support(
+                oracle_prior_points, oracle_prior_valid, img[:, :, :3],
+                lambda points: self.mvt1.get_pt_loc_on_img(points, dyn_cam_info=None))
         out["mvt1_ori_img"]=img.clone().detach()
         def visualize_tensor(tensor, save_path=None):
             """
@@ -803,6 +810,11 @@ class MVT(nn.Module):
             )
             if not self.object_slots_enabled:
                 self._attach_oracle_instance_prior(out_mvt2, oracle_prior2)
+            elif oracle_prior_points is not None and (self.object_slot_predictor_type == 'role_queries'
+                                                     or self.object_conditioning_refine_role_masks):
+                out_mvt2['object_role_visible_support'] = visible_role_support(
+                    oracle_relation_points2, oracle_prior_valid, img[:, :, :3],
+                    lambda points: self.mvt1.get_pt_loc_on_img(points, dyn_cam_info=None))
 
             out["wpt_local1"] = wpt_local_stage_one_noisy
             out["rev_trans"] = rev_trans 

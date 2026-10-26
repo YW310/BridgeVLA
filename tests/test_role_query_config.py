@@ -67,7 +67,7 @@ class RoleQueryConfigTest(unittest.TestCase):
                         'object_prior_mode: o2_internal_slots',
                         'supervise_mixed_role_maps: False',
                         'inherit_coarse_roles: True', 'preserve_role_tokens: True',
-                        'object_slot_diversity_loss_weight: 0.0'):
+                        'object_slot_diversity_loss_weight: 0.01'):
             self.assertIn(setting, profile)
         reference = (ROOT / 'finetune/RLBench/configs/rlbench_o2_internal_slots_cross_scale.yaml').read_text(
             encoding='utf-8')

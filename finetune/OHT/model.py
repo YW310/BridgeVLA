@@ -101,7 +101,8 @@ def build_agent(config, contract, device, pretrain_path=None, training=True, dis
                    object_slot_mask_loss_weight=role_loss.get("map", 1),
                    object_slot_null_loss_weight=role_loss.get("reference_null", .25),
                    object_refine_mask_loss_weight=role_loss.get("refine_map", 1),
-                   object_slot_diversity_loss_weight=0)
+                   object_slot_diversity_loss_weight=role_loss.get('diversity', 0),
+                   object_refine_diversity_loss_weight=role_loss.get('refine_diversity', 0))
     agent_class, extra = RVTAgent, {}
     if action["mode"] != "eef":
         from .action_model import VectorActionAgent

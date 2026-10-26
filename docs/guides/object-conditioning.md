@@ -309,7 +309,7 @@ ORACLE_DEBUG=0 SAVE_VIDEO=0 VISUALIZE=0 bash eval.sh
 ### 条件化 refine masks（opt-in）
 
 `rlbench_o2_internal_slots_refine.yaml` 使用两个固定 T/R queries（`predictor_type: role_queries, num_slots: 2`），不做无序匹配或 slot 混合。
-coarse maps 直接监督，关闭额外 mixed-map 与 diversity 项；继承 coarse 角色/token/NULL/几何，新增轻量局部 head：
+coarse maps 直接监督，关闭额外 mixed-map；coarse/refine 分别加入可见表面上的 T/R 分离 loss。继承 coarse 角色/token/NULL/几何，新增轻量局部 head：
 coarse T/R query + refine VLM/RGB/XYZ + 投影/几何空间偏置 → 一层局部 cross-attention → 更新的 T/R tokens 与 maps → 原 anchor → 完整动作。不重选角色，不增加 VLM 前向。
 已有 semantic buffer 不重写；当前 Gaussian 点投影只能作弱监督，loss 屏蔽空视图、无效几何及 teacher footprint 外未知像素。
 局部 query 要求可靠 coarse token，以及点提示或变换后几何附近的真实 rendered XYZ；几何近邻可恢复点提示失效的局部条件，但不是实例身份认证。
@@ -330,12 +330,24 @@ GPUS_PER_NODE=2 bash train_8x40.sh \
 从旧 `slots` checkpoint 初始化会重置 predictor、adapter 和 refine head；从同为 `role_queries` 的 checkpoint 初始化可保留兼容权重。
 `object_conditioning.refine_role_masks` / `refine_local_query` 全局默认 False，当前 refine YAML 开启二者；后者依赖前者。
 `refine_mask_detach True` 只切断 maps 的 action 梯度，更新后的 token 仍进入 anchor，分割监督仍保留；不是整个局部 query 的梯度隔离。
-`rvt.object_refine_mask_loss_weight` 控制新增 loss（默认 1.0）。新 mask 接收 action 梯度的默认值为 joint；不是已验证最优设置。
+`rvt.object_refine_mask_loss_weight` 控制局部 BCE/Dice（默认 1.0）。当前 refine YAML 的 `rvt.object_slot_diversity_loss_weight` 和 `rvt.object_refine_diversity_loss_weight` 均为 0.01，分别控制 coarse/refine 分离项。新 mask 接收 action 梯度的默认值为 joint；这些权重不是已验证最优设置。
 对照只改开关：`refine_local_query=False, refine_role_masks=False` 为继承提示；`False, True` 为旧静态 mask head；`True, True` 为局部 query。保持初始化来源、冻结范围和预算相同。
 同为双 query 的静态 head checkpoint 可用 `--init_checkpoint` 保留旧权重、补建零初始化更新分支；不能用旧 optimizer resume，评估不能跳过新开关的 checkpoint 检查。
 评估使用训练保存的配置、`ORACLE_PROVIDER=none`。JSON 标注 `role_source=coarse`、`mask_source=refine`、`query_source=coarse_conditioned_refine`，并记录 point-hint validity、query active、token update norm，便于做 token 置空/打乱干预对照。
 单步 smoke 可在 opts 中加入 `tasks place_cups bs 1 global_batch_size 1 num_workers 0 max_optimizer_steps 1`。
-OHT `role_queries` 可在 `object` 中设置同名 `refine_role_masks` / `refine_local_query` / `refine_mask_detach`；`role_loss.refine_map` 控制权重，默认关闭，不修改 baseline 或控制器。
+OHT `role_queries` 可在 `object` 中设置同名 `refine_role_masks` / `refine_local_query` / `refine_mask_detach`；refine head 默认关闭，不修改 baseline 或控制器。`role_loss.refine_map` 控制局部 BCE/Dice，`role_loss.diversity` / `role_loss.refine_diversity` 分别控制 coarse/refine 分离项。
+
+#### T/R 分离监督与日志
+
+固定 query 顺序不能防止两张图学成相同响应。role-query 路径的 diversity 使用交叉角色负例 BCE：在 Reference 的可靠表面点抑制 Target 响应，反向同理。它与旧无序 slots 的 cosine diversity 不同。
+
+监督点来自 GT 角色点云，必须在当前 coarse cube/refine crop 内，投影到图像范围内，并与该像素的 rendered XYZ 在一个像素 pitch 的距离内一致。同一视角两种角色均需有效且有可见点；NULL、unknown、缺失几何、无深度、遮挡、crop 外，以及两种 teacher 投影 footprint 重叠的区域不产生负例。低分辨率监督使用 max pooling 保留重叠，不能通过降采样抹掉另一角色的支持。使用未乘 NULL 的原始 mask logits，避免借助 NULL 概率规避惩罚。
+
+GT 可见点仅在策略前向后附加为 loss 标签，不进入 query、anchor 或继承 packet。该检查只是采样表面的几何近似，不能认证实例身份，也不能恢复不可见表面；错误或过稀的角色标注仍需排查。若任务允许 T/R 指向同一物体的不同区域，应关闭这两项或提供明确互斥的角色标注，不能假定所有角色都互斥。
+
+日志分别记录 `object_slot_diversity_loss` / `object_refine_diversity_loss`、对应的 `*_diversity_loss_weight` 和 `*_diversity_supervised_pixels`。像素数为 0 时该项为可反传的 0；不应为得到非零曲线而把不可见区域当成负例。像素数非零但 loss 很小，才表示这些被监督点上的跨角色响应已受到抑制；不代表整张图或 token 已完全分离。
+
+不需要重建已有有效 semantic buffer/teacher cache，也不增加模型参数。新 loss 需要重新训练才影响预测，修改评估配置不会修复旧 checkpoint。旧实验评估仍使用保存的配置；新实验使用新输出目录及上述配置，按原初始化流程训练。消融时同时将两项权重设为 0，其余初始化、冻结范围和预算保持一致。
 
 ### 固定 T/R role queries（opt-in）
 
@@ -356,7 +368,7 @@ GPUS_PER_NODE=2 bash train_8x40.sh \
 该配置沿用 joint 的冻结范围、学习率与训练预算；不传 `--train_object_adapter_only`。
 角色图 BCE/Dice 直接监督策略使用的 T/R maps，权重为 `rvt.object_slot_mask_loss_weight`；
 真实 Reference absence 才监督其 NULL posterior，权重为 `rvt.object_slot_null_loss_weight`。
-`supervise_mixed_role_maps: False` 避免重复计数；本模式没有 Hungarian、role CE、slot objectness/diversity 项，也没有 Target NULL head。
+`supervise_mixed_role_maps: False` 避免重复计数；本模式没有 Hungarian、role CE、slot objectness 或无序 slot cosine diversity，也没有 Target NULL head。保留上述针对 T/R 的可见表面分离监督。
 几何不可用不等于语义 NULL；无可靠 GT 几何/标注的视角按 teacher 有效性跳过，不伪造空 mask 负例。
 Reference 空间 prior 含一次 `(1-p_NULL)`，anchor 中的语义 token 另按该 posterior 条件化；
 `confidence` 是预测图峰值支持分数，不是校准身份、存在或可见性置信度。

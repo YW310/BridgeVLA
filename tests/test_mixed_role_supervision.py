@@ -197,7 +197,7 @@ class MixedRoleSupervisionTest(unittest.TestCase):
         off = self._loss_agent(False).losses(stage, valid)
         on = self._loss_agent(True).losses(stage, valid)
         self.assertEqual(set(off), {'mask', 'mask_bce', 'mask_dice', 'role',
-                                   'objectness', 'presence', 'diversity'})
+                                   'objectness', 'presence', 'diversity', 'diversity_pixels'})
         for name, value in off.items():
             torch.testing.assert_close(on[name], value)
         self.assertIn('mixed_role', on)

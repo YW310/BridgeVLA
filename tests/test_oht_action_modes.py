@@ -225,6 +225,49 @@ def test_all_modes_train_actual_agent_and_serve_prediction_only(replay_fixture, 
     assert np.isfinite(report["all_samples"][metric])
 
 
+def test_role_diversity_config_reaches_actual_total_loss_and_logs(replay_fixture, caches, monkeypatch):
+    from bridgevla.mvt import mvt
+
+    class VisibleRolesMVT(TinyMVT):
+        def forward(self, pc, **kwargs):
+            out = super().forward(pc, **kwargs)
+            teacher = out['object_slot_target_prior'].clone()
+            teacher[:, :, 1, 1, 1] = 1
+            raw = torch.logit(out['object_slot_prior'])
+            for stage in (out, out['mvt2']):
+                stage.update(object_slot_target_prior=teacher, object_role_visible_support=teacher.bool())
+            out['object_slot_mask_logits'] = raw
+            out['mvt2'].update(object_slot_masks_refined=True,
+                               object_refine_mask_logits=raw * 1.2,
+                               object_refine_pixel_valid=torch.ones_like(teacher[:, :, 0]).bool())
+            return out
+
+    monkeypatch.setattr(mvt, 'MVT', VisibleRolesMVT)
+    config = load(ROOT / 'finetune/OHT/configs/role_queries.yaml')
+    config['point_count'] = 8
+    config['role_loss'].update(map=0., reference_null=0., refine_map=0.,
+                               diversity=.3, refine_diversity=.7)
+    data = OHTDataset(replay_fixture.replay, 'train', 'role_queries', caches[0] / 'teacher', 8)
+    batch = collate([data[0], data[1]])
+    batch['oracle_reference_object_valid'].fill_(True)
+    batch['oracle_reference_present'].fill_(True)
+    agent = build_agent(config, data.contract, torch.device('cpu'))
+    metrics = agent.update(batch, step_optimizer=False)
+    assert metrics['object_slot_diversity_loss'] > 0
+    assert metrics['object_refine_diversity_loss'] > 0
+    assert metrics['object_slot_diversity_supervised_pixels'] == 12
+    assert metrics['object_refine_diversity_supervised_pixels'] == 12
+    assert metrics['object_slot_diversity_loss_weight'] == .3
+    assert metrics['object_refine_diversity_loss_weight'] == .7
+    expected = (.3 * metrics['object_slot_diversity_loss']
+                + .7 * metrics['object_refine_diversity_loss'])
+    assert metrics['total_loss'] - metrics['action_total_loss'] == pytest.approx(expected, abs=2e-6)
+    assert agent._net_mod.object_slot_predictor1.weight.grad.abs().sum() > 0
+    agent.object_slot_diversity_loss_weight = agent.object_refine_diversity_loss_weight = 0.
+    disabled = agent.update(batch, step_optimizer=False)
+    assert disabled['total_loss'] == pytest.approx(disabled['action_total_loss'], abs=2e-6)
+
+
 @pytest.mark.parametrize("mode", MODES)
 def test_http_action_negotiation_and_physical_payload(replay_fixture, mode):
     options = action_options({"mode": mode})

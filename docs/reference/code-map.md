@@ -102,7 +102,7 @@ resume 签名对 checkpoint 使用 path/size/mtime，对 raw data 使用目录�
 | --- | --- |
 | opt-in shared action routes、同次 text pooling、预测 teacher 隔离 | 旧 YAML 不自动启用；训练仍用 GT waypoint/crop，推理用预测 waypoint/crop |
 | soft T/R posterior、可微几何、Reference NULL loss | 默认仍按 geometry valid 屏蔽 token；opt-in 保留可靠角色；没有 Target NULL head |
-| 默认独立 slots；opt-in 混合 map 监督/本步继承；另有有序 T/R queries | 继承时只有 coarse 学习角色，refine 提示不另算辅助 loss；role-query 没有 Hungarian/objectness/diversity，不是全实例发现 |
+| 默认独立 slots；opt-in 混合 map 监督/本步继承；另有有序 T/R queries | 纯继承提示不另算辅助 loss；启用 refine mask head 后有局部 map/分离 loss。role-query 没有 Hungarian/objectness/无序 slot cosine，但有可见表面 T/R 分离监督，不是全实例发现 |
 | kind 只读派生 presence、全量语义校验 | role YAML 是全文件 hash；resume 不迁移旧 replay；mask-only/局部身份证书不认证整场景 XYZ |
 | RLBench 稀疏 reward 统计、完成数校验、episode/video 同编号 | 配对 CI 只接收 `100/0` journals；历史表格不能当当前 O2 验收结果 |
 

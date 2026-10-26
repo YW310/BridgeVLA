@@ -73,7 +73,9 @@ rvt:
   object_slot_mixed_role_loss_weight: 0.0
   object_refine_mask_loss_weight: 1.0
   object_slot_null_loss_weight: 0.25
-  object_slot_diversity_loss_weight: 0.0
+  # Visibility-checked T/R separation; original unordered-slot cosine loss is not used here.
+  object_slot_diversity_loss_weight: 0.01
+  object_refine_diversity_loss_weight: 0.01
   oracle_prior_sigma: 2.0
   oracle_prior_active_role: auto
   oracle_prior_strict: False

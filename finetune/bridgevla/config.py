@@ -126,6 +126,7 @@ _C.rvt.object_prediction_confidence_threshold = 0.25
 _C.rvt.object_slot_mask_loss_weight = 1.0
 _C.rvt.object_slot_mixed_role_loss_weight = 1.0
 _C.rvt.object_refine_mask_loss_weight = 1.0
+_C.rvt.object_refine_diversity_loss_weight = 0.0
 _C.rvt.object_slot_null_loss_weight = 0.0
 _C.rvt.object_slot_diversity_loss_weight = 0.01
 _C.rvt.oracle_prior_sigma = 2.0

@@ -192,12 +192,13 @@ q_T / q_R + instruction + 当前状态
 
 固定的是 T/R **角色顺序**，不是物体 ID。每个 query 直接输出对应 mask/token；Reference 单独预测 NULL posterior。
 参考角色图为 `M_R=(1-p_{NULL})\,\sigma(L_R)`；Reference token 在 anchor 的条件分支应用非 NULL mass，二者属于不同空间/语义路径。
-它移除无序匹配、role 分类、slot objectness/diversity，不引入第三次 VLM 前向；仍保留完整场景特征。
+它移除无序匹配、role 分类、slot objectness 和无序 slot cosine diversity，增加针对 T/R 可见表面的分离监督，不引入第三次 VLM 前向；仍保留完整场景特征。
 输出 `confidence` 仅为角色图峰值支持分数，不是校准的对象身份、存在或可见性概率。两个 queries 仍可能混淆同类实例，不能称为全实例发现。
 
-损失为 `L_action + λ_map(L_T + L_R) + λ_null L_NULL`；`λ_map` 复用 `rvt.object_slot_mask_loss_weight`，本模式不叠加 `supervise_mixed_role_maps`：
+损失为 `L_action + λ_map(L_T + L_R) + λ_null L_NULL + λ_sep L_sep`；启用 refine mask head 时再加入 `λ_refine L_refine + λ_refine_sep L_refine_sep`。`λ_map` 复用 `rvt.object_slot_mask_loss_weight`，本模式不叠加 `supervise_mixed_role_maps`：
 
 - maps 使用 BCE/Dice 和有效 GT role maps；NULL 只用可靠 absence 标签。
+- 分离项在 GT 投影与当前 rendered XYZ 一致的表面点上，惩罚另一角色的响应；跳过重叠 footprint、遮挡、crop 外、unknown/NULL。分别由 `rvt.object_slot_diversity_loss_weight` / `rvt.object_refine_diversity_loss_weight` 控制，当前 role-query/refine 配置为 0.01。可见性只是采样几何近似；角色允许共享同一对象不同区域时需关闭分离项或明确互斥标注。日志同时报告参与监督的像素数，详见[配置与边界](../guides/object-conditioning.md#tr-分离监督与日志)。
 - Reference token 由角色 query 产生；NULL mass 在 anchor 的语义条件分支只应用一次。
 - 没有可靠 Target absence 标签时不新增 Target NULL head；终止占位不参与角色 loss。
 - 复用 text pooling、soft geometry 与共享动作路由，保留 action 到 queries/maps/anchor 的梯度。
@@ -235,7 +236,7 @@ anchor 分开读取全局角色条件与局部空间支持；同时开启 token 
 首版继承 tokens/NULL/可信几何，并重投影 coarse 预测点提示。逐点/视角要求当前 rendered XYZ 对应，
 容差为 unit-cube 三个像素 pitch；背景、越界或被其他表面覆盖不作为本角色支持。量化容差不保证身份正确。
 继承或 direct role-query 模式的 XYZ 使用干净的实际 crop 坐标，不受 `norm_corr` 或 RGB augmentation 污染；即使关闭继承做 direct-query 消融也保留此坐标契约。VLM RGB 路径不变。
-`internal_slots_refine` 以两个固定 T/R queries 为 coarse 条件，关闭无序匹配、额外 mixed-map 与 diversity 项，再增加 `RoleConditionedRefineMaskHead`：
+`internal_slots_refine` 以两个固定 T/R queries 为 coarse 条件，关闭无序匹配和额外 mixed-map，保留可见表面 T/R 分离项，再增加 `RoleConditionedRefineMaskHead`：
 旧静态路径为 `q_r = W_q t_r^c + e_r`，`M_r^f = sigmoid(q_r^T K(D^f)/sqrt(d))`。
 `D^f` 融合当前 refine VLM 特征和 RGB/XYZ 的半/四分辨率 CNN 细节；不额外运行 VLM/SAM。
 当前 refine YAML 同时开启 `refine_local_query`：

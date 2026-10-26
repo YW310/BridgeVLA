@@ -702,7 +702,11 @@ epoch 配置还允许变更 `epochs`、`max_optimizer_steps` 和 `checkpoint_eve
 
 ## 5. 内部 predicted assistance：首选路线
 
-[role_queries.yaml](configs/role_queries.yaml) 复用现有两角色预测器：由当前渲染特征与任务上下文预测 Target/Reference，在 coarse/refine 间继承几何与角色 token。教师只监督角色图和 Reference NULL，推理时不输入 GT 对象。
+[role_queries.yaml](configs/role_queries.yaml) 复用现有两角色预测器：由当前渲染特征与任务上下文预测 Target/Reference，在 coarse/refine 间继承几何与角色 token。教师监督角色图、Reference NULL 及可见表面上的 T/R 分离，推理时不输入 GT 对象。
+
+`role_loss.diversity: 0.01` 控制 coarse 分离项，`role_loss.refine_diversity: 0.01` 控制启用 `object.refine_role_masks: true` 后的局部分离项（该 head 默认关闭）。在可靠 Reference 表面抑制 Target 响应，反向同理；仅监督当前渲染可见、几何一致且角色 footprint 不重叠的点，不把 NULL、遮挡或未知区域当负例。TensorBoard 中分别查看 `object_slot_diversity_loss` / `object_refine_diversity_loss` 和对应的 `*_diversity_supervised_pixels`；像素数为 0 时 loss 为 0 属正常跳过。角色允许共享同一对象不同区域时应关闭分离项或明确互斥标注，具体边界见[分离监督说明](../../docs/guides/object-conditioning.md#tr-分离监督与日志)。
+
+已有有效 replay/teacher cache 无需重新生成；使用新配置在新目录训练，既有 checkpoint 的预测不会因新增 loss 自动改变。这里仍是单关键点 `role_queries` 路径，V4 chunk 训练暂不接收 role cache。
 
 每个 replay sample 的教师需要显式标注。annotations.jsonl 的一行示例：
 

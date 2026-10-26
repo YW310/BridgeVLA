@@ -46,6 +46,7 @@ from bridgevla.models.oracle_prior import (
 )
 from bridgevla.models.optimizer_utils import parameter_learning_rate
 from bridgevla.models.refine_role_masks import refine_role_mask_losses
+from bridgevla.models.role_separation import role_separation_loss
 from bridgevla.models.object_conditioning import (
     active_semantic_target_mask,
     hungarian_role_slot_losses,
@@ -489,6 +490,7 @@ class RVTAgent:
         object_slot_diversity_loss_weight: float = 0.01,
         object_slot_mixed_role_loss_weight: float = 1.0,
         object_refine_mask_loss_weight: float = 1.0,
+        object_refine_diversity_loss_weight: float = 0.0,
         log_dir="",
         collision_loss_weight: float = 1.0,
     ):
@@ -552,13 +554,15 @@ class RVTAgent:
             object_slot_diversity_loss_weight,
             object_slot_mixed_role_loss_weight,
             object_refine_mask_loss_weight,
+            object_refine_diversity_loss_weight,
         )
-        if any(weight < 0 for weight in slot_loss_weights):
-            raise ValueError('object slot loss weights must be non-negative')
+        if any(not math.isfinite(weight) or weight < 0 for weight in slot_loss_weights):
+            raise ValueError('object slot loss weights must be finite and non-negative')
         self.object_slot_mask_loss_weight = float(object_slot_mask_loss_weight)
         if not math.isfinite(object_refine_mask_loss_weight):
             raise ValueError('object_refine_mask_loss_weight must be finite')
         self.object_refine_mask_loss_weight = float(object_refine_mask_loss_weight)
+        self.object_refine_diversity_loss_weight = float(object_refine_diversity_loss_weight)
         self.object_slot_null_loss_weight = float(object_slot_null_loss_weight)
         self.object_slot_diversity_loss_weight = float(
             object_slot_diversity_loss_weight
@@ -920,7 +924,7 @@ class RVTAgent:
         sums = {
             'mask': 0.0, 'mask_bce': 0.0, 'mask_dice': 0.0,
             'role': 0.0, 'objectness': 0.0,
-            'presence': 0.0, 'diversity': 0.0,
+            'presence': 0.0, 'diversity': 0.0, 'diversity_pixels': 0.0,
         }
         supervise_mixed = bool(getattr(
             self._net_mod, 'object_conditioning_supervise_mixed_role_maps', False))
@@ -949,12 +953,20 @@ class RVTAgent:
                     for name in ('mask', 'bce', 'dice'):
                         key = 'refine_' + name
                         sums[key] = sums.get(key, 0.) + local[name]
+                    separation = role_separation_loss(
+                        stage_output['object_refine_mask_logits'].float().sigmoid(),
+                        stage_output['object_slot_target_prior'], teacher_valid,
+                        stage_output.get('object_role_visible_support'), role_present, role_present_known,
+                        pixel_valid=stage_output['object_refine_pixel_valid'],
+                        logits=stage_output['object_refine_mask_logits'])
+                    sums['refine_diversity'] = sums.get('refine_diversity', 0.) + separation['loss']
+                    sums['refine_diversity_pixels'] = sums.get('refine_diversity_pixels', 0.) + separation['supervised_pixels']
                     refine_stage_count += 1
                 continue
             if stage_output.get('object_slot_predictor_type') == 'role_queries':
                 # Direct T/R queries already emit the policy maps. They have
-                # no unordered slots, so matching/role/objectness/diversity
-                # losses would fabricate heads and labels that do not exist.
+                # no unordered slots, so matching/role/objectness heads are
+                # absent. T/R separation uses visibility-checked GT anchors.
                 if supervise_mixed:
                     raise ValueError(
                         'Direct-role queries use the intrinsic map loss; '
@@ -984,8 +996,16 @@ class RVTAgent:
                 sums['mask_bce'] = sums['mask_bce'] + direct['bce']
                 sums['mask_dice'] = sums['mask_dice'] + direct['dice']
                 sums['presence'] = sums['presence'] + null_loss
-                for name in ('role', 'objectness', 'diversity'):
+                for name in ('role', 'objectness'):
                     sums[name] = sums[name] + zero
+                raw_logits = stage_output.get('object_slot_mask_logits')
+                probabilities = predicted if raw_logits is None else raw_logits.float().sigmoid()
+                separation = role_separation_loss(
+                    probabilities, stage_output['object_slot_target_prior'], teacher_valid,
+                    stage_output.get('object_role_visible_support'), role_present, role_present_known,
+                    logits=raw_logits)
+                sums['diversity'] = sums['diversity'] + separation['loss']
+                sums['diversity_pixels'] = sums['diversity_pixels'] + separation['supervised_pixels']
                 raw_stage_count += 1
                 continue
             teacher_valid = oracle_valid
@@ -1636,6 +1656,8 @@ class RVTAgent:
                 if 'refine_mask' in object_slot_losses:
                     total_loss = (total_loss + self.object_refine_mask_loss_weight
                                   * object_slot_losses['refine_mask'])
+                    total_loss = (total_loss + self.object_refine_diversity_loss_weight
+                                  * object_slot_losses['refine_diversity'])
             base_total_loss = None
             if base_trans_loss is not None:
                 base_total_loss = choose_oracle_translation_loss(
@@ -1706,6 +1728,8 @@ class RVTAgent:
                     'object_slot_diversity_loss': (
                         object_slot_losses['diversity'].item()
                     ),
+                    'object_slot_diversity_supervised_pixels': object_slot_losses['diversity_pixels'].item(),
+                    'object_slot_diversity_loss_weight': self.object_slot_diversity_loss_weight,
                 })
                 if 'mixed_role' in object_slot_losses:
                     loss_log.update({
@@ -1718,6 +1742,9 @@ class RVTAgent:
                         'object_refine_mask_loss': object_slot_losses['refine_mask'].item(),
                         'object_refine_mask_bce_loss': object_slot_losses['refine_bce'].item(),
                         'object_refine_mask_dice_loss': object_slot_losses['refine_dice'].item(),
+                        'object_refine_diversity_loss': object_slot_losses['refine_diversity'].item(),
+                        'object_refine_diversity_supervised_pixels': object_slot_losses['refine_diversity_pixels'].item(),
+                        'object_refine_diversity_loss_weight': self.object_refine_diversity_loss_weight,
                     })
             if base_trans_loss is not None:
                 loss_log['trans_loss_base'] = base_trans_loss.item()
