@@ -40,7 +40,7 @@ def save_replay_viewer(path, frames, contract_sha256):
 
 
 def export_replay_viewer(replay, output, *, every=1, max_points=40_000, source=None,
-                         object_cloud_config=None, object_root=None, object_manifest=None):
+                         object_cloud_config=None, object_root=None, object_manifest=None, role_annotations=None):
     """Export a complete replay to grouped PNG/HTML previews without cache edits."""
     import numpy as np
     from .common import inside, read_jsonl
@@ -70,8 +70,13 @@ def export_replay_viewer(replay, output, *, every=1, max_points=40_000, source=N
     options = object_cloud_config if object_cloud_config is not None else contract.get("diagnostic_object_clouds")
     selector = None if options is None else BuildObjectCloudWriter(output,options)
     selected_source = source or (selector.options["source"] if selector else "depth")
+    samples = read_jsonl(replay/"samples.jsonl")
+    roles = None
+    if role_annotations is not None:
+        from .role_visualization import SegmentationRoleAnnotations
+        roles = SegmentationRoleAnnotations(role_annotations, contract, [row['id'] for row in samples])
     frames, counts = [], {}
-    for sample in read_jsonl(replay/"samples.jsonl"):
+    for sample in samples:
         episode = sample["id"].rsplit("/",1)[0]
         count = counts.get(episode,0);counts[episode]=count+1
         if count % every:
@@ -103,12 +108,19 @@ def export_replay_viewer(replay, output, *, every=1, max_points=40_000, source=N
         sample = dict(sample,diagnostic_contract_sha256=contract["sha256"])
         boxes = None if selector is None else dict(selector.specification(sample),source=selected_source,
                                                    contract_sha256=contract["sha256"])
+        role_options = {} if roles is None else roles.read(sample, observation, config)
         path = inside(output,sample["id"]+"/point-cloud-roi.html")
         image = save_preview(path.parent/"preview.png",observation,config,sample,current_tcp=sample.get("current_tcp"),
-                             object_boxes=boxes, **chunk_options)
+                             object_boxes=boxes, **chunk_options, **role_options)
         save_point_cloud_html(path,observation,config,sample,max_points,source=selected_source,object_boxes=boxes,
-                              preview_image=image)
+                              preview_image=image, role_masks=role_options.get('role_masks'))
         frames.append(dict(sample_id=sample["id"],frame=sample["frame"],target_frame=sample["target_frame"],
                            timestamp=sample.get("timestamp"),html=path,image=image))
     save_replay_viewer(output/"index.html",frames,contract["sha256"])
+    if roles is not None:
+        from .common import write_json
+        write_json(output / 'role_preview.json', dict(replay_contract_sha256=contract['sha256'],
+            annotation_sha256=roles.checksum, mask_sha256=roles.hashes,
+            source_mask_hashes_available='mask_sha256' in roles.provenance,
+            colors=dict(target='green', reference='blue', overlap='yellow'), diagnostic_only=True))
     return len(frames)

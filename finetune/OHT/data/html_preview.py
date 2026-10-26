@@ -9,7 +9,7 @@ import numpy as np
 from .geometry import array, check_bounds
 from .cloud_source import camera_cloud
 from .point_filter import point_filter_options
-from .visualization import CAMERA_COLORS, OBJECT_COLORS, OBJECT_OVERLAP, current_position_label
+from .visualization import CAMERA_COLORS, OBJECT_COLORS, OBJECT_OVERLAP, current_position_label, role_overlay
 from .object_preview import object_payload
 from .object_cloud import box_mask, resolve_object_boxes
 
@@ -24,7 +24,8 @@ def html_point_limit(value):
     return int(value)
 
 
-def point_cloud_payload(observation, config, sample, max_points=40_000, *, source="xyz", object_boxes=None):
+def point_cloud_payload(observation, config, sample, max_points=40_000, *, source="xyz", object_boxes=None,
+                        role_masks=None):
     """Include finite cached points BEFORE any additional ROI/workspace masking.
 
     XYZ mode cannot recover cached NaNs. Depth mode can reconstruct ROI-masked
@@ -48,6 +49,9 @@ def point_cloud_payload(observation, config, sample, max_points=40_000, *, sourc
         raise ValueError("HTML preview requires 1-255 cameras")
     for index, camera in enumerate(config["cameras"]):
         xyz, rgb = camera_cloud(observation, config, camera, source)
+        if role_masks is not None:
+            masks = {role: values[camera] for role, values in role_masks.items()}
+            rgb = role_overlay(observation[f'{camera}_rgb'].transpose(1, 2, 0), masks).reshape(-1, 3)
         finite = np.isfinite(xyz).all(axis=1)
         chunks.append(xyz[finite])
         color_chunks.append(rgb[finite])
@@ -91,7 +95,10 @@ def point_cloud_payload(observation, config, sample, max_points=40_000, *, sourc
 
     return dict(sample_id=str(sample["id"]), frame=None if sample.get("frame") is None else int(sample["frame"]),
                 target_frame=None if sample.get("target_frame") is None else int(sample["target_frame"]),
-                diagnostic_note=sample.get("diagnostic_note", ""), scene_bounds=bounds.tolist(),
+                diagnostic_note=sample.get("diagnostic_note", "") +
+                    (' GT roles: green=target, blue=reference, yellow=overlap; diagnostic only.'
+                     if role_masks is not None else ''), scene_bounds=bounds.tolist(),
+                role_overlay=role_masks is not None,
                 objects=object_payload(sample), object_source=sample.get("diagnostic_objects"),
                 observation_sha256=sample.get("observation_sha256"),
                 contract_sha256=sample.get("diagnostic_contract_sha256"),
@@ -112,9 +119,10 @@ def point_cloud_payload(observation, config, sample, max_points=40_000, *, sourc
 
 
 def save_point_cloud_html(path, observation, config, sample, max_points=40_000, *, source="xyz", object_boxes=None,
-                          preview_image=None):
+                          preview_image=None, role_masks=None):
     """Write offline HTML, optionally linking its local preview PNG; never overwrite."""
-    payload = point_cloud_payload(observation, config, sample, max_points, source=source, object_boxes=object_boxes)
+    payload = point_cloud_payload(observation, config, sample, max_points, source=source,
+                                  object_boxes=object_boxes, role_masks=role_masks)
     if preview_image is not None:
         image_path = Path(preview_image).resolve()
         if image_path.suffix.lower() != ".png" or not image_path.is_file():

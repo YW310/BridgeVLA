@@ -1,16 +1,9 @@
 # Confirmed semantic IDs: 5=shaft_left, 6=shaft_right.
-# Task-role assignments are configured separately from semantic class identity.
+# Confirmed disassemble_left roles remain fixed across all instruction phases.
 schema: oht_seg_roles_v1
 tasks:
   disassemble_left:
     default:
       target: [1]  # wheel_left; known present even when occluded
-      reference: unknown
-    # Optional explicit CURRENT-frame instruction_id overrides, after verification:
-    # phases:
-    #   0: {target: [1], reference: [5]}  # wheel_left / shaft_left
-    #   1: {target: [1], reference: [5]}
-    #   2: {target: [1], reference: [5]}
-    #   3: {target: [1], reference: [4]}  # wheel_left / plate
-    #   4: {target: [1], reference: [4]}
+      reference: [4]  # plate; known present even when occluded
     # [] means verified semantic NULL; unknown means unlabelled, not absent.

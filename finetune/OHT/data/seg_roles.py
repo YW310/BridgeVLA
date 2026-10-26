@@ -62,7 +62,7 @@ def export_roles(root, manifest, replay, mapping, output):
         groups.setdefault((row['task'], row['episode_index'], row['data_profile']), []).append(row)
     if output.exists():
         raise FileExistsError(f'Refusing to overwrite {output}')
-    hashes, annotations = {}, []
+    hashes, mask_hashes, annotations = {}, {}, []
     output.mkdir(parents=True)
     # Publish annotations only after all selected streams have passed validation.
     for identity, samples in groups.items():
@@ -123,6 +123,7 @@ def export_roles(root, manifest, replay, mapping, output):
                         path = inside(output, relative)
                         path.parent.mkdir(parents=True, exist_ok=True)
                         np.savez_compressed(path, **arrays)
+                        mask_hashes[relative] = file_digest(path)
                         annotation[role]['mask_path'] = relative
                 annotations.append(annotation)
             videos.validate_lengths()
@@ -132,6 +133,6 @@ def export_roles(root, manifest, replay, mapping, output):
     path.write_text(''.join(json.dumps(row) + '\n' for row in annotations), encoding='utf-8')
     write_json(output / 'provenance.json', dict(schema='oht_seg_roles_v1',
         replay_contract_sha256=contract['sha256'], audit_manifest_sha256=checksum,
-        mapping_sha256=file_digest(mapping), mapping=rules, video_sha256=hashes,
+        mapping_sha256=file_digest(mapping), mapping=rules, video_sha256=hashes, mask_sha256=mask_hashes,
         annotation_sha256=file_digest(path), alignment='frame_index', labels_only=True))
     return dict(samples=len(annotations), annotations=str(path))

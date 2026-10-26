@@ -303,6 +303,9 @@ def save_preview(path, observation, config, sample, current_tcp=None, role_specs
     for camera in cameras:
         cloud = observation[f"{camera}_point_cloud"].reshape(3, -1).T
         colors = observation[f"{camera}_rgb"].reshape(3, -1).T
+        if role_masks and not color_by_camera:
+            masks = {role: values[camera] for role, values in role_masks.items()}
+            colors = role_overlay(observation[f'{camera}_rgb'].transpose(1, 2, 0), masks).reshape(-1, 3)
         if color_by_camera:
             colors = np.broadcast_to(CAMERA_COLORS[camera], colors.shape).astype(np.uint8)
         valid = point_cloud_mask(cloud, filter_options) & (cloud >= bounds[:3]).all(axis=1)
@@ -341,6 +344,8 @@ def save_preview(path, observation, config, sample, current_tcp=None, role_specs
               f"Cyan=current {current_label}; magenta=future action; green=Target; blue=Reference; yellow=overlap")
     if chunk is not None:
         legend = f"Cyan=current {current_label}; magenta=next key goal; orange=GT future chunk (not collision/visibility checked)"
+        if role_specs is not None:
+            legend = f"Cyan={current_label}; magenta=key; orange=GT chunk; green=Target; blue=Reference; yellow=overlap"
     draw.text((8, 60), legend, fill="white")
     if role_specs is not None:
         status = " | ".join(f"{role}: {spec['source']} present={spec['present']} known={spec['known']} geometry={bool(role_valid[i])}"

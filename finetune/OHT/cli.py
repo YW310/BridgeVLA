@@ -98,6 +98,7 @@ def main(argv=None):
     p.add_argument("--object-root", help="Original raw root for an old replay without object poses")
     p.add_argument("--object-manifest", help="Original bound audit; requires --object-root")
     p = sub.add_parser("export-viewer", help="Export grouped PNG/HTML previews and an offline frame viewer from a complete replay")
+    p.add_argument('--role-annotations', help='Segmentation annotations.jsonl bound to this replay; overlay GT roles')
     p.add_argument("--replay", required=True)
     p.add_argument("--output", required=True, help="New HTML directory; no replay edits")
     p.add_argument("--every", type=int, default=1, help="Every N emitted samples per episode, including the first")
@@ -230,7 +231,8 @@ def main(argv=None):
         from .data.replay_viewer import export_replay_viewer
         count = export_replay_viewer(args.replay,args.output,every=args.every,max_points=args.max_points,source=args.source,
                                     object_cloud_config=read_config(args.object_cloud_config) if args.object_cloud_config else None,
-                                    object_root=args.object_root,object_manifest=args.object_manifest)
+                                    object_root=args.object_root,object_manifest=args.object_manifest,
+                                    role_annotations=args.role_annotations)
         print(f"Saved {count} HTML frames; open {Path(args.output)/'index.html'}")
     elif args.command == "teacher":
         result = build_teacher(args.replay, args.annotations, args.output, args.point_count,

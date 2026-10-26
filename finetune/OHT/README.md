@@ -202,9 +202,9 @@ bash finetune/OHT/prepare_seg_data.sh \
   --chunk-horizon 16 --action-frame-stride 1
 ```
 
-默认脚本依次执行 audit → V4 replay → 完整校验 → seg-role annotations，任一步失败立即停止。V4 targets 保存下一关键目标、未来实测 TCP/夹爪 `action_chunk[K,8]`、关节/夹爪 `joint_chunk[K,7]` 及有效 mask、帧号和时间戳；不使用原始 action 命令或关键点间插值。默认每个观测监督未来 16 个连续原始帧，`--sample-stride 10` 只控制输入观测抽样，不会将 action stride 改成 10。原始 60 fps 数据的动作间隔约为 1/60 s，实际间隔由原始时间戳推导并校验。原始数据不覆盖，`--output` 必须为新目录；目录内保存 `dataset.yaml`、`seg_roles.yaml` 配置快照和 `pipeline.json` 执行状态，各工具直接打印进度。只包含 disassemble_left 的数据无需补其他任务。
+默认脚本依次执行 audit → V4 replay → 完整校验 → seg-role annotations → role-preview（预览开启时），任一步失败立即停止。V4 targets 保存下一关键目标、未来实测 TCP/夹爪 `action_chunk[K,8]`、关节/夹爪 `joint_chunk[K,7]` 及有效 mask、帧号和时间戳；不使用原始 action 命令或关键点间插值。默认每个观测监督未来 16 个连续原始帧，`--sample-stride 10` 只控制输入观测抽样，不会将 action stride 改成 10。原始 60 fps 数据的动作间隔约为 1/60 s，实际间隔由原始时间戳推导并校验。原始数据不覆盖，`--output` 必须为新目录；目录内保存 `dataset.yaml`、`seg_roles.yaml` 配置快照和 `pipeline.json` 执行状态，各工具直接打印进度。只包含 disassemble_left 的数据无需补其他任务。
 
-默认 `--sample-stride 10 --visualize-every 100 --workers 4 --point-count 512`。可用 `--config /path/to/dataset.yaml --mapping /path/to/seg_roles.yaml` 指定已确认的标定/角色配置，`--dry-run` 查看命令且不创建文件。默认 reference 仍是 unknown；要生成轴/盘的 reference 标注，先在映射配置启用确认后的阶段规则。也可直接执行 `python tools/prepare_oht_seg_data.py`，参数相同；Bash 入口可通过 `PYTHON_BIN` 指定解释器。
+默认 `--sample-stride 10 --visualize-every 100 --workers 4 --point-count 512`。可用 `--config /path/to/dataset.yaml --mapping /path/to/seg_roles.yaml` 指定已确认的标定/角色配置，`--dry-run` 查看命令且不创建文件。disassemble_left 的角色在全部阶段固定：target 为左轮 ID 1，reference 为放置盘 ID 4。也可直接执行 `python tools/prepare_oht_seg_data.py`，参数相同；Bash 入口可通过 `PYTHON_BIN` 指定解释器。
 
 正常运行会先打印原始数据根目录、解释器、输出目录和 replay 路径，并在启动 audit 前写出 `pipeline.json`。若当前输出目录没有任何 JSON，检查终端最早的启动/路径错误及 `--dry-run`；尚未生成的 replay 不能用于训练或 mask 导出。`--root "$ROOT"` 中的变量必须已设置，空字符串会立即报错。配置快照失败也会记录在 `pipeline.json` 的 `failed_stage=setup` 中。
 
@@ -216,7 +216,7 @@ bash finetune/OHT/prepare_seg_data.sh \
   --replay-version 3
 ```
 
-V3 在 mask 导出后继续生成 teacher。V4 自动执行到角色 mask 导出，**不运行不兼容的 teacher 步骤**，也不表示 chunk 训练已接入角色监督。V4 预览在 `replay-source-v4/preview/index.html`，有效稠密轨迹叠加在 sensor RGB 和点云投影图上。以下为各步骤的独立命令。
+V3 在 mask 导出后继续生成 teacher。V4 在导出 mask 后，按 `--visualize-every` 生成 `role-preview/index.html`：target 左轮为绿色、reference 放置盘为蓝色、重叠为黄色，叠加在 sensor RGB、全局/局部点云投影及交互式 3D 点云上；PNG 保留橙色稠密轨迹。`replay-source-v4/preview/index.html` 是构建时生成的原始预览，不含后续角色 mask。`--visualize-every 0` 同时关闭两个预览。V4 **不运行不兼容的 teacher 步骤**，也不表示 chunk 训练已接入角色监督。以下为各步骤的独立命令。
 
 先在 BridgeVLA 根目录构建新数据缓存（以下为单关键点版本；chunk 数据使用上方 V4 构建参数和新输出目录）：
 
@@ -242,7 +242,28 @@ python tools/build_oht_role_teacher.py \
 
 `dataset.yaml` 的深度、相机和夹爪参数仍需匹配采集定义。该根目录只有一个任务，audit 报告其余任务缺失属预期；坏 episode 仍需检查。
 
-类别 ID：`0=robot, 1=wheel_left, 2=wheel_right, 3=wheel_stack, 4=plate, 5=shaft_left, 6=shaft_right, 255=背景/未标注`。其中原采集名 `shaft_1`（ID 5）已确认是左轴，`shaft_2`（ID 6）是右轴。这是语义分割，不能区分同类别的多个实例。默认映射仅指定 `target: [1]`，`reference: unknown`；角色阶段规则确认后再启用配置中的示例。可按**当前帧** `instruction_id` 配置 `phases`，例如拆轮阶段使用左轴 `[5]`、放盘阶段使用 `[4]`，不会使用未来关键帧的阶段。`[]` 仅用于已确认语义为空的角色，`unknown` 表示未标注，二者不同。
+类别 ID：`0=robot, 1=wheel_left, 2=wheel_right, 3=wheel_stack, 4=plate, 5=shaft_left, 6=shaft_right, 255=背景/未标注`。其中原采集名 `shaft_1`（ID 5）已确认是左轴，`shaft_2`（ID 6）是右轴。这是语义分割，不能区分同类别的多个实例。disassemble_left 使用固定映射 `target: [1]`（左轮）、`reference: [4]`（放置盘），所有阶段保持一致。通用导出器仍允许其他任务按**当前帧** `instruction_id` 配置 `phases`，不会使用未来关键帧的阶段。`[]` 仅用于已确认语义为空的角色，`unknown` 表示未标注，二者不同。
+
+旧标注若为 `reference: unknown`，已有 replay 和稠密动作标签可直接复用；使用更新后的 `--mapping finetune/OHT/configs/seg_roles.yaml` 将分割标注重新导出到新目录。原运行目录的 `seg_roles.yaml` 是历史快照，不会随仓库配置更新。单关键点版本依赖旧标注的 teacher 也需重新生成。
+
+已有 V4 数据只刷新角色标注和网页，无需重建 replay（输出目录均需全新）：
+
+```bash
+ROOT=/media/34.92/common-data-32t/data/robot_data/oht_curobo_pd_v423-seg
+OUT="$ROOT/bridgevla-seg-v4-run01"
+python tools/export_oht_seg_roles.py \
+  --root "$ROOT" --manifest "$OUT/audit.json" \
+  --replay "$OUT/replay-source-v4" \
+  --mapping finetune/OHT/configs/seg_roles.yaml \
+  --output "$OUT/seg-role-annotations-wheel-plate"
+
+python tools/export_oht_replay_viewer.py \
+  --replay "$OUT/replay-source-v4" \
+  --role-annotations "$OUT/seg-role-annotations-wheel-plate/annotations.jsonl" \
+  --output "$OUT/role-preview-wheel-plate" --every 100
+```
+
+打开 `$OUT/role-preview-wheel-plate/index.html`。已按正确映射生成 mask 时可直接执行第二条命令，指向已有的 annotations.jsonl。预览验证标注与 replay 的契约和 annotation 哈希；新版标注还记录并校验 mask 哈希。旧标注没有 mask 哈希时仍可诊断预览，`role_preview.json` 明确记录源哈希是否齐备及本次读取的 mask 哈希。任何预览都不修改 observation、稠密动作标签或训练契约。
 
 导出逐帧读取 `observation.seg.*` 引用的实际路径（包括非标准 `seg/`），按原始帧序号对齐，校验流长度、RGB/seg 引用时间戳和原始分辨率。只接受原生灰度 `uint8` 精确 ID，不经 RGB 转换或插值；与 RGB-D 一样做整数步长缩采样。小目标可能因缩采样消失，可提高 replay 的 `image_size` 后重建；不能用插值恢复标签。角色存在性来自映射，完全遮挡时保留 present/known，空 mask 对应无有效 3D geometry。
 
@@ -689,7 +710,7 @@ epoch 配置还允许变更 `epochs`、`max_optimizer_steps` 和 `checkpoint_eve
 {"id":"assemble_left/000000/000000","target":{"present":true,"known":true,"source":"visible_surface","mask_path":"masks/assemble_left-000000-000000.npz"},"reference":{"present":false,"known":true,"source":"none"}}
 ~~~
 
-Reference=NULL **仅示范格式**，实际任务必须逐阶段定义正确角色。NPZ 以相机名为 key，值是与缓存同尺寸的 bool mask；取当前可见表面 world XYZ 后重采样。原尺寸 mask 应按缓存相同的整数步长采样。
+Reference=NULL **仅示范格式**，实际任务必须按明确的角色定义填写。NPZ 以相机名为 key，值是与缓存同尺寸的 bool mask；取当前可见表面 world XYZ 后重采样。原尺寸 mask 应按缓存相同的整数步长采样。
 
 可用 site_region 标注接收位置：提供 world_from_site 4×4 和 size 三维正长度，生成带类型声明的 site 区域点。这是特权训练标注，不能把物体中心伪装成表面，也不能当作在线预测结果。
 

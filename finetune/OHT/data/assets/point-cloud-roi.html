@@ -87,6 +87,7 @@
   const root = document.getElementById("oht-roi");
   const el = id => root.querySelector("#" + id);
   const data = JSON.parse(document.getElementById("oht-cloud-data").textContent);
+  if(data.role_overlay){el("color-mode").querySelector('option[value="rgb"]').textContent="RGB + GT 角色";}
   const currentPositionLabel = data.current_position_label || "TCP";
   el("current-position-label").textContent = currentPositionLabel;
   if(data.preview_image){el("interactive-heading").hidden=false;if(parent===window){el("frame-preview-section").hidden=false;el("frame-preview").src=data.preview_image;}}

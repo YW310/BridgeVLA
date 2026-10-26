@@ -148,7 +148,8 @@ def test_full_pipeline_starts_from_raw_only_without_any_contract(replay_fixture,
     script = Path(__file__).parents[1] / 'tools/prepare_oht_seg_data.py'
     result = subprocess.run([sys.executable, '-u', str(script), '--root', str(root),
         '--config', str(config_path), '--output', str(output), '--replay-version', str(version),
-        '--sample-stride', '2', '--chunk-horizon', '4', '--workers', '1', '--visualize-every', '0'],
+        '--sample-stride', '2', '--chunk-horizon', '4', '--workers', '1',
+        '--visualize-every', '100' if version == 4 else '0'],
         capture_output=True, text=True, encoding='utf-8', timeout=90)
     assert result.returncode == 0, result.stdout + result.stderr
     status = json.loads((output / 'pipeline.json').read_text())
@@ -157,5 +158,54 @@ def test_full_pipeline_starts_from_raw_only_without_any_contract(replay_fixture,
     assert (output / 'audit.json').is_file()
     assert (replay / 'contract.json').is_file() and (replay / 'complete.json').is_file()
     assert (output / 'seg-role-annotations/annotations.jsonl').is_file()
+    for annotation in read_jsonl(output / 'seg-role-annotations/annotations.jsonl'):
+        assert annotation['target']['source'] == annotation['reference']['source'] == 'visible_surface'
+        assert annotation['target']['present'] and annotation['reference']['present']
+        assert annotation['target']['known'] and annotation['reference']['known']
+        with np.load(output / 'seg-role-annotations' / annotation['reference']['mask_path']) as masks:
+            expected = np.zeros((8, 8), bool)
+            if int(annotation['id'].rsplit('/', 1)[1]) != 2:
+                expected[4:, 4:] = True  # Plate ID 4, independent of the instruction phase.
+            np.testing.assert_array_equal(masks['wrist'], expected)
     assert (output / 'role-teacher/manifest.json').is_file() == (version == 3)
     assert not list(root.rglob('contract.json'))
+    # The default V4 pipeline exports role-colored previews after the mask stage.
+    from finetune.OHT.cli import main
+    from finetune.OHT.data.common import file_digest
+    from finetune.OHT.data.visualization import TARGET, REFERENCE
+    from tests.test_oht_html_preview import payload_from_html
+    from tests.test_oht_replay_viewer import viewer_payload
+    from PIL import Image
+    import base64
+    annotations = output / 'seg-role-annotations/annotations.jsonl'
+    inputs = list(replay.rglob('*.npz')) + [replay / 'contract.json', replay / 'complete.json', annotations]
+    hashes = [file_digest(path) for path in inputs]
+    viewer = output / 'role-preview'
+    if version == 3:
+        assert main(['export-viewer', '--replay', str(replay), '--output', str(viewer),
+                     '--every', '100', '--role-annotations', str(annotations)]) == 0
+    assert 'role-preview' in status['completed'] or version == 3
+    entry = viewer_payload(viewer / 'index.html')['frames'][0]
+    first_sample = next(row for row in read_jsonl(replay / 'samples.jsonl') if row['id'] == entry['sample_id'])
+    with np.load(replay / first_sample['observation']) as observation:
+        raw = observation['global_left_rgb'][:, 1, 1]
+    expected = [(.3 * raw + .7 * color).astype(np.uint8) for color in (TARGET, REFERENCE)]
+    with Image.open(viewer / entry['image']) as png:
+        sensor = np.asarray(png.crop((0, 116, 256, 308)))
+        for color in expected:
+            assert np.any(np.all(sensor == color, axis=-1))
+    cloud = payload_from_html(viewer / entry['html'])
+    assert cloud['role_overlay']
+    colors = np.frombuffer(base64.b64decode(cloud['rgb']), np.uint8).reshape(-1, 3)
+    for color in expected:
+        assert np.any(np.all(colors == color, axis=-1))
+    assert [file_digest(path) for path in inputs] == hashes
+    report = json.loads((viewer / 'role_preview.json').read_text())
+    assert report['source_mask_hashes_available'] and report['diagnostic_only']
+    mask = read_jsonl(annotations)[0]['reference']['mask_path']
+    with (annotations.parent / mask).open('ab') as stream:
+        stream.write(b'changed')
+    with pytest.raises(ValueError, match='Role mask changed'):
+        main(['export-viewer', '--replay', str(replay), '--output', str(tmp_path / 'tampered-preview'),
+              '--role-annotations', str(annotations), '--every', '100'])
+    assert not (tmp_path / 'tampered-preview/index.html').exists()

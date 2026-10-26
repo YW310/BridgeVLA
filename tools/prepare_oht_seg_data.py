@@ -56,6 +56,10 @@ def commands(args):
             '--annotations', out / 'seg-role-annotations/annotations.jsonl',
             '--output', out / 'role-teacher', '--point-count', args.point_count,
             '--visualize-every', args.visualize_every)))
+    elif args.visualize_every:
+        stages.append(('role-preview', command('export_oht_replay_viewer.py', '--replay', replay,
+            '--role-annotations', out / 'seg-role-annotations/annotations.jsonl',
+            '--output', out / 'role-preview', '--every', args.visualize_every)))
     return stages
 
 

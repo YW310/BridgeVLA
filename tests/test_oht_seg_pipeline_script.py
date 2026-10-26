@@ -31,7 +31,7 @@ def test_pipeline_stage_order_and_v4_boundary(tmp_path, monkeypatch, version):
     options = ['--replay-version', '3'] if version == 3 else []
     assert pipeline.main(['--root', str(root), '--output', str(output), *options]) == 0
     status = json.loads((output / 'pipeline.json').read_text())
-    expected = ['audit', 'replay', 'validate', 'seg-roles'] + (['teacher'] if version == 3 else [])
+    expected = ['audit', 'replay', 'validate', 'seg-roles'] + (['teacher'] if version == 3 else ['role-preview'])
     assert status['status'] == 'complete' and status['completed'] == expected
     assert len(calls) == len(expected)
     assert calls[0][calls[0].index('--root') + 1] == str(root.resolve())
