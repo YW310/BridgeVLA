@@ -319,6 +319,34 @@ chunk_policy:
 
 chunk 损失为 `position_weight * L_pos + rotation_weight * L_rotation + gripper_weight * L_gripper`。`oht_chunk_v4_8x40.yaml` 将 `position_weight` 设为 5，其他两项为 1，`position_scale` 保持 0.25。未指定 `position_weight` 的旧配置仍按 1 解析；`chunk_position_loss` 记录原始值，`chunk_position_weighted_loss` 记录加权值。权重 5 是待验证的对照设置，需通过物理位置误差和轨迹图判断效果。
 
+**相邻位移监督实验。** [oht_chunk_v4_displacement_8x40.yaml](configs/oht_chunk_v4_displacement_8x40.yaml) 继承上述 pos=5 配置，增加 `displacement_weight: 1.0`、`displacement_scale: 0.01`。总损失另加 `displacement_weight * L_displacement`：第一项比较预测/真实的 `p₁−当前实测 TCP`，后续比较各自的 `pₖ−pₖ₋₁`，使用按 `displacement_scale` 归一化的 SmoothL1。0.01 的单位为米，只控制辅助 loss 的归一化，不改变模型输出尺度或动作执行。它监督真实运动的方向和幅度，不是让轨迹更平滑，也不要求 chunk 终点等于远处关键目标。该设置仍需实验验证。
+
+仅计算有效的当前→第一帧及连续有效帧对，不跨越无效标签；末尾 padding 不参与梯度。默认 `displacement_weight: 0.0` 保留旧训练目标；所有配置默认 `displacement_scale: 0.01`。V4 已有当前 TCP 和连续未来标签，无需重建数据。用上一实验的 chunk checkpoint 初始化可保留 encoder/decoder 权重，但改变监督需新建 run：
+
+~~~bash
+GPUS_PER_NODE=8 bash finetune/OHT/train_8x40.sh \
+  --config finetune/OHT/configs/oht_chunk_v4_displacement_8x40.yaml \
+  --replay "$OUT/replay-source-v4" \
+  --init-checkpoint /path/to/previous-chunk-run/model_last.pth \
+  --log-dir "$OUT/runs" --exp-id oht-seg-v4-pos5-displacement-s0
+~~~
+
+`OUT` 使用本节前面的实际数据生成目录。TensorBoard/JSONL 增加原始 `chunk_displacement_loss`、加权后的 `chunk_displacement_weighted_loss`，以及每个有效位移的平均欧氏误差 `chunk_displacement_error_m`、保持当前位置的对照 `chunk_stationary_displacement_error_m`（均为米/步，不是 m/s）。调用训练入口时，即使辅助权重为 0 也计算这些位移诊断，便于与原 baseline 对比；统计仍为 rank 0 本地 microbatch 均值。判断效果时同时检查绝对位置误差、位移误差和轨迹图，避免只优化局部位移而产生整体位置偏差。
+
+**相对 TCP 关键目标条件实验。** [oht_chunk_v4_relative_goal_8x40.yaml](configs/oht_chunk_v4_relative_goal_8x40.yaml) 独立继承 pos=5 baseline，设置 `chunk_policy.goal_conditioning: relative_tcp`，不默认叠加位移辅助 loss。decoder 的目标 token 使用 `inverse(T_current_tcp) @ T_predicted_key`：平移为 `R_currentᵀ(p_key−p_current) / position_scale`，旋转为 `inverse(q_current) * q_key`（xyzw、单位四元数并统一符号），夹爪仍为预测关键目标的 0/1。只使用当前实测 TCP 和预测关键目标，训练与在线推理共用同一路径。
+
+当前本体状态、预测关键目标的返回值、chunk 输出和训练标签仍为世界坐标绝对 EEF；相对条件不改变旋转输出或客户端执行方式，也不引入历史状态。已有 V4 数据无需重建。旧配置未设置此项时继续使用 `absolute`，旧 checkpoint 的推理行为保持一致。该修改是否改善方向或位置误差需实验验证。
+
+~~~bash
+GPUS_PER_NODE=8 bash finetune/OHT/train_8x40.sh \
+  --config finetune/OHT/configs/oht_chunk_v4_relative_goal_8x40.yaml \
+  --replay "$OUT/replay-source-v4" \
+  --init-checkpoint /path/to/previous-chunk-run/model_last.pth \
+  --log-dir "$OUT/runs" --exp-id oht-seg-v4-pos5-relative-goal-s0
+~~~
+
+相对/绝对条件切换必须用 `--init-checkpoint` 新建 run：保留 encoder 和 chunk decoder 的其他权重，仅重新初始化 `decoder.goal` 投影层，optimizer 从新开始；不能 `--resume` 接续旧语义训练。联合训练也可省略初始化 checkpoint 从头训练。服务端直接读取新 checkpoint 内的配置，无需增加客户端参数。若要组合位移实验，可在相对目标配置中显式增加 `displacement_weight: 1.0`、`displacement_scale: 0.01` 后新建独立 run；单项对照应保持两次训练的 loss 权重一致。
+
 可在派生配置中将 `stage` 改为 `frozen_key` 做对照。从 frozen_key 切换到 joint、改变 loss 权重或冻结策略时，使用 `--init-checkpoint` 新建 run，不复用旧优化器；仅阶段/loss 权重变化时保留已训练的 encoder 和 decoder 权重。相同配置才能 `--resume`。两种阶段共用 V4 数据，无需因此重新构建。
 
 新配置默认 K=16、建议执行 H=4。可将模型 K 减小到 cache horizon 以内做对照，无需重建同一 V4 数据；超过监督 horizon 则拒绝训练。TensorBoard 记录总损失、关键目标各项损失、masked chunk 位置/旋转/夹爪损失，以及预测关键目标热图和 chunk 的 XY/XZ/YZ 预测与实测未来路径。预测条件复用逐样本部署路径；joint 还增加一次有效关键目标子批的监督 forward，吞吐和显存需在实际 GPU 上测量。

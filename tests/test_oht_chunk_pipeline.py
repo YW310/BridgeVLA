@@ -192,8 +192,10 @@ def test_v4_training_validate_only_and_offline_metrics(chunk_fixture, tmp_path, 
     assert report['all_actions']['samples'] >= 2
 
 
-def test_chunk_prepared_http_and_native_client_negotiate_explicit_actions(chunk_fixture, tmp_path):
+@pytest.mark.parametrize('goal_conditioning', ['absolute', 'relative_tcp'])
+def test_chunk_prepared_http_and_native_client_negotiate_explicit_actions(chunk_fixture, tmp_path, goal_conditioning):
     agent, data, _ = agent_data(chunk_fixture, training=False)
+    agent.settings['goal_conditioning'] = goal_conditioning
     policy = Policy(agent, data.contract, 'cpu', 'baseline')
     sample = data[0]
     observation = {key: value for key, value in sample.items() if key in

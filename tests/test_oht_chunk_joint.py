@@ -154,8 +154,10 @@ def test_cli_frozen_key_still_requires_trained_checkpoint(chunk_fixture, tmp_pat
 
 
 @pytest.mark.parametrize('prefix', [0, 2, 6])
-def test_joint_layer_count_freezes_prefix_but_trains_later_layers_and_both_heads(chunk_fixture, prefix):
+@pytest.mark.parametrize('goal_conditioning', ['absolute', 'relative_tcp'])
+def test_joint_layer_count_freezes_prefix_but_trains_later_layers_and_both_heads(chunk_fixture, prefix, goal_conditioning):
     agent, data, config = joint_agent(chunk_fixture.root, overrides={'freeze_gemma_prefix_layers': prefix})
+    agent.settings['goal_conditioning'] = goal_conditioning
     assert not config['freeze_language_model']
     before = copy.deepcopy(model_state(agent))
     frozen = [name for name, p in agent._net_mod.named_parameters() if not p.requires_grad]

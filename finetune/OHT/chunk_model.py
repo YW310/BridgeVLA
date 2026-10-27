@@ -45,16 +45,36 @@ class ChunkDecoder(nn.Module):
 
     def forward(self, coarse, fine, state, goal):
         dtype = self.visual.weight.dtype
+        goal_condition = self.goal_condition(state, goal)
         memory = torch.cat((self.visual(coarse.to(dtype)) + self.scale_embedding[0],
                             self.visual(fine.to(dtype)) + self.scale_embedding[1],
-                            self.state(state.to(dtype))[:, None], self.goal(goal.to(dtype))[:, None]), 1)
+                            self.state(state.to(dtype))[:, None], self.goal(goal_condition.to(dtype))[:, None]), 1)
         query = self.queries[None].expand(state.shape[0], -1, -1)
         raw = self.head(self.transformer(query, memory))
         position = state[:, None, :3] + raw[..., :3] * self.settings['position_scale']
         return position, rotation_6d(raw[..., 3:9]), raw[..., 9]
 
+    def goal_condition(self, state, goal):
+        if self.settings['goal_conditioning'] == 'absolute':
+            return goal
+        # Only the decoder's condition changes. State and returned EEF actions
+        # remain in world coordinates; goal is the detached predicted key pose.
+        current = F.normalize(state[:, 3:7], dim=-1)
+        target = F.normalize(goal[:, 3:7], dim=-1)
+        local_position = torch.einsum('bij,bj->bi', quaternion_matrix(current).transpose(-1, -2),
+                                      goal[:, :3] - state[:, :3]) / self.settings['position_scale']
+        xyz, w = current[:, :3], current[:, 3:4]
+        target_xyz, target_w = target[:, :3], target[:, 3:4]
+        relative = torch.cat((w * target_xyz - target_w * xyz - torch.linalg.cross(xyz, target_xyz),
+                              w * target_w + (xyz * target_xyz).sum(-1, keepdim=True)), dim=-1)
+        relative = F.normalize(relative, dim=-1)
+        # q and -q encode the same rotation, including exactly 180 degrees.
+        pivot = relative.gather(-1, relative.abs().argmax(-1, keepdim=True))
+        relative = torch.where(pivot < 0, -relative, relative)
+        return torch.cat((local_position, relative, goal[:, 7:8]), dim=-1)
 
-def chunk_loss(prediction, target, valid, settings):
+
+def chunk_loss(prediction, target, valid, settings, *, current_position=None):
     position, rotation, grip = prediction
     target, valid = target[:, :position.shape[1]], valid[:, :position.shape[1]]
     if target.shape != (*position.shape[:2], 8) or valid.shape != position.shape[:2] or valid.dtype != torch.bool:
@@ -66,8 +86,33 @@ def chunk_loss(prediction, target, valid, settings):
     r = F.mse_loss(rotation[valid], quaternion_matrix(target[..., 3:7][valid]))
     g = F.binary_cross_entropy_with_logits(grip[valid], target[..., 7][valid])
     weighted_p = settings['position_weight'] * p
-    return weighted_p + settings['rotation_weight'] * r + settings['gripper_weight'] * g, dict(
+    displacement = position[valid].sum() * 0.
+    displacement_error = stationary_displacement_error = 0.
+    if settings['displacement_weight'] > 0 and current_position is None:
+        raise ValueError('Displacement supervision requires the measured current TCP position')
+    if current_position is not None:
+        if current_position.shape != (position.shape[0], 3) or not torch.isfinite(current_position).all():
+            raise ValueError('Current TCP position must be finite [B,3]')
+        # Anchor the first tick to the measured state. Later ticks compare only
+        # consecutive valid labels, never bridging padding or missing frames.
+        paired = torch.cat((valid[:, :1], valid[:, 1:] & valid[:, :-1]), dim=1)
+        if paired.any():
+            previous_predicted = torch.cat((current_position[:, None], position[:, :-1]), dim=1)
+            previous_target = torch.cat((current_position[:, None], target[:, :-1, :3]), dim=1)
+            predicted_delta = position[paired] - previous_predicted[paired]
+            target_delta = target[..., :3][paired] - previous_target[paired]
+            scale = settings['displacement_scale']
+            displacement = F.smooth_l1_loss(predicted_delta / scale, target_delta / scale)
+            with torch.no_grad():
+                displacement_error = torch.linalg.vector_norm(predicted_delta - target_delta, dim=-1).mean().item()
+                stationary_displacement_error = torch.linalg.vector_norm(target_delta, dim=-1).mean().item()
+    weighted_d = settings['displacement_weight'] * displacement
+    return weighted_p + weighted_d + settings['rotation_weight'] * r + settings['gripper_weight'] * g, dict(
         chunk_position_loss=p.detach().item(), chunk_position_weighted_loss=weighted_p.detach().item(),
+        chunk_displacement_loss=displacement.detach().item(),
+        chunk_displacement_weighted_loss=weighted_d.detach().item(),
+        chunk_displacement_error_m=displacement_error,
+        chunk_stationary_displacement_error_m=stationary_displacement_error,
         chunk_rotation_loss=r.detach().item(),
         chunk_gripper_loss=g.detach().item(), chunk_valid_actions=int(valid.sum().item()))
 
@@ -235,7 +280,8 @@ class ChunkAgent:
             self._optimizer.zero_grad(set_to_none=True)
         prediction, key_loss, key_metrics = self._network(
             context_builder=context_builder, key_loss_builder=(lambda: self._key_loss(batch)) if joint else None)
-        loss, metrics = chunk_loss(prediction, batch['action_chunk'][:, 0], batch['action_valid'][:, 0], self.settings)
+        loss, metrics = chunk_loss(prediction, batch['action_chunk'][:, 0], batch['action_valid'][:, 0], self.settings,
+                                   current_position=batch['tcp_pose'][:, 0, :3])
         with torch.no_grad():
             valid = batch['action_valid'][:, 0, :self.settings['horizon']]
             target = batch['action_chunk'][:, 0, :self.settings['horizon'], :3]
@@ -306,8 +352,17 @@ def load_chunk_weights(agent, checkpoint, initialize=False):
             if not initialize:
                 raise ValueError('Chunk checkpoint architecture/configuration mismatch')
             changed = {name for name in saved if saved[name] != agent.settings[name]}
-            if changed <= {'stage', 'key_loss_weight', 'position_weight', 'rotation_weight', 'gripper_weight'}:
-                agent._net_mod.load_state_dict(checkpoint['model_state'], strict=True)
+            if changed <= {'stage', 'key_loss_weight', 'position_weight', 'rotation_weight', 'gripper_weight',
+                           'displacement_weight', 'displacement_scale', 'goal_conditioning'}:
+                state = checkpoint['model_state']
+                if 'goal_conditioning' in changed:
+                    # Same dimensions, different meaning: relearn only the goal
+                    # projection while retaining the encoder and trajectory head.
+                    state = dict(state)
+                    for name, value in agent._net_mod.state_dict().items():
+                        if name.startswith('decoder.goal.'):
+                            state[name] = value
+                agent._net_mod.load_state_dict(state, strict=True)
             else:
                 encoder = {key.removeprefix('encoder.'): value for key, value in checkpoint['model_state'].items()
                            if key.startswith('encoder.')}

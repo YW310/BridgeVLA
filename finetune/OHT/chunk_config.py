@@ -3,8 +3,9 @@ import math
 
 
 DEFAULTS = dict(enabled=False, horizon=16, execute_horizon=4, hidden_dim=256,
-                layers=2, heads=4, dropout=0., position_scale=.25,
-                position_weight=1., rotation_weight=1., gripper_weight=1., stage='frozen_key', key_loss_weight=1.)
+                layers=2, heads=4, dropout=0., position_scale=.25, goal_conditioning='absolute',
+                position_weight=1., displacement_weight=0., displacement_scale=.01,
+                rotation_weight=1., gripper_weight=1., stage='frozen_key', key_loss_weight=1.)
 
 
 def chunk_settings(config, contract=None):
@@ -21,12 +22,17 @@ def chunk_settings(config, contract=None):
             raise ValueError(f'chunk_policy.{name} must be a positive integer')
     if result['execute_horizon'] > result['horizon'] or result['hidden_dim'] % result['heads']:
         raise ValueError('Chunk execution horizon or attention dimensions are invalid')
-    for name in ('dropout', 'position_scale', 'position_weight', 'rotation_weight', 'gripper_weight', 'key_loss_weight'):
+    for name in ('dropout', 'position_scale', 'position_weight', 'displacement_weight', 'displacement_scale',
+                 'rotation_weight', 'gripper_weight', 'key_loss_weight'):
         value = result[name]
         if type(value) not in (float, int) or not math.isfinite(value) or value < 0:
             raise ValueError(f'chunk_policy.{name} must be finite and nonnegative')
     if result['dropout'] >= 1 or result['position_scale'] <= 0:
         raise ValueError('Chunk dropout must be <1 and position_scale >0')
+    if result['displacement_scale'] <= 0:
+        raise ValueError('chunk_policy.displacement_scale must be positive')
+    if result['goal_conditioning'] not in ('absolute', 'relative_tcp'):
+        raise ValueError('chunk_policy.goal_conditioning must be absolute or relative_tcp')
     if result['stage'] not in ('frozen_key', 'joint'):
         raise ValueError('chunk_policy.stage must be frozen_key or joint')
     if result['stage'] == 'joint' and result['key_loss_weight'] <= 0:
