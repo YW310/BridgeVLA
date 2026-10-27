@@ -312,11 +312,14 @@ chunk_policy:
   enabled: true
   stage: joint                      # frozen_key 则冻结整个关键目标网络
   key_loss_weight: 1.0
+  position_weight: 5.0               # chunk 平移项权重；未指定时为 1.0
 ~~~
 
 联合损失为 `chunk_loss + key_loss_weight * key_loss`；key loss 沿用关键目标的 heatmap、旋转和夹爪监督，只计算 `key_valid=true` 的样本。每批先计算独立的 GT 监督分支，再通过预测目标裁剪提取 chunk 条件；两条路径共享模型权重，GT 特征不会送入 decoder。关键目标的离散解码及裁剪位置保持 detach；chunk loss 可沿预测分支更新未冻结的 Gemma 后续层，但不穿过 argmax。冻结模块保持 eval，BatchNorm 运行统计固定，仿射参数仍遵循冻结规则。`lm_head/embed_tokens` 沿用原有冻结规则；若显式设置 `freeze_language_model=true`，则覆盖层数设置并冻结整个语言模型。
 
-可在派生配置中将 `stage` 改为 `frozen_key` 做对照。从 frozen_key 切换到 joint，或改变冻结策略时，使用 `--init-checkpoint` 新建 run，不复用旧优化器；仅阶段/key loss 权重变化时保留已训练的 decoder 权重。相同配置才能 `--resume`。两种阶段共用 V4 数据，无需因此重新构建。
+chunk 损失为 `position_weight * L_pos + rotation_weight * L_rotation + gripper_weight * L_gripper`。`oht_chunk_v4_8x40.yaml` 将 `position_weight` 设为 5，其他两项为 1，`position_scale` 保持 0.25。未指定 `position_weight` 的旧配置仍按 1 解析；`chunk_position_loss` 记录原始值，`chunk_position_weighted_loss` 记录加权值。权重 5 是待验证的对照设置，需通过物理位置误差和轨迹图判断效果。
+
+可在派生配置中将 `stage` 改为 `frozen_key` 做对照。从 frozen_key 切换到 joint、改变 loss 权重或冻结策略时，使用 `--init-checkpoint` 新建 run，不复用旧优化器；仅阶段/loss 权重变化时保留已训练的 encoder 和 decoder 权重。相同配置才能 `--resume`。两种阶段共用 V4 数据，无需因此重新构建。
 
 新配置默认 K=16、建议执行 H=4。可将模型 K 减小到 cache horizon 以内做对照，无需重建同一 V4 数据；超过监督 horizon 则拒绝训练。TensorBoard 记录总损失、关键目标各项损失、masked chunk 位置/旋转/夹爪损失，以及预测关键目标热图和 chunk 的 XY/XZ/YZ 预测与实测未来路径。预测条件复用逐样本部署路径；joint 还增加一次有效关键目标子批的监督 forward，吞吐和显存需在实际 GPU 上测量。
 
@@ -687,6 +690,10 @@ train_visualization:
 启用后记录第 1 个优化步及每个 `interval` 的倍数步，在 TensorBoard 的 Images 中查看 `train_visualization/mvt1`（coarse）和 `train_visualization/mvt2`（refine）。图中包含该次训练实际渲染的输入 RGB、增强/投影后用于 loss 的 GT 定位热图、模型预测定位热图；模型返回角色监督、Target/Reference prior 或 relation anchor 时也显示对应面板。每次显示 rank 0 最后一个累积 microbatch 的首个样本，并记录 task 和 instruction。关节模式的定位热图来自辅助 EEF 头，不代表预测关节角或闭环轨迹。
 
 PNG 同时保存为 `<output>/train_visualizations/step_00000001_mvt1.png`、`..._mvt2.png` 等；相对 `output_dir` 按训练输出目录解析。`save_png: false` 可仅写 TensorBoard；只保存 PNG 时设置 `tensorboard: false`，可配合 `--log-backend none`。同时关闭两个输出需将 `enabled` 设为 false。只在采集步请求真实前向载荷，不额外运行模型，不为其余 rank/microbatch 复制图像；新增开销是 CPU 传输、拼图和图像写入，可增大 `interval` 控制。图像只用于训练诊断，含 GT 的诊断内容不会成为额外策略输入。
+
+V4 chunk 训练另有 `train_visualization/chunk`：红线是预测，绿线是同一样本的实测未来 TCP，白色十字是当前 TCP。两条线均只绘制 `action_valid` 有效的未来时刻，使用世界坐标及各面板内等比例轴；图中显示 sample ID、步数、采样间隔，以及有效时刻的平均/最大/末点位置误差（mm）。`save_png: true` 时同步保存 `chunk_step_<step>.png` 和 `.npz`，NPZ 包含本次 loss 前向的原始预测、标签、有效性、当前 TCP 和样本信息，便于逐点核对。
+
+标量 `train/chunk_position_error_m` 是有效未来时刻的平均欧氏位置误差，`train/chunk_stationary_error_m` 是始终保持当前 TCP 的对照误差；两者单位为米，沿用上述本地 microbatch 累积平均规则。`chunk_position_loss` 则是按 `position_scale` 归一化后的 SmoothL1，不能直接当作米误差；loss 下降不等同于轨迹准确，需结合这两个物理误差及图中单样本误差判断。
 
 已运行的旧进程不会自动新增图像；更新代码并从兼容 checkpoint 恢复后生效。`train_visualization` 仅控制诊断，可在续训时调整，不参与优化器连续性指纹；旧 JSONL 没有保存模型图像，历史标量转换工具无法补出这些中间结果。
 

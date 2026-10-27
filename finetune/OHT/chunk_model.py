@@ -65,8 +65,10 @@ def chunk_loss(prediction, target, valid, settings):
                          target[..., :3][valid] / settings['position_scale'])
     r = F.mse_loss(rotation[valid], quaternion_matrix(target[..., 3:7][valid]))
     g = F.binary_cross_entropy_with_logits(grip[valid], target[..., 7][valid])
-    return p + settings['rotation_weight'] * r + settings['gripper_weight'] * g, dict(
-        chunk_position_loss=p.detach().item(), chunk_rotation_loss=r.detach().item(),
+    weighted_p = settings['position_weight'] * p
+    return weighted_p + settings['rotation_weight'] * r + settings['gripper_weight'] * g, dict(
+        chunk_position_loss=p.detach().item(), chunk_position_weighted_loss=weighted_p.detach().item(),
+        chunk_rotation_loss=r.detach().item(),
         chunk_gripper_loss=g.detach().item(), chunk_valid_actions=int(valid.sum().item()))
 
 
@@ -234,6 +236,13 @@ class ChunkAgent:
         prediction, key_loss, key_metrics = self._network(
             context_builder=context_builder, key_loss_builder=(lambda: self._key_loss(batch)) if joint else None)
         loss, metrics = chunk_loss(prediction, batch['action_chunk'][:, 0], batch['action_valid'][:, 0], self.settings)
+        with torch.no_grad():
+            valid = batch['action_valid'][:, 0, :self.settings['horizon']]
+            target = batch['action_chunk'][:, 0, :self.settings['horizon'], :3]
+            error = torch.linalg.vector_norm(prediction[0] - target, dim=-1)
+            stationary = torch.linalg.vector_norm(batch['tcp_pose'][:, 0, None, :3] - target, dim=-1)
+            metrics.update(chunk_position_error_m=error[valid].mean().item(),
+                           chunk_stationary_error_m=stationary[valid].mean().item())
         metrics.update(chunk_total_loss=loss.detach().item(), **key_metrics)
         if key_loss is not None:
             loss = loss + self.settings['key_loss_weight'] * key_loss
@@ -248,7 +257,9 @@ class ChunkAgent:
             result['train_visualization'] = dict(chunk=True, policy=payload[0] if payload else None,
                 predicted=prediction[0][0].detach().float().cpu().numpy(),
                 target=batch['action_chunk'][0, 0, :self.settings['horizon'], :3].detach().float().cpu().numpy(),
-                valid=batch['action_valid'][0, 0, :self.settings['horizon']].cpu().numpy())
+                valid=batch['action_valid'][0, 0, :self.settings['horizon']].cpu().numpy(),
+                current=batch['tcp_pose'][0, 0, :3].detach().float().cpu().numpy(),
+                sample_id=batch.get('sample_ids', [''])[0], action_dt=self.contract['chunk']['action_dt'])
         return result
 
     def predict(self, observation, goal, visualization_callback=None):
@@ -295,7 +306,7 @@ def load_chunk_weights(agent, checkpoint, initialize=False):
             if not initialize:
                 raise ValueError('Chunk checkpoint architecture/configuration mismatch')
             changed = {name for name in saved if saved[name] != agent.settings[name]}
-            if changed <= {'stage', 'key_loss_weight'}:
+            if changed <= {'stage', 'key_loss_weight', 'position_weight', 'rotation_weight', 'gripper_weight'}:
                 agent._net_mod.load_state_dict(checkpoint['model_state'], strict=True)
             else:
                 encoder = {key.removeprefix('encoder.'): value for key, value in checkpoint['model_state'].items()

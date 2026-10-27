@@ -19,5 +19,6 @@ chunk_policy:
   heads: 4
   dropout: 0.0
   position_scale: 0.25
+  position_weight: 5.0
   rotation_weight: 1.0
   gripper_weight: 1.0

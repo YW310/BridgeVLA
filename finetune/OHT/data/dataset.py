@@ -104,6 +104,8 @@ def collate(samples):
         batch[key] = torch.from_numpy(values if key == "oracle_role_present_known" else values[:, None])
     batch["lang_goal"] = [[[row["goal"]]] for row in samples]
     batch["tasks"] = [row["task"] for row in samples]
+    if all('sample_id' in row for row in samples):
+        batch['sample_ids'] = [row['sample_id'] for row in samples]
     return batch
 
 
