@@ -4,7 +4,7 @@ exp_id: oht-key-chunk-v4
 freeze_vision_tower: true
 freeze_multimodal_projector: true
 freeze_language_model: false
-freeze_gemma_prefix_layers: 6
+freeze_gemma_prefix_layers: 16
 agent:
   transform_augmentation: false
 chunk_policy:

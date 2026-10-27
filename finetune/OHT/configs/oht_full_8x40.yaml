@@ -2,11 +2,11 @@
 extends: baseline.yaml
 mode: baseline
 action_mode: eef
-batch_size: 4
+batch_size: 8
 num_workers: 3
 epochs: 60
 train_iter: 40000
-global_batch_size: 192
+global_batch_size: 16
 max_optimizer_steps: 83300
 checkpoint_every_epochs: 10
 # Epoch/global-batch fields replace the legacy step budget and fixed accumulation.
