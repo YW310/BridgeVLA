@@ -427,6 +427,19 @@ class MVT(nn.Module):
             self.object_conditioning_inherit_coarse_roles
             or getattr(self, 'object_slot_predictor_type', 'slots') == 'role_queries'
         )
+        chunk_geometry = getattr(mvt, 'oht_return_chunk_geometry', False)
+        rendered_geometry = []
+
+        def render_one(points, features, **options):
+            if not chunk_geometry:
+                return self.renderer(points, features, **options)
+            count = features.shape[-1]
+            # Append true coordinates and coverage without altering legacy RGB,
+            # normalized correlation channels, depth or z-buffer correspondence.
+            features = torch.cat((features, points, torch.ones_like(points[:, :1])), -1)
+            result = self.renderer(points, features, **options)
+            rendered_geometry.append(result[..., count:count + 4])
+            return torch.cat((result[..., :count], result[..., count + 4:]), -1)
 
         with torch.no_grad():
             # with autocast(enabled=False):
@@ -445,7 +458,7 @@ class MVT(nn.Module):
                             max_pc = 1.0 if len(_pc) == 0 else torch.max(torch.abs(_pc))
                            
                             img.append(
-                                self.renderer(
+                                render_one(
                                     _pc,
                                     torch.cat((_pc / max_pc, _img_feat), dim=-1),
                                     fix_cam=True,
@@ -456,7 +469,7 @@ class MVT(nn.Module):
                             )
                     else:
                         img = [
-                            self.renderer(
+                            render_one(
                                 _pc,
                                 torch.cat((_pc, _img_feat), dim=-1),
                                 fix_cam=True,
@@ -470,7 +483,7 @@ class MVT(nn.Module):
                         ]
                 else:
                     img = [
-                        self.renderer(
+                        render_one(
                             _pc,
                             _img_feat,
                             fix_cam=True,
@@ -486,6 +499,9 @@ class MVT(nn.Module):
         img = torch.cat(img, 0)
         
         img = img.permute(0, 1, 4, 2, 3)
+        if chunk_geometry:
+            geometry = torch.stack(rendered_geometry).permute(0, 1, 4, 2, 3)
+            self._oht_chunk_render_geometry = geometry.detach()
 
         # for visualization purposes
         if mvt.add_corr:
@@ -670,6 +686,11 @@ class MVT(nn.Module):
                 oracle_prior_points, oracle_prior_valid, img[:, :, :3],
                 lambda points: self.mvt1.get_pt_loc_on_img(points, dyn_cam_info=None))
         out["mvt1_ori_img"]=img.clone().detach()
+        if getattr(self.mvt1, 'oht_return_chunk_geometry', False):
+            from bridgevla.mvt.chunk_geometry import pool_chunk_geometry
+            geometry = self._oht_chunk_render_geometry
+            out['oht_chunk_xyz'], out['oht_chunk_valid'] = pool_chunk_geometry(
+                geometry[:, :, :3], geometry[:, :, 3:4], out['oht_chunk_grid_shape'])
         def visualize_tensor(tensor, save_path=None):
             """
             Visualize a tensor of shape (3, 3, 224, 224) as three separate images.
@@ -840,6 +861,10 @@ class MVT(nn.Module):
             out["rev_trans"] = rev_trans 
             out["mvt2"] = out_mvt2
             out["mvt2_ori_img"]=img.clone().detach()
+            if getattr(self.mvt1, 'oht_return_chunk_geometry', False):
+                geometry = self._oht_chunk_render_geometry
+                out_mvt2['oht_chunk_xyz'], out_mvt2['oht_chunk_valid'] = pool_chunk_geometry(
+                    geometry[:, :, :3], geometry[:, :, 3:4], out_mvt2['oht_chunk_grid_shape'])
 
         return out
 

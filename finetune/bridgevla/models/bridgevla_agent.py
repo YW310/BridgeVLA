@@ -2682,6 +2682,9 @@ class RVTAgent:
                 language_goal=language_goal,
                 **self._network_extra_inputs(observation),
             )
+        if getattr(self._net_mod.mvt1, 'oht_return_chunk_geometry', False):
+            from bridgevla.mvt.chunk_geometry import chunk_geometry_to_world
+            chunk_geometry_to_world(out, rev_trans)
         bridgevla_alignment_elements = {}
         if self.bridgevla_aligned_objects:
             aligned_points, aligned_valid, bridgevla_alignment_elements = (

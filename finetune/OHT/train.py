@@ -89,6 +89,11 @@ def main(argv=None):
             source = ('resume' if args.resume else 'checkpoint' if args.init_checkpoint
                       else 'bridgevla_pretrain' if args.pretrain_path else 'paligemma_base')
             print(f"Chunk initialization: stage={settings['stage']} source={source}", flush=True)
+            print(json.dumps(dict(chunk_decoder=settings['decoder_type'],
+                                  spatial_conditioning=settings['spatial_conditioning'],
+                                  goal_conditioning=settings['goal_conditioning'],
+                                  displacement_weight=settings['displacement_weight'],
+                                  flow_steps=settings['flow_steps'] if settings['decoder_type'] == 'flow_matching' else None)), flush=True)
     if world > 1:
         dist.barrier()
     remaining_draws = target_steps * accumulation * config["batch_size"]

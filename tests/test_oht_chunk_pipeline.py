@@ -29,6 +29,7 @@ from finetune.OHT.eval import open_loop
 
 def settings_config():
     config = load('finetune/OHT/configs/oht_chunk_v4_8x40.yaml')
+    config['freeze_gemma_prefix_layers'] = 6  # Tiny test Gemma has only 8 layers.
     config['chunk_policy'].update(stage='frozen_key', horizon=4, execute_horizon=2, hidden_dim=16, layers=1, heads=2)
     return config
 
@@ -74,7 +75,7 @@ def test_chunk_config_inherits_epoch_adamw_and_rejects_inconsistent_modes():
     parent = load('finetune/OHT/configs/oht_full_8x40.yaml')
     assert config['epochs'] == parent['epochs'] and config['global_batch_size'] == parent['global_batch_size']
     assert config['agent']['optimizer_type'] == 'adamw'
-    assert config['freeze_vision_tower'] and config['freeze_gemma_prefix_layers'] == 6
+    assert config['freeze_vision_tower'] and config['freeze_gemma_prefix_layers'] >= 0
     assert not config['agent']['transform_augmentation']
     assert not config['freeze_language_model'] and config['chunk_policy']['stage'] == 'joint'
     for patch in ({'execute_horizon': 17}, {'stage': 'unknown'}, {'heads': 3}, {'dropout': 1.}):

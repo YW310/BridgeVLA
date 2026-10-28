@@ -131,14 +131,19 @@ class ChunkNetwork(nn.Module):
         self.encoder.eval()  # never activate GT crop/teacher-forced rotation routing
         return self
 
-    def forward(self, *args, context_builder=None, key_loss_builder=None):
+    def forward(self, *args, context_builder=None, key_loss_builder=None, chunk_target=None, chunk_valid=None):
         if context_builder is None:
             return self.decoder(*args)
         # All trainable forwards are inside the outer DDP call, including both
         # uses of the shared encoder. The GT branch never supplies decoder inputs.
         key_loss, metrics = key_loss_builder() if key_loss_builder else (None, {})
-        prediction = self.decoder(*context_builder())
-        return prediction, key_loss, metrics
+        context = context_builder()
+        extra = {}
+        if hasattr(self.decoder, 'training_prediction'):
+            prediction, extra = self.decoder.training_prediction(*context, target=chunk_target, valid=chunk_valid)
+        else:
+            prediction = self.decoder(*context)
+        return prediction, key_loss, metrics, extra
 
 
 class ChunkAgent:
@@ -149,8 +154,14 @@ class ChunkAgent:
         self.oht_action_config = action_options()
         self._device = device
         base._net_mod.mvt1.oht_return_chunk_tokens = True
+        base._net_mod.mvt1.oht_return_chunk_geometry = settings['spatial_conditioning']
         dim = base._net_mod.mvt1.vlm_dim
-        self._net_mod = ChunkNetwork(base._net_mod, ChunkDecoder(dim, settings), settings['stage']).to(device)
+        if settings['spatial_conditioning']:
+            from .spatial_chunk import SpatialChunkDecoder
+            decoder = SpatialChunkDecoder(dim, settings, base._net_mod.num_img, contract['chunk']['action_dt'])
+        else:
+            decoder = ChunkDecoder(dim, settings)
+        self._net_mod = ChunkNetwork(base._net_mod, decoder, settings['stage']).to(device)
         self._net_mod.train(training)
         self._network = self._net_mod
         self.distributed = distributed
@@ -203,7 +214,15 @@ class ChunkAgent:
         if not with_grad:
             coarse, fine = coarse.detach(), fine.detach()
         goal = torch.as_tensor(validate_action(goal, self.oht_action_config), device=self._device)[None]
-        return coarse, fine, torch.as_tensor(state, device=self._device)[None], goal
+        context = (coarse, fine, torch.as_tensor(state, device=self._device)[None], goal)
+        if self.settings['spatial_conditioning']:
+            stages = output, output.get('mvt2', output)
+            for stage in stages:
+                if not {'oht_chunk_xyz_world', 'oht_chunk_valid'} <= stage.keys():
+                    raise ValueError('Spatial chunk encoder did not provide aligned observed world XYZ/validity')
+            context += tuple(stage['oht_chunk_xyz_world'].detach() for stage in stages)
+            context += tuple(stage['oht_chunk_valid'].detach() for stage in stages)
+        return context
 
     def _key_loss(self, batch):
         valid = batch['key_valid'][:, 0]
@@ -275,13 +294,31 @@ class ChunkAgent:
                 sample['goal'] = goal
                 contexts.append(self._context(sample, payload.append if return_visualization and i == 0 else None,
                                               with_grad=joint))
-            return tuple(torch.cat([row[j] for row in contexts], 0) for j in range(4))
+            return tuple(torch.cat([row[j] for row in contexts], 0) for j in range(len(contexts[0])))
         if reset_gradients:
             self._optimizer.zero_grad(set_to_none=True)
-        prediction, key_loss, key_metrics = self._network(
-            context_builder=context_builder, key_loss_builder=(lambda: self._key_loss(batch)) if joint else None)
+        prediction, key_loss, key_metrics, extra = self._network(
+            context_builder=context_builder, key_loss_builder=(lambda: self._key_loss(batch)) if joint else None,
+            chunk_target=batch['action_chunk'][:, 0], chunk_valid=batch['action_valid'][:, 0])
         loss, metrics = chunk_loss(prediction, batch['action_chunk'][:, 0], batch['action_valid'][:, 0], self.settings,
                                    current_position=batch['tcp_pose'][:, 0, :3])
+        if 'flow_loss' in extra:
+            weighted = self.settings['flow_weight'] * extra['flow_loss']
+            loss = loss + weighted
+            metrics.update(chunk_flow_loss=extra['flow_loss'].detach().item(),
+                           chunk_flow_weighted_loss=weighted.detach().item(),
+                           chunk_flow_position_loss=extra['chunk_flow_position_loss'],
+                           chunk_flow_rotation_loss=extra['chunk_flow_rotation_loss'])
+            with torch.no_grad():
+                mask = batch['action_valid'][:, 0, :self.settings['horizon']]
+                residual = prediction[0] - batch['action_chunk'][:, 0, :self.settings['horizon'], :3]
+                metrics['chunk_reconstruction_position_error_m'] = torch.linalg.vector_norm(residual, dim=-1)[mask].mean().item()
+            prediction = extra['sampled_prediction']
+            with torch.no_grad():
+                _, sampled_metrics = chunk_loss(prediction, batch['action_chunk'][:, 0], batch['action_valid'][:, 0],
+                                               self.settings, current_position=batch['tcp_pose'][:, 0, :3])
+                for name in ('chunk_displacement_error_m', 'chunk_stationary_displacement_error_m'):
+                    metrics[name] = sampled_metrics[name]
         with torch.no_grad():
             valid = batch['action_valid'][:, 0, :self.settings['horizon']]
             target = batch['action_chunk'][:, 0, :self.settings['horizon'], :3]
@@ -289,6 +326,9 @@ class ChunkAgent:
             stationary = torch.linalg.vector_norm(batch['tcp_pose'][:, 0, None, :3] - target, dim=-1)
             metrics.update(chunk_position_error_m=error[valid].mean().item(),
                            chunk_stationary_error_m=stationary[valid].mean().item())
+            for length in sorted({1, self.settings['execute_horizon']}):
+                selected = valid[:, :length]
+                metrics[f'chunk_prefix_{length}_position_error_m'] = error[:, :length][selected].mean().item() if selected.any() else 0.
         metrics.update(chunk_total_loss=loss.detach().item(), **key_metrics)
         if key_loss is not None:
             loss = loss + self.settings['key_loss_weight'] * key_loss
@@ -310,9 +350,14 @@ class ChunkAgent:
 
     def predict(self, observation, goal, visualization_callback=None):
         sample = dict(observation, goal=goal)
-        with torch.no_grad():
-            context = self._context(sample, visualization_callback)
-            position, rotation, grip = self._net_mod(*context)
+        decoder_training = self._net_mod.decoder.training
+        try:
+            self._net_mod.decoder.eval()
+            with torch.no_grad():
+                context = self._context(sample, visualization_callback)
+                position, rotation, grip = self._net_mod(*context)
+        finally:
+            self._net_mod.decoder.train(decoder_training)
         matrix = rotation[0].detach().float().cpu().numpy()
         if not np.allclose(np.linalg.det(matrix), 1., atol=1e-4):
             raise ValueError('Chunk decoder produced a degenerate rotation')
@@ -353,7 +398,8 @@ def load_chunk_weights(agent, checkpoint, initialize=False):
                 raise ValueError('Chunk checkpoint architecture/configuration mismatch')
             changed = {name for name in saved if saved[name] != agent.settings[name]}
             if changed <= {'stage', 'key_loss_weight', 'position_weight', 'rotation_weight', 'gripper_weight',
-                           'displacement_weight', 'displacement_scale', 'goal_conditioning'}:
+                           'displacement_weight', 'displacement_scale', 'goal_conditioning',
+                           'flow_weight', 'flow_steps', 'flow_inference_seed'}:
                 state = checkpoint['model_state']
                 if 'goal_conditioning' in changed:
                     # Same dimensions, different meaning: relearn only the goal
@@ -367,6 +413,7 @@ def load_chunk_weights(agent, checkpoint, initialize=False):
                 encoder = {key.removeprefix('encoder.'): value for key, value in checkpoint['model_state'].items()
                            if key.startswith('encoder.')}
                 agent._net_mod.encoder.load_state_dict(encoder, strict=True)
+                print('Chunk initialization: encoder preserved; decoder reinitialized for architecture change', flush=True)
         else:
             agent._net_mod.load_state_dict(checkpoint['model_state'], strict=True)
     return checkpoint

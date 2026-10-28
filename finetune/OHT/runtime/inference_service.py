@@ -146,6 +146,7 @@ class InferenceService:
         if getattr(self.policy, 'chunk_settings', None) is not None:
             from .chunk_protocol import chunk_spec
             self.metadata['chunk_spec'] = chunk_spec(self.policy.chunk_settings, self.policy.contract)
+            self.metadata['chunk_policy'] = dict(self.policy.chunk_settings)
             write_json(self.output_dir / 'info.json', self.metadata)
         with self.lock:
             self.ready = True

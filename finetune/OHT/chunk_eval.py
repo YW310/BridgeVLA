@@ -48,9 +48,11 @@ def open_loop_chunk(policy, replay, split='val', limit=None, *, progress=None, v
         if due:
             folder = visualizer.root / f'sample_{index:06d}'
             folder.mkdir(parents=True, exist_ok=False)
-            path_panel(actions, target, valid).save(folder / 'chunk.png')
+            path_panel(actions, target, valid, current=sample['tcp_pose'][:3], sample_id=meta['id'],
+                       action_dt=spec['action_dt']).save(folder / 'chunk.png')
             np.savez_compressed(folder / 'chunk.npz', actions=actions, target=target, valid=valid,
-                                key_action=prediction['key_action'], key_valid=sample['key_valid'])
+                                key_action=prediction['key_action'], key_valid=sample['key_valid'],
+                                current=sample['tcp_pose'][:3], sample_id=meta['id'], action_dt=spec['action_dt'])
             if captured:
                 from .runtime.online_visualization import _montage
                 for name, stage in captured[0]['stages'].items():
@@ -63,6 +65,7 @@ def open_loop_chunk(policy, replay, split='val', limit=None, *, progress=None, v
         return dict(samples=len(values), **{name + '_mean': float(np.mean([row[name] for row in values]))
                     if values else None for name in ('translation_m', 'rotation_degrees', 'gripper_correct')})
     result = dict(kind='open_loop_chunk_errors', split=split, samples=total, chunk_spec=spec,
+        chunk_policy=dict(policy.chunk_settings),
         contract_sha256=data.contract['sha256'], per_offset={str(j): summarize([
             item for row in rows for item in row['offsets'] if item['offset'] == j]) for j in range(1, spec['horizon'] + 1)},
         all_actions=summarize([item for row in rows for item in row['offsets']]),

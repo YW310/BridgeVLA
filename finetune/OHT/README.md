@@ -347,6 +347,21 @@ GPUS_PER_NODE=8 bash finetune/OHT/train_8x40.sh \
 
 相对/绝对条件切换必须用 `--init-checkpoint` 新建 run：保留 encoder 和 chunk decoder 的其他权重，仅重新初始化 `decoder.goal` 投影层，optimizer 从新开始；不能 `--resume` 接续旧语义训练。联合训练也可省略初始化 checkpoint 从头训练。服务端直接读取新 checkpoint 内的配置，无需增加客户端参数。若要组合位移实验，可在相对目标配置中显式增加 `displacement_weight: 1.0`、`displacement_scale: 0.01` 后新建独立 run；单项对照应保持两次训练的 loss 权重一致。
 
+**显式三维条件与 flow matching。** 新增 [三维回归配置](configs/oht_chunk_v4_spatial_8x40.yaml) 和 [flow 配置](configs/oht_chunk_v4_flow_8x40.yaml)。两者共用原始渲染表面的 XYZ/有效性、视角与尺度标识、TCP 局部坐标、三维相对 attention 和未来物理时间，且均开启位移监督；flow 另以向量场损失学习整段 pose，默认 8 次积分。推理输出仍为世界坐标绝对 EEF，HTTP/IsaacLab 客户端无需修改。
+
+~~~bash
+OUT=/common-data-32t/data/robot_data/oht_curobo_pd_v423-seg/bridgevla-seg-v4-run01
+GPUS_PER_NODE=8 bash finetune/OHT/train_8x40.sh \
+  --config finetune/OHT/configs/oht_chunk_v4_flow_8x40.yaml \
+  --replay "$OUT/replay-source-v4" \
+  --init-checkpoint /path/to/previous-chunk-run/model_last.pth \
+  --log-dir "$OUT/runs" --exp-id oht-seg-v4-flow-s0
+~~~
+
+`OUT` 按实际生成目录设置。三维回归对照将 config 改为 `oht_chunk_v4_spatial_8x40.yaml`，另用独立 `--exp-id`。新配置沿用当前 chunk baseline 的 epoch、batch、AdamW、视觉/projector 冻结和 Gemma 前缀层数；已有 V4 不需重建。旧模型初始化新结构时保留 encoder、重新初始化 decoder/optimizer，须新 run，不能 `--resume`；joint 也可不传 `--init-checkpoint`。当前未加入本体历史或跨 chunk 延续。
+
+flow 的 loss 包含带噪 GT 重建，因此 `chunk_*_loss` 不代表部署误差。轨迹图与 `chunk_position_error_m`、`chunk_displacement_error_m`、`chunk_prefix_1_position_error_m`、`chunk_prefix_<H>_position_error_m` 均使用独立部署采样，不读取未来标签；另记 `chunk_reconstruction_position_error_m`。`/model_info.chunk_policy` 可核对实际配置；默认 `flow_inference_seed: 0` 固定采样便于复现，设为 `null` 则随机。算法与坐标细节见[设计说明](../../docs/design/oht-spatial-flow-chunk.md)。实际精度、吞吐与显存仍需 GPU 验证。
+
 可在派生配置中将 `stage` 改为 `frozen_key` 做对照。从 frozen_key 切换到 joint、改变 loss 权重或冻结策略时，使用 `--init-checkpoint` 新建 run，不复用旧优化器；仅阶段/loss 权重变化时保留已训练的 encoder 和 decoder 权重。相同配置才能 `--resume`。两种阶段共用 V4 数据，无需因此重新构建。
 
 新配置默认 K=16、建议执行 H=4。可将模型 K 减小到 cache horizon 以内做对照，无需重建同一 V4 数据；超过监督 horizon 则拒绝训练。TensorBoard 记录总损失、关键目标各项损失、masked chunk 位置/旋转/夹爪损失，以及预测关键目标热图和 chunk 的 XY/XZ/YZ 预测与实测未来路径。预测条件复用逐样本部署路径；joint 还增加一次有效关键目标子批的监督 forward，吞吐和显存需在实际 GPU 上测量。

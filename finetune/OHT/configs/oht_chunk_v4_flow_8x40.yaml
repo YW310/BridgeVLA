@@ -1,0 +1,8 @@
+extends: oht_chunk_v4_spatial_8x40.yaml
+exp_id: oht-key-chunk-v4-flow
+chunk_policy:
+  decoder_type: flow_matching
+  flow_weight: 1.0
+  flow_steps: 8
+  # Fixed conditional sample for reproducible evaluation; null enables randomness.
+  flow_inference_seed: 0

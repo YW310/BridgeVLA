@@ -56,6 +56,13 @@ class JointMVT(TinyMVT):
                          feat_z=logits[:, 144:216], feat_ex_rot=logits[:, 216:])
         output['oht_chunk_tokens'] = features
         output['mvt2']['oht_chunk_tokens'] = features + .1
+        if getattr(self.mvt1, 'oht_return_chunk_geometry', False):
+            points = torch.stack([value[torch.linspace(0, len(value) - 1, 6).long()] for value in pc])
+            center = points.mean(1)
+            output['rev_trans'] = lambda value: value / 3. + center
+            for stage, xyz in ((output, points), (output['mvt2'], (points - center[:, None]) * 3.)):
+                stage['oht_chunk_xyz'] = xyz
+                stage['oht_chunk_valid'] = torch.ones(xyz.shape[:2], dtype=torch.bool)
         return output
 
 
