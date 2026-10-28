@@ -44,6 +44,7 @@ class RefineMaskConfigTest(unittest.TestCase):
         self.assertEqual(cfg.object_slots.predictor_type, 'role_queries')
         self.assertEqual(cfg.object_slots.num_slots, 2)
         self.assertEqual(cfg.object_slots.slot_dim, 128)
+        self.assertEqual(cfg.rvt.object_prediction_confidence_threshold, .05)
         self.assertFalse(cfg.object_conditioning.supervise_mixed_role_maps)
         self.assertEqual(cfg.rvt.object_slot_mixed_role_loss_weight, 0.)
         self.assertEqual(cfg.rvt.object_slot_diversity_loss_weight, .01)

@@ -70,7 +70,8 @@ rvt:
   img_aug: 0.0
   object_prior_mode: o2_internal_slots
   oracle_prior_mode: none
-  object_prediction_confidence_threshold: 0.25
+  # Role-map peak gate: allow weak coarse responses to reach refine (ablate vs 0.25).
+  object_prediction_confidence_threshold: 0.05
   object_slot_mask_loss_weight: 1.0
   object_slot_mixed_role_loss_weight: 0.0
   object_refine_mask_loss_weight: 1.0
