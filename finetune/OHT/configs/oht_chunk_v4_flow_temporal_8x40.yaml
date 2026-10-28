@@ -1,0 +1,8 @@
+extends: oht_chunk_v4_flow_scaled_8x40.yaml
+exp_id: oht-key-chunk-v4-flow-temporal
+chunk_policy:
+  adaln: true
+  temporal_kernel_size: 3
+  # Match the demonstrated changes of displacement, including necessary turns.
+  second_difference_weight: 0.1
+  second_difference_scale: 0.001

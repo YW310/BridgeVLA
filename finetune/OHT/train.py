@@ -63,6 +63,9 @@ def main(argv=None):
     plan = resolve_training_plan(config, len(dataset), world)
     target_steps, accumulation = plan["optimizer_steps"], plan["accumulation_steps"]
     if args.validate_only:
+        if chunk_enabled:
+            from .chunk_normalization import resolve_training_normalization
+            resolve_training_normalization(config, dataset)
         print(json.dumps(dict(valid=True, mode=config["mode"], samples=dataset.validate_all(), training_plan=plan)))
         return 0
     import torch
@@ -96,6 +99,18 @@ def main(argv=None):
                                   flow_steps=settings['flow_steps'] if settings['decoder_type'] == 'flow_matching' else None)), flush=True)
     if world > 1:
         dist.barrier()
+    if chunk_enabled:
+        from .chunk_normalization import resolve_training_normalization
+        resolve_training_normalization(config, dataset, distributed=dist if world > 1 else None, rank=rank)
+        settings = chunk_settings(config, dataset.contract)
+        if rank == 0:
+            print(json.dumps(dict(chunk_scales={name: settings[name] for name in
+                ('action_position_scale', 'geometry_scale', 'position_loss_scale')},
+                flow_time_sampling=settings['flow_time_sampling'], adaln=settings['adaln'],
+                temporal_kernel_size=settings['temporal_kernel_size'],
+                second_difference_weight=settings['second_difference_weight'])), flush=True)
+            if config.get('chunk_normalization'):
+                write_json(output / 'chunk_normalization.json', config['chunk_normalization'])
     remaining_draws = target_steps * accumulation * config["batch_size"]
     sampler = TaskBalancedSampler(dataset.samples, remaining_draws, seed)
     loader = DataLoader(dataset, batch_size=config["batch_size"], sampler=sampler,

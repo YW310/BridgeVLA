@@ -6,7 +6,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from .action_modes import action_options, validate_action
-from .chunk_config import chunk_settings
+from .chunk_config import chunk_settings, chunk_scale
 
 
 def rotation_6d(value):
@@ -28,6 +28,7 @@ class ChunkDecoder(nn.Module):
     def __init__(self, feature_dim, settings):
         super().__init__()
         self.settings = settings
+        chunk_scale(settings, 'action_position_scale')
         dim = settings['hidden_dim']
         self.visual = nn.Linear(feature_dim, dim)
         self.state = nn.Linear(14, dim)  # current TCP7 + q6 + measured opening1
@@ -51,7 +52,7 @@ class ChunkDecoder(nn.Module):
                             self.state(state.to(dtype))[:, None], self.goal(goal_condition.to(dtype))[:, None]), 1)
         query = self.queries[None].expand(state.shape[0], -1, -1)
         raw = self.head(self.transformer(query, memory))
-        position = state[:, None, :3] + raw[..., :3] * self.settings['position_scale']
+        position = state[:, None, :3] + raw[..., :3] * chunk_scale(self.settings, 'action_position_scale')
         return position, rotation_6d(raw[..., 3:9]), raw[..., 9]
 
     def goal_condition(self, state, goal):
@@ -62,7 +63,7 @@ class ChunkDecoder(nn.Module):
         current = F.normalize(state[:, 3:7], dim=-1)
         target = F.normalize(goal[:, 3:7], dim=-1)
         local_position = torch.einsum('bij,bj->bi', quaternion_matrix(current).transpose(-1, -2),
-                                      goal[:, :3] - state[:, :3]) / self.settings['position_scale']
+                                      goal[:, :3] - state[:, :3]) / chunk_scale(self.settings, 'geometry_scale')
         xyz, w = current[:, :3], current[:, 3:4]
         target_xyz, target_w = target[:, :3], target[:, 3:4]
         relative = torch.cat((w * target_xyz - target_w * xyz - torch.linalg.cross(xyz, target_xyz),
@@ -81,36 +82,52 @@ def chunk_loss(prediction, target, valid, settings, *, current_position=None):
         raise ValueError('Chunk supervision requires [B,K,8] and bool [B,K]')
     if not valid.any() or not torch.isfinite(target[valid]).all():
         raise ValueError('Chunk batch has no valid finite supervision')
-    p = F.smooth_l1_loss(position[valid] / settings['position_scale'],
-                         target[..., :3][valid] / settings['position_scale'])
+    position_scale = chunk_scale(settings, 'position_loss_scale')
+    p = F.smooth_l1_loss(position[valid] / position_scale,
+                         target[..., :3][valid] / position_scale)
     r = F.mse_loss(rotation[valid], quaternion_matrix(target[..., 3:7][valid]))
     g = F.binary_cross_entropy_with_logits(grip[valid], target[..., 7][valid])
     weighted_p = settings['position_weight'] * p
     displacement = position[valid].sum() * 0.
+    second = displacement
+    second_error = 0.
     displacement_error = stationary_displacement_error = 0.
-    if settings['displacement_weight'] > 0 and current_position is None:
-        raise ValueError('Displacement supervision requires the measured current TCP position')
+    if (settings['displacement_weight'] > 0 or settings.get('second_difference_weight', 0.) > 0) and current_position is None:
+        raise ValueError('Displacement/second-difference supervision requires the measured current TCP position')
     if current_position is not None:
         if current_position.shape != (position.shape[0], 3) or not torch.isfinite(current_position).all():
             raise ValueError('Current TCP position must be finite [B,3]')
         # Anchor the first tick to the measured state. Later ticks compare only
         # consecutive valid labels, never bridging padding or missing frames.
         paired = torch.cat((valid[:, :1], valid[:, 1:] & valid[:, :-1]), dim=1)
+        previous_predicted = torch.cat((current_position[:, None], position[:, :-1]), dim=1)
+        previous_target = torch.cat((current_position[:, None], target[:, :-1, :3]), dim=1)
+        delta_predicted = position - previous_predicted
+        delta_target = target[..., :3] - previous_target
         if paired.any():
-            previous_predicted = torch.cat((current_position[:, None], position[:, :-1]), dim=1)
-            previous_target = torch.cat((current_position[:, None], target[:, :-1, :3]), dim=1)
-            predicted_delta = position[paired] - previous_predicted[paired]
-            target_delta = target[..., :3][paired] - previous_target[paired]
+            predicted_delta = delta_predicted[paired]
+            target_delta = delta_target[paired]
             scale = settings['displacement_scale']
             displacement = F.smooth_l1_loss(predicted_delta / scale, target_delta / scale)
             with torch.no_grad():
                 displacement_error = torch.linalg.vector_norm(predicted_delta - target_delta, dim=-1).mean().item()
                 stationary_displacement_error = torch.linalg.vector_norm(target_delta, dim=-1).mean().item()
+        triples = paired[:, 1:] & paired[:, :-1]
+        if triples.any():
+            predicted_second = torch.diff(delta_predicted, dim=1)[triples]
+            target_second = torch.diff(delta_target, dim=1)[triples]
+            scale = settings.get('second_difference_scale', .001)
+            second = F.smooth_l1_loss(predicted_second / scale, target_second / scale)
+            second_error = torch.linalg.vector_norm(predicted_second - target_second, dim=-1).mean().detach().item()
     weighted_d = settings['displacement_weight'] * displacement
-    return weighted_p + weighted_d + settings['rotation_weight'] * r + settings['gripper_weight'] * g, dict(
+    weighted_second = settings.get('second_difference_weight', 0.) * second
+    return weighted_p + weighted_d + weighted_second + settings['rotation_weight'] * r + settings['gripper_weight'] * g, dict(
         chunk_position_loss=p.detach().item(), chunk_position_weighted_loss=weighted_p.detach().item(),
         chunk_displacement_loss=displacement.detach().item(),
         chunk_displacement_weighted_loss=weighted_d.detach().item(),
+        chunk_second_difference_loss=second.detach().item(),
+        chunk_second_difference_weighted_loss=weighted_second.detach().item(),
+        chunk_second_difference_error_m=second_error,
         chunk_displacement_error_m=displacement_error,
         chunk_stationary_displacement_error_m=stationary_displacement_error,
         chunk_rotation_loss=r.detach().item(),
@@ -309,6 +326,7 @@ class ChunkAgent:
                            chunk_flow_weighted_loss=weighted.detach().item(),
                            chunk_flow_position_loss=extra['chunk_flow_position_loss'],
                            chunk_flow_rotation_loss=extra['chunk_flow_rotation_loss'])
+            metrics.update({name: value for name, value in extra.items() if name.startswith('chunk_flow_tau_')})
             with torch.no_grad():
                 mask = batch['action_valid'][:, 0, :self.settings['horizon']]
                 residual = prediction[0] - batch['action_chunk'][:, 0, :self.settings['horizon'], :3]
@@ -317,8 +335,11 @@ class ChunkAgent:
             with torch.no_grad():
                 _, sampled_metrics = chunk_loss(prediction, batch['action_chunk'][:, 0], batch['action_valid'][:, 0],
                                                self.settings, current_position=batch['tcp_pose'][:, 0, :3])
-                for name in ('chunk_displacement_error_m', 'chunk_stationary_displacement_error_m'):
+                for name in ('chunk_displacement_error_m', 'chunk_stationary_displacement_error_m',
+                             'chunk_second_difference_error_m'):
                     metrics[name] = sampled_metrics[name]
+                metrics['chunk_sampled_position_loss'] = sampled_metrics['chunk_position_loss']
+                metrics['chunk_sampled_displacement_loss'] = sampled_metrics['chunk_displacement_loss']
         with torch.no_grad():
             valid = batch['action_valid'][:, 0, :self.settings['horizon']]
             target = batch['action_chunk'][:, 0, :self.settings['horizon'], :3]
@@ -399,7 +420,9 @@ def load_chunk_weights(agent, checkpoint, initialize=False):
             changed = {name for name in saved if saved[name] != agent.settings[name]}
             if changed <= {'stage', 'key_loss_weight', 'position_weight', 'rotation_weight', 'gripper_weight',
                            'displacement_weight', 'displacement_scale', 'goal_conditioning',
-                           'flow_weight', 'flow_steps', 'flow_inference_seed'}:
+                           'flow_weight', 'flow_steps', 'flow_inference_seed', 'flow_time_sampling',
+                           'position_loss_scale', 'second_difference_weight', 'second_difference_scale',
+                           'normalization_quantile', 'normalization_min_scale', 'normalization_max_samples'}:
                 state = checkpoint['model_state']
                 if 'goal_conditioning' in changed:
                     # Same dimensions, different meaning: relearn only the goal

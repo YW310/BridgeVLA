@@ -1,0 +1,11 @@
+extends: oht_chunk_v4_flow_8x40.yaml
+exp_id: oht-key-chunk-v4-flow-scaled
+chunk_policy:
+  # Resolved from training-only valid future displacement radii, saved in checkpoint.
+  action_position_scale: train_quantile
+  normalization_quantile: 0.99
+  normalization_min_scale: 0.01
+  normalization_max_samples: 4096
+  geometry_scale: 0.25
+  position_loss_scale: 0.01
+  flow_time_sampling: beta_high_noise

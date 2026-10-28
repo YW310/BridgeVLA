@@ -39,4 +39,28 @@ flow 训练的 `chunk_*_loss` 是带噪监督及其重建的训练损失。`chun
 
 CPU 测试覆盖渲染通道对齐、抗锯齿/空白/原点、裁剪逆变换、旋转与世界坐标恢复、相对 attention、有效 mask、flow 积分、标签隔离、梯度、DDP、HTTP 和离线评估。实际 CUDA 渲染、吞吐、内存和 OHT 闭环精度需在训练/仿真服务器验收。
 
-参考方法：[ChainedDiffuser](https://proceedings.mlr.press/v229/xian23a.html)、[3D Diffuser Actor](https://3d-diffuser-actor.github.io/)、[pi0](https://arxiv.org/abs/2410.24164)。这是面向现有 BridgeVLA 的组合实现，不是三篇论文的原样复现。
+## 尺度与时序实验
+
+`oht_chunk_v4_flow_scaled_8x40.yaml` 在旧 flow 上单独启用尺度与时间采样实验；`oht_chunk_v4_flow_temporal_8x40.yaml` 再开启结构与二阶差分。旧配置与旧 checkpoint 默认行为不变。
+
+| 设置 | 新实验 | 用途 |
+| --- | --- | --- |
+| `action_position_scale` | `train_quantile`，训练启动后解析为数值 | 当前 TCP 到各未来点的平移编码/解码；单位高斯位置噪声对应这个米尺度 |
+| `geometry_scale` | 0.25 m | 观测表面、关键目标和动作 query 的统一 attention 坐标尺度 |
+| `position_loss_scale` | 0.01 m | 物理位置 Smooth L1 的独立容差，默认 beta=1 |
+| `flow_time_sampling` | `beta_high_noise` | `tau=.999*(1-U**(1/1.5))`，偏向 tau=0 的高噪声端 |
+| `adaln` | temporal 配置为 true | 各 block 的 self/cross/FFN 使用 flow-time 条件的 shift/scale/residual gate，gate 零初始化 |
+| `temporal_kernel_size` | temporal 配置为 3 | 输出前的 depthwise 时间卷积，零初始化的残差支路 |
+| `second_difference_weight/scale` | temporal 配置为 0.1 / 0.001 m | 匹配 GT 的位移二阶差分，不惩罚真实曲率本身 |
+
+未设置前三个尺度时各自回退到原 `position_scale`。动作 query 必须乘 `action_position_scale/geometry_scale` 后才能与场景位置比较；预测目标的空间条件使用 `geometry_scale`。几何仍在当前 TCP 坐标系，最终动作仍为世界绝对 EEF。
+
+动作归一化使用训练集至多 `normalization_max_samples=4096` 个均匀选取的样本。仅检查并读取小型 targets NPZ；当前 TCP 来自已绑定 checksum 的 sample index。只取模型 horizon 内的有效未来点，统计位移半径的 `normalization_quantile=.99` 分位数，设 `normalization_min_scale=.01` m 下限。标量半径尺度不放大近静止轴，且不依赖坐标系朝向。val/test 与无效 padding 不进入统计。rank 0 计算并向全部 rank 广播数值或错误，避免其他 rank 在构建 DDP 时等待失败进程。
+
+统计写入 run 的 `chunk_normalization.json` 和 checkpoint 的 `config.chunk_normalization`；解析后的 float 写入 `config.chunk_policy.action_position_scale`。checkpoint 推理无需训练数据。相同配置 resume 会重新校验训练统计；更换尺度或结构必须新建 run，通过 `--init-checkpoint` 保留 encoder、重新初始化 decoder/optimizer。仅调整 loss 权重/容差或 flow 时间采样时，新 run 初始化可保留 decoder。已有 V4 标签无需重建。
+
+二阶差分以当前 TCP 为第 0 点，匹配 `(p[k]-p[k-1])-(p[k-1]-p[k-2])` 的 GT；相邻两段位移都有效时才监督。数值尺度是米/控制步²，不是 m/s²。时间卷积不接收 GT 或未来有效长度；不强制第一未来点等于当前 TCP，也不强制末点到达预测 key。
+
+`chunk_second_difference_loss/weighted_loss` 属于重建辅助损失；`chunk_second_difference_error_m` 来自独立部署采样。新增 `chunk_sampled_position_loss` 与 `chunk_sampled_displacement_loss` 仅用于诊断，不加入反传。`chunk_flow_tau_{high,mid,low}_noise_count/position_loss` 将 tau 按三等分记录，位置项为动作归一化空间的速度场 MSE；空分箱 count/loss 均为 0，跨 batch 汇总应按 count 加权。这些训练指标不能替代固定验证集上的真实采样误差和闭环效果。
+
+参考方法：[ChainedDiffuser](https://proceedings.mlr.press/v229/xian23a.html)、[3D Diffuser Actor](https://3d-diffuser-actor.github.io/)、[pi0](https://arxiv.org/abs/2410.24164)。时间采样参考 pi0；时序卷积、物理差分项与尺度分离是本仓库的实验设计，不据此宣称精度提升。这是面向现有 BridgeVLA 的组合实现，不是三篇论文的原样复现。

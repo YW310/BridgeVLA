@@ -366,6 +366,21 @@ flow 的 loss 包含带噪 GT 重建，因此 `chunk_*_loss` 不代表部署误�
 
 新配置默认 K=16、建议执行 H=4。可将模型 K 减小到 cache horizon 以内做对照，无需重建同一 V4 数据；超过监督 horizon 则拒绝训练。TensorBoard 记录总损失、关键目标各项损失、masked chunk 位置/旋转/夹爪损失，以及预测关键目标热图和 chunk 的 XY/XZ/YZ 预测与实测未来路径。预测条件复用逐样本部署路径；joint 还增加一次有效关键目标子批的监督 forward，吞吐和显存需在实际 GPU 上测量。
 
+**尺度与时序实验。** [flow_scaled 配置](configs/oht_chunk_v4_flow_scaled_8x40.yaml) 分离动作、几何、位置 loss 的尺度，并增加高噪声阶段的训练覆盖；[flow_temporal 配置](configs/oht_chunk_v4_flow_temporal_8x40.yaml) 再增加逐层 AdaLN、时序卷积和匹配 GT 的二阶差分监督。旧 flow 配置不自动开启新功能。
+
+~~~bash
+OUT=/common-data-32t/data/robot_data/oht_curobo_pd_v423-seg/bridgevla-seg-v4-run01
+GPUS_PER_NODE=2 bash finetune/OHT/train_8x40.sh \
+  --config finetune/OHT/configs/oht_chunk_v4_flow_temporal_8x40.yaml \
+  --replay "$OUT/replay-source-v4" \
+  --init-checkpoint /path/to/previous-flow-run/model_last.pth \
+  --log-dir "$OUT/runs" --exp-id oht-seg-v4-flow-temporal-s0
+~~~
+
+仅改尺度/时间采样的对照改用 `oht_chunk_v4_flow_scaled_8x40.yaml` 和独立实验名。动作尺度由 rank 0 读取最多 4096 个均匀选取的训练样本标签，统计有效未来相对当前 TCP 位移半径的 99% 分位数，下限 0.01 m；不读取 RGB-D 或 val/test。启动打印进度，结果写入 `chunk_normalization.json` 和 checkpoint 的 `config.chunk_normalization`，数值尺度写入 `config.chunk_policy.action_position_scale`；推理直接复用。几何尺度为 0.25 m，位置 loss 尺度为 0.01 m。
+
+已有 V4 无需重建，输出仍为世界绝对 EEF。改变动作尺度/结构后用 `--init-checkpoint` 保留 encoder、重新初始化 decoder/optimizer，不能直接 resume 旧实验；也可省略 checkpoint 从基础模型联合训练。新实验原配置可 resume。冻结层数沿用当前 chunk 配置。新 loss/分箱日志与有效 mask 规则见[设计说明](../../docs/design/oht-spatial-flow-chunk.md#尺度与时序实验)。改善效果需在服务器对照验证。
+
 训练会打印实际 run 目录。将该目录填写为环境变量后执行：
 
 ~~~bash

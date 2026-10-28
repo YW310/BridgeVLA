@@ -11,6 +11,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from .chunk_model import ChunkDecoder, quaternion_matrix, rotation_6d
+from .chunk_config import chunk_scale
 
 
 def time_features(value, width=32):
@@ -49,14 +50,30 @@ class RelativeAttention(nn.Module):
 
 
 class SpatialBlock(nn.Module):
-    def __init__(self, dim, heads, dropout):
+    def __init__(self, dim, heads, dropout, adaln=False):
         super().__init__()
         self.self_attention = RelativeAttention(dim, heads, dropout)
         self.cross_attention = RelativeAttention(dim, heads, dropout)
-        self.norms = nn.ModuleList(nn.LayerNorm(dim) for _ in range(3))
+        self.norms = nn.ModuleList(nn.LayerNorm(dim, elementwise_affine=not adaln) for _ in range(3))
         self.ffn = nn.Sequential(nn.Linear(dim, 4 * dim), nn.GELU(), nn.Dropout(dropout), nn.Linear(4 * dim, dim))
+        self.modulation = nn.Sequential(nn.SiLU(), nn.Linear(dim, 9 * dim)) if adaln else None
+        if self.modulation is not None:
+            nn.init.zeros_(self.modulation[-1].weight)
+            nn.init.zeros_(self.modulation[-1].bias)
 
-    def forward(self, query, xyz, memory, positions, valid):
+    def forward(self, query, xyz, memory, positions, valid, time=None):
+        if self.modulation is not None:
+            if time is None:
+                raise ValueError('AdaLN block requires a flow-time condition')
+            shift1, scale1, gate1, shift2, scale2, gate2, shift3, scale3, gate3 = (
+                value[:, None] for value in self.modulation(time).chunk(9, dim=-1))
+            normalized = self.norms[0](query) * (1 + scale1) + shift1
+            query = query + gate1 * self.self_attention(normalized, normalized, xyz, xyz,
+                                            torch.ones_like(xyz[..., 0], dtype=torch.bool))
+            normalized = self.norms[1](query) * (1 + scale2) + shift2
+            query = query + gate2 * self.cross_attention(normalized, memory, xyz, positions, valid)
+            normalized = self.norms[2](query) * (1 + scale3) + shift3
+            return query + gate3 * self.ffn(normalized)
         normalized = self.norms[0](query)
         query = query + self.self_attention(normalized, normalized, xyz, xyz,
                                            torch.ones_like(xyz[..., 0], dtype=torch.bool))
@@ -70,6 +87,7 @@ class SpatialChunkDecoder(nn.Module):
     def __init__(self, feature_dim, settings, num_views, action_dt):
         super().__init__()
         self.settings, self.num_views, self.action_dt = settings, num_views, action_dt
+        chunk_scale(settings, 'action_position_scale')
         self.is_flow = settings['decoder_type'] == 'flow_matching'
         dim = settings['hidden_dim']
         self.visual, self.state, self.goal = nn.Linear(feature_dim, dim), nn.Linear(14, dim), nn.Linear(8, dim)
@@ -79,8 +97,13 @@ class SpatialChunkDecoder(nn.Module):
         self.action = nn.Linear(9, dim)
         self.flow_time = nn.Sequential(nn.Linear(32, dim), nn.SiLU(), nn.Linear(dim, dim))
         self.tick_time = nn.Sequential(nn.Linear(32, dim), nn.SiLU(), nn.Linear(dim, dim))
-        self.blocks = nn.ModuleList(SpatialBlock(dim, settings['heads'], settings['dropout'])
+        self.blocks = nn.ModuleList(SpatialBlock(dim, settings['heads'], settings['dropout'], settings.get('adaln', False))
                                     for _ in range(settings['layers']))
+        kernel = settings.get('temporal_kernel_size', 1)
+        self.temporal = nn.Conv1d(dim, dim, kernel, padding=kernel // 2, groups=dim) if kernel > 1 else None
+        if self.temporal is not None:
+            nn.init.zeros_(self.temporal.weight)
+            nn.init.zeros_(self.temporal.bias)
         self.head = nn.Linear(dim, 10)
         nn.init.normal_(self.head.weight, std=.001)
         nn.init.zeros_(self.head.bias)
@@ -90,7 +113,7 @@ class SpatialChunkDecoder(nn.Module):
 
     def memory(self, coarse, fine, state, goal, coarse_xyz, fine_xyz, coarse_valid, fine_valid):
         features, positions, validity = [], [], []
-        scale, dtype = self.settings['position_scale'], self.visual.weight.dtype
+        scale, dtype = chunk_scale(self.settings, 'geometry_scale'), self.visual.weight.dtype
         for index, (tokens, xyz, valid) in enumerate(((coarse, coarse_xyz, coarse_valid),
                                                      (fine, fine_xyz, fine_valid))):
             if xyz.shape != (*tokens.shape[:2], 3) or valid.shape != tokens.shape[:2] or valid.dtype != torch.bool:
@@ -118,21 +141,28 @@ class SpatialChunkDecoder(nn.Module):
         dtype = features.dtype
         pose = pose.to(dtype)
         ticks = torch.arange(1, pose.shape[1] + 1, device=pose.device, dtype=dtype) * self.action_dt
+        time = self.flow_time(time_features(tau.to(dtype)))
         query = (self.action(pose) + self.queries[None] + self.tick_time(time_features(ticks))[None]
-                 + self.flow_time(time_features(tau.to(dtype)))[:, None])
+                 + time[:, None])
+        # Flow tokens are action-normalized. Relative attention must compare
+        # them to scene/key coordinates in the *geometry* normalization instead.
+        xyz = pose[..., :3] * (chunk_scale(self.settings, 'action_position_scale') /
+                                chunk_scale(self.settings, 'geometry_scale'))
         for block in self.blocks:
-            query = block(query, pose[..., :3], features, positions, valid)
+            query = block(query, xyz, features, positions, valid, time)
+        if self.temporal is not None:
+            query = query + self.temporal(query.transpose(1, 2)).transpose(1, 2)
         raw = self.head(query)
         return raw[..., :9], raw[..., 9]
 
     def decode(self, pose, grip, state):
         rotation = quaternion_matrix(state[:, 3:7])
-        position = torch.einsum('bij,bkj->bki', rotation, pose[..., :3] * self.settings['position_scale'])
+        position = torch.einsum('bij,bkj->bki', rotation, pose[..., :3] * chunk_scale(self.settings, 'action_position_scale'))
         return (position + state[:, None, :3], rotation[:, None] @ rotation_6d(pose[..., 3:9]), grip)
 
     def encode_target(self, target, state):
         local_rotation = quaternion_matrix(state[:, 3:7]).transpose(-1, -2)[:, None] @ quaternion_matrix(target[..., 3:7])
-        return torch.cat((to_local(target[..., :3], state) / self.settings['position_scale'],
+        return torch.cat((to_local(target[..., :3], state) / chunk_scale(self.settings, 'action_position_scale'),
                           local_rotation[..., :, 0], local_rotation[..., :, 1]), -1)
 
     def sample(self, memory, state):
@@ -158,6 +188,13 @@ class SpatialChunkDecoder(nn.Module):
         memory = self.memory(coarse, fine, state, goal, coarse_xyz, fine_xyz, coarse_valid, fine_valid)
         return self.sample(memory, state)
 
+    def sample_flow_time(self, state):
+        uniform = torch.rand(len(state), device=state.device, dtype=state.dtype)
+        if self.settings.get('flow_time_sampling', 'uniform') == 'beta_high_noise':
+            # pi0-style shifted Beta(1.5, 1): tau=0 is the high-noise end.
+            return .999 * (1 - uniform.pow(1 / 1.5))
+        return uniform
+
     def training_prediction(self, coarse, fine, state, goal, coarse_xyz, fine_xyz, coarse_valid, fine_valid, *, target, valid):
         memory = self.memory(coarse, fine, state, goal, coarse_xyz, fine_xyz, coarse_valid, fine_valid)
         if not self.is_flow:
@@ -169,7 +206,7 @@ class SpatialChunkDecoder(nn.Module):
             raise ValueError('Flow requires valid finite future supervision')
         safe_target = torch.where(valid[..., None], target, torch.cat((state[:, None, :7], state.new_zeros(len(state), 1, 1)), -1))
         clean = self.encode_target(safe_target, state)
-        noise, tau = torch.randn_like(clean), torch.rand(len(state), device=state.device, dtype=state.dtype)
+        noise, tau = torch.randn_like(clean), self.sample_flow_time(state)
         mixed = (1 - tau[:, None, None]) * noise + tau[:, None, None] * clean
         mixed = torch.where(valid[..., None], mixed, noise)
         velocity, grip = self.field(mixed, tau, memory)
@@ -178,6 +215,13 @@ class SpatialChunkDecoder(nn.Module):
         rotation_loss = F.mse_loss(velocity[..., 3:9][valid], expected[..., 3:9][valid])
         flow_loss = self.settings['position_weight'] * position_loss + self.settings['rotation_weight'] * rotation_loss
         reconstruction = mixed + (1 - tau[:, None, None]) * velocity
+        bins = {}
+        for name, lower, upper in (('high_noise', 0., 1 / 3), ('mid_noise', 1 / 3, 2 / 3), ('low_noise', 2 / 3, 1.)):
+            selected = valid & (tau[:, None] >= lower) & (tau[:, None] < upper)
+            bins[f'chunk_flow_tau_{name}_count'] = int(selected.sum().item())
+            bins[f'chunk_flow_tau_{name}_position_loss'] = (
+                F.mse_loss(velocity[..., :3][selected], expected[..., :3][selected]).detach().item()
+                if selected.any() else 0.)
         # Diagnostics and TensorBoard use an independent deployment sample.
         # Clean/noisy futures above must not make policy curves look accurate.
         training = self.training
@@ -190,4 +234,4 @@ class SpatialChunkDecoder(nn.Module):
         return self.decode(reconstruction, grip, state), dict(
             flow_loss=flow_loss, sampled_prediction=sampled,
             chunk_flow_position_loss=position_loss.detach().item(),
-            chunk_flow_rotation_loss=rotation_loss.detach().item())
+            chunk_flow_rotation_loss=rotation_loss.detach().item(), **bins)
