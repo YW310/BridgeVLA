@@ -30,7 +30,7 @@ GPU_ID=1 bash finetune/OHT/vla_server.sh \
 
 命令行参数优先于对应环境变量。服务使用单进程、单模型，不用 `torchrun`；多个模型分别使用不同端口和日志目录。
 
-V4 chunk checkpoint 使用同一启动入口，训练与离线评估见 [V4 说明](../../finetune/OHT/README.md#v4关键目标--连续-chunk-训练与评估)。`/model_info.chunk_spec` 声明 K、dt 和建议 H；新版客户端会确认 chunk schema，旧单动作客户端不能将其当作关键目标执行。
+V4 chunk checkpoint 使用同一启动入口，训练与离线评估见 [V4 说明](../../finetune/OHT/README.md#3-训练)。`/model_info.chunk_spec` 声明 K、dt 和建议 H；新版客户端会确认 chunk schema，旧单动作客户端不能将其当作关键目标执行。
 
 ## 分机部署：VLA server 与 IsaacLab client
 
@@ -49,7 +49,7 @@ curl http://109.105.46.126:8004/model_info
 
 启动脚本：[tools/oht_bridgevla_client.py](../../tools/oht_bridgevla_client.py)。主逻辑：[finetune/OHT/isaaclab_client.py](../../finetune/OHT/isaaclab_client.py)。
 
-在仿真服务器激活能运行 OHT 的 IsaacLab 环境，在其根目录执行以下命令。客户端启动仿真、连接 VLA 服务并执行策略；示例运行 1 个 episode，最多请求 20 个未来关键点。
+在仿真服务器激活能运行 OHT 的 IsaacLab 环境，在其根目录执行以下命令。客户端启动仿真、连接 VLA 服务并执行策略；示例运行 1 个 episode，最多请求 20 次策略：单关键点模型每次一个目标，chunk 模型每次一段轨迹。
 
 ```bash
 cd /home/yiwei/IsaacLab
@@ -68,7 +68,7 @@ python /home/yiwei/BridgeVLA/tools/oht_bridgevla_client.py \
 
 **每次运行使用尚不存在的输出目录。** 默认 `--initialization env-reset --score none`，因此 `success=null`；这不是任务成功率评估。
 
-policy 默认按 waypoint 执行：固定本次解码的绝对目标，先保持当前夹爪状态并跟踪到位，连续确认后才开闭夹爪；等待夹爪稳定后再请求下一目标。每目标最多 600 个物理控制步，停滞/超时会记录原因并停止。逐帧 GT replay 仍按原始时间线执行。详细参数、同初态策略验证和 GT 关键点对照见[关键点执行说明](oht-waypoint-execution.md)。
+单关键点 policy 默认按 waypoint 执行：固定本次解码的绝对目标，先保持当前夹爪状态并跟踪到位，连续确认后才开闭夹爪；等待夹爪稳定后再请求下一目标。每目标最多 600 个物理控制步，停滞/超时会记录原因并停止。chunk policy 则根据 `/model_info.chunk_spec` 按时间执行前 H 项后重新观测，不等待关键目标到位。逐帧 GT replay 仍按原始时间线执行。详细参数、同初态策略验证和 GT 关键点对照见[关键点执行说明](oht-waypoint-execution.md)。
 
 去掉 `--headless` 即可显示窗口。客户端默认在后台处理 HTTP reset/predict（包括观测打包），等待期间由主线程以最多约 20 Hz 调用 [IsaacLab render 接口](https://github.com/isaac-sim/IsaacLab/blob/v2.2.1/source/isaaclab/isaaclab/sim/simulation_context.py)刷新窗口；headless 下不做额外等待渲染。等待预测时不推进物理，收到预测后才开始跟踪目标；关闭窗口后丢弃未执行的预测。窗口响应与策略动作频率是两项指标，动作频率仍受采集、传输和推理耗时影响。
 
@@ -203,7 +203,7 @@ python tools/smoke_oht_vla_server.py \
 | 运动异常或长期限幅 | 对比 `measured_before/after` 与 `errors_before/after`，区分目标跳变与执行跟踪问题；不要仅翻转夹爪符号 |
 | HTTP 409 / 429 / 503 | 分别检查模型/会话冲突、服务 busy、服务未就绪；请求结果不确定时不重发旧动作，待空闲后重置 episode |
 | 退出时 `Invalid NodeObj` | 区分相机清理错误与运行期间错误，检查 episode 是否已完成；其他 cleanup warning 保留排查 |
-| 在线 heatmap 可视化 | 打开 `/visualization`，检查 `/model_info.visualization` 和 `/visualization/latest`；离线 GT 对比见 [OHT 评估说明](../../finetune/OHT/README.md#8-离线与闭环评估) |
+| 在线 heatmap 可视化 | 打开 `/visualization`，检查 `/model_info.visualization` 和 `/visualization/latest`；离线 GT 对比见 [OHT 评估说明](../../finetune/OHT/README.md#4-离线评估) |
 
 客户端自动处理 `/model_info`、`/reset`、`/predict` 和会话校验；服务端支持 prepared/raw 两种观测格式。协议字段与实现见[服务设计](../design/oht-vla-server.md#4-http-接口)，坐标、TCP 与参考脚本差异见[对照检查](../design/oht-client-server-audit.md)，动作模式见[动作模式指南](oht-action-modes.md)。
 

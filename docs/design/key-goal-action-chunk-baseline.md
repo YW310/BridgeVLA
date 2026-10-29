@@ -1,6 +1,6 @@
 # 关键目标与连续 Action Chunk Baseline
 
-状态：2026-10-23，V4 数据、joint/frozen_key 两种 chunk 训练、checkpoint、离线评估、HTTP 协议与原生客户端前缀执行已接通。默认冻结 Gemma 前 6 层、视觉编码器与 projector，联合训练后续 Gemma 层、关键目标头和 chunk decoder。CPU 合成数据及仿真接口替身用于回归；真实 CUDA 模型和 IsaacLab 闭环待服务器验收。数据及训练命令见 [OHT README](../../finetune/OHT/README.md#v4关键目标--连续-chunk-训练与评估)，服务启动见 [VLA server 指南](../guides/oht-vla-server.md)。
+本文记录最初的轻量 Transformer chunk baseline，以及仍沿用的 V4 数据和执行契约。当前三组状态条件配置与 flow/增量表示见[连续轨迹模型设计](oht-spatial-flow-chunk.md)，运行命令见 [OHT README](../../finetune/OHT/README.md#3-训练)。joint/frozen_key、checkpoint、离线评估和 HTTP/客户端已接通；CPU/接口回归不代表完整 CUDA 或闭环性能已验证。
 
 ## 1. 首版范围
 
@@ -77,7 +77,7 @@ episode 尾部只保留至少有一项未来目标的窗口，剩余项 padding 
 
 cache contract 绑定原始 audit、坐标定义、关键点方法、K、stride、dt 容差、mask 规则、观测索引和标签索引的摘要。旧 replay 的单关键点标签不足以恢复密集路径，需从原始轨迹生成新的 chunk cache；不能只修改原 `contract.json`。
 
-同一 episode、关联场景及其派生样本保持原来的组划分。位置尺度当前由配置固定为 0.25 m，写入 checkpoint；后续若改为拟合，只用 train。旧关键点策略与 chunk 的直接对照使用相同输入锚点；完整尾段覆盖另报结果，避免把数据覆盖变化误算成架构收益。
+同一 episode、关联场景及其派生样本保持原来的组划分。基础 decoder 的位置尺度为 0.25 m；当前状态条件配置仅用 train 拟合动作尺度并写入 checkpoint，见[归一化说明](oht-spatial-flow-chunk.md#归一化与-checkpoint)。旧关键点策略与 chunk 的直接对照使用相同输入锚点；完整尾段覆盖另报结果，避免把数据覆盖变化误算成架构收益。
 
 ## 4. 模型与训练
 
@@ -108,7 +108,7 @@ masked chunk loss 包含位置的归一化 Smooth L1、连续旋转恢复后的�
 
 joint 优化 `chunk_loss + key_loss_weight * key_loss`，默认权重 1.0。没有未来关键点的样本仅计算 chunk loss，key loss 按全卡有效关键目标数归一化，允许某个 rank 全部为无 key 尾段。GT 关键目标仅用于独立监督，不进入 chunk 条件。TensorBoard 分别记录 key 和 chunk 的总损失及各分量。
 
-新配置独立继承 `oht_full_8x40.yaml` 的 AdamW、学习率、epoch/global batch、采样、保存频率和 TensorBoard 习惯。默认 joint 沿用父配置的按层数冻结：`freeze_gemma_prefix_layers=6`、`freeze_language_model=false`、`freeze_vision_tower=true`、`freeze_multimodal_projector=true`；Gemma 后续层、关键目标头及 chunk decoder 可训练，`lm_head/embed_tokens` 继续冻结。层数可配置为非负整数；显式 `freeze_language_model=true` 可冻结整个语言模型。frozen_key 则额外冻结整个关键目标网络。可训练参数名单和数量写入日志。
+新配置独立继承 `oht_full_8x40.yaml` 的 AdamW、学习率、epoch/global batch、采样、保存频率和 TensorBoard 习惯。当前 chunk 配置在父配置上覆盖按层数冻结：`freeze_gemma_prefix_layers=16`、`freeze_language_model=false`、`freeze_vision_tower=true`、`freeze_multimodal_projector=true`；Gemma 后续层、关键目标头及 chunk decoder 可训练，`lm_head/embed_tokens` 继续冻结。层数可配置为非负整数；显式 `freeze_language_model=true` 可冻结整个语言模型。frozen_key 则额外冻结整个关键目标网络。可训练参数名单和数量写入日志。
 
 空间增强必须同时变换当前点云、当前 TCP、关键目标和整个 chunk；机器人状态不能因此变成无法用 q 验证的虚构构型。首个 chunk 配置显式关闭全局刚体变换增强，先保留独立的图像增强；恢复空间增强需先定义机器人基座/关节的等变契约，并作为独立实验。
 
@@ -154,7 +154,7 @@ joint 优化 `chunk_loss + key_loss_weight * key_loss`，默认权重 1.0。没�
 | 5. 执行器（已接通） | `runtime/chunk_executor.py`、`isaaclab_client.py` | 固定 dt 消费前缀、夹爪时序、跟踪异常停止；真实仿真待验收 |
 | 6. 评估与可视化（已接通） | TensorBoard、离线 PNG/NPZ、在线 3D | 关键目标热图、预测 chunk 与默认前缀；客户端日志记录真实执行 |
 
-当前配置为 `configs/oht_chunk_v4_8x40.yaml`，继承 full 8x40 的 AdamW/epoch/logging，默认 joint；可训练参数名单写入 run。joint 可不传 EEF checkpoint：使用 PaliGemma 基础资源或可选的 `--pretrain-path` 热图预训练，关键目标由独立 GT 分支从新学习，chunk 仍使用预测目标裁剪，训练初始化不引入 GT 条件。frozen_key 仍要求已训练 checkpoint。K 可以小于等于 cache 的监督 horizon，因此同一 V4 数据可做 K=1 对照。可选的旧关键目标 checkpoint 用 `--init-checkpoint` 初始化 encoder，要求已解析的 data profiles/标定一致；相同阶段及冻结策略的 chunk checkpoint 才可 resume。
+基础配置为 `configs/oht_chunk_v4_8x40.yaml`（当前三组状态条件配置另见[模型设计](oht-spatial-flow-chunk.md#当前三组配置)），继承 full 8x40 的 AdamW/epoch/logging，默认 joint；可训练参数名单写入 run。joint 可不传 EEF checkpoint：使用 PaliGemma 基础资源或可选的 `--pretrain-path` 热图预训练，关键目标由独立 GT 分支从新学习，chunk 仍使用预测目标裁剪，训练初始化不引入 GT 条件。frozen_key 仍要求已训练 checkpoint。K 可以小于等于 cache 的监督 horizon，因此同一 V4 数据可做 K=1 对照。可选的旧关键目标 checkpoint 用 `--init-checkpoint` 初始化 encoder，要求已解析的 data profiles/标定一致；相同阶段及冻结策略的 chunk checkpoint 才可 resume。
 
 当前预测条件按样本复用原部署 `act` 路径，以保持裁剪/旋转推理一致，尚未实现 backbone 批量推理优化。同步网络等待期间暂停物理时间。首版执行器要求 action_dt 为 control dt 的整数倍；不以浮点四舍五入改变动作时间。超出默认 0.10 m / 0.5 rad 跟踪误差或已越过已知硬限位时停止，不无限等待。
 

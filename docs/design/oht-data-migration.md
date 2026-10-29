@@ -43,7 +43,7 @@ Baseline 和 assistance 共用观测、相机、动作定义、控制器、训�
 
 ### 3.1 深度视频契约（2026-10-09 补充调查）
 
-深度为 **无损 HEVC gray12le**，数值编码不能从像素格式推断。当前按用户要求以参考代码为准：`encoding: quantized`、`metadata: reference`，每相机 depth metadata 优先，缺字段用参考默认 `depth_min=0.01`、`depth_max=10`、`shift=3.5`、`use_log=true`、`qmax=4095`。匹配参考 float32 反量化及毫米 PNG 舍入，再按 Z-depth 反投影。默认 raw=897 为 1.215 m；0 无效，4095 解为有效 10 m，点云独立过滤 `0 < Z <= 3 m`。此前直接 `raw × 0.001` 的默认值不再用于参考链路。严格 `metadata: true` 和显式毫米导出模式仍保留。配置、区别和旧缓存迁移见 [OHT 运行说明](../../finetune/OHT/README.md#3-仿真数据契约与构建共用缓存)。
+深度为 **无损 HEVC gray12le**，数值编码不能从像素格式推断。当前按用户要求以参考代码为准：`encoding: quantized`、`metadata: reference`，每相机 depth metadata 优先，缺字段用参考默认 `depth_min=0.01`、`depth_max=10`、`shift=3.5`、`use_log=true`、`qmax=4095`。匹配参考 float32 反量化及毫米 PNG 舍入，再按 Z-depth 反投影。默认 raw=897 为 1.215 m；0 无效，4095 解为有效 10 m，点云独立过滤 `0 < Z <= 3 m`。此前直接 `raw × 0.001` 的默认值不再用于参考链路。严格 `metadata: true` 和显式毫米导出模式仍保留。配置、区别和旧缓存迁移见 [OHT 运行说明](../guides/oht-data-diagnostics.md#相机深度与工作区契约)。
 
 不需要 raw sidecar 或重新采集。读取器原生读取灰度平面并检查像素格式；仓库配置按原始帧序号配对，独立时间戳流可显式选择 PTS。禁止将数值深度转换成 RGB 再解码。相机世界姿态为 USD/OpenGL，使用 `T_world_optical = T_world_usd @ diag(1,-1,-1,1)`。
 
@@ -115,7 +115,7 @@ OHT 默认按参考模块使用 Z-depth，不归一化射线；若独立确认�
 
 首版保留当前 organized RGB/point_cloud batch 接口，图像尺寸改为配置项；先在原始分辨率验证几何，再选择下采样。深度/点坐标使用一致像素采样并更新 K，不对跨物体边缘的深度做普通 RGB 双线性插值。
 
-已实现可选手工背景过滤 `point_cloud_filter`：仓库 YAML 启用经验 ROI `[-0.3,-0.8,0.4,1.2,0.8,1.9]`，旧配置缺少此块仍关闭。它覆盖已记录的坐标示例，须预览四任务抓取/放置/高位姿态验证，不能视作全量安全边界。世界坐标保留框减去排除框并集，独立于 `scene_bounds` 和动作标签。共享 `data/point_filter.py`，缓存构建、训练输入、在线 predictor/agent 及全局/局部预览一致；排除 XYZ 记 NaN，原始 RGB/depth 与像素布局不改。单相机可空，全场过滤为空则拒绝执行/完成缓存。参数纳入 data profile/契约，更改后在新目录重建 replay/角色缓存；原始数据/audit 可复用。配置与安全边界见 [OHT 运行说明](../../finetune/OHT/README.md#3-仿真数据契约与构建共用缓存)，不预设实际墙壁排除框，也不删除所有平面或按未来 GT goal 筛点。
+已实现可选手工背景过滤 `point_cloud_filter`：仓库 YAML 启用经验 ROI `[-0.3,-0.8,0.4,1.2,0.8,1.9]`，旧配置缺少此块仍关闭。它覆盖已记录的坐标示例，须预览四任务抓取/放置/高位姿态验证，不能视作全量安全边界。世界坐标保留框减去排除框并集，独立于 `scene_bounds` 和动作标签。共享 `data/point_filter.py`，缓存构建、训练输入、在线 predictor/agent 及全局/局部预览一致；排除 XYZ 记 NaN，原始 RGB/depth 与像素布局不改。单相机可空，全场过滤为空则拒绝执行/完成缓存。参数纳入 data profile/契约，更改后在新目录重建 replay/角色缓存；原始数据/audit 可复用。配置与安全边界见 [OHT 运行说明](../guides/oht-data-diagnostics.md#相机深度与工作区契约)，不预设实际墙壁排除框，也不删除所有平面或按未来 GT goal 筛点。
 
 约 150 万原始点/帧无需全部进 renderer。缓存抽取帧/共享观测，按空间与颜色一致性采样或保留局部细节。不要把 60 万帧的五路 float32 RGB-D/XYZ 全部复制为多个 replay transition；先估算磁盘、点数、加载吞吐和显存。
 
@@ -226,7 +226,7 @@ rvt:
 
 OHT 只有四物体中心和姿态，未提供实例 mask、mesh 尺寸或轴 site 几何，不能直接满足当前 O2 表面点/区域点输入。
 
-2026-10-11：交互 HTML 已增加当前帧对象中心、可编辑名称和可选局部姿态轴；新 replay 仅在样本索引保存诊断位姿，旧 replay 可通过原始数据与绑定 audit 只读补充。对象索引语义和四元数顺序不自动推断，页面显式选择顺序后才显示轴；此图层不进入训练观测，不提供实例表面或自动 T/R 标签。使用方法见 [对象预览](../../finetune/OHT/README.md#显示任务相关对象)。
+2026-10-11：交互 HTML 已增加当前帧对象中心、可编辑名称和可选局部姿态轴；新 replay 仅在样本索引保存诊断位姿，旧 replay 可通过原始数据与绑定 audit 只读补充。对象索引语义和四元数顺序不自动推断，页面显式选择顺序后才显示轴；此图层不进入训练观测，不提供实例表面或自动 T/R 标签。使用方法见 [对象预览](../guides/oht-data-diagnostics.md#显示任务相关对象)。
 
 2026-10-12：无实例标注时可用当前对象中心与显式 world XYZ 尺寸框近似截取点云。HTML 调框并导出绑定当前 sample/frame 的 JSON，`tools/extract_oht_object_clouds.py` 从全部有效缓存点或米制深度重建点导出逐对象 PLY/NPZ，记录近似来源、每相机点数及空几何。它不是实例分割或完整表面 GT，不自动产生 T/R 教师或进入动作前向。
 
@@ -578,9 +578,9 @@ IsaacLab client（现有环境）
 
 验证使用 12 个合成 OHT episode、真实 Parquet/MP4/米制深度，生成 60 条 transitions。覆盖 baseline batch、教师与预测缓存、无 GT 推理隔离、真实 RVTAgent 梯度累积和优化器更新、HTTP 本地收发及闭环失败计数。渲染器/VLM 用轻量 CPU 替身，完整模型及真实仿真不在此次验证范围。现有 role queries、跨尺度继承、角色特征保留和辅助损失测试亦已回归。
 
-构建 buffer/teacher 时可用 `--visualize-every N`，默认关闭，`1` 覆盖每个生成样本；可指定 `--visualize-output-dir`。PNG 与缓存数据分开：全局三视图保留最多 20 万点，全局/局部点云均以单像素绘制，不扩张邻域，并标出 GT 局部范围；局部三视图围绕下一 GT keypoint 各轴 ±0.20 m，明确标注 **GT-centered refine diagnostic**，不是模型真实二阶段输出。均为 CPU 诊断投影，不修改缓存 XYZ；site 点投影不代表可见性已验证。`diagnose_oht_geometry.py --html` 可额外导出离线可旋转点云，编辑世界工作区/保留框/排除框并下载 YAML；默认读取缓存 XYZ，`--html-source depth` 可仅为显示重建米制深度中仍有效、但被旧 ROI 删掉的点。不写回 buffer，不补造不可见表面，也不修复原始深度/相机参数错误。参数、限制和命令统一见 [OHT 运行说明](../../finetune/OHT/README.md#生成时可视化)。
+构建 buffer/teacher 时可用 `--visualize-every N`，默认关闭，`1` 覆盖每个生成样本；可指定 `--visualize-output-dir`。PNG 与缓存数据分开：全局三视图保留最多 20 万点，全局/局部点云均以单像素绘制，不扩张邻域，并标出 GT 局部范围；局部三视图围绕下一 GT keypoint 各轴 ±0.20 m，明确标注 **GT-centered refine diagnostic**，不是模型真实二阶段输出。均为 CPU 诊断投影，不修改缓存 XYZ；site 点投影不代表可见性已验证。`diagnose_oht_geometry.py --html` 可额外导出离线可旋转点云，编辑世界工作区/保留框/排除框并下载 YAML；默认读取缓存 XYZ，`--html-source depth` 可仅为显示重建米制深度中仍有效、但被旧 ROI 删掉的点。不写回 buffer，不补造不可见表面，也不修复原始深度/相机参数错误。参数、限制和命令统一见 [OHT 运行说明](../guides/oht-data-diagnostics.md#生成时可视化)。
 
-仅诊断可用 `--allow-incomplete` 跳过 `complete.json`；尚无 `samples.jsonl` 时用 `--observation` 直接打开已写完的 NPZ，多数据源需指定 `--data-profile`。缺失的 TCP/goal 不猜测，不生成 GT 局部视图；contract/所选 NPZ 仍检查，诊断结果不证明 buffer 可用于训练。命令见 [OHT 运行说明](../../finetune/OHT/README.md#构建未完成时)。
+仅诊断可用 `--allow-incomplete` 跳过 `complete.json`；尚无 `samples.jsonl` 时用 `--observation` 直接打开已写完的 NPZ，多数据源需指定 `--data-profile`。缺失的 TCP/goal 不猜测，不生成 GT 局部视图；contract/所选 NPZ 仍检查，诊断结果不证明 buffer 可用于训练。命令见 [OHT 运行说明](../guides/oht-data-diagnostics.md#构建未完成时)。
 
 尚未完成且需要现场信息的工作：
 
