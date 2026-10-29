@@ -532,6 +532,7 @@ class MVT(nn.Module):
         oracle_adapter_translation_only=False,
         oracle_compute_base=False,
         object_slot_predictor=None,
+        coarse_query_context=None,
         object_slot_target_heatmap=None,
         object_conditioning_shared_action_features=False,
         object_conditioning_use_context=False,
@@ -550,6 +551,8 @@ class MVT(nn.Module):
         assert num_img == self.num_img
         assert h == w == self.img_size
         uses_object_roles = object_slot_predictor is not None or inherited_object_roles is not None
+        if coarse_query_context is not None and object_slot_predictor is None:
+            raise ValueError('soft coarse query context requires an independent local predictor')
         if object_slot_predictor is not None and inherited_object_roles is not None:
             raise ValueError('refine role inheritance must not run an independent slot selector')
         if refine_role_mask_head is not None and inherited_object_roles is None:
@@ -636,6 +639,7 @@ class MVT(nn.Module):
             object_slot_output = object_slot_predictor(
                 x, rendered_xyz, current_state=oracle_relation_state,
                 context=instruction_context,
+                **(coarse_query_context or {}),
             )
         elif inherited_object_roles is not None:
             object_slot_output = inherited_object_roles

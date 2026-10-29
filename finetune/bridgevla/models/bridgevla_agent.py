@@ -1507,6 +1507,13 @@ class RVTAgent:
                     slot_valid[:, 1].mean().item()
                 ),
             })
+            # Keep legacy averages, but expose each stage to locate a weak
+            # coarse selector versus a failing local predictor.
+            for name, stage in zip(('coarse', 'refine'), slot_stages):
+                for role, index in (('target', 0), ('reference', 1)):
+                    prefix = f'object_slot_{name}_{role}'
+                    return_out[prefix + '_confidence'] = stage['object_slot_confidence'][:, index].mean().item()
+                    return_out[prefix + '_valid_rate'] = stage['object_slot_valid'][:, index].float().mean().item()
 
         q_trans, rot_q, grip_q, collision_q, y_q, pts = self.get_q(
             out, dims=(bs, nc, h, w)

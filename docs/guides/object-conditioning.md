@@ -20,11 +20,33 @@ baseline 的安装/预训练/其他 benchmark 命令仍见[训练](training.md)�
 | `semantic_gt_relation_anchor` | Semantic-GT | anchor 额外增强 translation，R/G/C 保留原 shared 路由 | `rlbench_gt` |
 | `predicted_objects` | 外部 predictor 的 T/R XYZ | 原 relation + anchor | `none`，须另接 predictor wrapper |
 | `internal_slots` | 2 个无序 slots | 原 relation + anchor，无 instruction context | `none` |
+| `internal_slots_soft_coarse` | 两级独立的 2 个无序 slots；局部 queries 接收 coarse soft tokens | 保留旧动作路由；不继承 coarse valid/NULL，不叠加热图残差 | `none` |
 | `semantic_gt_joint` | Semantic-GT | instruction + 完整动作共享 | `rlbench_gt` |
 | `internal_slots_joint` | 6 个无序 slots，128 dim | soft tokens/geometry + instruction + 完整动作共享 | `none` |
 | `internal_slots_cross_scale` | 同一 coarse 的 6 slots | joint + 混合 map 监督 + 本步继承 + token 保留 | `none` |
 | `internal_slots_refine` | 两个固定 T/R queries | coarse-conditioned 局部 query 更新 + RGB/XYZ mask head；更新 token 进入 anchor | `none` |
 | `role_queries` | 两个有序 T/R queries | joint + 直接角色图监督 + 本步继承 + token 保留 | `none` |
+
+### 无序 slots + coarse 软提示（新对照）
+
+使用 `configs/rlbench_o2_internal_slots_soft_coarse.yaml`，复用现有 Semantic-GT buffer，无需重新生成数据：
+
+```bash
+cd finetune/RLBench
+GPUS_PER_NODE=2 bash train_8x40.sh \
+  --exp_cfg_path configs/rlbench_o2_internal_slots_soft_coarse.yaml \
+  --train_replay_storage_dir "$SEMANTIC_BUFFER" \
+  --init_checkpoint /path/to/trained_unordered_slots.pth \
+  --log_backend tensorboard
+```
+
+优先用旧 `internal_slots` 的已训练 checkpoint；也可从 BridgeVLA baseline 初始化，但 object 分支需从头学习。不要使用此前固定双 query/refine 的 optimizer resume；跨 predictor 类型初始化会重置 object/adapter。新配置冻结 vision/projector/Gemma 前 18 层，与旧基线对比时务必统一冻结范围、steps、effective batch 和初始化。
+
+唯一新增 object-conditioning 开关为 `soft_coarse_queries: True`。refine 从自己的特征预测 masks/objectness/T/R/NULL；coarse 的两个 soft role tokens 仅作为零初始化 query 提示，不传 coarse valid、几何或投影热图。原 `internal_slots_refine` 不改，继续作为硬继承/热图残差实验。
+
+阈值恢复使用旧 slots 的 **objectness 0.25**，不是固定 role-query 的 mask 峰值 0.05。关闭新开关可做独立 slots 对照，但结构切换须重新 init，不能直接 resume optimizer。
+
+TensorBoard 保留旧平均指标，并新增 `object_slot_{coarse,refine}_{target,reference}_{confidence,valid_rate}`。评估用该 run 保存的 `exp_cfg.yaml`，provider 为 `none`；真实闭环收益尚未验证。
 
 `rlbench_o2_semantic_roles.yaml` **不是训练配置**：它定义任务/variation 的 T/R、顺序与 NULL 语义，摘要进入数据/checkpoint contract。
 摘要是整个 YAML 文件字节的 SHA-256，不是逐 task 语义摘要；修改注释/格式也会改变 contract。

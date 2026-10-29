@@ -96,9 +96,15 @@ class MVT(nn.Module):
         object_conditioning_refine_role_masks=False,
         object_conditioning_refine_local_query=False,
         object_conditioning_refine_heatmap_residual=False,
+        object_conditioning_soft_coarse_queries=False,
         object_conditioning_refine_mask_detach=False,
     ):
         super().__init__()
+        if object_conditioning_soft_coarse_queries:
+            if not object_slots_enabled or object_slot_predictor_type != 'slots' or not stage_two:
+                raise ValueError('soft_coarse_queries requires independent unordered slots and stage_two=True')
+            if object_conditioning_inherit_coarse_roles or object_conditioning_refine_role_masks:
+                raise ValueError('soft_coarse_queries conflicts with hard role inheritance/refine masks')
         if object_conditioning_refine_heatmap_residual and not (
             object_conditioning_refine_role_masks and object_slot_predictor_type == 'role_queries'
         ):
@@ -202,6 +208,7 @@ class MVT(nn.Module):
         del args['object_conditioning_refine_role_masks']
         del args['object_conditioning_refine_local_query']
         del args['object_conditioning_refine_heatmap_residual']
+        del args['object_conditioning_soft_coarse_queries']
         del args['object_conditioning_refine_mask_detach']
 
         self.rot_ver = rot_ver
@@ -229,6 +236,7 @@ class MVT(nn.Module):
         self.object_conditioning_refine_role_masks = bool(object_conditioning_refine_role_masks)
         self.object_conditioning_refine_local_query = bool(object_conditioning_refine_local_query)
         self.object_conditioning_refine_heatmap_residual = bool(object_conditioning_refine_heatmap_residual)
+        self.object_conditioning_soft_coarse_queries = bool(object_conditioning_soft_coarse_queries)
         self.object_conditioning_refine_mask_detach = bool(object_conditioning_refine_mask_detach)
         oracle_prior_channels = 2 if oracle_prior_relation else 1
         # for verifying the input
@@ -297,7 +305,8 @@ class MVT(nn.Module):
             if self.object_slots_enabled else None
         )
         self.object_slot_predictor2 = (
-            predictor_class(**slot_kwargs)
+            predictor_class(**slot_kwargs, **(
+                {'soft_coarse_queries': True} if self.object_conditioning_soft_coarse_queries else {}))
             if self.object_slots_enabled and stage_two
             and not (object_slot_predictor_type == 'role_queries'
                      and self.object_conditioning_inherit_coarse_roles) else None
@@ -832,6 +841,11 @@ class MVT(nn.Module):
                 oracle_relation_state=oracle_relation_state,
                 object_slot_predictor=(None if inherited_roles is not None else self.object_slot_predictor2),
                 inherited_object_roles=inherited_roles,
+                coarse_query_context=(
+                    {'coarse_role_tokens': out['object_slot_role_tokens'],
+                     'coarse_reference_null_probability': out['object_slot_reference_null_probability']}
+                    if getattr(self, 'object_conditioning_soft_coarse_queries', False) else None
+                ),
                 refine_role_mask_head=self.refine_role_mask_head,
                 refine_mask_detach=self.object_conditioning_refine_mask_detach,
                 object_conditioning_shared_action_features=self.object_conditioning_shared_action_features,

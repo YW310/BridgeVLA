@@ -40,6 +40,7 @@ RVTAgent.update/act
 | [mvt.py](../../finetune/bridgevla/mvt/mvt.py) | `MVT.forward()`、`_build_oracle_instance_prior()`；管理 coarse/refine 投影与 crop |
 | [mvt_single.py](../../finetune/bridgevla/mvt/mvt_single.py) | `MVT.forward()`；VLM/decoder、预测策略的 GT 隔离、共享模式 global 重池化 |
 | [object_conditioning.py](../../finetune/bridgevla/models/object_conditioning.py) | `pool_instruction_context()`、`soft_role_geometry()`、`action_feature_routes()` |
+| [soft_coarse_queries.py](../../finetune/bridgevla/models/soft_coarse_queries.py) | `SoftCoarseQueryConditioner.forward()`：coarse soft T/R tokens → 独立 refine slots 的零初始化 query 提示；不继承有效性或几何 |
 | 同上 | `role_supervision_mask()` 统一 stage/role/view 支持；`mixed_role_map_losses()`、`hungarian_role_slot_losses()`、`reference_null_loss()` |
 | [cross_scale_roles.py](../../finetune/bridgevla/models/cross_scale_roles.py) | `inherit_coarse_roles()`、`transform_role_geometry()`；本步角色传递与局部提示支持 |
 | [refine_role_masks.py](../../finetune/bridgevla/models/refine_role_masks.py) | `CoarseConditionedLocalQuery.forward()` 更新 coarse-bound tokens；局部 mask head 读出；`refine_role_mask_losses()` 屏蔽未知像素 |
@@ -61,6 +62,7 @@ RVTAgent.update/act
 | `rlbench_o2_internal_slots_joint.yaml` | 6 个无序 slots，soft roles/geometry + joint training；GT 准入后实验 |
 | `rlbench_o2_internal_slots_cross_scale.yaml` | 同 joint 预算，6 无序 slots，显式启用 mixed supervision / inheritance / token preservation |
 | `rlbench_o2_internal_slots_refine.yaml` | 2 固定 T/R queries；coarse 热图经 XYZ 重投影形成 refine 空间 tokens，与 VLM 输出融合并预测零初始化残差；microbatch 24 / effective batch 192，projector 冻结 |
+| `rlbench_o2_internal_slots_soft_coarse.yaml` | 旧两级独立无序 slots + coarse token 软条件；旧动作路由、objectness 阈值 0.25，无硬继承或热图残差；microbatch 48 / effective batch 192 |
 | `rlbench_o2_role_queries.yaml` | 2 有序 T/R queries；直接角色图 + Reference NULL loss，本步继承/token 保留；与 6-slot 跨尺度路线分开消融 |
 
 默认旧配置不切换新路由；数值与闭环收益须在目标环境验收。

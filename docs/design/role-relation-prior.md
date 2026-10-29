@@ -2,14 +2,14 @@
 
 [文档索引](../README.md) · [论文 survey](../research/object-centric-policy-memory.md) · [实验与命令](../guides/object-conditioning.md#gt-联合对照) · [代码索引](../reference/code-map.md)
 
-> 更新：2026-10-20。设计与接口统一在本文维护。实现状态见下表；memory 与真机部署为后续方案，不代表当前代码能力。
+> 更新：2026-10-28。设计与接口统一在本文维护。实现状态见下表；memory 与真机部署为后续方案，不代表当前代码能力。
 
 阅读导航：[架构](#整体架构) → [当前实现与数据](#当前实现与数据契约) → [角色方案](#角色预测与跨尺度调整) → [实验](#实验顺序)；后续查[Memory](#object-centric-memory后续未实现)、[真机部署](#真实机器人部署后续规划)、[投影扩展](#其他可选扩展未实现)。
 
 ## 整体架构
 
 保留 BridgeVLA 的 coarse/refine、每级三视角、共享 VLM 权重和 translation heatmap。
-推荐调整是：**coarse 选本步对象，refine 继承角色并细定位，完整动作使用同一最终特征。**
+当前优先验证：**以旧无序 slots 为基线，coarse 提供软语义提示，refine 独立预测局部对象。** 硬角色继承与热图残差保留为实验分支，不再作为默认有效的前提；完整动作共享特征仍是独立对照。
 
 ```mermaid
 flowchart TB
@@ -28,22 +28,24 @@ flowchart TB
     WC --> C["现有 crop / zoom"]
     P --> C
     C --> VF["Refine VLM + 同次 text pooling：共享 backbone 权重"]
-    VF --> AR["opt-in：继承角色 → 原 anchor / adapter"]
-    VF -.可选局部读出.-> MR["Coarse-conditioned 局部 query + mask head + RGB/XYZ"]
-    K --> MR
+    VF --> LS["独立局部 slots：mask / objectness / T/R / NULL"]
+    K -.零初始化软 query 提示：无 coarse 门控.-> LS
+    LS --> AR["原 anchor / adapter：按配置路由动作特征"]
+    VF -.旧继承实验分支.-> MR["继承角色的局部 query / mask head"]
+    K -.旧继承实验分支.-> MR
     MR --> AR
-    K --> AR
-    C -.实际坐标变换.-> AR
+    C -.局部坐标.-> LS
     ST --> AR
-    AR --> F["同一最终 action feature"]
+    AR --> F["Action features：legacy 或 shared 路由"]
     F --> WT["最终 translation → waypoint"]
-    F --> RGC["Global pooling + 最终 waypoint 处 local sampling：R/G/C"]
+    F --> RGC["R/G/C：按配置 global pooling + 最终 waypoint 处 local sampling"]
     WT --> RGC
     WT --> A["完整动作 → 控制器执行"]
     RGC --> A
     A -.下一步重新观测.-> O
     GT["训练：GT T/R + 已知 presence"] -.辅助 role-map / NULL loss.-> Q
     GT -.局部弱监督.-> MR
+    GT -.两级独立匹配监督.-> LS
     D["训练：demo action"] -.action loss.-> AC
     D -.action loss.-> F
     D -.训练 crop teacher forcing.-> C
@@ -54,7 +56,7 @@ flowchart TB
 ```
 
 每步仍是现有两次 VLM 前向（`3 × 2` 视角），text context 来自同次 hidden states。
-预测模式的 GT 只进入辅助监督；推理 crop 来自 coarse waypoint。cross-scale 继承 tokens、NULL 与变换后的可信几何；新增 opt-in `internal_slots_refine` 在同一角色条件下学习局部 masks，旧配置仍只重投影点提示。
+预测模式的 GT 只进入辅助监督；推理 crop 来自 coarse waypoint。`internal_slots_soft_coarse` 保留独立局部选择，不输送 coarse 的 valid、几何或热图；旧 cross-scale/refine 配置仍保留硬继承、局部读出及投影残差用于消融。该最小新配置沿用旧动作路由，不同时开启 shared-action/context 改动。
 
 本步继承不是跨步锁定：下一控制步重新选择。完整场景特征始终进入动作分支，T/R maps 不把 waypoint 限制在物体表面。
 角色与坐标接口见下文[跨尺度继承](#跨尺度角色继承计划未实现)，函数见[代码索引](../reference/code-map.md)。
@@ -63,6 +65,7 @@ flowchart TB
 
 | 状态 | 内容 |
 | --- | --- |
+| 已实现，闭环待验证 | `soft_coarse_queries`：旧无序 slots 的局部 decoder 接收零初始化软提示，两级独立预测与监督，不继承 coarse 有效性或 NULL 决策 |
 | 已实现，默认关闭 | `shared_action_features`：translation 与 R/G/C 使用同一最终特征；`use_context`：同次 VLM 的 instruction 条件 |
 | 已实现，预测路线 | 默认无序 slots → soft T/R；opt-in 固定 T/R queries → 直接角色 maps/tokens；两者均预测 Reference NULL、隔离 GT teacher |
 | 已实现，数据兼容 | 从旧 replay 的角色 `kind` 只读派生 presence/known；NULL loss 监督实际 posterior |
@@ -156,7 +159,32 @@ GT site 体积、点投影 prior 与当前可见实例轮廓不同，role-map �
 
 ## 角色预测与跨尺度调整
 
-三个开关位于 `object_conditioning`，均默认 `False`，只用于内部预测；role-query 配置只启用后两项，角色图采用自身直接监督：
+### 独立 slots + 软 coarse query（当前优先对照）
+
+`rlbench_o2_internal_slots_soft_coarse.yaml` 只在旧无序 slots 的 refine decoder 前增加 `SoftCoarseQueryConditioner`：
+
+\[
+Z=\mathrm{LN}([z_T^c,z_R^c])+E_{T/R},\quad
+A=\mathrm{softmax}(W_q\mathrm{LN}(Q_f)(W_kZ)^T/\sqrt d),
+\]
+\[
+Q'_f=Q_f+W_o\big[A\,\mathrm{diag}(1,1-p^c_{NULL})W_vZ\big],\qquad
+M_f=\sigma(D(F_f,Q'_f)).
+\]
+
+`W_o` 的权重/bias 零初始化，替代标量门控，避免两层同时零初始化造成死梯度。加载旧 slots 权重时初始局部输出与旧模型一致；输出投影先学习，打开后 action/auxiliary loss 可回传 coarse soft tokens 与 NULL posterior。
+
+- coarse role tokens 来自 soft role mixing，不乘 coarse valid；不传几何、mask、置信度或 top-k 点。
+- refine 仍保留独立 slots、objectness、T/R 和 NULL head；两级使用现有匹配/辅助监督。局部决策不被 coarse invalid/NULL 强制关闭，也不承诺绝不切换对象。
+- Reference non-NULL 仅软加权提示值；局部 NULL 自行预测。crop 外 Reference 仍是需要评估的 unknown/absence 区分问题，不声称已解决。
+- 不增加 VLM 前向、投影残差或局部 dense mask head。新配置沿用旧 action/context 路由及 objectness 阈值 0.25，与固定角色图峰值门控不同。
+- 新参数位于 `object_slot_predictor2.soft_coarse_conditioner`；开关默认 False。旧 slots checkpoint 用 init 保留两级 predictor/adapter，新参数零初始化；不能跨结构恢复 optimizer。
+
+先比较旧配置、同预算新配置及关闭该开关的对照。记录每级 confidence/valid rate、GT 有效样本上的角色覆盖、waypoint 误差和闭环成功率；热图变亮不等于动作改善。实现不保证性能提升。
+
+### 原有跨尺度实验开关
+
+以下三个开关位于 `object_conditioning`，均默认 `False`，只用于内部预测；role-query 配置只启用后两项，角色图采用自身直接监督：
 
 | 开关 | 实现行为 |
 | --- | --- |
@@ -216,7 +244,7 @@ q_T / q_R + instruction + 当前状态
 
 ### 跨尺度角色继承（opt-in 已实现）
 
-默认两级独立调用 slot predictor；开启继承后 **coarse 本步绑定一次角色，refine 只读；下一控制步重新选择**。
+默认两级独立调用 slot predictor；开启硬继承后 **coarse 本步绑定一次角色，refine 只读；下一控制步重新选择**。以下为保留的硬继承实验，不适用于 `soft_coarse_queries`。
 不依赖 temporal memory，不增加 VLM 前向、pair search 或 phase head。
 
 #### 本步接口与条件路径

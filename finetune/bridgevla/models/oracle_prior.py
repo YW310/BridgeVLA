@@ -943,7 +943,7 @@ class _ObjectQueryDecoder(nn.Module):
         return points
 
     def _decode(self, features, rendered_xyz, relation_state=None, *, current_state=None,
-                context=None):
+                context=None, coarse_role_tokens=None, coarse_reference_null_probability=None):
         if current_state is not None:
             if relation_state is not None:
                 raise ValueError('pass current_state or legacy relation_state, not both')
@@ -981,6 +981,13 @@ class _ObjectQueryDecoder(nn.Module):
             if context is None or context.shape != (batch_size, features.shape[1]):
                 raise ValueError('instruction context must have shape [B,C]')
             queries = queries + self.context_projection(context.to(features.dtype))[:, None]
+        conditioner = getattr(self, 'soft_coarse_conditioner', None)
+        if conditioner is not None:
+            if coarse_role_tokens is None or coarse_reference_null_probability is None:
+                raise ValueError('soft coarse queries require predicted coarse tokens and NULL posterior')
+            queries = conditioner(queries, coarse_role_tokens, coarse_reference_null_probability)
+        elif coarse_role_tokens is not None or coarse_reference_null_probability is not None:
+            raise ValueError('coarse query hints require soft_coarse_queries=True')
         slots = self.decoder(queries, memory)
 
         keys = self.mask_key(reduced.reshape(-1, self.slot_dim, height, width))
@@ -997,19 +1004,24 @@ class _ObjectQueryDecoder(nn.Module):
 class InternalObjectSlotPredictor(_ObjectQueryDecoder):
     '''Unordered instance slots mixed into Target/Reference (legacy mode).'''
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, soft_coarse_queries=False, **kwargs):
         super().__init__(*args, **kwargs)
         self.objectness_head = nn.Linear(self.slot_dim, 1)
         self.role_head = nn.Linear(self.slot_dim, 2)
         self.reference_null_head = nn.Linear(self.slot_dim + self.state_channels, 1)
         # Preserve the legacy state keys and initialization order exactly.
         nn.init.constant_(self.objectness_head.bias, -2.0)
+        if soft_coarse_queries:
+            from .soft_coarse_queries import SoftCoarseQueryConditioner
+            self.soft_coarse_conditioner = SoftCoarseQueryConditioner(self.slot_dim)
 
     def forward(self, features, rendered_xyz, relation_state=None, *, current_state=None,
-                context=None):
+                context=None, coarse_role_tokens=None, coarse_reference_null_probability=None):
         slots, mask_logits, relation_state = self._decode(
             features, rendered_xyz, relation_state,
             current_state=current_state, context=context,
+            coarse_role_tokens=coarse_role_tokens,
+            coarse_reference_null_probability=coarse_reference_null_probability,
         )
         slot_masks = torch.sigmoid(mask_logits)
         objectness_logits = self.objectness_head(slots).squeeze(-1)

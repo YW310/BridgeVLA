@@ -1,0 +1,77 @@
+# Minimal delta from internal_slots: independent local slots + soft coarse query hints.
+# Use --init_checkpoint (prefer a trained unordered-slots checkpoint), not old optimizer resume.
+exp_id: rlbench_o2_internal_slots_soft_coarse
+seed: 0
+tasks: all
+bs: 48
+num_workers: 2
+pin_memory: False
+epochs: 50
+train_iter: 38400
+global_batch_size: 192
+gradient_checkpointing: False
+efficient_paligemma_forward: True
+gpu_paligemma_preprocessing: False
+flash_attention_2: False
+freeze_vision_tower: True
+freeze_gemma_prefix_layers: 18
+freeze_multimodal_projector: True
+sample_distribution_mode: task_uniform
+train_visualization:
+  enabled: True
+  interval: 100
+  save_png: True
+  tensorboard: True
+use_oracle_objects: True
+oracle_semantic_audit: False
+oracle_semantic_contract:
+  enforce: False
+  required_phase_source: demo_events
+  role_config: configs/rlbench_o2_semantic_roles.yaml
+oracle_max_objects: 32
+oracle_num_points: 512
+use_predicted_objects: False
+oracle_prior_adapter_rank: 16
+oracle_relation_gated_adapter: True
+oracle_adapter_translation_only: False
+oracle_relation_anchor_rank: 16
+object_conditioning:
+  # Only this switch differs from the legacy object-conditioning route.
+  soft_coarse_queries: True
+  shared_action_features: False
+  use_context: False
+  supervise_mixed_role_maps: False
+  inherit_coarse_roles: False
+  preserve_role_tokens: False
+  refine_role_masks: False
+  refine_local_query: False
+  refine_heatmap_residual: False
+object_slots:
+  enabled: True
+  predictor_type: slots
+  num_slots: 2
+  slot_dim: 128
+  decoder_layers: 2
+  num_heads: 4
+  point_samples: 128
+peract:
+  lr: 4e-5
+  add_rgc_loss: True
+  transform_augmentation_xyz: [0.125, 0.125, 0.125]
+  transform_augmentation_rpy: [0.0, 0.0, 45.0]
+rvt:
+  place_with_mean: False
+  img_aug: 0.0
+  object_prior_mode: o2_internal_slots
+  oracle_prior_mode: none
+  # Legacy objectness-based confidence, NOT the fixed-role map peak threshold.
+  object_prediction_confidence_threshold: 0.25
+  object_slot_mask_loss_weight: 1.0
+  object_slot_null_loss_weight: 0.25
+  object_slot_diversity_loss_weight: 0.0
+  oracle_prior_sigma: 2.0
+  oracle_prior_active_role: auto
+  oracle_prior_strict: False
+  oracle_prior_relation: True
+  oracle_log_base_loss: True
+  oracle_valid_only_loss: False

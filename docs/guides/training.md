@@ -77,7 +77,7 @@ GPUS_PER_NODE=2 bash train_8x40.sh --exp_cfg_path configs/rlbench_config.yaml \
 | `o2_gt_instance` | `BridgeVLA_RLBench_TRAIN_TASK_OBJECT_Buffer`；调试可用 `BridgeVLA_RLBench_TINY_TASK_OBJECT_Buffer`，T/R 为启发式角色 |
 | `o2_semantic_gt`、`o2_semantic_gt_joint`、`o2_semantic_gt_relation_anchor` | `BridgeVLA_RLBench_SEMANTIC_GT_MASK_VERIFIED_Buffer`；默认非严格，严格模式要求全量验收 |
 | `o2_internal_slots` | 推荐同一 Semantic-GT buffer；旧配置未强制语义审计，也允许启发式物体 buffer，但监督质量不同 |
-| `o2_internal_slots_joint`、`o2_internal_slots_cross_scale`、`o2_internal_slots_refine`、`o2_role_queries` | 同一 Semantic-GT buffer；默认非严格，GT 仅用于辅助监督；refine 为投影支持内弱监督 |
+| `o2_internal_slots_joint`、`o2_internal_slots_cross_scale`、`o2_internal_slots_refine`、`o2_internal_slots_soft_coarse`、`o2_role_queries` | 同一 Semantic-GT buffer；默认非严格，GT 仅用于辅助监督；soft_coarse 为独立 slots + 软 query 提示，refine 为投影支持内弱监督 |
 | `o2_predicted_objects` | 另行准备含 `predicted_*` 字段的外部预测 replay；不能直接以 Oracle 字段替代 |
 | `o2_semantic_roles` | 不是训练配置，是 T/R 角色定义与契约文件 |
 

@@ -83,6 +83,8 @@ _C.object_conditioning.preserve_role_tokens = False
 _C.object_conditioning.refine_role_masks = False
 _C.object_conditioning.refine_local_query = False
 _C.object_conditioning.refine_heatmap_residual = False
+# Independent unordered refine slots receive zero-init soft coarse token hints.
+_C.object_conditioning.soft_coarse_queries = False
 _C.object_conditioning.refine_mask_detach = False
 # Internal object-slot predictor. In o2_internal_slots mode Oracle objects are
 # supervision labels only and are never passed into the policy adapter.
