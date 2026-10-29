@@ -921,16 +921,18 @@ class RVTAgent:
         stage_outputs = [output]
         if self.stage_two:
             stage_outputs.append(output['mvt2'])
-        sums = {
-            'mask': 0.0, 'mask_bce': 0.0, 'mask_dice': 0.0,
-            'role': 0.0, 'objectness': 0.0,
-            'presence': 0.0, 'diversity': 0.0, 'diversity_pixels': 0.0,
-        }
+        # Unused statistics (e.g. visible-surface pixel counts for unordered
+        # slots) still need scalar tensors: update() logs every value via item().
+        metric_zero = output['object_slot_prior'].new_zeros(())
+        sums = dict.fromkeys((
+            'mask', 'mask_bce', 'mask_dice', 'role', 'objectness',
+            'presence', 'diversity', 'diversity_pixels',
+        ), metric_zero)
         supervise_mixed = bool(getattr(
             self._net_mod, 'object_conditioning_supervise_mixed_role_maps', False))
         if supervise_mixed:
-            sums.update({'mixed_role': 0.0, 'mixed_role_bce': 0.0,
-                         'mixed_role_dice': 0.0})
+            sums.update(dict.fromkeys(('mixed_role', 'mixed_role_bce',
+                                       'mixed_role_dice'), metric_zero))
         raw_stage_count = 0
         mixed_stage_count = 0
         refine_stage_count = 0
