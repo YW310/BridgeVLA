@@ -351,6 +351,9 @@ class ChunkAgent:
                 selected = valid[:, :length]
                 metrics[f'chunk_prefix_{length}_position_error_m'] = error[:, :length][selected].mean().item() if selected.any() else 0.
         metrics.update(chunk_total_loss=loss.detach().item(), **key_metrics)
+        gate = getattr(self._net_mod.decoder, 'key_gate_logit', None)
+        if gate is not None:
+            metrics['chunk_key_condition_gate'] = gate.detach().sigmoid().item()
         if key_loss is not None:
             loss = loss + self.settings['key_loss_weight'] * key_loss
         if not torch.isfinite(loss):

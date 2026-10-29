@@ -381,6 +381,25 @@ GPUS_PER_NODE=2 bash finetune/OHT/train_8x40.sh \
 
 已有 V4 无需重建，输出仍为世界绝对 EEF。改变动作尺度/结构后用 `--init-checkpoint` 保留 encoder、重新初始化 decoder/optimizer，不能直接 resume 旧实验；也可省略 checkpoint 从基础模型联合训练。新实验原配置可 resume。冻结层数沿用当前 chunk 配置。新 loss/分箱日志与有效 mask 规则见[设计说明](../../docs/design/oht-spatial-flow-chunk.md#尺度与时序实验)。改善效果需在服务器对照验证。
 
+**本体状态条件与回归对照。** 新配置在每层 AdaLN 中直接注入当前关节和夹爪状态，预测 key 通过可学习 gate 作为辅助条件；coarse/refine 视觉特征仍保留。三种配置共用输入、训练预算和冻结策略：
+
+| 配置 | 动作头 |
+| --- | --- |
+| [regression_state](configs/oht_chunk_v4_regression_state_8x40.yaml) | 相对当前 TCP 的未来 pose 回归，建议先作为确定性对照 |
+| [delta_state](configs/oht_chunk_v4_delta_state_8x40.yaml) | 逐步平移和旋转增量回归，累积为完整 EEF 轨迹后监督 |
+| [flow_state](configs/oht_chunk_v4_flow_state_8x40.yaml) | 同样状态条件下的 flow matching |
+
+~~~bash
+OUT=/common-data-32t/data/robot_data/oht_curobo_pd_v423-seg/bridgevla-seg-v4-run01
+GPUS_PER_NODE=2 bash finetune/OHT/train_8x40.sh \
+  --config finetune/OHT/configs/oht_chunk_v4_regression_state_8x40.yaml \
+  --replay "$OUT/replay-source-v4" \
+  --pretrain-path /home/yiwei/project/BridgeVLA/checkpoints/pretrain \
+  --log-dir "$OUT/runs" --exp-id oht-seg-v4-regression-state-s0
+~~~
+
+另外两组分别替换 config 和实验名，使用相同初始化来源与种子。启动时仅用 train 实测关节统计归一化参数，结果写入 `proprio_normalization.json` 与 checkpoint；推理自动复用。首次统计会校验 observation 文件 checksum 并打印进度，只解压关节/夹爪数组。无需重建 V4，客户端输出仍是世界绝对 EEF。已有 checkpoint 可增加 `--init-checkpoint /path/to/model_last.pth` 保留 encoder；新结构/归一化会重建 decoder，不能 resume 旧配置。历史帧尚未加入。细节见[状态条件设计](../../docs/design/oht-spatial-flow-chunk.md#本体状态条件与增量回归)。
+
 训练会打印实际 run 目录。将该目录填写为环境变量后执行：
 
 ~~~bash

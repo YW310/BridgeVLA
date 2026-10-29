@@ -1,0 +1,9 @@
+extends: oht_chunk_v4_flow_temporal_8x40.yaml
+exp_id: oht-key-chunk-v4-flow-state
+chunk_policy:
+  # Measured q6/opening condition every action block, not just memory attention.
+  state_conditioning: true
+  proprio_normalization: train_quantile
+  proprio_min_scale: 0.1
+  key_condition_gate: true
+  key_condition_gate_init: 0.1

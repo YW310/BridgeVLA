@@ -64,3 +64,21 @@ CPU 测试覆盖渲染通道对齐、抗锯齿/空白/原点、裁剪逆变换�
 `chunk_second_difference_loss/weighted_loss` 属于重建辅助损失；`chunk_second_difference_error_m` 来自独立部署采样。新增 `chunk_sampled_position_loss` 与 `chunk_sampled_displacement_loss` 仅用于诊断，不加入反传。`chunk_flow_tau_{high,mid,low}_noise_count/position_loss` 将 tau 按三等分记录，位置项为动作归一化空间的速度场 MSE；空分箱 count/loss 均为 0，跨 batch 汇总应按 count 加权。这些训练指标不能替代固定验证集上的真实采样误差和闭环效果。
 
 参考方法：[ChainedDiffuser](https://proceedings.mlr.press/v229/xian23a.html)、[3D Diffuser Actor](https://3d-diffuser-actor.github.io/)、[pi0](https://arxiv.org/abs/2410.24164)。时间采样参考 pi0；时序卷积、物理差分项与尺度分离是本仓库的实验设计，不据此宣称精度提升。这是面向现有 BridgeVLA 的组合实现，不是三篇论文的原样复现。
+
+## 本体状态条件与增量回归
+
+`oht_chunk_v4_flow_state_8x40.yaml` 在 temporal 配置上开启 `state_conditioning`、`proprio_normalization: train_quantile` 和 `key_condition_gate`。`regression_state` 仅替换为确定性回归；`delta_state` 在同一回归头上改为逐步增量参数化。旧配置默认全部关闭，已有模型参数与行为不变。三组沿用 Gemma 前 16 层冻结、视觉编码器和 projection 冻结、联合关键目标训练的设置，不加入历史帧或改变预测裁剪。
+
+归一化仅统计 train 中最多 4096 个均匀选取的实测状态。逐关节采用 1%/99% 分位数的中点和半区间作为 center/scale，scale 下限 `proprio_min_scale=0.1` rad，避免近常量关节噪声被过度放大；夹爪输入已是实测开度 [0,1]，固定 center=0.5、scale=0.5。不对超出区间的值裁剪，不改变关节角分支。只解压 observation NPZ 的 `joint_positions` 和 `gripper_open01`；文件 checksum 校验仍需读取完整文件，启动会打印进度。val/test、关键目标标签和未来动作不参与本体统计。
+
+rank 0 计算并广播统计或错误。`proprio_normalization.json` 和 checkpoint 的 `config.chunk_proprio_normalization` 保存来源与统计；七维 center/scale 写入 `chunk_policy`，同时注册为 decoder buffer。推理直接使用 checkpoint 中的数值，无需 replay。动作归一化仍按当前 TCP 到未来点的位移半径统计，三组共用同一尺度定义，不随增量参数化切换。
+
+decoder 把当前 TCP 局部坐标下的状态投影为 `s`，预测关键目标投影为 `g`。条件 `c = time_embedding(tau) + s + sigmoid(key_gate_logit) * g` 同时加入初始动作 queries，并送入每一层 AdaLN 的 self-attention、cross-attention 和 FFN 调制。即使 AdaLN 残差 gate 零初始化，状态也能通过 queries 直接影响输出。保留一个始终有效的状态 memory token，保证所有视觉 patch 无效时 attention 有可用输入。
+
+显式关键目标不再额外走未门控的 memory/XYZ 路径；gate 初值为 0.1，训练指标 `chunk_key_condition_gate` 记录其 sigmoid 值。它只控制显式 key 条件，refine 视觉特征仍依赖原有预测关键目标裁剪，因此不能将 gate 接近 0 解读为整个网络与关键目标完全解耦。
+
+默认回归仍预测每个未来点相对当前 TCP 的 pose。`prediction_representation: delta_pose` 则预测初始 TCP 朝向坐标轴下的平移增量 `d_k=R_0ᵀ(p_k-p_{k-1})/action_position_scale`，累积为 `p_k=p_0+R_0*scale*sum(d_1...d_k)`。旋转增量为 `D_k=R_{k-1}ᵀR_k` 的六维表示，通过矩阵连乘 `R_k=R_0 D_1...D_k` 恢复，不能将 Euler 角或旋转向量直接相加。该参数化目前仅支持 spatial regression。
+
+位置、旋转、相邻位移与二阶差分监督都作用于恢复后的完整世界轨迹；首点以实测 TCP 为起点，前面增量误差会影响后续轨迹损失。输出仍是世界绝对 EEF xyzw 和二值夹爪，V4 数据、HTTP、客户端执行与可视化无需改变。
+
+使用已有 checkpoint 时通过 `--init-checkpoint` 保留 encoder；改变本体归一化、状态条件或动作参数化会重新初始化 decoder 和 optimizer。新实验的原配置可严格 resume。验证应在同一验证集比较完整采样的前 1/4/16 步物理误差和静止基线；CPU 正确性测试不代表轨迹精度已改善。

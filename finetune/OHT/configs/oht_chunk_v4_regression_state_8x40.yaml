@@ -1,0 +1,4 @@
+extends: oht_chunk_v4_flow_state_8x40.yaml
+exp_id: oht-key-chunk-v4-regression-state
+chunk_policy:
+  decoder_type: regression

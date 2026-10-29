@@ -42,16 +42,57 @@ def action_scale_statistics(dataset, settings, progress=None):
                 minimum_m=settings['normalization_min_scale'], action_position_scale=scale)
 
 
+def proprio_statistics(dataset, settings, progress=None):
+    """Fit q6 from measured training states; opening already has physical [0,1] units."""
+    rows = dataset.samples
+    if not rows or any(row['split'] != 'train' for row in rows):
+        raise ValueError('Proprio normalization requires a nonempty training split')
+    indices = np.linspace(0, len(rows) - 1, min(len(rows), settings['normalization_max_samples']), dtype=int)
+    joints = []
+    for completed, index in enumerate(indices, 1):
+        row = rows[index]
+        path = inside(dataset.root, row['observation'])
+        if progress and (completed == 1 or completed % 64 == 0 or completed == len(indices)):
+            progress(completed, len(indices))
+        if file_digest(path) != row['observation_sha256']:
+            raise ValueError(f'Normalization observation checksum mismatch: {row["id"]}')
+        # NPZ access is lazy: only decompress the two measured-state arrays.
+        # Hashing still reads the file, keeping statistics bound to the replay.
+        with np.load(path, allow_pickle=False) as source:
+            joint = np.asarray(source['joint_positions'], dtype=np.float64)
+            opening = np.asarray(source['gripper_open01'], dtype=np.float64)
+        if (joint.shape != (6,) or opening.shape != () or not np.isfinite(joint).all()
+                or not np.isfinite(opening) or not 0 <= opening <= 1):
+            raise ValueError(f'Invalid normalization proprioception: {row["id"]}')
+        joints.append(joint)
+    quantile = settings['normalization_quantile']
+    lower, upper = np.quantile(joints, [1 - quantile, quantile], axis=0)
+    center = np.r_[(lower + upper) / 2, .5]
+    scale = np.r_[np.maximum((upper - lower) / 2, settings['proprio_min_scale']), .5]
+    return dict(method='train_quantile', replay_sha256=dataset.contract['sha256'], split='train',
+                samples=len(indices), quantile=quantile, minimum_joint_scale_rad=settings['proprio_min_scale'],
+                joint_lower=lower.tolist(), joint_upper=upper.tolist(),
+                proprio_center=center.tolist(), proprio_scale=scale.tolist())
+
+
 def resolve_training_normalization(config, dataset, *, distributed=None, rank=0):
     settings = chunk_settings(config, dataset.contract)
-    if settings['action_position_scale'] != 'train_quantile':
+    action_pending = settings['action_position_scale'] == 'train_quantile'
+    proprio_pending = settings['proprio_normalization'] == 'train_quantile' and settings['proprio_center'] is None
+    if not (action_pending or proprio_pending):
         return
     result = [None, None]
     if rank == 0:
         try:
             def progress(completed, total):
                 print(f'[OHT normalization] training labels {completed}/{total}', flush=True)
-            result[0] = action_scale_statistics(dataset, settings, progress)
+            result[0] = {}
+            if action_pending:
+                result[0]['action'] = action_scale_statistics(dataset, settings, progress)
+            if proprio_pending:
+                def proprio_progress(completed, total):
+                    print(f'[OHT normalization] measured training states {completed}/{total}', flush=True)
+                result[0]['proprio'] = proprio_statistics(dataset, settings, proprio_progress)
         except Exception as error:
             # All ranks must receive failures before anyone enters model/DDP
             # construction, otherwise peers can wait forever in collectives.
@@ -60,9 +101,18 @@ def resolve_training_normalization(config, dataset, *, distributed=None, rank=0)
         distributed.broadcast_object_list(result, src=0)
     if result[1] is not None:
         raise ValueError(f'Cannot resolve chunk normalization: {result[1]}')
-    statistics = result[0]
-    config['chunk_policy']['action_position_scale'] = statistics['action_position_scale']
-    config['chunk_normalization'] = statistics
-    if rank == 0:
-        print(f'[OHT normalization] action_position_scale={statistics["action_position_scale"]:.6g} m '
-              f'from {statistics["valid_ticks"]} valid training ticks', flush=True)
+    if action_pending:
+        statistics = result[0]['action']
+        config['chunk_policy']['action_position_scale'] = statistics['action_position_scale']
+        config['chunk_normalization'] = statistics
+        if rank == 0:
+            print(f'[OHT normalization] action_position_scale={statistics["action_position_scale"]:.6g} m '
+                  f'from {statistics["valid_ticks"]} valid training ticks', flush=True)
+    if proprio_pending:
+        statistics = result[0]['proprio']
+        for name in ('proprio_center', 'proprio_scale'):
+            config['chunk_policy'][name] = statistics[name]
+        config['chunk_proprio_normalization'] = statistics
+        if rank == 0:
+            print(f'[OHT normalization] proprio center={statistics["proprio_center"]} '
+                  f'scale={statistics["proprio_scale"]}', flush=True)

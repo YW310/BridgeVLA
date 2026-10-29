@@ -108,9 +108,15 @@ def main(argv=None):
                 ('action_position_scale', 'geometry_scale', 'position_loss_scale')},
                 flow_time_sampling=settings['flow_time_sampling'], adaln=settings['adaln'],
                 temporal_kernel_size=settings['temporal_kernel_size'],
-                second_difference_weight=settings['second_difference_weight'])), flush=True)
+                second_difference_weight=settings['second_difference_weight'],
+                state_conditioning=settings['state_conditioning'],
+                proprio_normalization=settings['proprio_normalization'],
+                key_condition_gate=settings['key_condition_gate'],
+                prediction_representation=settings['prediction_representation'])), flush=True)
             if config.get('chunk_normalization'):
                 write_json(output / 'chunk_normalization.json', config['chunk_normalization'])
+            if config.get('chunk_proprio_normalization'):
+                write_json(output / 'proprio_normalization.json', config['chunk_proprio_normalization'])
     remaining_draws = target_steps * accumulation * config["batch_size"]
     sampler = TaskBalancedSampler(dataset.samples, remaining_draws, seed)
     loader = DataLoader(dataset, batch_size=config["batch_size"], sampler=sampler,
