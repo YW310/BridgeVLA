@@ -49,6 +49,8 @@ JSON 的 `object_groups` 和 `group_by_handle` 中。
 默认开启的严格源对齐检查；发现异常会先写 manifest 再停止，不会静默生成错误 instance。
 只有已经确认少量异常样本可以退回 baseline 时，才额外添加 `--skip-invalid-frames`：
 
+这里的 `--dry-run` 会读取真实 replay/raw RGB-D，可创建 metadata 索引、PNG 和 alignment manifest，但不写增强 replay 或新 handle 缓存。示例的 `--visualize-every 100` 检查排序后第 0、100、200……个 replay，替代默认随机 5 个普通 transition；未抽到的文件没有通过此次源对齐审计。
+
 ```bash
 python tools/augment_replay_with_oracle_objects.py \
     --replay-dir LPY/BridgeVLA_RLBench_TRAIN_Buffer \
@@ -98,9 +100,9 @@ python tools/augment_replay_with_oracle_objects.py \
 | 输入 | `--replay-dir PATH` | 必填 | 原始 BridgeVLA replay 目录；可为单任务目录或包含多个任务的根目录。 |
 | 输入 | `--raw-data-dir PATH` | 必填 | RLBench raw data 的 `train` 目录或可解析到 episode 的上级目录。 |
 | 输入 | `--task NAME` | `all` | 任务名、逗号分隔任务名或 `all`；可重复传入。 |
-| 输出 | `--output-dir PATH` | 无 | 写入新的 Oracle replay 目录；非 dry-run 时必须与 `--in-place` 二选一。 |
+| 输出 | `--output-dir PATH` | 无 | 多任务根输入写到 `PATH/<task>`；单任务 replay 输入直接写到 `PATH`。非 dry-run 时必须与 `--in-place` 二选一。 |
 | 输出 | `--in-place` | 关闭 | 原地修改 replay；与 `--output-dir` 互斥，建议优先使用新目录。 |
-| 输出 | `--resume` | 关闭 | 断点续跑：跳过已原子写完的正式 replay，只生成缺失文件；与 `--overwrite` 互斥。 |
+| 输出 | `--resume` | 关闭 | 仅用于 `--output-dir`：跳过已存在的正式 replay，只生成缺失文件；与 `--overwrite`、`--in-place`、`--dry-run` 互斥。不会逐个回读已跳过文件。 |
 | 输出 | `--overwrite` | 关闭 | 重新处理并覆盖已有输出 replay/元数据；与 `--resume` 互斥。 |
 | 输出 | `--durable-write` | 关闭 | 临时文件重命名前执行 `fsync`；更安全，但网络盘上更慢。 |
 | 张量 | `--max-objects N` | `32` | 每帧固定的最大 instance 槽位数；超出部分会截断。 |
@@ -120,7 +122,7 @@ python tools/augment_replay_with_oracle_objects.py \
 | 单帧先验 | `--task-prior-max-instances N` | 高召回不限；strict 按任务 | 限制先验保留的 simulator handle 数。 |
 | 单帧先验 | `--task-prior-background-extent METRES` | `0.60` | 两个轴均达到该尺度时视为明显桌面/地面。 |
 | 时序匹配 | `--temporal-id-matching`（兼容旧名 `--temporal-task-filter`） | 关闭 | 建立稳定 `handle ID → object group → slot`；以闭爪处物体为 T、松爪放置位置最近的其他物体为 R，并在同一抓取周期固定 T/R；不删除当前帧可见实例。 |
-| 时序任务 | `--task-detection-frames N` | `16` | 每个 episode 均匀抽取的最大检测帧数；需覆盖闭爪和松爪边界，长 episode 建议提高到 `24` 或 `32`。 |
+| 时序任务 | `--task-detection-frames N` | `16` | 每个 episode 从 replay metadata 均匀选取的最大证据数；不是按 raw 帧等间隔取样。需覆盖开闭边界，长 episode 可提高到 `24` 或 `32`。 |
 | 时序匹配 | `--task-handle-cache-dir PATH` | `<output-dir>/<task>/task_handle_maps` | episode 稳定 slot 与 task handle JSON 缓存；显式 PATH 作为根目录并追加 task 名。 |
 | 时序任务 | `--refresh-task-handle-cache` | 关闭 | 忽略已有 task handle JSON 并重新检测。 |
 | 机器人 | `--detect-robot-handles` | 关闭 | 检测 wrist 稳定的夹爪 seed，并沿持续邻接的运动学链扩展到机械臂及静止底座；只使用第一次闭合前的前缀，避免把被抓物体当作机器人。 |
@@ -143,11 +145,11 @@ python tools/augment_replay_with_oracle_objects.py \
 | 性能 | `--cache-frames N` | `128` | 相同 raw 帧 Oracle 结果的 LRU 容量；`0` 禁用，内存有限时降低。 |
 | 性能 | `--seed N` | `0` | 控制确定性点采样和 dry-run 抽样。 |
 | 性能 | `--no-progress` | 关闭 | 关闭 tqdm 进度条。 |
-| 检查 | `--dry-run` | 关闭 | 只验证和可视化，不写 replay，也不新建/覆盖 handle 缓存。 |
-| 检查 | `--dry-run-samples N` | `5` | 未指定间隔可视化时，dry-run 随机检查的普通 transition 数。 |
+| 检查 | `--dry-run` | 关闭 | 实际读取并抽查数据，可写 metadata 索引、PNG、alignment manifest；不写增强 replay，也不新建/覆盖 handle 缓存。 |
+| 检查 | `--dry-run-samples N` | `5` | `--visualize-every 0` 时随机选取的普通 transition 数；`--visualize-index` 另追加指定文件，可能多于 N 个。非零 visualize-every 改用间隔选帧。 |
 | 可视化 | `--visualize-index N` | 无 | 保存指定 replay index；与 `--visualize-every` 互斥。 |
 | 可视化 | `--visualize-every N` | `0` | 每隔 N 个排序后的 replay 保存一张 PNG；`0` 关闭。 |
-| 可视化 | `--visualize-output-dir PATH` | `oracle_visualizations` | PNG 输出目录，不设置时也会自动创建该默认目录。 |
+| 可视化 | `--visualize-output-dir PATH` | `oracle_visualizations` | 显式选帧的 PNG 输出目录；dry-run 的源对齐 manifest 也写在其 task 子目录。未选择可视化时不会生成 PNG。 |
 | 可视化 | `--visualize-objects-only` | 关闭 | 隐藏点云面板中的灰色完整场景，仅绘制保留实例；不影响上排 RGB。 |
 
 <a id=oracle-checks></a>
@@ -182,19 +184,11 @@ python tools/augment_replay_with_oracle_objects.py \
   普通第一阶段始终使用 2 cm，避免把静止邻近物体在整幅场景中误合并。`place_cups` 只有在
   多帧证据先找到 reference 支架种子后，才允许从该种子向其他静止、相对位姿稳定的区域做
   6 cm 二阶段结构扩展；target 和发生明显运动的杯子不会进入该扩展。
-- Robot 检测使用 raw observation 中的当前夹爪位姿、`gripper_open`、GT mask 和 raw
-  depth。depth 会用同帧相机内外参重建世界坐标点云，与 mask 像素严格对齐。夹爪 seed 以
-  wrist 图像稳定性为主，并允许夹爪旋转造成的世界坐标偏移、部分遮挡及距离离群；夹爪
-  handle 不必在第 0 帧可见，在 episode 早期窗口内首次出现（如 raw frame 10）时，会以
-  它自己的首个可见帧检查 wrist 邻接和后续随动。严格评分没有 seed 时会从 wrist 稳定候选
-  恢复 seed。只在外部相机可见、wrist mask 中不可见的夹爪 link 也允许在早期首次出现；
-  arm 扩展会使用它与 seed 的首个共同可见帧，而不再强制要求 raw frame 0 可见。arm 扩展先确认紧邻夹爪的移动 link，
-  再沿 episode 早期已连接且持续邻接的运动学链扩展，因此可覆盖运动较少的机械臂底座。
+- Robot 检测使用当前夹爪位姿、`gripper_open`、GT mask，以及同帧 depth/K/外参重建的世界点云。seed 主要依赖 wrist 图像稳定性，允许旋转、遮挡和早期首次可见；arm 扩展使用与 seed 的首个共同可见帧，不强制 raw frame 0 可见。先确认夹爪旁的移动 link，再沿持续邻接链扩展到低运动底座。
   默认在 `0–100` raw 帧内每隔 5 帧取样；若夹爪相对第 0 帧的最大位移不足 2 cm，则继续
   按相同间隔向后扩展，直到运动足够、达到帧数上限、episode 结束或夹爪第一次闭合。
   `--robot-motion-threshold` 只影响这里的采样长度。机械臂是否进入 `arm_handles` 由
   `--robot-link-motion-threshold`、`--robot-adjacency-distance`、可见率和持续邻接共同决定。
-  低幅 link 只要达到独立的绝对运动阈值，就不会再仅因运动量小于夹爪的 25% 被当作静止物体。
   若一直静止会打印 `motion-based robot evidence is weak`，提示运动证据不足。检测只使用
   第一次闭合之前的前缀，因此不会把随后被夹起并跟随夹爪运动的任务物体当成机械臂。
   夹爪持续运动而某实例基本静止时，该实例不会判为机器人；证据不足的实例只进入
@@ -207,9 +201,10 @@ python tools/augment_replay_with_oracle_objects.py \
   直接来自 episode 前部等间隔的 raw 帧；检测出的稳定 handle ID 会应用到后续整个
   episode。task 仍执行 episode 级 replay 均匀采样，并按
   `(episode_idx, sample_frame, next_keypoint_frame)` 保留不同动作边。
-- 提供 `--output-dir` 时，Task 缓存位于
+- 以下以多任务根输入为例：提供 `--output-dir` 时，Task 缓存位于
   `<output-dir>/<task>/task_handle_maps/episode_NNNN.json`，robot 缓存位于
-  `<output-dir>/<task>/robot_handle_maps/episode_NNNN.json`。显式指定对应的
+  `<output-dir>/<task>/robot_handle_maps/episode_NNNN.json`。若输入就是包含 `N.replay` 的
+  单任务目录，输出和默认缓存直接位于 `<output-dir>` 下，不再追加 task 名。显式指定对应的
   `--*-handle-cache-dir PATH` 时使用 `PATH/<task>/episode_NNNN.json`，避免多任务间
   episode 文件重名。Robot cache 会记录 raw 采样间隔、窗口、帧数上限、采样运动阈值、
   link 运动阈值和邻接距离；
@@ -269,7 +264,7 @@ python tools/augment_replay_with_oracle_objects.py \
   点云使用固定米制
   场景边界；缺失 RGB 显示
   `RGB unavailable`，不会中断生成。
-- 默认先写 `.tmp`、回读验证后原子重命名，不覆盖原始数据。缓存会自动淘汰已完成的
+- 写 replay 时先写 `.tmp`、回读验证后原子重命名；新 `--output-dir` 保留输入，`--in-place` 会替换原文件。缓存会自动淘汰已完成的
   旧帧；进度条中的 `cache_hits`、`cache_misses` 和 `cache_entries` 可用于检查效果。
 
 **突然只剩一个物体时：**先比较启动日志中的 `slots=[...]` 和图片标题里的
@@ -296,8 +291,10 @@ python tools/augment_replay_with_oracle_objects.py \
   episode 内 ID 突变。`sentinel=True` 对应 `terminal == -1` 填充 transition，保存的
   Oracle 张量为空是预期行为。
 
-可先提高 robot/task 采样密度和交互半径重新检查；dry-run 只实时重检，不写入新缓存，
-确认后需移除 `--dry-run` 才会保存结果。robot 结果会影响后续 task slot，因此刷新顺序
+可先提高 robot/task 采样密度和交互半径重新检查；dry-run 仍会读取兼容的已有 handle 缓存，
+需要重新检测时同时提供对应的 `--refresh-*-handle-cache`。它不写入新 handle 缓存，
+但可写 metadata 索引、PNG 和 alignment manifest；确认后需移除 `--dry-run` 才会保存检测结果。
+robot 结果会影响后续 task slot，因此刷新顺序
 是先 robot、再 task：
 
 ```bash
@@ -320,13 +317,13 @@ python tools/augment_replay_with_oracle_objects.py \
 同一 `episode_idx` 的多个 replay 子序列共用 slot 映射；切换到新的 `episode_idx` 时
 使用独立映射。训练随机采样 replay 时不依赖上一条 transition。
 
-训练加载 Oracle replay 时，通过 `--train_replay_storage_dir` 显式指定 Oracle
-输出根目录，并启用与数据准备阶段一致的张量尺寸：
+训练启动方式和工作目录见[训练指南](training.md#rlbench-fine-tuning)。将下面的**加载参数片段**合并到所选训练命令；已有 `--exp_cfg_opts` 时合并为同一个参数：
 
-    GPUS_PER_NODE=2 bash train_8x40.sh --train_replay_storage_dir /path/to/augmented_replay \
-        --exp_cfg_opts 'use_oracle_objects True oracle_max_objects 32 oracle_num_points 512' \
-        [其他训练参数]
+```text
+--train_replay_storage_dir /absolute/path/to/augmented_replay \
+--exp_cfg_opts "use_oracle_objects True oracle_max_objects 32 oracle_num_points 512"
+```
 
-use_oracle_objects 默认为 False，因此原始非 Oracle replay 的加载行为保持不变。
+`use_oracle_objects` 默认 False；设为 True 仅声明 replay 要加载 Oracle 字段，不会自动启用某种 prior/adapter。实际模型路由由训练配置决定，张量尺寸须与生成阶段一致，见 [O2 模式选择](object-conditioning.md#gt-adapter-only)。
 
 > 上述启发式角色不是严格 semantic-GT。正式 O2 角色标注请继续阅读 [Semantic-GT](semantic-gt.md)。

@@ -1,7 +1,5 @@
 [文档索引](../README.md) · [项目首页](../../README.md)
 
-> 命令不在 docs/ 下执行。带 cd 的独立示例从仓库根目录开始；其后命令沿用该目录。替换所有示例路径后再运行。
-
 <a id=experimental-results></a>
 
 # Experimental Results
@@ -9,7 +7,17 @@
 本页保留原 BridgeVLA 发布结果，未重新计算；不是当前 O2/slots/memory 的复现实验报告。
 新增实验应保存训练配置与版本、完整 episode journals 和配对 CI；COLOSSEUM 历史统计口径限制见[评估](../guides/evaluation.md)。
 
-BridgeVLA's performance on three simulation benchmarks is shown in the following table:
+当前扩展的验收状态单独记录，不能用下方历史表格替代：
+
+| 路线 | 当前可陈述结论 | 记录入口 |
+| --- | --- | --- |
+| OHT regression_state | 用户确认整体配置解决本次轨迹问题；无各项改动的独立归因或新增成功率 | [已确认基线与交接](../oht/training.md#已确认基线与交接) |
+| OHT delta_state / flow_state | 已实现独立配置，不能继承 regression_state 的确认 | [当前轨迹模型](../oht/training.md#连续轨迹模型) |
+| O2 slots / 角色与跨尺度扩展 | opt-in 实现及 CPU 回归不构成闭环收益证明 | [实验与准入](../guides/object-conditioning.md#闭环统计与准入) |
+| 跨步 object memory | 尚未实现，不提供性能结论 | [后续设计](../design/role-relation-prior.md#object-centric-memory后续未实现) |
+
+以下为原发布的三项仿真 benchmark 结果，成功率为百分比，Avg. Rank 为名次。RLBench 的两张表合计 18 个任务；Part 1 的平均值/排名是全任务统计，不是该半表的平均值。各方法的实验条件和误差项沿用原发布材料，本页未补推缺失的 seeds 或置信区间。
+
 ### RLBench Task Success Rates (Part 1)
 
 | Model                          | Avg. Success (%) ↑ | Avg. Rank ↓ | Close Jar      | Drag Stick     | Insert Peg     | Meat off Grill | Open Drawer    | Place Cups     | Place Wine     | Push Buttons   |
@@ -79,18 +87,10 @@ BridgeVLA's performance on three simulation benchmarks is shown in the following
 
 <a id=todo></a>
 
-## 📅 TODO
+## 原发布清单（历史）
 
-- [x] Release the pre-training code
-- [x] Release the training & evaluation code of RLBench
-- [x] Release the training & evaluation code of COLOSSEUM
-- [x] Release the training & evaluation code of GemBench
-- [x] Release the pre-training data
-- [x] Release the checkpoints
-
-
-
-## 🔥 News
+原项目已发布预训练代码/数据、RLBench/COLOSSEUM/GemBench 训练评估代码及 checkpoints；这是历史发布状态，不表示本工作区复现实验或当前扩展验收通过。
+## 原项目新闻（历史）
 
 * **`2026.04.06`** 🌟 We release [MV-VDP](https://lpy1219.github.io/MV-VDP-Web/), a spatio-temporal aware video action model that leverages the similar projection and back-projection strategy. It demonstrates great data-efficiency, robustness, generalization and interpretability. We invite you to check it out!
 * **`2025.09.20`** 🌟 BridgeVLA was accepted by NeurIPS 2025! 🥳🥳🥳

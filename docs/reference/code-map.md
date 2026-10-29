@@ -2,26 +2,26 @@
 
 [文档索引](../README.md) · [配置流程](../guides/object-conditioning.md#配置选择) · [接口契约](../design/role-relation-prior.md#当前实现与数据契约) · [联合实验](../guides/object-conditioning.md#gt-联合对照)
 
-> 本页定位现有代码。角色监督/继承/token 保留与有序 T/R queries 均有 opt-in 实现；temporal memory 仍未实现，闭环收益待验证。
+> 2026-10-29 按代码入口核对。本页维护函数索引、配置入口与当前运行限制；操作命令见各指南。O2、OHT 单关键点与 V4 chunk 分别选择数据和配置，验证结果不能互用。
 
 ## Semantic-GT 数据流
 
 ```text
-role YAML + stored demo → Oracle provider → phase/handle manifest
+role YAML + stored demo → model-free demo_events → phase/handle manifest
   → replay 重写：T/R XYZ + audit → schema/loader
   → 读取时派生 presence/known → 预测模式仅用于辅助监督
 ```
 
 | 阶段 | 文件 | 关键函数 |
 | --- | --- | --- |
-| 角色/manifest | [o2_oracle_provider.py](../../finetune/RLBench/utils/o2_oracle_provider.py) | `_build_assignment()`、`build_demo_event_manifest()`、`_sample_entity_points()` |
+| 角色/manifest | [o2_oracle_provider.py](../../finetune/RLBench/utils/o2_oracle_provider.py) | `_build_assignment()`、`build_demo_event_manifest()`、`_sample_entity_points()`；`demo_events` 不加载策略模型，`sim_replay` 为另一路诊断 |
 | handle 证书 | [oracle_handle_alignment.py](../../finetune/RLBench/utils/oracle_handle_alignment.py) | `align_handles()`、`align_semantic_handle_group()` |
 | site 几何 | [site_geometry.py](../../finetune/RLBench/utils/site_geometry.py) | `site_geometry_from_object()`、`sample_site_geometry()` |
 | 重写/审计 | [rewrite_replay_with_semantic_roles.py](../../tools/rewrite_replay_with_semantic_roles.py) | `_load_manifest()`、`_build_oracle()`、`_fill_slot()`、`_audit_fields()` |
 | 校验/可视化 | 同上 | `_validate_semantic_transition()`、`_validate_task_output()`、`_visualize_task_output()` |
 | schema/loader | [dataset.py](../../finetune/RLBench/utils/dataset.py) / [get_dataset.py](../../finetune/RLBench/utils/get_dataset.py) | `create_replay()`、`get_dataset()` |
 | 旧数据 presence | [YARR uniform_replay_buffer.py](../../finetune/bridgevla/libs/YARR/yarr/replay_buffer/uniform_replay_buffer.py) | `_derive_role_presence()`、`_copy_required_disk_fields()`，只读派生 |
-| train/eval 契约 | [semantic_contract.py](../../finetune/RLBench/utils/semantic_contract.py) / [train.py](../../finetune/RLBench/train.py) / [eval.py](../../finetune/RLBench/eval.py) | `_validate_semantic_replay_schema()`、`load_agent()` |
+| train/eval 契约 | [semantic_contract.py](../../finetune/RLBench/utils/semantic_contract.py) / [train.py](../../finetune/RLBench/train.py) / [eval.py](../../finetune/RLBench/eval.py) | `_validate_semantic_replay_schema()`、`load_agent()`；严格训练审计读取各任务全量验证报告并抽查 transition，不在启动时重新逐条校验整个 buffer |
 
 ## Policy 数据流
 
@@ -39,14 +39,16 @@ RVTAgent.update/act
 | [bridgevla_agent.py](../../finetune/bridgevla/models/bridgevla_agent.py) | `_select_oracle_prior_points()`、`_oracle_network_kwargs()`；teacher-only `_object_slot_auxiliary_losses()` |
 | [mvt.py](../../finetune/bridgevla/mvt/mvt.py) | `MVT.forward()`、`_build_oracle_instance_prior()`；管理 coarse/refine 投影与 crop |
 | [mvt_single.py](../../finetune/bridgevla/mvt/mvt_single.py) | `MVT.forward()`；VLM/decoder、预测策略的 GT 隔离、共享模式 global 重池化 |
-| [object_conditioning.py](../../finetune/bridgevla/models/object_conditioning.py) | `pool_instruction_context()`、`soft_role_geometry()`、`action_feature_routes()` |
+| [object_conditioning.py](../../finetune/bridgevla/models/object_conditioning.py) | `pool_instruction_context()`、`soft_role_geometry()`、`action_feature_routes()`；`role_supervision_mask()`、`mixed_role_map_losses()`、`hungarian_role_slot_losses()`、`reference_null_loss()` 管理有效监督 |
 | [soft_coarse_queries.py](../../finetune/bridgevla/models/soft_coarse_queries.py) | `SoftCoarseQueryConditioner.forward()`：coarse soft T/R tokens → 独立 refine slots 的零初始化 query 提示；不继承有效性或几何 |
-| 同上 | `role_supervision_mask()` 统一 stage/role/view 支持；`mixed_role_map_losses()`、`hungarian_role_slot_losses()`、`reference_null_loss()` |
 | [cross_scale_roles.py](../../finetune/bridgevla/models/cross_scale_roles.py) | `inherit_coarse_roles()`、`transform_role_geometry()`；本步角色传递与局部提示支持 |
 | [refine_role_masks.py](../../finetune/bridgevla/models/refine_role_masks.py) | `CoarseConditionedLocalQuery.forward()` 更新 coarse-bound tokens；局部 mask head 读出；`refine_role_mask_losses()` 屏蔽未知像素 |
+| [heatmap_transport.py](../../finetune/bridgevla/models/heatmap_transport.py) | `reproject_role_heatmaps()` 用观测 XYZ 将完整 coarse 角色概率传入实际 refine crop，保留投影有效性 |
+| [role_separation.py](../../finetune/bridgevla/models/role_separation.py) | `role_separation_loss()` 在可核实的角色表面构造 T/R 交叉负例；与旧无序 slot cosine loss 分开 |
 | [train.py](../../finetune/RLBench/train.py) | `load_initial_model_checkpoint()`、`load_training_checkpoint()` |
 | [training_utils.py](../../finetune/RLBench/training_utils.py) | `resolve_training_epochs()`、`build_batch_plan()`、`optimizer_steps_per_epoch()`；显式 CLI 优先，实际预算存入训练配置 |
-| [compare_paired_success.py](../../tools/compare_paired_success.py) | `compare()`，同 episodes 配对闭环 CI |
+| [eval_reporting.py](../../finetune/RLBench/utils/eval_reporting.py) | `evaluation_result()`、`build_eval_run_signature()`；完成数校验、任务汇总与续跑签名 |
+| [compare_paired_success.py](../../tools/compare_paired_success.py) | `load_episodes()`、`compare()`；三训练 seed 起的配对 bootstrap，预定 episode 完整性仍需先验收 |
 
 ## 配置入口
 
@@ -66,62 +68,71 @@ RVTAgent.update/act
 | `rlbench_o2_role_queries.yaml` | 2 有序 T/R queries；直接角色图 + Reference NULL loss，本步继承/token 保留；与 6-slot 跨尺度路线分开消融 |
 
 默认旧配置不切换新路由；数值与闭环收益须在目标环境验收。
-`current_state[B,3]` 是当前夹爪状态，旧 relation-state 名称兼容；
+`current_state` 形状为 `[B,3]`（gripper open + 两维 finger state），兼容旧 relation-state 参数名；
 预测部署不得读取 simulator ID、GT phase 或未来目标动作，Oracle 实验另作上界。
 
-## 计划代码落点
+## OHT 数据、连续轨迹与部署
+
+单关键点 replay 使用 `oht_bridgevla_v2`，连续轨迹使用独立 `oht_bridgevla_v4`；chunk 不能读取旧单关键点标签补出密集路径。运行命令见[训练与评估](../oht/training.md#训练与评估)，当前状态条件配置见[连续轨迹模型](../oht/training.md#连续轨迹模型)。
+
+| 阶段 | 当前入口与职责 |
+| --- | --- |
+| 审计与单关键点 replay | [audit_oht_dataset.py](../../tools/audit_oht_dataset.py)、[data/replay.py](../../finetune/OHT/data/replay.py)、[data/dataset.py](../../finetune/OHT/data/dataset.py)：划分、观测/标定契约与下一关键点标签 |
+| V4 构建与读取 | [chunk_actions.py](../../finetune/OHT/data/chunk_actions.py)：`make_chunk_targets()`；[chunk_replay.py](../../finetune/OHT/data/chunk_replay.py)：`build()`；[chunk_dataset.py](../../finetune/OHT/data/chunk_dataset.py)：`OHTChunkDataset`、`load_chunk_contract()` |
+| 模型与监督 | [chunk_model.py](../../finetune/OHT/chunk_model.py)：`ChunkAgent`、独立 key loss / prediction-only chunk 条件、`chunk_loss()`；[spatial_chunk.py](../../finetune/OHT/spatial_chunk.py)：空间 attention、状态条件与 flow / regression |
+| 训练统计 | [chunk_normalization.py](../../finetune/OHT/chunk_normalization.py)：仅 train 的动作/本体统计；[chunk_config.py](../../finetune/OHT/chunk_config.py)：结构、数据与参数化约束 |
+| 离线与执行 | [chunk_eval.py](../../finetune/OHT/chunk_eval.py)：按未来 offset 评估；[chunk_protocol.py](../../finetune/OHT/runtime/chunk_protocol.py)：K/dt/H 协商；[chunk_executor.py](../../finetune/OHT/runtime/chunk_executor.py)：固定时间消费绝对 EEF 前缀 |
+| 初态与批次结果 | [trajectory_initialization.py](../../finetune/OHT/runtime/trajectory_initialization.py)：`InitialState`，记录初态恢复和有限标定检查；[isaaclab_client.py](../../finetune/OHT/isaaclab_client.py)：`_run()`，提前停止及 attempted/planned 统计 |
+| 外部对象接口（单关键点路线） | [predicted_wrapper.py](../../finetune/OHT/runtime/predicted_wrapper.py)：`PredictedObjectWrapper` 与观测白名单；插件不等于已提供训练好的 detector |
+
+V4 chunk 当前要求 `mode=baseline`、`action_mode=eef`，不接入 role cache。regression_state 整体配置的用户确认与定量/CUDA/闭环验收边界见 [已确认基线与交接](../oht/training.md#已确认基线与交接)。
+
+## 尚未实现的代码落点
 
 | 尚未实现 | 设计入口 |
 | --- | --- |
-| 可训练 refine mask readout；当前仍是经 XYZ 核验的离散提示 | [跨尺度角色继承](../design/role-relation-prior.md#跨尺度角色继承计划未实现)；固定 T/R queries 已有[操作指南](../guides/object-conditioning.md#固定-tr-role-queriesopt-in) |
 | 跨步 object bank、序列 loader、act/reset 状态 | [Memory](../design/role-relation-prior.md#object-centric-memory后续未实现) |
-| visibility / 当前 EE pose / phase graph / object-local views / risk head | 不进入当前主线，按标签与瓶颈另验 |
+| RLBench O2 的独立 visibility / 当前 EE pose / phase graph / object-local views / risk head | 不进入当前 O2 主线，按标签与瓶颈另验；OHT chunk 已有实测 TCP/proprio 输入 |
 
 predictor 内的 attention `memory` 不是历史 bank。`RVTAgent.reset()` 会清理 simulator alignment 的锁与计数，
 但当前没有学习式 role memory/object bank。
 
-## 项目审查（2026-09-29）
+<a id="项目审查2026-09-29"></a>
+<a id="已确认尚未修复的运行问题"></a>
 
-本轮按运行链路审查 first-party 入口和关键实现：pretrain、RLBench 数据/模型/训练/评估、
-Semantic-GT 工具、Colosseum/GemBench launcher 与统计、相关 tests 和 docs。
-不是全部文件的逐行审计；vendor 库仅检查关联接口，也未运行 GPU/模拟器。初次审查只改文档；后续按授权实现了三个角色一致性开关，以下运行问题暂不修复。
+## 当前运行限制
 
-### 已确认、尚未修复的运行问题
+以下按当前源码复核，覆盖相关入口与 vendor 接口；不代表逐行审计全部文件或完成 GPU/模拟器验收。旧审查锚点保留在此处，避免从旧链接进入过时快照。
 
 | 优先级 | 问题与影响 | 代码证据 | 当前处理 |
 | --- | --- | --- | --- |
 | P1 | 旧 launcher 硬编码路径、未引用 `$@`，会拆开 overrides/含空格路径 | [RLBench train.sh](../../finetune/RLBench/train.sh)；Colosseum/GemBench 同类脚本 | RLBench 示例改用 `train_8x40.sh`；其他分支先适配脚本 |
 | P1 | eval resume 没有覆盖全部策略依赖，模型模块改变后可能复用旧结果 | [eval.py](../../finetune/RLBench/eval.py) 的 `runtime_files` 未含 `mvt_single.py` / `object_conditioning.py` / `oracle_prior.py` | 代码/数据改变后使用新评估目录，不复用旧 journals |
 | P1 | 配对 CI 只要求双方已有 episode 集合相同，双方同样中断仍可能通过 | [compare_paired_success.py](../../tools/compare_paired_success.py) 的 `load_episodes()` / `compare()` 未校验 requested summary | 先核对每 task 完成数与预定 episode 范围，再运行 CI |
+| P1 | OHT 执行错误会停止后续 episodes；`success_rate` 的分母为 attempted，可能小于 planned | [isaaclab_client.py](../../finetune/OHT/isaaclab_client.py) 的 `_run()` | 检查 planned/attempted/unattempted 和停止原因；[固定 case 验收](../oht/runtime.md#时间预算与停止结果) |
+| P2 | OHT 记录初态的 contract loader 只支持 V3；data-config 路线不自动比对完整相机/状态标定 | [trajectory_replay.py](../../finetune/OHT/runtime/trajectory_replay.py)、[trajectory_initialization.py](../../finetune/OHT/runtime/trajectory_initialization.py) 的 `InitialState._check_calibration()` | V4 使用匹配的 data-config；自动检查字段及手动核对项见[同初态说明](../oht/runtime.md#相同记录初态运行策略) |
 | P2 | installer 与其他 benchmark 流程不完全可移植；统计依赖目录/顺序假设 | [pretrain installer](../../pretrain/pretrain_install.sh)、[GemBench client](../../finetune/GemBench/run_client.sh)、[GemBench aggregation](../../finetune/GemBench/cal_results.py)、[Colosseum aggregation](../../finetune/Colosseum/cal_statics.py) | 预先配置依赖/路径，核对任务与 episode 覆盖；不能直接套用 RLBench 统计保障 |
+| P2 | 预算测试仍要求 OHT 与 RLBench full 配方相同，当前 epochs 为 60 / 100 | [test_oht_training_plan.py](../../tests/test_oht_training_plan.py) 的 `test_full_preset_matches_rlbench_recipe_and_mvt()` | 同步测试预期与各自配方；当前 OHT 数值见[预算说明](../oht/training.md#预算与卡数)，不能改配置凑旧断言 |
 
 P1 指会破坏实验可运行性或结果可信度，P2 指复现/配置风险；以上没有宣称已修复。
 resume 签名对 checkpoint 使用 path/size/mtime，对 raw data 使用目录路径，不是全内容 provenance。
 
-### 模型与数据审查结论
+<a id="模型与数据审查结论"></a>
 
-| 已实现 | 当前边界 |
+模型输入、监督隔离与角色有效性以[当前数据契约](../design/role-relation-prior.md#当前实现与数据契约)为准；训练和评估步骤集中在[O2 指南](../guides/object-conditioning.md)。mask-only 身份证书不认证整场景 XYZ，presence 不等于几何可用，预测模式的 teacher 只用于辅助监督。
+
+<a id="验证与下一步"></a>
+
+## 验证入口
+
+| 目的 | 入口 |
 | --- | --- |
-| opt-in shared action routes、同次 text pooling、预测 teacher 隔离 | 旧 YAML 不自动启用；训练仍用 GT waypoint/crop，推理用预测 waypoint/crop |
-| soft T/R posterior、可微几何、Reference NULL loss | 默认仍按 geometry valid 屏蔽 token；opt-in 保留可靠角色；没有 Target NULL head |
-| 默认独立 slots；opt-in 混合 map 监督/本步继承；另有有序 T/R queries | 纯继承提示不另算辅助 loss；启用 refine mask head 后有局部 map/分离 loss。role-query 没有 Hungarian/objectness/无序 slot cosine，但有可见表面 T/R 分离监督，不是全实例发现 |
-| kind 只读派生 presence、全量语义校验 | role YAML 是全文件 hash；resume 不迁移旧 replay；mask-only/局部身份证书不认证整场景 XYZ |
-| RLBench 稀疏 reward 统计、完成数校验、episode/video 同编号 | 配对 CI 只接收 `100/0` journals；历史表格不能当当前 O2 验收结果 |
+| 本地文档链接与锚点 | 仓库根目录运行 `python tools/check_docs.py`；只做离线结构检查 |
+| RLBench 动作/teacher 隔离及语义契约 | [test_object_conditioning_forward.py](../../tests/test_object_conditioning_forward.py)、[test_semantic_contract.py](../../tests/test_semantic_contract.py) |
+| RLBench 汇总与配对比较 | [test_eval_reporting.py](../../tests/test_eval_reporting.py)、[test_paired_success.py](../../tests/test_paired_success.py)；完成集合仍须对照预定 cases |
+| OHT 数据、状态与执行回归 | [OHT 本地验证](../oht/training.md#本地验证)；对应改动选取现有测试 |
+| 真实模型与控制 | 目标 Linux/CUDA 环境做单步训练、同初态 GT/模型对照和固定 case/seed 闭环；CPU 替身不提供此类运行证据 |
 
-当前不具备学习式时空 memory、物理遮挡补全或已验证的失败恢复/真机能力。
-详细接口只维护在[主设计](../design/role-relation-prior.md)，操作与临时规避只维护在[O2 指南](../guides/object-conditioning.md)。
+## 历史项目审查（2026-09-29）
 
-### 验证与下一步
-
-本机完成 16 个 first-party Bash 脚本的 `bash -n`，以及未引用/已引用 `$@` 的独立参数复现。
-实施后复核 13 份 Markdown：本地链接/锚点与 Bash 示例通过静态校验；
-语法通过不代表 placeholder、依赖或模型数值正确。
-隔离环境（Python 3.12 / PyTorch 2.5.1 CPU）已通过相关回归，覆盖角色 loss/梯度、跨尺度继承、role-query 配置/前向、小模型动作前向与可视化；不代表完整 CUDA/模拟器验证或闭环收益。
-同时修复了 RLBench eval 的 `--use-input-place-with-mean` 未初始化变量，以及 YAML epochs 被 CLI 默认 100 覆盖的问题。完整 PaliGemma/CUDA 单步训练、真实 renderer 与模拟器闭环尚未运行。
-
-目标 Linux/CUDA 环境按以下顺序验收：
-
-1. `python -m pytest -q tests`；重点检查 [动作/teacher 隔离](../../tests/test_object_conditioning_forward.py)、[语义契约](../../tests/test_semantic_contract.py)、[评估报告](../../tests/test_eval_reporting.py)、[配对 CI](../../tests/test_paired_success.py)。现有部分测试是源码检查，不替代数值测试。
-2. 修运行问题时补 launcher 参数保真、依赖模块变更使 resume 失效、双方同样缺 episode 时 CI 拒绝的回归测试。
-3. 分别做 GT/预测单步训练与单 episode smoke，检查梯度、coarse/refine 坐标、最终 waypoint 下 R/G/C；预测动作前向不读 GT。
-4. 固定版本/预算/完整 episodes，3 seeds 配对闭环；GT 准入后验证三个 opt-in 开关，不先追加 memory。
+早期审查覆盖 first-party launcher、角色一致性与评估口径；后续新增的 OHT、soft coarse、refine masks 已反映在上面的当前索引。旧测试数量不作为当前验收结果重复维护；OHT 已确认配置与历史验证记录见 [已确认基线与交接](../oht/training.md#已确认基线与交接)。

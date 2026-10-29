@@ -24,7 +24,7 @@ baseline 的安装/预训练/其他 benchmark 命令仍见[训练](training.md)�
 | `semantic_gt_joint` | Semantic-GT | instruction + 完整动作共享 | `rlbench_gt` |
 | `internal_slots_joint` | 6 个无序 slots，128 dim | soft tokens/geometry + instruction + 完整动作共享 | `none` |
 | `internal_slots_cross_scale` | 同一 coarse 的 6 slots | joint + 混合 map 监督 + 本步继承 + token 保留 | `none` |
-| `internal_slots_refine` | 两个固定 T/R queries | coarse-conditioned 局部 query 更新 + RGB/XYZ mask head；更新 token 进入 anchor | `none` |
+| `internal_slots_refine` | 两个固定 T/R queries | coarse 完整热图经 XYZ 重投影 → post-VLM 空间融合 + 零初始化残差 mask；更新 token 进入 anchor | `none` |
 | `role_queries` | 两个有序 T/R queries | joint + 直接角色图监督 + 本步继承 + token 保留 | `none` |
 
 ### 无序 slots + coarse 软提示（新对照）
@@ -73,6 +73,8 @@ flowchart LR
 各 YAML 对应哪个 replay 目录，见[RLBench config 与数据目录](training.md#rlbench-config-datasets)；路径通过 `--train_replay_storage_dir` 显式指定。
 
 语义/slots/query 配置默认非严格：`oracle_semantic_audit: False`、`oracle_semantic_contract.enforce: False`。旧 buffer 缺少 role-config SHA256 或全量验证报告时不阻止启动；对象 teacher、模型结构和基本输入要求不变。非严格运行不记录已验证的 `semantic_contract`，不能据此宣称 train/eval 语义一致。
+
+下文的 GT 准入统计与严格来源审计是两项检查。正式对照需记录实际审计开关和 contract 验证状态；仅通过成功率 CI 不补足数据 provenance。
 
 需要严格启动审计时，在训练命令中显式开启两项（评估使用该训练保存的配置）：
 
@@ -253,35 +255,17 @@ hard top-k XYZ 用于兼容/可视化与 opt-in 继承的局部提示，不是�
 
 ### 角色一致性开关
 
-三个独立开关默认关闭，仅支持内部预测；GT/外部 predictor 不误启用。`role_queries` 配置使用后两项，并以自身输出角色图直接监督，不打开 mixed-map 附加损失。
+以下三项全局默认 False，仅用于内部预测；`role_queries` 使用后两项并直接监督角色图，不叠加 mixed-map loss。
 
-```yaml
-object_conditioning:
-  supervise_mixed_role_maps: False
-  inherit_coarse_roles: False
-  preserve_role_tokens: False
-rvt:
-  object_slot_mixed_role_loss_weight: 1.0
-```
-
-| 开关 | 启用后 |
+| `object_conditioning` 开关 | 启用后 |
 | --- | --- |
-| `supervise_mixed_role_maps` | 匹配 slot 与 mixed-map BCE/Dice 共用 stage/role/view teacher 有效性；未知/无效角色和空 teacher views 跳过 |
-| `inherit_coarse_roles` | refine 不调用 predictor2，复用 coarse tokens/NULL/几何；预测点作有 XYZ 支持的重投影提示 |
-| `preserve_role_tokens` | 可信角色 token 不随局部 geometry valid 清空；不生成虚构局部 XYZ |
+| `supervise_mixed_role_maps` | 匹配与 mixed-map 共用 stage/role/view teacher 有效性；mixed 权重为 `rvt.object_slot_mixed_role_loss_weight`（默认 1） |
+| `inherit_coarse_roles` | refine 跳过 predictor2，继承 coarse tokens/NULL/几何，预测点作 XYZ 核验提示；纯提示不另算角色/NULL loss |
+| `preserve_role_tokens` | 可信 token 与局部 geometry valid 分开，不生成虚构局部 XYZ |
 
-后两项要求 shared action features + anchor；继承还要求 stage_two 与 XYZ channels。
-继承或 direct role-query 模式自动使用未额外归一化、未受图像增强扰动的 XYZ，RGB/VLM 不变；关闭继承做 direct-query 消融也维持该坐标契约。可沿用默认 `rvt2.yaml`。
-继承时 refine 提示为离散重投影，不另算角色/NULL/slot loss；学习式混合 map loss 只在 coarse。
-global tokens/soft geometry 仍接受 refine action 梯度；cross-scale 本身没有学习式局部 mask decoder 或跨步 memory，局部读出需另选下方 refine 配置。
-有效性只读取 teacher，不由预测 confidence 决定。Reference 在 refine 全部视角没有投影支持时，两种 map loss 都跳过对应监督，也不产生该角色的 objectness 正例；presence/NULL 标签独立保留。
-teacher 是模糊、峰值归一化的点投影 prior，未验证虚拟视角遮挡，不能按严格实例分割 GT 解释。
+后两项要求 shared action features + anchor，继承还要求 stage_two/XYZ channels。继承或 direct-query 使用未受 norm_corr/图像增强污染的实际 XYZ。teacher 有效性不由预测 confidence 决定，空视图/unknown 跳过 map 监督，presence/NULL 独立保留。点投影 teacher 不是严格可见实例分割。接口和梯度细节见[主设计](../design/role-relation-prior.md#跨尺度角色继承计划未实现)。
 
-跨尺度配置启用全部三项，保持 joint 的学习率、slots 和有效训练预算；microbatch 和 projector 冻结以各自 YAML/overrides 为准，对照时统一。已有 semantic buffer 不重写：
-
-- 冻结 vision tower、Gemma 前 18 层及既有 embedding/lm_head；projector 依配置，上层 Gemma、动作头和 object 模块参与训练。
-- 非 Gemma 学习率 `4e-5`，Gemma `1e-5`；effective batch 192，50 epochs × 200 optimizer steps = 10,000 updates。
-- `--epochs` 未指定时使用 YAML/overrides，显式指定时覆盖并保存实际值；joint 不传 `--train_object_adapter_only`。
+cross-scale 配置开齐三项，6 slots、非 Gemma/Gemma LR 为 `4e-5/1e-5`、有效 batch 192、50×200=10,000 updates。冻结范围按 YAML/overrides；joint 对照统一 projector 与 microbatch，不传 adapter-only。有效 semantic buffer 无需重写。
 
 ```bash
 cd finetune/RLBench
@@ -293,40 +277,18 @@ GPUS_PER_NODE=2 bash train_8x40.sh \
   --exp_cfg_opts "seed 0"
 ```
 
-消融只替换 overrides，其他预算保持不变：
+消融只替换 opts，从相同初始化重新训练：
 
 | 组 | `--exp_cfg_opts` |
 | --- | --- |
 | 旧 joint | `seed 0 object_conditioning.supervise_mixed_role_maps False object_conditioning.inherit_coarse_roles False object_conditioning.preserve_role_tokens False` |
-| 监督对齐（mixed + 有效性修正） | `seed 0 object_conditioning.inherit_coarse_roles False object_conditioning.preserve_role_tokens False` |
+| 监督对齐 | `seed 0 object_conditioning.inherit_coarse_roles False object_conditioning.preserve_role_tokens False` |
 | mixed + 继承 | `seed 0 object_conditioning.preserve_role_tokens False` |
-| 三项全开 | `seed 0` |
+| 全开 | `seed 0` |
 
-要单独验证 teacher 有效性修正，可在监督对齐组追加 `rvt.object_slot_mixed_role_loss_weight 0.0`；此时不加 mixed 项，匹配 loss 仍使用修正后的有效性。
-四个路由开关（shared/context/inherit/preserve）及 predictor type 写入 checkpoint；改变路由或 slots↔role queries 用 `--init_checkpoint`；监督开关/权重改变可复用兼容 optimizer，但正式消融仍从相同初始化重新训练。
-相同配置续训用 `--resume_checkpoint`，optimizer 连续性要求之前保存过 `--save_optimizer_state`。评估读取该 checkpoint 保存的 `exp_cfg.yaml` 与 `mvt_cfg.yaml`，四个路由设置不匹配会报错。
-VISUALIZE 中 refine 显示继承的 T/R maps，不伪造 slot/head 分数；JSON 标记 `roles_inherited=true, role_source=coarse`。
+监督对齐组追加 `rvt.object_slot_mixed_role_loss_weight 0.0` 可只测 teacher 有效性修正，匹配 loss 仍采用修正 mask。架构切换与保存配置校验见[Checkpoint](#loss与checkpoint)；权重/监督变化即使技术上可复用 optimizer，正式消融仍统一起点。单步训练和预测-only episode 按[最小验证](#最小验证)执行。
 
-正式训练前可先做一个 optimizer update：
-
-```bash
-cd finetune/RLBench
-GPUS_PER_NODE=1 bash train_8x40.sh \
-  --exp_cfg_path configs/rlbench_o2_internal_slots_cross_scale.yaml \
-  --train_replay_storage_dir "$SEMANTIC_BUFFER" \
-  --init_checkpoint "$BASE_CHECKPOINT" \
-  --exp_cfg_opts "seed 0 tasks place_cups bs 1 global_batch_size 1 num_workers 0 max_optimizer_steps 1 exp_id o2_cross_scale_smoke"
-```
-
-将训练输出目录设为 `SLOT_RUN`，使用其保存配置做预测-only 单 episode 检查；正式实验恢复原 batch/预算，并按相同 episodes 做配对闭环评估。
-
-```bash
-cd finetune/RLBench
-TASKS=place_cups MODEL_FOLDER="$SLOT_RUN" MODEL_NAME=model_last.pth \
-EXP_CFG_PATH="$SLOT_RUN/exp_cfg.yaml" EVAL_DATAFOLDER=/path/to/raw_eval \
-ORACLE_PROVIDER=none REPLAY_GROUND_TRUTH=0 EVAL_EPISODES=1 EVAL_RESUME=0 \
-ORACLE_DEBUG=0 SAVE_VIDEO=0 VISUALIZE=0 bash eval.sh
-```
+纯继承可视化中 `roles_inherited=true, role_source=coarse`，不伪造 refine slot/head 分数；学习式局部读出另用下节配置，不能把继承提示称为新 mask decoder。
 
 ### 条件化 refine masks（opt-in）
 
@@ -363,29 +325,11 @@ OHT `role_queries` 可在 `object` 中设置同名 `refine_role_masks` / `refine
 
 #### 完整热图输入与残差细化
 
-`refine_heatmap_residual` 全局默认 False，旧实验按其保存配置加载；当前 refine YAML 显式开启。流程为：
+`refine_heatmap_residual` 全局默认 False，当前 refine YAML 开启。它按实际 crop 的 XYZ 将完整 coarse T/R 概率重投影到局部表面，保留各自有效性，再生成对齐 refine patch 的空间 tokens，融合 VLM 输出并预测零初始化残差；RGB 输入不变，不额外运行 VLM，不重建 replay。公式、遮挡容差、unknown 弱先验和 detach 路径见[主设计](../design/role-relation-prior.md#跨尺度角色继承计划未实现)。
 
-```text
-coarse 原始 T/R 概率 + coarse 渲染 XYZ
-              ↓ x_coarse = x_refine / scale + crop_center
-refine 表面点查询 coarse 各视角，检查 frustum 与 XYZ 一致性
-              ↓ 平均融合可靠视角，保留原始响应强弱
-T/R 投影热图 + 各自有效性 + refine XYZ + UV/视角位置
-              ↓ 按 refine VLM 图像 patch 网格生成空间 tokens
-同视角图像 tokens cross-attend 热图 tokens，保留逐 patch 对齐连接
-              ↓ 融合 RGB/XYZ 局部细节，保留全局 T/R 语义 tokens
-零初始化的局部残差 → 最终 T/R map → 原动作 adapter/anchor
-```
+PNG/TensorBoard 的 `Target prior / Reference prior`、`T/R projection valid` 都处于 refine 坐标。查看 `train/object_refine_projection_coverage`、`train/object_refine_residual_abs_mean`，以及 JSON 的 `mask_source=coarse_heatmap_residual`；新初始化的首个 residual 为 0，已有同模式权重按保存状态。投影无效不能读作空角色标签。
 
-无需重新生成 replay。XYZ 来自同一观测的已有渲染通道，不使用 GT 对象坐标；不是 resize coarse 二维图，也不把彩色热图画入 VLM RGB。重投影对每个 refine 表面点查询 coarse，使用一个 coarse 像素 pitch 的 XYZ 容差排除其他/遮挡表面；按 8192 点分块限制临时显存，不做 top-K 截断或逐图峰值归一化。空间热图传递与旧点提示一样 detach，coarse 仍通过原有动作/角色 loss 及 token/几何路径训练。
-
-空间 token 在重投影后生成，不直接裁剪 coarse tokens。每个 patch 分别保留 T/R 的已知像素平均概率与覆盖率，附加 refine XYZ、UV 和视角位置；未知区域不参与概率平均或作为 attention 的 key。各视角独立融合，全未知视角不产生 token 更新。融合位于 VLM 输出后，RGB 输入和原细节 CNN 不变；已删除被替代的 `prior_half` 热图 CNN 分支。
-
-在可靠投影区域，`L_refine = logit(clamp(P_projected, 1e-4, 1-1e-4)) + ΔL`。残差输出层零初始化，初始化时继承该裁剪范围内的概率。Reference 的 coarse 非 NULL mass 在最终输出应用一次。未知投影以 `1e-4` 弱先验开始，真实 GT 可训练局部恢复，不生成空 mask 标签；无有效深度或语义角色不可用时不输出空间响应。保留全局角色 token、Gemma 按层冻结、vision tower 和 projector 策略。
-
-PNG/TensorBoard 增加 `Target prior / Reference prior` 和 `T/R projection valid`，均处于 refine 坐标；可直接对比输入先验与最终预测。额外标量为 `train/object_refine_projection_coverage` 和 `train/object_refine_residual_abs_mean`。初始化后首个残差应为 0（若从同模式已训练权重初始化则按其状态），有效性为 0 的位置需结合弱先验看待。推理诊断记录 `mask_source=coarse_heatmap_residual`。
-
-新增 `heatmap_tokens` 和 `residual_output` 随 refine head 训练。从原双 query/静态 head checkpoint 使用 `--init_checkpoint` 保留兼容权重并初始化新分支；旧 optimizer 不能直接恢复。checkpoint 保存 `refine_heatmap_fusion=spatial_tokens_v1`，训练恢复和评估会校验。早期含 `prior_half` 的 CNN 原型权重与本版不兼容，不会静默丢弃；请从原双 query checkpoint 初始化。闭环收益、CUDA 显存和吞吐需在服务器验证。
+从双 query/静态 head 使用 `--init_checkpoint` 保留兼容权重并新建 `heatmap_tokens`/`residual_output`，不恢复旧 optimizer。checkpoint 的 `refine_heatmap_fusion=spatial_tokens_v1` 在训练恢复/评估时校验；已废弃 `prior_half` 原型不兼容，不会静默忽略，应从原双 query checkpoint 初始化。性能和 CUDA 开销仍需实验。
 
 #### T/R 分离监督与日志
 
@@ -442,14 +386,14 @@ GPUS_PER_NODE=2 bash train_8x40.sh \
 几何不可用不等于语义 NULL；无可靠 GT 几何/标注的视角按 teacher 有效性跳过，不伪造空 mask 负例。
 Reference 空间 prior 含一次 `(1-p_NULL)`，anchor 中的语义 token 另按该 posterior 条件化；
 `confidence` 是预测图峰值支持分数，不是校准身份、存在或可见性置信度。
-refine 继承本步 coarse 角色与可用全局条件，局部 map 是当前 XYZ 核验后的离散提示，不是新的学习式 mask decoder 或 temporal memory。
+本节 `rlbench_o2_role_queries.yaml` 未开启 refine mask head：refine 继承本步 coarse 角色与可用全局条件，局部 map 是当前 XYZ 核验后的离散提示。`internal_slots_refine` 另有[学习式局部 mask / 热图残差](#条件化-refine-masksopt-in)，不要将两份配置混为同一路径；两者都不是 temporal memory。
 
 从旧 slots checkpoint 切换结构时，`--init_checkpoint` 保留兼容的 BridgeVLA backbone/action 权重，
 **同时重新初始化 predictor 与 adapter**；不能用 `--resume_checkpoint` 沿用旧 optimizer。
 checkpoint 的 `object_predictor_type` 记录模式，缺字段的旧 checkpoint 按 `slots` 解释。
 评估使用本次训练保存的 `exp_cfg.yaml`、`ORACLE_PROVIDER=none`，命令与上面的预测-only 示例相同；
 固定相同数据、初始化来源、训练预算与 episodes，和 6-slot 跨尺度配置做配对闭环对照。
-目前没有此结构优于 slots 的实测成功率结论。
+闭环收益待按相同 episodes 与 6-slot 对照验证。
 
 ### 外部预测对象
 
@@ -500,6 +444,8 @@ strict 模式缺字段直接报错。低于配置 confidence 阈值则无效；
 | 同架构、同路由续训 | `--resume_checkpoint` |
 | 改变路由、解冻范围或 fusion 参数组 | 不沿用旧 optimizer resume |
 | 旧 Adapter+Fusion 初始化 | init 保留 adapter，忽略已废弃 fusion tensors；其他参数差异仍校验 |
+
+评估还核对 predictor type 及八项推理开关：shared/context、inherit/preserve、refine mask/local query/heatmap residual、soft coarse；热图残差另校验 fusion version。对应 [eval.py](../../finetune/RLBench/eval.py) 的 `_validate_role_feature_checkpoint()`，并非只校验旧四项。改这些结构后先 init 新训练，评估使用其保存配置；loss-only 的 mixed-map/梯度 detach 不属于该推理路由校验。
 
 有 embedded semantic contract 时核对 schema、phase source、点数、Reference 几何版本和 role YAML SHA-256。
 **评估例外：**运行配置要求 `demo_events` 时，缺 embedded contract 的旧 demo checkpoint 可以加载，但记录

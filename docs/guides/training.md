@@ -18,11 +18,17 @@ We use the object detection data in the RoboPoint dataset to pre-train the model
 | `2` | Pre-train PaliGemma; vision tower is frozen by this entry |
 | `3` (default) | Test the pre-trained checkpoints |
 
-Choose the branch explicitly; no source edit is needed for branch selection:
+Choose the branch explicitly. For example, start pre-training on one GPU from the repository root:
 
 ```bash
-bash pretrain/pretrain.sh --branches BRANCH_OPTION --config_path PATH_TO_CONFIG_FILE --json_detection_path PATH_TO_DETECTION_JSON --image_folder PATH_TO_IMAGE_FOLDER
+cd pretrain
+torchrun --standalone --nnodes=1 --nproc_per_node=1 pretrain.py \
+    --branches 2 --config_path pretrain_config.yaml \
+    --json_detection_path /absolute/path/to/detection_data.json \
+    --image_folder /absolute/path/to/images
 ```
+
+Adjust `--nproc_per_node` to the intended single-node GPU count; use one process for visualization/testing. In `pretrain_config.yaml`, set `output_dir` for training and `checkpoint_dir` / `test_save_path` for checkpoint testing. Paths passed after `cd pretrain` are relative to that directory unless absolute. The legacy `pretrain.sh` contains literal GPU/node/port placeholders and its own `cd pretrain`; adapt it before running it from the repository root.
 
 ## RLBench Fine-tuning
 
@@ -43,6 +49,7 @@ GPUS_PER_NODE=2 bash train_8x40.sh --exp_cfg_path configs/rlbench_config.yaml \
               --exp_note debug \
               --freeze_vision_tower \
               --log_dir exp/RLBench \
+              --train_replay_storage_dir /absolute/path/to/BridgeVLA_RLBench_TRAIN_Buffer \
               --load_pretrain \
               --pretrain_path PATH_TO_2D_HEATMAP_PRETRAINED_MODEL
 ```
@@ -102,6 +109,7 @@ GPUS_PER_NODE=8 bash train_8x40.sh \
     --exp_note trend_seed0 \
     --freeze_vision_tower \
     --log_dir exp/RLBench \
+    --train_replay_storage_dir /absolute/path/to/BridgeVLA_RLBench_TRAIN_Buffer \
     --load_pretrain \
     --pretrain_path PATH_TO_2D_HEATMAP_PRETRAINED_MODEL \
     --save_initial_checkpoint \
@@ -211,5 +219,3 @@ bash train.sh --exp_cfg_path  configs/gembench_config.yaml \
               --load_pretrain \
               --pretrain_path  PATH_TO_PRETRAINED_MODEL
 ```
-
-> 预训练前还需设置 pretrain/pretrain.sh 内的端口、GPU 数和节点数；该脚本自身包含 cd pretrain，请从仓库根目录执行 bash pretrain/pretrain.sh 并传入上述参数。

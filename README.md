@@ -50,7 +50,7 @@ conda activate bridgevla
 
 ### OHT v423
 
-OHT 数据迁移、baseline 与 predicted object assistance 的命令和接入说明见 [OHT 实施指南](finetune/OHT/README.md)；设计依据见 [迁移方案](docs/design/oht-data-migration.md)。
+OHT 统一按三份文档阅读：[数据](docs/oht/data.md) → [训练与模型](docs/oht/training.md) → [部署与回放](docs/oht/runtime.md)。已确认的 `regression_state` 基线、模型设计与交接经验均并入训练文档。
 
 ### RLBench 训练
 
@@ -70,7 +70,7 @@ GPUS_PER_NODE=2 bash train_8x40.sh --exp_cfg_path configs/rlbench_config.yaml \
 
 ### 评估
 
-在 `finetune/RLBench` 下修改 `eval.sh` 中的任务和 checkpoint 路径后执行 `bash eval.sh`。
+RLBench 通过环境变量设置任务和 checkpoint 路径后执行 `bash finetune/RLBench/eval.sh`，完整命令见[评估说明](docs/guides/evaluation.md#rlbench)。
 长时间测试可加 `EVAL_RESUME=1`，按 episode 自动恢复；参数签名、限制和结果位置见
 [闭环日志与恢复限制](docs/guides/object-conditioning.md#评估日志与最终统计)。
 其他 benchmark 见 [评估说明](docs/guides/evaluation.md)；O2 的 GT、预测与 no-prior 对照见 [O2 评估](docs/guides/object-conditioning.md#closed-loop评估)。
@@ -79,6 +79,7 @@ GPUS_PER_NODE=2 bash train_8x40.sh --exp_cfg_path configs/rlbench_config.yaml \
 
 | 需求 | 文档 |
 | --- | --- |
+| OHT 数据、训练与模型、部署与回放 | [数据](docs/oht/data.md) · [训练](docs/oht/training.md) · [运行](docs/oht/runtime.md) |
 | 环境与依赖 | [安装](docs/guides/installation.md) |
 | 预训练、各 benchmark 微调、8×40GB 和日志 | [训练](docs/guides/training.md) |
 | Raw 数据转 replay | [Replay 生成](docs/guides/replay.md) |

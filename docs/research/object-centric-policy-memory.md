@@ -4,6 +4,8 @@
 
 调研截止 **2026-09-29**。围绕 BridgeVLA 的角色预测、跨尺度继承、实例历史与闭环状态更新，核对原论文的方法、监督和实验边界；不是穷尽式综述，也未复现这些方法。下文区分论文事实、本项目代码事实与待验证设计推论。论文指标不直接横向排名。
 
+本项目实现对照于 2026-10-29 更新；本次未重新联网复核论文版本。当前优先实验已改为独立 slots + coarse 软提示，硬继承/有序 queries/局部 mask head 保留为分别验收的分支；不能将论文调研截止日期当成当前代码状态日期。
+
 ## 1. 先明确需要解决的问题
 
 | 问题 | 最小必要机制 | 不能混为一谈的能力 |
@@ -103,47 +105,23 @@ MemoryVLA 提供检索/融合/容量管理；PAM 用少量不同时间跨度 que
 
 ## 4. 与当前代码和数据的差距
 
-| 当前可核对事实 | 文件 / 函数 | 对调研方案的约束 |
-| --- | --- | --- |
-| 无序 slots → objectness / role 分数 → 混合 T/R maps；forward 不接收历史状态 | [oracle_prior.py](../../finetune/bridgevla/models/oracle_prior.py)：`InternalObjectSlotPredictor.forward()` | 当前不是 Slot Attention + SSM，不提供跨帧 ID；局部变量 `memory` 是当前 decoder 的 K/V，不是 temporal bank |
-| 有效 GT T/R 与 slots 做最小代价匹配；只监督匹配 slots，无拒配阈值 | [object_conditioning.py](../../finetune/bridgevla/models/object_conditioning.py)：`hungarian_role_slot_losses()`、`mixed_role_map_losses()` | 不等于全场景 discovery/tracking 标签；最终混合角色图监督已 opt-in 实现，收益待验证 |
-| 默认两级独立；opt-in coarse 预测后将本步 role packet 传给 refine | [mvt.py](../../finetune/bridgevla/mvt/mvt.py)：`MVT.forward()`；[cross_scale_roles.py](../../finetune/bridgevla/models/cross_scale_roles.py) | 只约束同一控制步的 T/R，不能称作跨步 ID 或 temporal memory；refine 提示是离散重投影，不是学习式局部 mask decoder |
-| opt-in 两个有序 T/R queries 直接读出角色图与 Reference NULL | [oracle_prior.py](../../finetune/bridgevla/models/oracle_prior.py)：`InternalRoleQueryPredictor.forward()` | 不是全实例发现；峰值 map confidence 未校准，不产生 phase/对象长期身份 |
-| joint 可用 instruction context、soft geometry 与共享最终动作特征 | [mvt_single.py](../../finetune/bridgevla/mvt/mvt_single.py)：`MVT.forward()`；[joint config](../../finetune/RLBench/configs/rlbench_o2_internal_slots_joint.yaml) | 可以复用，不增加第三次 VLM 前向；当前普通配置不默认打开同一路由 |
-| 普通配置 K=2，joint K=6；当前状态是夹爪三维低维状态 | [普通 config](../../finetune/RLBench/configs/rlbench_o2_internal_slots.yaml)、上述 predictor | K 与固定 T/R queries、bank capacity 是不同参数；目标 `gripper_pose` 不能用作当前 EE state |
+实现状态与函数位置由[主设计](../design/role-relation-prior.md#实现状态)和[代码索引](../reference/code-map.md#policy-数据流)维护，本页只保留研究约束：
 
-当前 replay 只支持已选 T/R 的监督，未证明全实例 ID、可靠 visibility、逐对成功或失败恢复标签完整可用。`present=True, geometry_valid=False` 不能改成 NULL；缺失角色/关系监督也不能自动变成负例。有效 buffer 不需为本次调研重写。[现有数据契约](../design/role-relation-prior.md#teacher-与数据)
+- 当前无序 slots/固定 T/R queries、软 coarse 提示、硬继承和局部 mask head 都在同一决策步内；attention 的 `memory` 不是历史状态，角色顺序不是实例 ID。
+- replay 只标已选 T/R，未提供全实例跟踪、可靠 visibility 或放置/失败恢复标签。匹配无拒配阈值，不能解释成全场景 discovery；unknown 几何不是 NULL，缺标签不是负例。
+- `current_state` 是当前夹爪三维状态，目标 `gripper_pose` 不能补作当前 EE；普通 slots 的 2、joint 的 6、两个有序角色与 bank 容量是不同参数。
 
-若训练实例 memory，先审计 episode/frame 顺序、同一实例跨决策点的关联及一致的空间增强。随机单帧 replay 不构成时序训练；成功 demo 的 release 边界不构成逐对 placement-success 标签。所有 GT ID / success 只用于 teacher 与诊断，不进入预测策略。
+序列研究须另审 episode/frame 顺序、跨帧身份和一致空间增强；随机单帧 replay 与成功 demo 的 release 边界不构成时序/逐对成功监督。有效 buffer 不因调研重写，GT ID/phase/success 仅用于 teacher/评分。[现有数据契约](../design/role-relation-prior.md#teacher-与数据)
 
 ## 5. 推荐的最小方案与后续 memory
 
 ### 主结构不因调研扩张
 
-```mermaid
-flowchart LR
-    O[当前 coarse 特征 + instruction + 当前状态] --> Q[opt-in: 两个有序 T/R queries]
-    Q --> P[本步 role packet]
-    P --> F[Refine 继承: 全局角色 / 局部支持分开]
-    F --> A[共享最终特征与完整动作]
-    B[后续实验: 有界实例 bank] -.历史辅助查询.-> Q
-    Q -.当前观测且关联可信时更新.-> B
-```
-
-首轮仅验证最终角色图监督、跨尺度继承与两个有序 T/R queries，保持当前三视角 `3×2` 路径和 heatmap decoder。三项均有 opt-in 代码，闭环收益仍待验证。relation/phase 仍由当前对象、instruction 与状态隐式条件化，不增加离散 phase、pair search 或显式进度 head。[实施次序](../design/role-relation-prior.md#实验顺序)
+当前优先比较独立 slots 与 `soft_coarse_queries`，保持原动作/context 路由和 `3×2` 视角；mixed-map、硬继承、有序 queries 与局部 head 各自消融，不因论文模块更多就一并加入。[现行实验顺序](../design/role-relation-prior.md#实验顺序)
 
 ### 时序扩展的最小契约
 
-| 状态 | 存什么 | 不承诺什么 |
-| --- | --- | --- |
-| 本步 role packet | T/R tokens、R NULL、可信几何与局部支持 | 不是跨帧 ID；下一步允许重新选择 |
-| 角色历史基线 | 最近观测的角色 token 与时间；可学习重绑定，不锁死物体 | 同一 T/R 编号换对象时，不能称为同一物体历史 |
-| 实例 bank（关联成立后） | 独立 entry key、token、最近位置/有效性、观测时间与关联质量 | key 只是存储索引，不是无需验证的真实 ID；不伪造 covariance/visibility |
-| 关系事件（单独实验） | 可验证的 T/R pair、事件时间与证据来源 | 不以 gripper command 生成 done；不是当前永久关系 |
-
-每步先让当前观测与历史共同生成条件，再以当前可信关联写入一次。若同一物体从 T 变为 R，读同一 entry；T 从 A 切为 C 时不能把 A 的状态累积到 C。无法可信关联时保留不确定历史或旁路，不强行合并相似对象。
-
-token 可保留，旧几何须独立失效；全遮挡时不把最后位置冒充当前确认位置。实例数量、bank capacity 与时序长度分别消融。GRU/SSM/attention 是相同表示契约下的替代实现，不同时堆叠；episode/任务切换、overflow、reset/burn-in 必须明确。
+先测试角色历史，再在关联可靠时建立实例 bank；前者的同一 T/R 编号可换对象，不能称持久身份。实例 entry 的 token、最近几何、证据时间及关联质量独立保存，物体 T→R 复用 entry，A→C 不转移历史；失效坐标不妨碍保留语义 token。容量、reset/overflow、因果读写与历史地点另见[实现前契约](../design/role-relation-prior.md#最小-memory先-token后空间缓存)。GRU/SSM/attention 是同契约下的替代时序算子，不同时堆叠。
 
 ## 6. 实验应怎样证明有效
 
@@ -159,16 +137,15 @@ token 可保留，旧几何须独立失效；全遮挡时不把最后位置冒�
 
 顺序：**无 memory → 最近可靠观测 → 同预算 scene/context 历史 → 角色历史 → 有可信关联的实例历史 → 最后才试空间缓存或结果读出**。前置 GT/单帧准入和跨尺度配置固定，不在一次实验同时改 renderer、分辨率、query 与 memory。[已有准入规则](../guides/object-conditioning.md#gt-联合对照)
 
-- 相同初始化、解冻范围、数据、训练步数与评估 episodes；至少 3 个训练 seeds 做配对闭环比较，报告成功率差及 95% CI。说明 CI 的重采样单位与训练 seed 变异，不能把同 seed 的各帧当独立样本。
-- RLBench 按标准 episode success 统计，失败、超时、拒绝都留在总分母；memory-decision、subgoal completion 与整任务成功分别报告。
-- 分别报告 VLM 前向次数、跟踪/关联成本、bank 大小、实际历史秒数、时延与显存。固定历史容量不等于整个模型零额外成本。
-- 只有在失败/恢复数据与测试定义明确时报告恢复能力；相关指标未改善时停止追加模块。先定位当前动作执行差距，不用辅助 mask loss 下降代替 closed-loop 收益。
+统一初始化、数据、预算与 episodes，至少 3 训练 seeds 配对报告差值/95% CI；失败、超时和拒绝保留分母，不把帧当独立训练重复。另报 VLM/跟踪关联成本、bank 大小、历史秒数与时延显存；恢复率须有明确失败数据。统计执行见[闭环准入](../guides/object-conditioning.md#闭环统计与准入)，辅助 loss 不替代闭环收益。
 
 ## 7. Motivation 与创新主张
 
+基于 OHT 状态条件回归与现有 O2 角色实现的新增问题、优先级和否定条件，统一维护在[设计中的研究动机](../design/role-relation-prior.md#研究动机与候选方向)；本页只记录相关工作对主张的限制。
+
 已有工作已经包含 object slots、relation queries、task-conditioned role binder、轻量 slot 适配、SSM、scene/object memory 和验证后更新。将这些模块组合不能单独构成创新，也不能把“隐式阶段”“失败恢复”“因果能力”当作架构自带属性。[SlotVLA](https://arxiv.org/html/2511.06754)、[SR-WM](https://arxiv.org/abs/2608.22294)、[STORM](https://arxiv.org/abs/2601.20381)分别限制了这些新颖性表述。
 
-本项目更具体的研究假设是：**在 BridgeVLA 三视角 heatmap 动作定位中，coarse 绑定本步 T/R，refine 保持同一角色、仅更新可核实的局部支持，同时将语义条件与可能缺失的几何分开。** 这与 [BridgeVLA++](https://arxiv.org/html/2608.05042) 的粗级历史/细级初始点云重编码不同，也不是已证明的性能优势。后续历史仅辅助当前绑定，身份与可能过期的几何分开；“两个 queries 足够”“实例 memory 更好”“共享状态改善恢复”仍需对照。
+硬继承分支的研究假设是：**在 BridgeVLA 三视角 heatmap 动作定位中，coarse 绑定本步 T/R，refine 保持同一角色、仅更新可核实的局部支持，同时将语义条件与可能缺失的几何分开。** 这与 [BridgeVLA++](https://arxiv.org/html/2608.05042) 的粗级历史/细级初始点云重编码不同，也不是已证明的性能优势。后续历史仅辅助当前绑定，身份与可能过期的几何分开；“两个 queries 足够”“实例 memory 更好”“共享状态改善恢复”仍需对照。
 
 可证伪条件：若仅监督最终角色图已获得相同收益，继承/queries 不应独占功劳；若 scene 历史同样有效，不主张 object-centric 必要性；若只减少角色漂移但不改善闭环，不主张操作性能提高；若依赖 GT ID、oracle subgoal 或在线 simulator success，单独标为 Oracle 上界。
 
@@ -180,3 +157,20 @@ token 可保留，旧几何须独立失效；全遮挡时不把最后位置冒�
 4. **时序规模：SlotSSM / PSB → Embodied-SlotSSM / Dyn-O。** 关联与数据契约成立后，再选择时序算子，不把模块名当收益保证。
 
 版本说明：Embodied-SlotSSM 使用 AAAI 正式 PDF；RandSF.Q 核对 v7 与 AAAI 条目；SemanticSlots 的接收状态来自作者 arXiv 声明；AGM 核对 v2；OCC4M 核对 v1。其他无版本后缀的链接可能随作者更新而变化，复现时应记录具体版本、代码 commit 和运行配置。
+
+## 9. OHT 连续轨迹与执行的相关工作边界
+
+2026-10-29 补查原始论文/正式论文页，核对与当前候选方向直接相关的方法范围，未在 OHT 复现论文结果，也未穷尽相关工作：
+
+| 原始来源 | 已有方法范围 | 本项目需要另行证明 |
+| --- | --- | --- |
+| [ChainedDiffuser，CoRL 2023](https://proceedings.mlr.press/v229/xian23a.html) | 全局 keypose / macro-action 与局部轨迹生成 | 当前 key/crop 两条条件路径如何传播误差及怎样纠正 |
+| [HAMSTER，2025 v4](https://arxiv.org/abs/2502.05485v4) | 高层粗 2D 路径指导三维低层策略 | 角色条件与实测本体状态对局部轨迹的增量价值；分层本身已有先例 |
+| [3D Diffuser Actor，2024 v3](https://arxiv.org/abs/2402.10885v3) | 三维场景、语言、本体状态与轨迹的条件融合 | 角色绑定、NULL/unknown 与局部支持的接口；三维 attention 本身已有先例 |
+| [EquiBot](https://arxiv.org/abs/2407.01479) | SIM(3) 等变策略架构 | 当前 TCP 局部参数化不等于整个 VLM/策略具有等变保证 |
+| [MemoryVLA](https://arxiv.org/abs/2508.19236) | 历史 bank、检索与当前表示融合 | 当前帧确实不足、对象历史优于同预算 scene/history，以及旧几何失效规则 |
+| [RTC，2025 v2](https://arxiv.org/abs/2506.07339v2) | diffusion/flow action chunk 的异步衔接与 inpainting | 确定性回归与当前同步执行的适配成本；不能直接照搬算法兼容性 |
+| [MoH，ICML 2026](https://proceedings.mlr.press/v306/jing26f.html) | 多 horizon 结构与一致性驱动的动态推理，覆盖 flow 和一步回归策略 | 自适应 H 本身不是新的问题定义；需同预算执行收益 |
+| [CA³C，2026-10 预印本](https://arxiv.org/abs/2610.07949v1) | action-conditioned world model 的后果一致性选择执行前缀 | 世界模型/多候选成本与可靠性；当前项目尚无这类实现 |
+
+角色条件轨迹还需进一步检查 object-centric policies、Diffusion-EDFs/等变动作表示与 subgoal uncertainty 相关工作，才能确定可辩护的区别。对象位置变化实验应在物理有效场景中构造，不能把任意刚体增强的轨迹默认当作可执行示范。

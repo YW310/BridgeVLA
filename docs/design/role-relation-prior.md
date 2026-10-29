@@ -2,11 +2,78 @@
 
 [文档索引](../README.md) · [论文 survey](../research/object-centric-policy-memory.md) · [实验与命令](../guides/object-conditioning.md#gt-联合对照) · [代码索引](../reference/code-map.md)
 
-> 更新：2026-10-28。设计与接口统一在本文维护。实现状态见下表；memory 与真机部署为后续方案，不代表当前代码能力。
+> 代码核对：2026-10-29。本文维护 RLBench O2 的设计与接口，并集中记录基于 OHT 已完成工作的研究动机。OHT 已实现模型与执行契约分别见[训练与模型](../oht/training.md)、[部署与回放](../oht/runtime.md)；下列候选方向是研究假设，未新增运行配置或模型能力。
 
-阅读导航：[架构](#整体架构) → [当前实现与数据](#当前实现与数据契约) → [角色方案](#角色预测与跨尺度调整) → [实验](#实验顺序)；后续查[Memory](#object-centric-memory后续未实现)、[真机部署](#真实机器人部署后续规划)、[投影扩展](#其他可选扩展未实现)。
+阅读导航：[研究动机与方向](#研究动机与候选方向) → [架构](#整体架构) → [当前实现与数据](#当前实现与数据契约) → [角色方案](#角色预测与跨尺度调整) → [实验](#实验顺序)；后续查[Memory](#object-centric-memory后续未实现)、[真机部署](#真实机器人部署后续规划)、[投影扩展](#其他可选扩展未实现)。
+
+## 研究动机与候选方向
+
+更新：2026-10-29。这里回答现有结果支持什么研究问题；具体命令、损失和协议仍由 OHT 三份文档维护。
+
+### 从现有工作得到的出发点
+
+| 已有基础 | 可以支持的判断 | 尚待证明 |
+| --- | --- | --- |
+| `regression_state` 整体配置获用户轨迹解决确认 | 已有可继续研究的短期动作基线 | 尚无完整 run/checkpoint/定量报告，也未独立证明 q6、AdaLN、key gate 各自的贡献 |
+| O2 已有 T/R 预测、NULL/unknown 区分、soft-coarse 与局部 refine 对照 | 已有研究任务角色与局部几何的实现入口 | 尚未证明这些分支改善 OHT 连续轨迹；V4 chunk 当前仍只支持 baseline+EEF，不消费 role packet |
+| chunk 使用实测 TCP/q6/开度、预测 key 及 coarse/refine 特征 | 可以拆开诊断状态、目标和视觉的信息作用 | key gate 仅控制显式条件，refine crop 仍受预测 key 影响；开口稳定不等于抓取/装配成功 |
+| 已有 K/dt/H 协商、GT 回放与执行诊断 | 可以区分预测误差、跟踪误差及时间预算 | 当前 HTTP 等待暂停物理，CPU 回归和离线误差不提供真实实时/闭环成功率证据 |
+
+核心 motivation：**任务角色决定操作哪个实体及其关系，当前状态决定下一小段动作能怎样执行；研究二者如何共同约束连续轨迹，并在目标或几何证据不可靠时及时纠正条件。**
+
+推荐主线是角色条件的状态回归轨迹；最先做的低成本工作是 key/crop 诊断与基线归档。下列收益均是待检验假设，模块组合本身不构成新颖性结论。
+
+### 方向一：角色条件的连续轨迹（优先主线）
+
+**动机。** 当前 TCP 相对参数化解决动作坐标组织，T/R 则表达任务中的物体关系。两条工作尚未在 V4 chunk 接通，适合检验对象/Reference 位移或局部可见性变化时，角色证据是否提供额外任务信息。
+
+**最小方案。** 保持现有 regression、完整场景特征和实测状态，新增当前观测预测的 T/R tokens、TCP 系下相对几何、Reference NULL 与独立 geometry-valid 条件。先使用可靠中心/相对位移与可见支持，不把局部点云中心/spread 当作完整物体位姿或插接轴。V4 需显式增加可选、哈希绑定的 teacher/预测接口；单改 YAML 的 `mode` 无法启用。
+
+**关键对照。** 无角色基线、仅角色辅助监督、预测角色条件、等容量普通视觉 tokens；GT-role 只作 privileged 诊断。固定数据/初始化/解冻范围/预算与执行器，在物理有效的留出物体位置、Reference 位置和遮挡条件下比较前缀误差与完整 case 闭环，而非只看 mask loss。角色打乱用于检查条件依赖；推理时删除输入不能替代重新训练的消融。
+
+**否定条件。** 若可靠 GT 角色也无增益，先停止扩大角色预测器；若普通 tokens 或仅辅助监督达到同样效果，不将收益独占归因于角色条件。已有 [3D Diffuser Actor](https://arxiv.org/abs/2402.10885v3) 融合三维场景/语言/本体状态，[EquiBot](https://arxiv.org/abs/2407.01479)研究等变策略；本方向仍需对照对象条件策略，当前局部坐标变换不提供整个 VLM 的等变保证。
+
+### 方向二：预测关键目标的可靠使用（先做诊断）
+
+**动机。** 预测 key 可在 K 步窗口之外，并同时控制显式 goal 条件和 refine crop。错误可能从两条路径进入动作，当前的可学习 key gate 没有共同控制这两条路径，也不是逐样本校准的目标置信度。
+
+**第一步。** 在有合法 key 标签的固定离线观测上，做显式 key × crop key 的 predicted/GT 2×2；单列 no-key 尾段。仅替换显式 key 时固定视觉特征；只替换 crop 时固定显式条件并重新提取对应视觉特征。GT 条件仅作诊断，不能将示范的未来 key 无条件用作偏离轨迹后的在线目标。
+
+当前 `ChunkAgent._context()` 将预测 key 与对应裁剪特征绑定，尚无现成 CLI/YAML 开关执行该 2×2；需新增仅离线使用的独立条件注入接口。
+
+**条件成立后再设计。** 若 oracle crop 的收益明显，研究裁剪范围、多候选或全局回退；若主要是显式目标误差，研究经留出集验证的目标可靠性条件。共同处理语义目标与局部支持的有效性，保留当前场景证据。热图峰值或 gate 数值不直接当成已校准错误概率；去显式 key 但保留 key-crop 仍不是完全无 key 对照。
+
+**否定条件。** 若两条 oracle 路径均无稳定收益，就降低 key 可靠性方向的优先级。[ChainedDiffuser](https://proceedings.mlr.press/v229/xian23a.html)已有关键位姿连接局部轨迹，[HAMSTER](https://arxiv.org/abs/2502.05485v4)已有高层路径指导三维控制；可研究的是本接口的错误传播与可纠正性，不能只将分层结构当新贡献。
+
+### 方向三：因果短时上下文与过期证据（条件性扩展）
+
+**动机。** 同一当前姿态可能对应仍在推进、夹爪过渡或先前操作后的不同状态。先收集当前观测近似而正确动作确实不同的案例，确认历史信息缺失，而非先假定需要 object memory。
+
+**最小方案。** 先比较最近观测、严格因果的 TCP/q6/夹爪历史及真实 Δt，再比较同预算 scene/context 历史；有可信关联后才试对象 token bank，按下文[读写与失效契约](#最小-memory先-token后空间缓存)区分身份与过期几何。当前 proprio 没有力/触觉，不能把开度变化直接标为接触成功。使用历史目标/执行残差时，训练也须取得相同来源，示范未来目标不能冒充已执行的 policy 命令。
+
+**否定条件。** 当前观测足够、普通历史效果相同或错误历史抵消收益时，不主张对象 bank 必要。结果验证/恢复还需真实失败和关系标签，成功 demo 的 release 事件不足以监督。通用历史检索/融合已有 [MemoryVLA](https://arxiv.org/abs/2508.19236) 等先例；本项目可检验的是角色切换和几何过期时的使用/失效规则。
+
+### 方向四：执行前缀与延迟预算（部署副线）
+
+先固定 K=16、数据 dt 和物理/墙钟预算，比较 H=1/4/8 的成功率、请求数与耗时；只有确有纠偏收益，再研究按在线跟踪证据选择 H。失败阈值仍保留，历史跟踪误差不保证将来可行或无碰撞。
+
+自适应 horizon 已有 [MoH（ICML 2026）](https://proceedings.mlr.press/v306/jing26f.html)，后果一致性选前缀也有 [CA³C（2026 预印本）](https://arxiv.org/abs/2610.07949)；异步生成/衔接已有 [RTC](https://arxiv.org/abs/2506.07339)。RTC 的 diffusion/flow inpainting 不能直接当作当前确定性回归头已有能力。这里先验证当前系统的成本收益，不将“动态 H”单独当作创新，也不把暂停物理的同步测试称为真实实时控制。
+
+### 第一轮实验与结论门槛
+
+| 顺序 | 工作 | 决策依据 |
+| --- | --- | --- |
+| 0 | 归档成功 run/固定权重、解析配置与 case 清单；复核数据划分 | 先建立可复核的用户确认基线，不为已存在配置补写成功率 |
+| 1 | 同初态 dense GT、GT keypoints、policy；检查 TCP/物体/关节限制和实际跟踪 | 若标定/执行链路有问题，先修其问题；GT keypoints 不作 chunk 定时对照 |
+| 2 | key/crop 2×2、状态/视觉重训练消融，保留坐标恢复必需的 TCP | 去 decoder 视觉后仍可能经 key 获得视觉信息，不能据此称纯本体基线 |
+| 3 | 角色条件与普通 tokens/辅助监督对照，在物体/Reference 变化的留出集评估 | 有可靠角色增益才扩预测器；若 key 错误主导，先做方向二 |
+| 4 | 固定 H 的成本收益，再决定短历史与自适应执行 | 避免在一次实验同时改角色、decoder、memory、controller 和预算 |
+
+正式比较至少 3 个训练 seeds，固定预定 cases 并报告配对差值/95% CI。模型失败和超时保留分母，环境异常单列；原生 OHT CLI 的 attempted 分母与未尝试 cases 按[执行说明](../oht/runtime.md#时间预算与停止结果)重新验收。目标是证明特定信息在特定失效条件下有增量价值，文献筛查和这些实验尚不支持“首次提出”或预期性能数字。相关工作边界集中见[调研补充](../research/object-centric-policy-memory.md#9-oht-连续轨迹与执行的相关工作边界)。
 
 ## 整体架构
+
+以下架构、实现状态与既有实验矩阵针对 RLBench O2；上节的 OHT 角色条件 chunk 仍为待实现、待验证方向。
 
 保留 BridgeVLA 的 coarse/refine、每级三视角、共享 VLM 权重和 translation heatmap。
 当前优先验证：**以旧无序 slots 为基线，coarse 提供软语义提示，refine 独立预测局部对象。** 硬角色继承与热图残差保留为实验分支，不再作为默认有效的前提；完整动作共享特征仍是独立对照。
@@ -233,18 +300,13 @@ q_T / q_R + instruction + 当前状态
 
 新结构由独立 [role-query 配置](../../finetune/RLBench/configs/rlbench_o2_role_queries.yaml)及当前 refine 配置启用，其余 slots 配置不变；checkpoint 记录 predictor type。
 从 slots 切换时用 `--init_checkpoint`，联合重置 predictor 与 adapter、沿用兼容 backbone/action 权重，不沿用旧 optimizer resume。
-[SlotVLA](https://arxiv.org/html/2511.06754#S4)已有对象 slots、relation queries，且依赖更丰富的实例/时序监督；
-[SR-WM](https://arxiv.org/abs/2608.22294)已有 task-conditioned functional role binding；
-[STORM](https://arxiv.org/html/2601.20381#S3.SS1)已有轻量 task-aware slots 与分阶段适配；其策略 loss 与 slot 模块梯度隔离，不能当作本项目动作 loss 反传到角色 query 的直接先例。
-[FocusPool](https://arxiv.org/html/2609.08408v1)支持状态条件 attention，
-[SlotFlow](https://arxiv.org/abs/2609.24155)保留语义/空间/全局条件。
-因此不能以“两 query”“角色绑定”“轻量 adapter”本身宣称新颖或有效；本项目可检验的是同一决策步在 BridgeVLA heatmap coarse/refine 间保持角色绑定、把语义与局部支持分开。依据见[调研](../research/object-centric-policy-memory.md)。
+对象 slots、relation/role queries、轻量适配和状态 attention 已有论文先例，监督与梯度路径各不相同。新颖性边界与论文依据统一见[调研](../research/object-centric-policy-memory.md#7-motivation-与创新主张)；本项目检验同一步 coarse/refine 的角色绑定与语义/局部几何分离，不预设性能改善。
 
 <a id="跨尺度角色继承计划未实现"></a>
 
 ### 跨尺度角色继承（opt-in 已实现）
 
-默认两级独立调用 slot predictor；开启硬继承后 **coarse 本步绑定一次角色，refine 只读；下一控制步重新选择**。以下为保留的硬继承实验，不适用于 `soft_coarse_queries`。
+默认两级独立调用 slot predictor；开启硬继承后 **coarse 本步绑定一次角色，refine 不重选角色；下一控制步重新选择**。只开继承时使用离散提示；启用局部 head 后可更新 token 与 mask，但仍不运行新的 role/NULL selector。以下为保留的硬继承实验，不适用于 `soft_coarse_queries`。
 不依赖 temporal memory，不增加 VLM 前向、pair search 或 phase head。
 
 #### 本步接口与条件路径
@@ -321,7 +383,7 @@ Reference NULL 空间质量只应用一次；`refine_mask_detach` 仅切断 maps
 | `mvt.MVT.forward()` / `mvt_single.MVT.forward()` | 传预测 packet，绕过 refine selector；teacher 单独隔离 |
 | `OracleRelationAnchorFeatureAdapter.forward_with_anchor()` | opt-in token 保留，全局条件与局部几何分开 |
 
-按主设计 A→A+M→B→C 对照，不同时改变渲染、分辨率或 memory。
+硬继承按下文 A→A+M→B→C 对照；软 coarse 提示单设 A+S 分支，不同时改变渲染、分辨率或 memory。
 测试覆盖 crop 外/部分支持/NULL/unknown/相似物体/误选/跨步切换/teacher-forcing gap，
 以及全局 token 保留、坐标反变换、action 梯度、teacher 隔离、旧配置回归与 checkpoint 初始化。
 报告 waypoint、预测 waypoint 下 R/G/C、闭环、时延和显存；前向次数不变不等于零开销。
@@ -337,12 +399,14 @@ coarse/refine 分工已有[BridgeVLA++](https://arxiv.org/html/2608.05042#S4)先
 | --- | --- | --- |
 | GT 对照 | 旧 GT anchor → 共享动作特征 → 再加 instruction；另设同预算 BridgeVLA baseline | 对象条件是否改善完整动作与闭环？ |
 | A | 当前独立 slots | 预测基线 |
+| A+S，当前优先 | A 只加 `soft_coarse_queries`；两级仍独立预测与监督 | 软语义提示是否改善局部选择，同时避免硬继承错误？ |
 | A+M | 只加最终混合 role-map 监督 | 监督与条件错位是否是瓶颈？ |
 | B | A+M 加本步跨尺度继承 | crop 外 Reference 是否仍误切换？ |
 | B+T | B 再启用 token 保留 | 不重选后，crop 外角色条件是否仍被屏蔽？ |
 | C | B+T 的 coarse 改为两个固定 T/R queries；其余路由/数据/预算相同 | 去匹配简化是否优于 6-slot 对照？ |
-| C+R | C 只开启 `refine_role_masks`，`refine_local_query=False`，其余设置相同 | 局部读出是否改善角色图与闭环？ |
-| C+R+Q | C+R 再启用 `refine_local_query`；当前 refine YAML 默认 | 局部证据能否改善角色条件传递，而非仅改善辅助 loss？ |
+| C+R | C 只开启 `refine_role_masks`，`refine_local_query=False`、`refine_heatmap_residual=False` | 局部读出是否改善角色图与闭环？ |
+| C+R+Q | C+R 再启用 `refine_local_query`，仍关闭热图残差 | 局部证据能否改善角色条件传递，而非仅改善辅助 loss？ |
+| C+R+Q+H | 再开启 `refine_heatmap_residual`；当前 refine YAML 同时开启这三项 | 完整 coarse 热图条件与残差细化是否改善角色图及动作？ |
 
 GT 准入采用同数据、初始化、解冻范围、训练步数和评估 episodes，至少 3 个训练 seeds；
 配对闭环成功率差的 95% CI 下界为正才进入预测联合实验。
@@ -353,220 +417,82 @@ GT waypoint/crop teacher forcing 与推理预测 crop 的差距另行诊断；�
 
 ### 训练设置
 
-| 配置 | 冻结 | 训练 |
-| --- | --- | --- |
-| semantic GT joint | vision tower、projector、Gemma 前 6 层 | 其余 Gemma、action decoder、O2 模块 |
-| internal slots joint / role queries | vision tower、Gemma 前 18 层 | projector、其余 Gemma、action decoder、object 模块 |
-| internal slots refine | vision tower、projector、Gemma 前 18 层 | 其余 Gemma、action decoder、object 模块与局部 mask head |
+冻结范围、学习率、microbatch/有效 batch 和实际 steps 以各 YAML/overrides 为准，命令及 checkpoint 规则统一见[O2 训练](../guides/object-conditioning.md#训练)和[Loss 与 Checkpoint](../guides/object-conditioning.md#loss与checkpoint)。soft-coarse/refine 冻结 projector，joint/role-query 训练 projector，不能直接把不同配置称为单因素对照。
 
-沿用已有 embedding/lm_head 冻结；分组 LR 为非 Gemma `4e-5`、Gemma `1e-5`。
-使用 `--init_checkpoint` 初始化已有参数，新增 residual 输出端零初始化，允许新增参数缺失。
-架构/路由变化不能沿用旧 optimizer resume；同架构续训才用 resume。checkpoint 记录 conditioning 开关和 `object_predictor_type`；跨 slots→role queries 的 init 联合重置 predictor/adapter，保留兼容的 backbone/action 参数。
-
-命令和统计工具见[联合实验](../guides/object-conditioning.md#gt-联合对照)。
-base diagnostic loss 不等于独立训练 baseline；CI 工具不丢弃失败、不接受不匹配 episodes，也不替代训练预算核对。
-工具只核对已有 journal 集合，不验证预定评估是否完整；先核对 summary 完成数与 episode 范围。
-运行入口、resume 缓存与其他 benchmark 的审查发现见[代码索引](../reference/code-map.md#项目审查2026-09-29)。
-
-对象交换、Reference→NULL、指令替换仅检验条件依赖，不能证明 causal reasoning。
-成功 demos 不覆盖失败状态时，不承诺坍塌恢复。
+架构/路由变化用 init，跨 slots→role queries 联合重置 predictor/adapter，保留兼容 backbone/action；同架构才严格 resume。base diagnostic 不是独立 baseline。配对工具只核对已读 journals，先核对预定 episodes 完整性；入口/resume 依赖限制见[代码索引](../reference/code-map.md#项目审查2026-09-29)。对象交换或指令干预检验条件依赖，不证明因果推理；成功 demos 不承诺失败恢复。
 
 ## Object-centric memory（后续，未实现）
 
-当前没有跨控制步 temporal memory；predictor 的 `memory` 只是当前 attention K/V。
-先完成单帧与跨尺度验收，现有 replay loader 尚未支持本节的序列训练。
-本步角色继承不跨步锁定；两个固定 role-query tokens 也不是持久实例 bank。
+当前没有跨控制步 temporal memory，loader 也不支持本节的序列训练。predictor 的 `memory` 是本次 attention K/V，本步 packet 和两个 T/R queries 不是持久实例 bank。
 
 ### 什么时候需要 memory
 
-目标是保留**哪个物体、最近在哪里、发生过什么交互**的证据。
-只有当前观测不足以决定动作时，历史才是必要条件；
-单帧 mask 不准、分辨率低或 refine crop 丢失 Reference，先按[主线](#实验顺序)处理，不能直接归因于缺少 memory。
-
-[MemoryBench](https://arxiv.org/html/2501.18564#S5.SS4)提供历史依赖任务，
-[BridgeVLA++](https://arxiv.org/html/2608.05042#S4)已有 coarse temporal / refine spatial memory。
-本方案的待验证点不是“加记忆”，而是**按对象保留交互证据，并分开使用身份与可能过期的几何**。
-
-先比较最近可靠观测和同预算 scene/context 历史，再试 object bank。
-token 改善关联不证明旧点可信，定位改善也不证明身份正确；不承诺因果推理、可解释 phase 或自动恢复。
-论文的监督、指标与限制统一见[调研](../research/object-centric-policy-memory.md)：
-SemanticSlots/RandSF.Q 不保证同类实例关联，SlotVLA/HistRISE 的身份前提不能由当前 T/R replay 替代，
-SlotSSM/Embodied-SlotSSM 的时序算子也不解决身份问题。首版不加 SSM、视频生成或进展 head。
+只有当前观测不足以决定动作时才研究历史；单帧 mask、分辨率或 crop 外 Reference 先按[现有实验](#实验顺序)处理。先比较最近可靠观测与同预算 scene/context 历史，再问 object bank 是否必要。文献的监督、额外编码/跟踪成本与限制见[调研](../research/object-centric-policy-memory.md#3-深读后影响设计的结论)。
 
 ### 动态角色：目标、意图与实际效果
 
-| 概念 | 保留什么 | 不能混同什么 |
-| --- | --- | --- |
-| 任务约束 `G` | instruction 要求 | 不一定指定唯一执行顺序/物体 ID |
-| 当前 `q_t(T,R)` | 本步角色 posterior，R 可 NULL | 角色编号不是持久实例 ID |
-| 变化证据 `e_t(i)` | 动作后可观测变化；不可观测为 unknown | 变化不是已证明的动作因果归属 |
-| 关系证据 `r_t(T,R)` | 当前物体对关系是否成立 | 不是单调 phase index，移动/坍塌可使其失效 |
+本步 T/R posterior、持久对象身份、动作后的变化证据与当前关系是否成立是不同状态，不要求各加一个 head。角色编号不是对象 ID，上一条命令不是已执行结果；没有逐对结果标签时只诊断，不硬门控动作。
 
-这些是概念区分，不要求四个输出 head。首版仍用 tokens、instruction 与当前状态学习 `z`；
-没有可信逐对标签时，变化/关系只作诊断，不硬门控动作。
-
-例如 stack_blocks：当前[demo 配置](../../finetune/RLBench/configs/rlbench_o2_semantic_roles.yaml)依次选 Target，
-Reference 先为底座、再为前一 Target。
-这是演示顺序，[任务成功条件](https://github.com/stepjam/RLBench/blob/master/rlbench/tasks/stack_blocks.py)不要求该 ID 顺序。
-局部 Reference 可以是当前塔顶，任务级底座不必永远是局部 R；当前固定 pair loss 不支持所有合法替代顺序的集合监督。
-
-若后续增加放置标志，应分为“曾观察到成立”与“当前仍成立”，绑定 `(T,R)` 而非只绑定 T。
-换 Reference 不继承旧标志；松爪不代表放置成功，塔塌可使关系失效。标志本身不会产生恢复能力。
+`stack_blocks` 的 demo 是既定顺序，Reference 从底座转为前一 Target，不覆盖所有合法堆叠顺序。未来放置记录必须绑定 `(T,R)`、区分“曾成立/当前成立”；换 Reference 不继承标志，松爪不写成 done，坍塌使当前关系失效。
 
 ### 最小 memory：先 token，后空间缓存
 
-```mermaid
-flowchart LR
-    M["上一步有界 bank"] --> Q["历史辅助 query 读取当前 coarse 特征"]
-    O["当前观测 + instruction"] --> Q
-    Q --> S["当前候选 + 关联证据"]
-    S --> R["本步 T/R packet → refine / 完整动作"]
-    S --> W["关联可信才更新"]
-    W -.下一控制步.-> M
-    M -.后续独立实验.-> P["可信静止 Reference 点缓存"]
-    P -.带来源/时间的空间 prior.-> R
-```
+候选流程为“历史辅助当前 coarse query → 当前观测与关联 → 本步 packet → 关联可信才写一次”，refine 只读。首版有界 entry 为：
 
-初版 entry 为 `m_i=(h_i,c_i,geometry_valid,last_seen,association_quality)`：
-
-| 字段 | 约束 |
+| 字段 | 契约 |
 | --- | --- |
-| `h_i` | 交互 token，含视觉/任务上下文，不是纯身份特征 |
-| `c_i, geometry_valid` | 最近可见位置及有效性；不是遮挡期间的确认位姿 |
-| `last_seen` | 最近真实证据时间；反复自写不刷新它 |
-| `association_quality` | 关联诊断；不是存在概率、安全置信度或协方差 |
-
-bank 容量独立于两个 role queries，按可信关联数据选择。
-空间点、概率不确定度、presence/visibility 与逐对进展均不是首版必需状态，需对应标签后另验。
+| `h_i` | 含任务/视觉上下文的 token，不是纯身份特征 |
+| `c_i, geometry_valid` | 最近可见位置，不是遮挡期间确认位姿 |
+| `last_seen` | 最近真实证据时间，自写不刷新 |
+| `association_quality` | 关联诊断，不冒充存在概率或已校准协方差 |
 
 #### 读写与身份
 
-- **读：** `q_i + W h_{t-1,i}` 查询当前 coarse 特征；无历史 query 仍可读取新候选。
-- **写：** 只对可核实关联更新一次，refine 只读。弱观测可保留 token，不能写入虚假位置或把旧状态伪装成新证据。
-- **切换：** 同一对象 T→R 使用同一 entry；T 从 A→C 不把 A 历史累积到 C。slot index 不是稳定 ID；两条 T/R 历史只能算便宜基线。
-- **容量：** 不静默覆盖当前关联对象；使用经验证的淘汰规则并记录 overflow，容量不足单独报告。
-- **重置：** episode、任务/instruction 切换清空或明确重绑定，不携带其他任务完成标志。
-
-首轮只研究曾有可信角色/身份支持的对象。
-非 T/R 候选仍可在当前步选择，但无关联证据不能称为长期 track；全候选 bank 需实例级序列监督。
-历史事件地点与当前对象位置分开，不能靠冻结坐标保持身份。
-
-先用最近可靠观测，再试学习式写门控；门控需 action/可信关联监督与独立校准。
-新增 memory residual 只将输出端零初始化，不把门控与输出同时置零。
+- 历史 `q_i+W h_i` 辅助查询当前特征，保留无历史的新候选；先用最近可靠观测，再试学习式写门控。
+- 同一对象 T→R 复用 entry；T 从 A→C 不继承 A 的状态。无可信关联的候选仍可当步选择，不能称长期 track；全实例 bank 需更丰富序列标签。
+- 容量独立于两个 queries，显式记录淘汰/overflow；episode、任务或 instruction 变化清空或明确重绑定。新 residual 只在输出端零初始化，避免门控与输出同时为零。
 
 #### 空间缓存与过期几何（token 收益成立后）
 
-只缓存少量**实际看过的表面点**，对象关联、坐标、来源和时间戳一致；不存完整场景或无界点并集。
+只缓存少量实际见过的表面点，绑定对象、坐标、来源与时间。首版仅对静止假设/关联/新鲜度已验证的 Reference 使用；移动/夹持 Target 只用当前重观测。移动、接触变化或外参/位姿不可信时关闭旧几何，token 可独立保留；“未看到移动”不是静止证明。
 
-| 状态 | 空间使用规则 |
-| --- | --- |
-| Reference 静止假设、关联、新鲜度均已验证 | 可在当前坐标下重投影历史点 |
-| 有移动/接触变化、外参变化或位姿不可信 | 关闭旧几何注入；token 可独立保留 |
-| 移动/夹持 Target | 首版只用当前重观测位置，不外推全遮挡位姿 |
-| 从未观测的表面 | 不补全为 GT |
-
-“没有看到移动”不是静止证明；用扰动实验测量旧点误导率。
-历史点不是当前传感器 XYZ，须保留历史来源/age；按实际 crop 变换，越界不夹到边缘，不做 post-hoc heatmap fusion。
-同一步的跨尺度点提示仍遵守当前局部支持，不能与跨时间缓存混为一谈。
+历史点保留 age，按实际 crop 变换，越界不夹到边缘，不当作当前 sensor XYZ 或未见表面 GT。历史地点与对象当前位置独立，同一步 XYZ 提示不等于跨时间缓存。
 
 ### 数据门槛与验证顺序
 
-**数据先行。** 审计 episode/frame 顺序、跨帧关联和坐标；随机 replay 单样本不是序列。
-Oracle ID、GT roles/phase 和 simulator success 仅用于监督/评估；实际 proprio 与目标动作分开，命令不等于执行成功。
-可行集合、all-instance ID、visibility、进展/效果需要独立标签，不从缺几何或释放边界伪造；成功 demos 不等于恢复轨迹。
+序列必须有 episode/frame 顺序、可信关联和一致坐标/空间增强；随机单帧 replay、成功 demo 的 release 边界不提供实例跟踪或恢复标签。训练只读过去，chunk 边界 reset 或过去 burn-in，训练/推理容量与更新规则一致；GT ID/phase/success 仅作监督/评分。
 
-**因果序列训练。** 从单帧 checkpoint 开始，只读过去状态/已发命令，新观测到来后写一次。
-chunk 边界 reset 或过去 burn-in，训练/推理同容量与更新规则；短截断训练另测长遮挡。
+按“无历史 → 最近观测 → scene/keyframes → object-token 读 → 选择性写 → 静止 Reference 点缓存”分别消融，固定单帧路线与预算。历史屏蔽/打乱、同类交换、遮挡重现、移动旧 Reference 和坍塌测试及指标见[调研实验表](../research/object-centric-policy-memory.md#6-实验应怎样证明有效)。关联或闭环无收益就不继续堆模块，GT memory 单报上界。
 
-**同预算消融。** 无 memory → 最近可靠观测 → scene/keyframes → object-token 读 → 选择性写 → 静止 Reference 点缓存。
-固定跨尺度路线、解冻范围和预算，报告额外编码成本；简化 scene cache 不能称为完整 BridgeVLA++ 复现。
-
-**验收。** 使用当前观测近似但历史不同的样本，检查相关/无关历史屏蔽或打乱。
-报告 mask、identity switch/重现关联、错误写入、overflow、遮挡长度、旧点误差、waypoint、R/G/C、时延/显存及三-seed 配对闭环差/95% CI。
-历史干预只是条件依赖诊断；对应指标无收益就停止加模块，GT memory 单报 Oracle 上限。
-
-stack_blocks 单测正常切换、合法替代顺序、抓错、未放稳与坍塌；无失败/恢复数据不承诺恢复。
-计划代码落点为 predictor 的历史 query、`mvt.MVT.forward()` 的 coarse 写/refine 读、
-`RVTAgent.act()/reset()` 的 episode 状态；均未实现。
+计划落点为 predictor 历史 query、`mvt.MVT.forward()` 的 coarse 写/refine 读及 `RVTAgent.act()/reset()` episode 状态，均未实现。
 
 ## 真实机器人部署（后续规划）
 
-尚未真机验收；跨尺度继承已有 opt-in 实现，memory 与再观测控制器仍未实现，规划器检查不是安全认证。
-真实动作前向不读 simulator ID、GT T/R、GT phase 或 success conditions；Oracle 仅作监督/评估。
-RGB-D、标定、当前 proprio 与时间戳必须同步，更新观测后不执行旧 packet；目标 `gripper_pose` 不当作实际 EE pose。
-训练/部署渲染一致，RGB 填色不增加真实 XYZ；simulator grasp 确认也不能替代无 GT 身份识别。
+尚未真机验收。真实策略只读同步 RGB-D、标定、实测 proprio 与时间戳；simulator ID/GT T/R/phase/success 不进入动作前向。部署渲染与训练一致，RGB 填色不创造 XYZ，simulator grasp 不能替代无 GT 身份识别。memory 和再观测控制器仍未实现。
 
 ### 证据不足时怎么办
 
-| 情况 | 处理边界 |
-| --- | --- |
-| Reference 在 refine crop 外 | 保留 coarse 全局条件，关闭无支持的局部注入；不重选或伪造 NULL |
-| 可核实的局部关联/几何冲突 | 降低对象条件强度，新观测后重估；不是永久锁定 |
-| 短时缺观测 | 后续可保留可靠 token，不能确认旧坐标 |
-| 可用再观测动作 | 必须先经控制器验证；相机移动后同步更新外参 |
-| 关键位置不满足执行要求、无可验证动作 | 拒绝并记录失败 |
-
-对同一旧点云换虚拟视角不是新观测。
-等待、旁路对象模块或执行原 BridgeVLA 都不是自动安全 fallback。
-历史空间缓存只有在静止假设、身份和新鲜度可信时启用；移动/坐标变化/关联不可信就关闭，见上文 memory 契约。
+crop 外角色可保留可信 coarse 条件，关闭无支持的局部注入；不能重选、伪造 NULL 或冻结旧位置来保持身份。局部关联冲突后重估，必要再观测动作须先经控制器验证。对旧点云换虚拟视角不是新观测，等待/旁路原网络也不是自动安全 fallback。
 
 ### 真机执行前置条件
 
-从**第一次真机试验前**启用独立安全 gate，不依赖 learned object/action 模块。
-场景与机器人状态需持续同步，可参考 [MoveIt Planning Scene Monitor](https://moveit.picknik.ai/main/doc/concepts/planning_scene_monitor.html)；
-以下是工程验收要求，不是该工具的安全保证。
-
-1. 拒绝过期或坐标不一致的 observation/action。
-2. 检查 workspace、IK/关节范围、完整轨迹碰撞、速度/力与平台控制限制，而非只检查终点。
-3. 对象相关操作具备所需角色/位置证据；高 confidence 不替代几何。pregrasp/lift/retreat 可以在自由空间。
-4. `ignore_collisions` 是训练动作标签，不能关闭真实碰撞检查；急停、接管、异常中止由独立平台负责。
-
-拒绝/再观测阈值用独立数据校准，不先宣称不确定度可靠。
-拒绝试验仍计入总尝试数；任务成功率与接受动作后的条件成功率分开报告。
+第一次试验前由独立执行 gate 校验时间/坐标、workspace、IK/关节范围、完整轨迹碰撞、速度/力及平台限制，并提供急停、接管与异常中止。`ignore_collisions` 训练标签不能关闭真实检查；高置信度不替代所需角色/位置证据。可参考 [MoveIt Planning Scene Monitor](https://moveit.picknik.ai/main/doc/concepts/planning_scene_monitor.html)，其本身不提供本系统安全认证。
 
 ### 数据与实施顺序
 
-已有 GT/预测对照和冻结范围以[联合实验](../guides/object-conditioning.md#gt-联合对照)为准；不是 adapter-only 部署方案。
-有效旧 replay 不重写；GT presence 不进入预测动作前向。
-真实少量 T/R 标注用于 grounding，可信关联才监督跨帧一致性；遮挡无标签不当作背景/不存在。
-
-| 优先级 | 工作 | 验收 |
-| --- | --- | --- |
-| R0，前置 | RGB-D/标定/proprio/时间戳 + 独立执行 gate | 坐标一致，过期/不可达/违规动作被拒绝 |
-| R1 | 无 Oracle 的单帧完整动作 | 去掉 GT 字段仍可推理；通过 GT 对照和预测闭环评估 |
-| R2 | 本步 coarse 绑定、refine 继承 | crop 外不误切 Reference；waypoint、R/G/C 与闭环改善 |
-| R3，可选 | token memory → 静止 Reference 点缓存 | 关联改善，不被错误历史/旧点误导 |
-| R4 | sim-to-real 适配与多场景实测 | 同一 gate 下评估，不靠 Oracle 或放宽拒绝条件 |
-
-memory 不是真机基本执行的前提。
-深度/外参扰动、视角缺失、遮挡和背景变化独立测试；有历史时采用一致空间增强。
-checkpoint/阈值只在验证集选择，测试集作最终评估；滑落、坍塌与恢复需另外收集数据。
+先完成无 Oracle 单帧完整动作和共用执行器，再独立评估跨尺度分支，确有历史瓶颈才加 memory。真实 grounding 标签、跨帧关联、visibility、放置结果和失败恢复分别审核，缺标签不当作负例。sim-to-real、视角/深度/外参扰动单独验收，checkpoint 与阈值只用验证集选择。
 
 ### 真机评估边界
 
-报告所有尝试为分母的无 GT 成功率、T/R grounding/NULL、局部误匹配、预测 waypoint 下 R/G/C、
-拒绝/再观测率、时延和显存。有可信标签才报告身份切换、visibility 与位置误差校准。
-
-分组区分 crop 外、虚拟投影覆盖、真实遮挡、深度/外参扰动；移动旧 Reference 测过期几何误导。
-恢复率需先定义失败事件与对应数据。真机使用预先定义的任务成功标准；
-RLBench 仿真仍按标准任务 success condition 统计，不在真实策略前向读取它。
-
-forward 成功、mask 好看或论文中的成功率，都不是本系统已经可部署的证明。
+所有尝试（含拒绝/超时）作为分母，报告无 GT 成功率、grounding/NULL、预测 waypoint 下 R/G/C、再观测/拒绝率和成本；有可信标签才报身份切换/位置校准。移动旧 Reference 检查过期误导，恢复率须先定义失败与数据。接受后的条件成功率另列，不用 forward 成功、mask 图或论文指标代替部署验收。
 
 ## 其他可选扩展（未实现）
 
 ### 投影稀疏与角色图分辨率（独立实验）
 
-当前 masks 与 teacher maps 在每视角 `16×16` 特征上读出/监督；上采样不增加边界证据。
-分别检查两级区域覆盖、map 质量、中心偏差和 waypoint，不只统计黑色像素比例。
+普通 slots/角色 query 在 `16×16` VLM 网格读出，已实现的 refine head 另融合半/四分辨率 RGB/XYZ 并输出渲染图分辨率 maps。额外 renderer/分辨率实验与该 head 分开；纯上采样不增加边界证据。
 
-renderer 已有 splatting；扩大半径会复制 RGB/XYZ、改变支持或粘连物体。
-轻量候选是仅修补小范围、邻域深度一致的 RGB 空洞，保留独立的真实 XYZ 有效性；
-填色不成为几何 GT，同深度邻近物体仍可能混淆。
-RGB 修补、高分辨率读出和 query 简化分别消融，训练/测试渲染一致。
-
-补洞、虚拟视角和 object crop 不恢复未观测表面。
-额外 mask/depth channels 不会自动进入只读 RGB 的 VLM，须另定义 feature 接口。
+renderer 已有 splatting；扩大半径会改变支持或粘连物体。可独立比较深度一致的 RGB 小空洞修补，但填色不成为真实 XYZ/teacher，不恢复未见表面。检查覆盖、map/中心偏差、waypoint 和闭环，训练/评估渲染一致；额外 mask/depth channels 需显式 VLM 接口。
 
 ### Object-layered Orthographic Refine
 
