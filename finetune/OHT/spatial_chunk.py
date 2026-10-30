@@ -4,6 +4,7 @@ Only observed geometry and the predicted key pose condition the policy. Flow
 training uses noisy future poses; deployment samples a fresh trajectory, never
 receiving clean futures, future validity or a required key-goal endpoint.
 """
+import logging
 import math
 
 import torch
@@ -12,6 +13,8 @@ from torch.nn import functional as F
 
 from .chunk_model import ChunkDecoder, quaternion_matrix, rotation_6d
 from .chunk_config import chunk_scale
+
+LOG = logging.getLogger(__name__)
 
 
 def time_features(value, width=32):
@@ -141,7 +144,28 @@ class SpatialChunkDecoder(nn.Module):
         local_state = state.clone()
         local_state[:, :7] = state.new_tensor([0., 0., 0., 0., 0., 0., 1.])
         if self.proprio_center is not None:
-            local_state[:, 7:] = (state[:, 7:] - self.proprio_center) / self.proprio_scale
+            # OHT's six revolute joints can be reported on different 2*pi
+            # branches by the simulator and recorded demonstrations. Align
+            # only model features, and only when the training interval admits
+            # one equivalent angle. Preserve genuinely out-of-range inputs and
+            # ambiguous multi-turn distributions rather than clipping them.
+            joints = state[:, 7:13]
+            center, scale = self.proprio_center[:6], self.proprio_scale[:6]
+            turns = torch.round((joints - center) / (2 * math.pi))
+            aligned = joints - turns * (2 * math.pi)
+            supported = (scale < math.pi) & ((aligned - center).abs() <= scale)
+            aligned = torch.where(supported, aligned, joints)
+            if not self.training and not getattr(self, '_joint_branch_reported', False):
+                corrected = supported & (turns != 0)
+                if corrected.any():
+                    row = corrected.any(-1).nonzero(as_tuple=True)[0][0]
+                    LOG.warning('Chunk joint input aligned to training branch (features only): '
+                                'raw_rad=%s aligned_rad=%s normalized=%s',
+                                joints[row].detach().cpu().tolist(), aligned[row].detach().cpu().tolist(),
+                                ((aligned[row] - center) / scale).detach().cpu().tolist())
+                    self._joint_branch_reported = True
+            proprio = torch.cat((aligned, state[:, 13:]), -1)
+            local_state[:, 7:] = (proprio - self.proprio_center) / self.proprio_scale
         relative_goal = self.goal_condition(state, goal)
         state_token = self.state(local_state.to(dtype))
         goal_token = self.goal(relative_goal.to(dtype))

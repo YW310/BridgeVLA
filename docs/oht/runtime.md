@@ -44,6 +44,14 @@ GPU_ID=1 bash finetune/OHT/vla_server.sh \
 `GPU_ID=1` 选物理卡 1，进程内仍用 cuda:0。`serve.sh` 是同一服务的兼容启动入口。
 模型结构、数据契约、动作、相机和渲染配置从 checkpoint 读取，不另传一份训练 YAML。
 
+使用 `train_quantile` 本体状态归一化的 spatial chunk 模型，会在模型输入侧对齐实测关节角的
+`2π` 分支：仅当该关节的训练统计区间跨度小于一整圈，且等价角落在 `center ± scale` 内时调整。
+例如训练 elbow 约为 `+1.68 rad`，IsaacLab 上报 `−4.60 rad`，会先对齐再归一化。
+这不是把所有关节包装到 `[-π, π]`，也不截断越出统计区间的状态；多圈区间不自动选择分支。
+同一路径用于训练、离线评估和在线推理，原始观测、TCP、夹爪开度及控制器关节角保持原值。
+推理首次发生调整时，server 输出 `Chunk joint input aligned to training branch`，记录原始角度、
+对齐角度和归一化值。已有 checkpoint 可直接使用，无需重建数据或重新训练；更新代码后重启 server。
+
 | 可选项 | 配置 |
 | --- | --- |
 | 环境变量 | OHT_MODEL_PATH、OHT_HOST、OHT_PORT、OHT_DEVICE、OHT_SERVER_OUTPUT；CLI 优先 |

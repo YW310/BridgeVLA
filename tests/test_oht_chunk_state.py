@@ -70,6 +70,70 @@ def test_unresolved_proprio_statistics_cannot_silently_reach_inference():
         SpatialChunkDecoder(4, chunk_settings(state_config(resolved=False)), 3, 1 / 60)
 
 
+@pytest.mark.parametrize('kind,representation', [('regression', 'relative_pose'),
+    ('regression', 'delta_pose'), ('flow_matching', 'relative_pose')])
+def test_live_joint_branches_match_training_state_features_without_changing_measurements(kind, representation, caplog):
+    # Statistics and measured q6 from the deployed policy's first failed chunk.
+    center = [.5836237419396639, -2.033438813686371, 1.777019736170769,
+              -2.7411230653524394, -1.7244551002979278, -2.5896496739238497, .5]
+    scale = [.5356327902525664, .5973584771156311, .5068113118410108,
+             1.8865561157464985, .8967279732227327, 2.561074999347329, .5]
+    measured = [-.01349194347858429, -2.3390045166015625, -4.599393844604492,
+                -2.3961946964263916, 4.640030384063721, .10907460749149323]
+    config = state_config(kind, representation)
+    config['chunk_policy'].update(proprio_center=center, proprio_scale=scale)
+    decoder = SpatialChunkDecoder(4, chunk_settings(config), 3, 1 / 60).eval()
+    _, context, _, _ = inputs()
+    state = context[2]
+    state[:, 7:13] = torch.tensor(measured)
+    state[:, 13] = .38315762584537016
+    original = state.clone()
+    captured = []
+    handle = decoder.state.register_forward_pre_hook(lambda module, args: captured.append(args[0].clone()))
+    try:
+        live_memory = decoder.memory(*context)
+        canonical = state.clone()
+        canonical[:, 9] += 2 * np.pi
+        canonical[:, 11] -= 2 * np.pi
+        canonical_memory = decoder.memory(*(*context[:2], canonical, *context[3:]))
+    finally:
+        handle.remove()
+    torch.testing.assert_close(state, original, rtol=0, atol=0)
+    expected = (canonical[:, 7:] - torch.tensor(center)) / torch.tensor(scale)
+    torch.testing.assert_close(captured[0][:, 7:], expected, atol=3e-6, rtol=1e-5)
+    # Slightly out-of-quantile joints remain out of range; nothing is clipped.
+    assert captured[0][0, 7] < -1 and captured[0][0, 12] > 1
+    assert captured[0][0, 9].item() == pytest.approx(-.18395066, abs=3e-6)
+    assert captured[0][0, 11].item() == pytest.approx(.09066314, abs=3e-6)
+    for live, recorded in zip(live_memory, canonical_memory):
+        torch.testing.assert_close(live, recorded, atol=5e-6, rtol=1e-5)
+    decoder.memory(*context)
+    assert caplog.text.count('Chunk joint input aligned to training branch') == 1
+
+
+def test_joint_branch_alignment_preserves_unsupported_and_ambiguous_states():
+    config = state_config()
+    config['chunk_policy'].update(proprio_center=[0.] * 6 + [.5],
+                                  proprio_scale=[.5, 4., .5, .5, .5, .5, .5])
+    decoder = SpatialChunkDecoder(4, chunk_settings(config), 3, 1 / 60)
+    _, context, _, _ = inputs()
+    state = context[2]
+    state[:, 7:13] = torch.tensor([7., 2 * np.pi + .1, -4 * np.pi + .2, .3, -.4, .1])
+    state[:, 13] = .8
+    original = state.clone()
+    captured = []
+    handle = decoder.state.register_forward_pre_hook(lambda module, args: captured.append(args[0].clone()))
+    try:
+        decoder.memory(*context)
+    finally:
+        handle.remove()
+    expected = original[:, 7:].clone()
+    expected[:, 2] = .2
+    expected = (expected - decoder.proprio_center) / decoder.proprio_scale
+    torch.testing.assert_close(captured[0][:, 7:], expected, atol=3e-6, rtol=1e-5)
+    torch.testing.assert_close(state, original, rtol=0, atol=0)
+
+
 def test_proprio_fit_is_train_only_repeatable_replay_bound_and_ignores_future_labels(chunk_fixture):
     data = OHTChunkDataset(chunk_fixture.root)
     config = state_config(resolved=False)
