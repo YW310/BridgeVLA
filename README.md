@@ -79,6 +79,7 @@ RLBench 通过环境变量设置任务和 checkpoint 路径后执行 `bash finet
 
 | 需求 | 文档 |
 | --- | --- |
+| 算法整体流程、输入输出维度与 Action chunk | [交互算法总览（HTML）](docs/design/algorithm-overview.html) |
 | OHT 数据、训练与模型、部署与回放 | [数据](docs/oht/data.md) · [训练](docs/oht/training.md) · [运行](docs/oht/runtime.md) |
 | 环境与依赖 | [安装](docs/guides/installation.md) |
 | 预训练、各 benchmark 微调、8×40GB 和日志 | [训练](docs/guides/training.md) |

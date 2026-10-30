@@ -1,0 +1,1452 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; style-src 'unsafe-inline' blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; img-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; font-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; media-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; worker-src blob:; connect-src blob: data:; frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<title>BridgeVLA 算法总览：输入输出、O2 与 Action chunk</title>
+<style>:root{color-scheme:light dark;background:light-dark(rgb(255 255 255), rgb(24 24 24))}html,body{margin:0}body{box-sizing:border-box;padding:1rem;background:inherit}iframe{display:block;width:100%;max-width:736px;height:calc(100vh - 2rem);margin:0 auto;border:0}</style>
+</head>
+<body>
+<iframe sandbox="allow-scripts" referrerpolicy="no-referrer" title="BridgeVLA 算法总览：输入输出、O2 与 Action chunk" srcdoc="&lt;!doctype html&gt;
+&lt;html lang=&quot;en&quot;&gt;
+&lt;head&gt;
+&lt;meta charset=&quot;utf-8&quot;&gt;
+&lt;meta name=&quot;viewport&quot; content=&quot;width=device-width, initial-scale=1&quot;&gt;
+&lt;meta name=&quot;referrer&quot; content=&quot;no-referrer&quot;&gt;
+&lt;meta http-equiv=&quot;Content-Security-Policy&quot; content=&quot;default-src &#x27;none&#x27;; script-src &#x27;unsafe-inline&#x27; &#x27;unsafe-eval&#x27; &#x27;wasm-unsafe-eval&#x27; blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; style-src &#x27;unsafe-inline&#x27; blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; img-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; font-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; media-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; worker-src blob:; connect-src blob: data:; frame-src &#x27;none&#x27;; object-src &#x27;none&#x27;; base-uri &#x27;none&#x27;; form-action &#x27;none&#x27;&quot;&gt;
+&lt;title&gt;BridgeVLA 算法总览：输入输出、O2 与 Action chunk&lt;/title&gt;
+&lt;style&gt;:root {
+  color-scheme: light dark;
+  background-color: var(--background) !important;
+
+  /* Agent-facing contract; keep in sync with SKILL.md. */
+  --background: light-dark(rgb(255 255 255), rgb(24 24 24));
+  --foreground: light-dark(rgb(26 28 31), rgb(255 255 255));
+  --card: color-mix(in oklab, var(--foreground) 5%, transparent);
+  --card-foreground: var(--foreground);
+  --popover: light-dark(rgb(255 255 255), rgb(45 45 45));
+  --popover-foreground: var(--foreground);
+  --primary: light-dark(rgb(51 156 255), rgb(131 195 255));
+  --primary-foreground: light-dark(rgb(255 255 255), rgb(13 13 13));
+  --secondary: light-dark(rgb(255 255 255 / 96%), rgb(54 54 54 / 96%));
+  --secondary-foreground: var(--foreground);
+  --muted: color-mix(in srgb, var(--foreground) 10%, transparent);
+  --muted-foreground: light-dark(
+    rgb(26 28 31 / 49.4%),
+    rgb(255 255 255 / 49.8%)
+  );
+  --accent: light-dark(rgb(229 242 255), rgb(13 39 63));
+  --accent-foreground: var(--primary);
+  --destructive: light-dark(rgb(226 85 7), rgb(255 133 73));
+  --border: light-dark(rgb(26 28 31 / 8%), rgb(255 255 255 / 8.2%));
+  --input: light-dark(
+    rgb(26 28 31 / 11.8%),
+    color-mix(in oklab, rgb(0 0 0) 10%, transparent)
+  );
+  --ring: light-dark(rgb(51 156 255), rgb(131 195 255 / 76%));
+  --font-size-base: 14px;
+  --viz-series-1: var(--primary);
+  --viz-series-2: light-dark(rgb(243 136 59), rgb(245 154 86));
+  --viz-series-3: light-dark(rgb(93 201 119), rgb(116 213 139));
+  --viz-series-4: light-dark(rgb(235 119 177), rgb(240 143 192));
+  --viz-series-5: light-dark(rgb(155 121 236), rgb(170 145 239));
+  --viz-series-6: light-dark(rgb(58 185 177), rgb(90 203 194));
+
+  /* Internal implementation variables; not part of the agent contract. */
+  --font-sans: -apple-system, system-ui, &quot;Segoe UI&quot;, sans-serif;
+  --font-mono:
+    ui-monospace, SFMono-Regular, &quot;SF Mono&quot;, Menlo, Consolas, &quot;Liberation Mono&quot;,
+    monospace;
+  --font-size-normal: max(11px, var(--font-size-base));
+  --font-size-tooltip: calc(var(--font-size-base) - 1px);
+  --font-size-small: max(11px, calc(var(--font-size-base) - 2px));
+  --font-size-h1: calc(var(--font-size-normal) * 1.7142857143);
+  --font-size-h2: calc(var(--font-size-normal) * 1.4285714286);
+  --font-size-h3: calc(var(--font-size-normal) * 1.2857142857);
+  --font-weight-normal: 430;
+  --font-weight-medium: 500;
+  --line-height-normal: calc(var(--font-size-normal) * 1.5);
+  --line-height-tooltip: calc(var(--font-size-tooltip) * 1.4285714286);
+  --line-height-small: calc(var(--font-size-small) + 4px);
+  --radius: 12.5px;
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-2xl: calc(var(--radius) * 1.6);
+  --radius-full: 9999px;
+  --shadow-sm: 0 1px 2px -1px rgb(0 0 0 / 8%);
+  --checkmark-image: url(&quot;data:image/svg+xml,%3Csvg xmlns=&#x27;http://www.w3.org/2000/svg&#x27; viewBox=&#x27;0 0 17 17&#x27;%3E%3Cpath d=&#x27;M12.8961 3.64101C13.1297 3.41418 13.4984 3.37523 13.7779 3.56581C14.0571 3.75635 14.1554 4.11331 14.0299 4.41347L13.9615 4.53847L7.71151 13.7045C7.59411 13.8767 7.4063 13.9877 7.19881 14.0072C6.99136 14.0267 6.78564 13.9533 6.63826 13.806L2.88826 10.056L2.79842 9.9457C2.6192 9.67407 2.64927 9.30496 2.88826 9.06581C3.12738 8.82669 3.49647 8.79676 3.76815 8.97597L3.8785 9.06581L7.03084 12.2182L12.8053 3.74941L12.8961 3.64101Z&#x27;/%3E%3C/svg%3E&quot;);
+
+  /* Legacy aliases; not part of the current agent contract. */
+  --viz-bg: transparent;
+  --viz-panel: var(--card);
+  --viz-border: var(--border);
+  --viz-text: var(--foreground);
+  --viz-muted: var(--muted-foreground);
+  --viz-accent: var(--primary);
+  --viz-accent-text: var(--primary-foreground);
+  --viz-accent-bg: var(--accent);
+  --viz-font-size: var(--font-size-base);
+  --viz-warning: var(--destructive);
+  --color-background-primary: var(--background);
+  --color-text-primary: var(--foreground);
+  --color-border-secondary: var(--border);
+}
+
+:root[data-theme=&quot;light&quot;] {
+  color-scheme: light;
+}
+
+:root[data-theme=&quot;dark&quot;] {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html &gt; body {
+  margin: 0;
+  padding: 5px;
+  color: var(--foreground);
+  background: transparent !important;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-normal);
+  font-weight: var(--font-weight-normal);
+  line-height: var(--line-height-normal);
+}
+
+a {
+  color: color-mix(in srgb, var(--viz-accent) 80%, var(--viz-text) 20%);
+  cursor: pointer;
+  font-weight: var(--viz-font-weight-medium);
+  text-decoration: none;
+  text-underline-offset: 2px;
+}
+
+a:is(:hover, :focus-visible) {
+  text-decoration-line: underline;
+  text-decoration-style: dashed;
+  text-decoration-thickness: 0.5px;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+p {
+  margin-block: 0;
+}
+
+h1 {
+  font-size: var(--font-size-h1);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.25;
+}
+
+h2 {
+  font-size: var(--font-size-h2);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.25;
+}
+
+h3,
+h4,
+h5,
+h6 {
+  font-size: var(--font-size-h3);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.3;
+}
+
+b,
+strong,
+th {
+  font-weight: var(--font-weight-medium);
+}
+
+code:not(pre code) {
+  display: inline;
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  corner-shape: superellipse(1.5);
+  background: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  overflow-wrap: anywhere;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+  word-break: break-word;
+}
+
+#widget {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  padding: 0;
+  background: transparent !important;
+}
+
+.card {
+  min-width: 0;
+  padding: 12px;
+  overflow: hidden;
+  overflow-wrap: break-word;
+  border-radius: var(--radius-2xl);
+  corner-shape: superellipse(1.5);
+  color: var(--card-foreground);
+  background: var(--card);
+}
+
+#widget &gt; :not(.card) {
+  width: 100% !important;
+  max-width: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.tooltip {
+  position: fixed;
+  z-index: 50;
+  top: 0;
+  left: 0;
+  width: max-content;
+  max-width: min(
+    20rem,
+    var(--tooltip-available-width, calc(100vw - 10px)),
+    calc(100vw - 10px)
+  );
+  max-height: min(
+    var(--tooltip-available-height, calc(100vh - 10px)),
+    calc(100vh - 10px)
+  );
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  corner-shape: superellipse(1.5);
+  color: var(--popover-foreground);
+  background: var(--popover);
+  box-shadow: none;
+  font-size: var(--font-size-tooltip);
+  line-height: var(--line-height-tooltip);
+  overflow-wrap: break-word;
+  white-space: normal;
+  pointer-events: none;
+  user-select: none;
+}
+
+.viz-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(max(180px, 24%), 1fr));
+  gap: 10px;
+}
+
+.viz-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.viz-stat-value {
+  font-size: var(--font-size-h2);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.25;
+}
+
+.viz-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.viz-badge {
+  padding: 3px 8px;
+  border-radius: var(--radius-full);
+  color: var(--accent-foreground);
+  background: var(--accent);
+  font-weight: var(--font-weight-medium);
+}
+
+small,
+.text-small,
+.viz-badge {
+  font-size: var(--font-size-small);
+  line-height: var(--line-height-small);
+}
+
+.text-muted {
+  color: var(--muted-foreground);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.viz-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.viz-controls &gt; .form-label {
+  display: grid;
+  min-width: min(100%, 260px);
+  flex: 1 1 280px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 2px 12px;
+  margin-bottom: 0;
+}
+
+.viz-controls &gt; .form-label &gt; :is(.form-control, .form-range, .form-select) {
+  grid-column: 1 / -1;
+}
+
+.btn,
+.form-check-input,
+.form-control,
+.form-range,
+.form-select {
+  font: inherit;
+}
+
+.btn {
+  appearance: button;
+  display: inline-flex;
+  inline-size: fit-content;
+  max-inline-size: 100%;
+  min-height: 28px;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  margin: 0;
+  padding: 0 8px;
+  -webkit-app-region: no-drag;
+  border: 1px solid var(--input);
+  border-radius: var(--radius-lg);
+  corner-shape: superellipse(1.5);
+  color: var(--secondary-foreground);
+  background: var(--secondary);
+  cursor: var(--cursor-interaction, pointer);
+  text-align: center;
+  text-decoration: none;
+  white-space: nowrap;
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+.btn:is(.btn-block, .viz-tile) {
+  inline-size: 100%;
+}
+
+.btn.viz-tile {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+a.btn {
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.btn:not(:disabled):hover {
+  background: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+}
+
+.btn-primary {
+  border-color: transparent;
+  color: var(--primary-foreground);
+  background: var(--foreground);
+  background-clip: padding-box;
+}
+
+.btn-primary .text-muted {
+  color: color-mix(in srgb, var(--primary-foreground) 50%, transparent);
+}
+
+.btn-primary:not(:disabled):hover {
+  background: color-mix(in srgb, var(--foreground) 80%, transparent);
+  background-clip: padding-box;
+}
+
+.btn-ghost {
+  border-color: transparent;
+  color: var(--muted-foreground);
+  background: transparent;
+}
+
+.btn-ghost:not(:disabled):hover {
+  color: var(--foreground);
+  background: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+}
+
+.btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+[data-lucide] {
+  stroke-width: 1.6;
+}
+
+.form-label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--foreground);
+}
+
+.form-control {
+  display: block;
+  width: 100%;
+  min-height: 28px;
+  padding: 0 8px;
+  outline: none;
+  border: 1px solid var(--input);
+  border-radius: var(--radius-lg);
+  corner-shape: superellipse(1.5);
+  color: var(--foreground);
+  background: var(--secondary);
+}
+
+.form-control::placeholder {
+  color: var(--muted-foreground);
+}
+
+.form-control[type=&quot;file&quot;] {
+  padding: 0;
+  overflow: hidden;
+  cursor: var(--cursor-interaction, pointer);
+}
+
+.form-control[type=&quot;file&quot;]::file-selector-button {
+  min-height: 26px;
+  margin-right: 8px;
+  padding: 0 8px;
+  border: 0;
+  border-right: 1px solid var(--input);
+  color: var(--secondary-foreground);
+  background: var(--secondary);
+  cursor: inherit;
+  font: inherit;
+}
+
+.form-control[type=&quot;file&quot;]:not(:disabled):hover::file-selector-button {
+  background: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+}
+
+.form-control-color[type=&quot;color&quot;] {
+  width: 40px;
+  height: 28px;
+  padding: 3px;
+  cursor: var(--cursor-interaction, pointer);
+}
+
+.form-control-color[type=&quot;color&quot;]::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.form-control-color[type=&quot;color&quot;]::-webkit-color-swatch {
+  border: 0;
+  border-radius: calc(var(--radius-lg) - 4px);
+  corner-shape: superellipse(1.5);
+}
+
+textarea.form-control {
+  height: auto;
+  min-height: 72px;
+  padding: 8px 10px;
+  resize: vertical;
+}
+
+.form-control:focus-visible {
+  border-color: var(--ring);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.form-control:disabled,
+.form-select:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.form-select {
+  appearance: none;
+  display: block;
+  width: 100%;
+  min-height: 28px;
+  margin: 0;
+  padding: 0 32px 0 8px;
+  outline: none;
+  border: 1px solid var(--input);
+  border-radius: var(--radius-lg);
+  corner-shape: superellipse(1.5);
+  color: var(--foreground);
+  background-color: var(--secondary);
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--muted-foreground) 50%),
+    linear-gradient(135deg, var(--muted-foreground) 50%, transparent 50%);
+  background-position:
+    calc(100% - 14px) 50%,
+    calc(100% - 10px) 50%;
+  background-repeat: no-repeat;
+  background-size: 4px 4px;
+  cursor: var(--cursor-interaction, default);
+}
+
+.form-select:not(:disabled):hover {
+  background-color: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+}
+
+.form-select:focus-visible {
+  border-color: var(--ring);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.form-check {
+  display: flex;
+  min-height: 20px;
+  align-items: center;
+  gap: 6px;
+}
+
+.form-check-input {
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  margin: 0;
+  border: 1px solid var(--input);
+  color: var(--primary-foreground);
+  background-color: transparent;
+  cursor: var(--cursor-interaction, default);
+  transition:
+    background-color 150ms,
+    border-color 150ms,
+    box-shadow 150ms;
+}
+
+.form-check:not(.form-switch) .form-check-input[type=&quot;checkbox&quot;] {
+  border-color: var(--input);
+  border-radius: var(--radius-sm);
+  corner-shape: superellipse(1.5);
+  background-color: var(--secondary);
+  box-shadow: var(--shadow-sm);
+}
+
+.form-check:not(.form-switch)
+  .form-check-input:not(:disabled):not(:checked):hover {
+  background-color: var(--card);
+}
+
+.form-check:not(.form-switch) .form-check-input[type=&quot;checkbox&quot;]:checked {
+  border-color: var(--primary);
+  background-color: var(--primary);
+}
+
+.form-check:not(.form-switch)
+  .form-check-input[type=&quot;checkbox&quot;]:checked::before {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: var(--primary-foreground);
+  content: &quot;&quot;;
+  mask: var(--checkmark-image) center / 12px 12px no-repeat;
+}
+
+.form-check-input[type=&quot;radio&quot;] {
+  width: 14px;
+  height: 14px;
+  border-radius: var(--radius-full);
+}
+
+.form-check-input[type=&quot;radio&quot;]:checked {
+  border: 2px solid var(--primary);
+  background:
+    radial-gradient(circle, var(--primary-foreground) 0 2.5px, transparent 3px),
+    var(--primary);
+}
+
+.form-check:not(.form-switch) .form-check-input:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.form-check:not(.form-switch) .form-check-input:disabled {
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.form-check:not(.form-switch) .form-check-input:disabled + .form-check-label {
+  cursor: not-allowed;
+}
+
+.form-switch .form-check-input:disabled,
+.form-switch .form-check-input:disabled + .form-check-label {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.form-check-label {
+  color: var(--foreground);
+  cursor: var(--cursor-interaction, default);
+}
+
+.form-switch .form-check-input {
+  position: relative;
+  width: 32px;
+  height: 20px;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--muted);
+  box-shadow: none;
+  transition: background-color 200ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.form-switch .form-check-input::before {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 16px;
+  height: 16px;
+  box-sizing: border-box;
+  border: 1px solid light-dark(var(--primary-foreground), var(--foreground));
+  border-radius: var(--radius-full);
+  background: light-dark(var(--primary-foreground), var(--foreground));
+  box-shadow: var(--shadow-sm);
+  content: &quot;&quot;;
+  transform: translate(2px, -50%);
+  transition: transform 200ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.form-switch .form-check-input:checked {
+  background: var(--primary);
+}
+
+.form-switch .form-check-input:checked::before {
+  transform: translate(14px, -50%);
+}
+
+.form-switch .form-check-input:focus-visible {
+  box-shadow: 0 0 0 2px var(--ring);
+}
+
+.form-range {
+  appearance: none;
+  display: block;
+  width: 100%;
+  height: 28px;
+  flex: 1;
+  margin: 0;
+  padding: 0;
+  outline: none;
+  border: 0;
+  accent-color: var(--primary);
+  background: linear-gradient(
+      color-mix(in srgb, var(--foreground) 7%, transparent),
+      color-mix(in srgb, var(--foreground) 7%, transparent)
+    )
+    center / 100% 2px no-repeat;
+}
+
+.form-range::-webkit-slider-runnable-track {
+  height: 28px;
+  background: transparent;
+}
+
+.form-range::-webkit-slider-thumb {
+  appearance: none;
+  width: 20px;
+  height: 20px;
+  margin-top: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: light-dark(var(--primary-foreground), var(--foreground));
+}
+
+.form-range:focus-visible::-webkit-slider-thumb {
+  border-color: var(--ring);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.form-range::-moz-range-track {
+  height: 28px;
+  background: transparent;
+}
+
+.form-range::-moz-range-thumb {
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: light-dark(var(--primary-foreground), var(--foreground));
+}
+
+.form-range:focus-visible::-moz-range-thumb {
+  border-color: var(--ring);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.form-range:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.btn:not(.btn-primary, .viz-tile):is(
+    [aria-pressed=&quot;true&quot;],
+    [aria-selected=&quot;true&quot;],
+    .is-selected
+  ) {
+  border-color: var(--primary);
+  color: var(--primary-foreground);
+  background: var(--primary);
+}
+
+.btn.viz-tile:is([aria-pressed=&quot;true&quot;], [aria-selected=&quot;true&quot;], .is-selected) {
+  border-color: var(--primary);
+  box-shadow: inset 0 0 0 1px var(--primary);
+}
+
+.btn:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+#widget &gt; svg {
+  width: 100%;
+}
+
+.text-warning,
+.text-destructive {
+  color: var(--destructive);
+}
+
+html&gt;body{padding:0}&lt;/style&gt;
+&lt;/head&gt;
+&lt;body&gt;
+&lt;main id=&quot;bridgevla-algorithm-overview&quot;&gt;
+  &lt;header&gt;
+    &lt;h1&gt;BridgeVLA 算法总览&lt;/h1&gt;
+    &lt;p&gt;从输入、对象与关系，到 key-action 和 Action chunk。按当前代码整理 · 2026-10-30&lt;/p&gt;
+    &lt;p&gt;&lt;strong&gt;两条已实现路径，不是一条已经接通的模型：&lt;/strong&gt;RLBench O2 使用对象条件预测关键动作；OHT V4 chunk 当前只支持 baseline + EEF，不消费 T/R role packet。&lt;/p&gt;
+  &lt;/header&gt;
+
+  &lt;nav class=&quot;viz-controls&quot; aria-label=&quot;算法路径&quot;&gt;
+    &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-mode=&quot;o2&quot; aria-pressed=&quot;true&quot;&gt;O2 · 完整流程&lt;/button&gt;
+    &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-mode=&quot;anchor&quot; aria-pressed=&quot;false&quot;&gt;Anchor · 内部展开&lt;/button&gt;
+    &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-mode=&quot;regression&quot; aria-pressed=&quot;false&quot;&gt;Chunk · 回归&lt;/button&gt;
+    &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-mode=&quot;flow&quot; aria-pressed=&quot;false&quot;&gt;Chunk · Flow&lt;/button&gt;
+    &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-mode=&quot;comparison&quot; aria-pressed=&quot;false&quot;&gt;Chunk · 前后对比&lt;/button&gt;
+  &lt;/nav&gt;
+  &lt;p id=&quot;route-summary&quot; aria-live=&quot;polite&quot;&gt;&lt;/p&gt;
+  &lt;p id=&quot;route-instructions&quot; class=&quot;text-small&quot;&gt;按箭头阅读；点击流程节点查看输入、输出、公式和对应函数。B 为 batch 维，不固定为 1。&lt;/p&gt;
+
+  &lt;section id=&quot;route-graph&quot; aria-label=&quot;包含符号与维度的整体流程图&quot;&gt;
+    &lt;div id=&quot;algorithm-graph&quot;&gt;
+      &lt;svg id=&quot;algorithm-edges&quot; class=&quot;algorithm-edges&quot; aria-hidden=&quot;true&quot;&gt;&lt;/svg&gt;
+      &lt;div id=&quot;algorithm-nodes&quot;&gt;&lt;/div&gt;
+    &lt;/div&gt;
+    &lt;p id=&quot;edge-summary&quot; class=&quot;text-small&quot;&gt;&lt;/p&gt;
+  &lt;/section&gt;
+
+  &lt;section class=&quot;card&quot; id=&quot;node-detail&quot; aria-label=&quot;选中节点的算法解释&quot;&gt;
+    &lt;h2 id=&quot;node-heading&quot;&gt;&lt;/h2&gt;
+    &lt;p id=&quot;node-description&quot;&gt;&lt;/p&gt;
+    &lt;pre id=&quot;node-equation&quot;&gt;&lt;/pre&gt;
+    &lt;table aria-label=&quot;节点的输入输出维度&quot;&gt;
+      &lt;thead&gt;&lt;tr&gt;&lt;th scope=&quot;col&quot;&gt;符号&lt;/th&gt;&lt;th scope=&quot;col&quot;&gt;维度&lt;/th&gt;&lt;th scope=&quot;col&quot;&gt;含义&lt;/th&gt;&lt;/tr&gt;&lt;/thead&gt;
+      &lt;tbody id=&quot;node-dimensions&quot;&gt;&lt;/tbody&gt;
+    &lt;/table&gt;
+    &lt;p class=&quot;text-small&quot; id=&quot;node-source&quot;&gt;&lt;/p&gt;
+  &lt;/section&gt;
+
+  &lt;section id=&quot;chunk-comparison&quot; hidden aria-label=&quot;OHT 状态条件前后对比与 Gemma 特征路径&quot;&gt;
+    &lt;h2&gt;Gemma 特征保留，状态增加直接通路&lt;/h2&gt;
+    &lt;p&gt;渲染图像 → 视觉塔 → Projector → Gemma，与指令 tokens 融合后取最后层图像 tokens。Coarse/refine 分别前向、共享 VLM 权重；这两组特征始终通过视觉 memory 进入动作头。实测状态绕过 Gemma，进入后端 chunk decoder。&lt;/p&gt;
+    &lt;div class=&quot;comparison-lanes&quot;&gt;
+      &lt;article&gt;
+        &lt;h3&gt;之前 · flow_temporal&lt;/h3&gt;
+        &lt;svg class=&quot;state-wiring&quot; viewBox=&quot;0 0 320 510&quot; role=&quot;img&quot; aria-labelledby=&quot;old-state-title old-state-description&quot;&gt;
+          &lt;title id=&quot;old-state-title&quot;&gt;旧 flow_temporal 的状态只走 memory&lt;/title&gt;
+          &lt;desc id=&quot;old-state-description&quot;&gt;Gemma 视觉 tokens、原始关节与夹爪状态 token、预测 key 合并到 memory，通过 cross-attention 进入动作块。动作 queries 没有直接状态输入，AdaLN 仅接生成时间 tau，最后 flow 采样轨迹。&lt;/desc&gt;
+          &lt;defs&gt;&lt;marker id=&quot;old-state-arrow&quot; viewBox=&quot;0 0 10 10&quot; refX=&quot;9&quot; refY=&quot;5&quot; markerWidth=&quot;5&quot; markerHeight=&quot;5&quot; orient=&quot;auto&quot;&gt;&lt;path d=&quot;M0 0L10 5L0 10Z&quot; fill=&quot;currentColor&quot;/&gt;&lt;/marker&gt;&lt;/defs&gt;
+          &lt;g class=&quot;comparison-wires&quot; marker-end=&quot;url(#old-state-arrow)&quot;&gt;
+            &lt;path d=&quot;M75 70V160&quot;/&gt;
+            &lt;path d=&quot;M180 120H160V185H140&quot;/&gt;
+            &lt;path d=&quot;M180 190H164V220H140&quot;/&gt;
+            &lt;path d=&quot;M75 235V350&quot;/&gt;
+            &lt;path d=&quot;M180 260H160V375H140&quot;/&gt;
+            &lt;path d=&quot;M180 325H166V400H140&quot;/&gt;
+            &lt;path d=&quot;M75 425V460&quot;/&gt;
+          &lt;/g&gt;
+          &lt;g class=&quot;comparison-node comparison-vision&quot;&gt;&lt;rect x=&quot;10&quot; y=&quot;10&quot; width=&quot;300&quot; height=&quot;60&quot; rx=&quot;5&quot;/&gt;&lt;text x=&quot;160&quot; y=&quot;34&quot;&gt;Gemma 的 coarse/refine 图像 tokens&lt;/text&gt;&lt;text x=&quot;160&quot; y=&quot;55&quot;&gt;Fᶜ、Fᶠ → 视觉投影&lt;/text&gt;&lt;/g&gt;
+          &lt;g class=&quot;comparison-node&quot;&gt;&lt;rect x=&quot;180&quot; y=&quot;95&quot; width=&quot;130&quot; height=&quot;50&quot; rx=&quot;5&quot;/&gt;&lt;text x=&quot;245&quot; y=&quot;116&quot;&gt;实测 q6 / 开度&lt;/text&gt;&lt;text x=&quot;245&quot; y=&quot;135&quot;&gt;原始状态 token&lt;/text&gt;&lt;/g&gt;
+          &lt;g class=&quot;comparison-node&quot;&gt;&lt;rect x=&quot;180&quot; y=&quot;165&quot; width=&quot;130&quot; height=&quot;50&quot; rx=&quot;5&quot;/&gt;&lt;text x=&quot;245&quot; y=&quot;186&quot;&gt;预测 key&lt;/text&gt;&lt;text x=&quot;245&quot; y=&quot;205&quot;&gt;额外 memory token&lt;/text&gt;&lt;/g&gt;
+          &lt;g class=&quot;comparison-node&quot;&gt;&lt;rect x=&quot;10&quot; y=&quot;160&quot; width=&quot;130&quot; height=&quot;75&quot; rx=&quot;5&quot;/&gt;&lt;text x=&quot;75&quot; y=&quot;182&quot;&gt;Memory&lt;/text&gt;&lt;text x=&quot;75&quot; y=&quot;203&quot;&gt;视觉 + 状态 + key&lt;/text&gt;&lt;text x=&quot;75&quot; y=&quot;224&quot;&gt;[B,1538,256]&lt;/text&gt;&lt;/g&gt;
+          &lt;text class=&quot;comparison-edge-label&quot; x=&quot;75&quot; y=&quot;294&quot;&gt;Cross-Attention&lt;/text&gt;
+          &lt;g class=&quot;comparison-node&quot;&gt;&lt;rect x=&quot;180&quot; y=&quot;235&quot; width=&quot;130&quot; height=&quot;50&quot; rx=&quot;5&quot;/&gt;&lt;text x=&quot;245&quot; y=&quot;256&quot;&gt;动作 queries&lt;/text&gt;&lt;text x=&quot;245&quot; y=&quot;275&quot;&gt;动作 / 时间编码&lt;/text&gt;&lt;/g&gt;
+          &lt;g class=&quot;comparison-node&quot;&gt;&lt;rect x=&quot;180&quot; y=&quot;300&quot; width=&quot;130&quot; height=&quot;50&quot; rx=&quot;5&quot;/&gt;&lt;text x=&quot;245&quot; y=&quot;321&quot;&gt;AdaLN 条件&lt;/text&gt;&lt;text x=&quot;245&quot; y=&quot;340&quot;&gt;仅 E_time(τ)&lt;/text&gt;&lt;/g&gt;
+          &lt;g class=&quot;comparison-node&quot;&gt;&lt;rect x=&quot;10&quot; y=&quot;350&quot; width=&quot;130&quot; height=&quot;75&quot; rx=&quot;5&quot;/&gt;&lt;text x=&quot;75&quot; y=&quot;373&quot;&gt;动作 blocks&lt;/text&gt;&lt;text x=&quot;75&quot; y=&quot;394&quot;&gt;Self / Cross Attn&lt;/text&gt;&lt;text x=&quot;75&quot; y=&quot;415&quot;&gt;AdaLN(τ)&lt;/text&gt;&lt;/g&gt;
+          &lt;g class=&quot;comparison-node&quot;&gt;&lt;rect x=&quot;10&quot; y=&quot;460&quot; width=&quot;300&quot; height=&quot;40&quot; rx=&quot;5&quot;/&gt;&lt;text x=&quot;160&quot; y=&quot;485&quot;&gt;Flow 多步采样 → 世界 EEF 轨迹&lt;/text&gt;&lt;/g&gt;
+        &lt;/svg&gt;
+      &lt;/article&gt;
+      &lt;article&gt;
+        &lt;h3&gt;当前 · regression_state&lt;/h3&gt;
+        &lt;svg class=&quot;state-wiring&quot; viewBox=&quot;0 0 320 510&quot; role=&quot;img&quot; aria-labelledby=&quot;new-state-title new-state-description&quot;&gt;
+          &lt;title id=&quot;new-state-title&quot;&gt;当前状态直接进入 queries 和每层 AdaLN&lt;/title&gt;
+          &lt;desc id=&quot;new-state-description&quot;&gt;Gemma 视觉 tokens 和归一化后的状态 token 保留在 memory。状态另投影为 s，与门控 key 和时间组成条件 c，直接加到动作 queries 并调制每层 AdaLN。最后确定性回归世界 EEF 轨迹。&lt;/desc&gt;
+          &lt;defs&gt;&lt;marker id=&quot;new-state-arrow&quot; viewBox=&quot;0 0 10 10&quot; refX=&quot;9&quot; refY=&quot;5&quot; markerWidth=&quot;5&quot; markerHeight=&quot;5&quot; orient=&quot;auto&quot;&gt;&lt;path d=&quot;M0 0L10 5L0 10Z&quot; fill=&quot;currentColor&quot;/&gt;&lt;/marker&gt;&lt;/defs&gt;
+          &lt;g class=&quot;comparison-wires&quot; marker-end=&quot;url(#new-state-arrow)&quot;&gt;
+            &lt;path d=&quot;M75 70V160&quot;/&gt;
+            &lt;path d=&quot;M245 215V245&quot;/&gt;
+            &lt;path d=&quot;M75 235V355&quot;/&gt;
+            &lt;path d=&quot;M75 430V460&quot;/&gt;
+          &lt;/g&gt;
+          &lt;g class=&quot;comparison-wires comparison-state-wire&quot; marker-end=&quot;url(#new-state-arrow)&quot;&gt;
+            &lt;path d=&quot;M180 120H160V190H140&quot;/&gt;
+            &lt;path d=&quot;M310 120H316V274H310&quot;/&gt;
+            &lt;path d=&quot;M245 310V330&quot;/&gt;
+            &lt;path d=&quot;M180 277H155V402H140&quot;/&gt;
+            &lt;path d=&quot;M180 355H166V377H140&quot;/&gt;
+          &lt;/g&gt;
+          &lt;g class=&quot;comparison-node comparison-vision&quot;&gt;&lt;rect x=&quot;10&quot; y=&quot;10&quot; width=&quot;300&quot; height=&quot;60&quot; rx=&quot;5&quot;/&gt;&lt;text x=&quot;160&quot; y=&quot;34&quot;&gt;Gemma 的 coarse/refine 图像 tokens&lt;/text&gt;&lt;text x=&quot;160&quot; y=&quot;55&quot;&gt;Fᶜ、Fᶠ → 视觉投影&lt;/text&gt;&lt;/g&gt;
+          &lt;g class=&quot;comparison-node comparison-state&quot;&gt;&lt;rect x=&quot;180&quot; y=&quot;95&quot; width=&quot;130&quot; height=&quot;50&quot; rx=&quot;5&quot;/&gt;&lt;text x=&quot;245&quot; y=&quot;116&quot;&gt;q6 / 开度归一化&lt;/text&gt;&lt;text x=&quot;245&quot; y=&quot;135&quot;&gt;投影 s：[B,256]&lt;/text&gt;&lt;/g&gt;
+          &lt;g class=&quot;comparison-node&quot;&gt;&lt;rect x=&quot;180&quot; y=&quot;165&quot; width=&quot;130&quot; height=&quot;50&quot; rx=&quot;5&quot;/&gt;&lt;text x=&quot;245&quot; y=&quot;186&quot;&gt;预测 key × gate&lt;/text&gt;&lt;text x=&quot;245&quot; y=&quot;205&quot;&gt;gate 初值 0.1&lt;/text&gt;&lt;/g&gt;
+          &lt;g class=&quot;comparison-node&quot;&gt;&lt;rect x=&quot;10&quot; y=&quot;160&quot; width=&quot;130&quot; height=&quot;75&quot; rx=&quot;5&quot;/&gt;&lt;text x=&quot;75&quot; y=&quot;182&quot;&gt;视觉 Memory&lt;/text&gt;&lt;text x=&quot;75&quot; y=&quot;203&quot;&gt;视觉 + 状态 token&lt;/text&gt;&lt;text x=&quot;75&quot; y=&quot;224&quot;&gt;[B,1537,256]&lt;/text&gt;&lt;/g&gt;
+          &lt;text class=&quot;comparison-edge-label&quot; x=&quot;75&quot; y=&quot;294&quot;&gt;Cross-Attention&lt;/text&gt;
+          &lt;g class=&quot;comparison-node comparison-state&quot;&gt;&lt;rect x=&quot;180&quot; y=&quot;245&quot; width=&quot;130&quot; height=&quot;65&quot; rx=&quot;5&quot;/&gt;&lt;text x=&quot;245&quot; y=&quot;265&quot;&gt;条件 c&lt;/text&gt;&lt;text x=&quot;245&quot; y=&quot;284&quot;&gt;s + gate × key&lt;/text&gt;&lt;text x=&quot;245&quot; y=&quot;303&quot;&gt;+ E_time(τ=1)&lt;/text&gt;&lt;/g&gt;
+          &lt;g class=&quot;comparison-node comparison-state&quot;&gt;&lt;rect x=&quot;180&quot; y=&quot;330&quot; width=&quot;130&quot; height=&quot;50&quot; rx=&quot;5&quot;/&gt;&lt;text x=&quot;245&quot; y=&quot;351&quot;&gt;动作 queries + c&lt;/text&gt;&lt;text x=&quot;245&quot; y=&quot;370&quot;&gt;[B,16,256]&lt;/text&gt;&lt;/g&gt;
+          &lt;g class=&quot;comparison-node comparison-state&quot;&gt;&lt;rect x=&quot;10&quot; y=&quot;355&quot; width=&quot;130&quot; height=&quot;75&quot; rx=&quot;5&quot;/&gt;&lt;text x=&quot;75&quot; y=&quot;378&quot;&gt;动作 blocks&lt;/text&gt;&lt;text x=&quot;75&quot; y=&quot;399&quot;&gt;Self / Cross Attn&lt;/text&gt;&lt;text x=&quot;75&quot; y=&quot;420&quot;&gt;每层 AdaLN(c)&lt;/text&gt;&lt;/g&gt;
+          &lt;g class=&quot;comparison-node&quot;&gt;&lt;rect x=&quot;10&quot; y=&quot;460&quot; width=&quot;300&quot; height=&quot;40&quot; rx=&quot;5&quot;/&gt;&lt;text x=&quot;160&quot; y=&quot;485&quot;&gt;确定性回归 → 世界 EEF 轨迹&lt;/text&gt;&lt;/g&gt;
+        &lt;/svg&gt;
+      &lt;/article&gt;
+    &lt;/div&gt;
+    &lt;p class=&quot;text-small&quot;&gt;Gemma 特征节点和新增状态通路分别着色；节点文字同时标明含义。两边均冻结 Gemma 前 16 层、训练后续层。图中省略 XYZ、噪声和预测 key 引导 refine crop 的连接。&lt;/p&gt;
+    &lt;details&gt;
+      &lt;summary&gt;state 14 维、归一化与 AdaLN 公式&lt;/summary&gt;
+      &lt;table aria-label=&quot;原始 state 与学习条件的区别&quot;&gt;
+        &lt;thead&gt;&lt;tr&gt;&lt;th scope=&quot;col&quot;&gt;字段&lt;/th&gt;&lt;th scope=&quot;col&quot;&gt;维度&lt;/th&gt;&lt;th scope=&quot;col&quot;&gt;作用&lt;/th&gt;&lt;/tr&gt;&lt;/thead&gt;
+        &lt;tbody&gt;
+          &lt;tr&gt;&lt;td&gt;当前 TCP 位置&lt;/td&gt;&lt;td&gt;3&lt;/td&gt;&lt;td&gt;定义当前局部坐标原点和世界轨迹起点。&lt;/td&gt;&lt;/tr&gt;
+          &lt;tr&gt;&lt;td&gt;当前 TCP 四元数 xyzw&lt;/td&gt;&lt;td&gt;4&lt;/td&gt;&lt;td&gt;定义局部坐标朝向，恢复世界姿态。&lt;/td&gt;&lt;/tr&gt;
+          &lt;tr&gt;&lt;td&gt;当前实测关节角&lt;/td&gt;&lt;td&gt;6&lt;/td&gt;&lt;td&gt;按训练集逐关节 center/scale 归一化后编码。&lt;/td&gt;&lt;/tr&gt;
+          &lt;tr&gt;&lt;td&gt;当前实测夹爪开度&lt;/td&gt;&lt;td&gt;1&lt;/td&gt;&lt;td&gt;0..1 映射到 −1..1；0.8 → 0.6 是输入编码，实际仍为 80% 开度。&lt;/td&gt;&lt;/tr&gt;
+        &lt;/tbody&gt;
+      &lt;/table&gt;
+      &lt;pre&gt;s_raw = [TCP7, q6, opening1]                         # [B,14]
+s_local[:7] = [0,0,0,0,0,0,1]                        # 当前 TCP 自身是 identity
+q_normalized = (q − center_train) / scale_train
+opening_normalized = 2 × opening − 1
+s = Linear14→256(s_local_normalized)
+c = E_time(τ=1) + s + gate × E_key(key_relative)
+Q_k = learned_k + E_tick(kΔt) + E_action(Y_init,k) + c
+h_mod = (1 + scale(c)) ⊙ LayerNorm(h) + shift(c)
+h_out = h + residual_gate(c) ⊙ Branch(h_mod)&lt;/pre&gt;
+      &lt;p&gt;各层分别为 self-attention、cross-attention 和 FFN 生成调制参数。当前 TCP 虽在状态投影中固定为 identity，仍参与场景/key 的局部变换和动作的世界坐标恢复；当前没有关节速度、TCP 速度或历史状态。&lt;/p&gt;
+      &lt;p&gt;归一化与直接通路减少状态被忽略的机会，回归直接监督部署输出，并沿用位移/二阶差分等物理损失。用户已确认 regression_state 整体解决本次轨迹问题；各项改动的独立贡献仍需消融。&lt;/p&gt;
+    &lt;/details&gt;
+  &lt;/section&gt;
+
+  &lt;details open&gt;
+    &lt;summary&gt;全部符号与维度&lt;/summary&gt;
+    &lt;p&gt;以下数字对应当前常用三视角配置，不是任意 checkpoint 都能修改的超参数。B 保留为符号；P 点数按样本变化。Hₑ 是执行前缀，和图像高度没有关系。&lt;/p&gt;
+    &lt;table aria-label=&quot;基本符号&quot;&gt;
+      &lt;thead&gt;&lt;tr&gt;&lt;th scope=&quot;col&quot;&gt;符号&lt;/th&gt;&lt;th scope=&quot;col&quot;&gt;当前值&lt;/th&gt;&lt;th scope=&quot;col&quot;&gt;定义&lt;/th&gt;&lt;/tr&gt;&lt;/thead&gt;
+      &lt;tbody&gt;
+        &lt;tr&gt;&lt;td&gt;B&lt;/td&gt;&lt;td&gt;可变&lt;/td&gt;&lt;td&gt;训练 batch；部署通常为 1。&lt;/td&gt;&lt;/tr&gt;
+        &lt;tr&gt;&lt;td&gt;Cₛ&lt;/td&gt;&lt;td&gt;由数据配置确定&lt;/td&gt;&lt;td&gt;物理 RGB-D 相机数；不等于虚拟视角数。&lt;/td&gt;&lt;/tr&gt;
+        &lt;tr&gt;&lt;td&gt;V / Hᵣ / Wᵣ&lt;/td&gt;&lt;td&gt;3 / 224 / 224&lt;/td&gt;&lt;td&gt;每级正交虚拟视角数及分辨率；coarse + refine 共 3×2 张。&lt;/td&gt;&lt;/tr&gt;
+        &lt;tr&gt;&lt;td&gt;h / w / Nᵥ&lt;/td&gt;&lt;td&gt;16 / 16 / 768&lt;/td&gt;&lt;td&gt;每视角 patch 网格；每级 Nᵥ=Vhw 个图像 tokens。&lt;/td&gt;&lt;/tr&gt;
+        &lt;tr&gt;&lt;td&gt;C&lt;/td&gt;&lt;td&gt;2048&lt;/td&gt;&lt;td&gt;当前 VLM 图像 hidden feature 通道。&lt;/td&gt;&lt;/tr&gt;
+        &lt;tr&gt;&lt;td&gt;S / d&lt;/td&gt;&lt;td&gt;2 / 128&lt;/td&gt;&lt;td&gt;soft-coarse 配置的无序 slot 数及维度；S=2 不保证两者始终一一对应 T/R。&lt;/td&gt;&lt;/tr&gt;
+        &lt;tr&gt;&lt;td&gt;r / dₐ&lt;/td&gt;&lt;td&gt;16 / 16&lt;/td&gt;&lt;td&gt;relation adapter 的低秩维及 anchor query 维度，不是类别数。&lt;/td&gt;&lt;/tr&gt;
+        &lt;tr&gt;&lt;td&gt;D / K / Hₑ&lt;/td&gt;&lt;td&gt;256 / 16 / 4&lt;/td&gt;&lt;td&gt;当前 state-chunk decoder hidden dim、预测长度及执行前缀。&lt;/td&gt;&lt;/tr&gt;
+        &lt;tr&gt;&lt;td&gt;Δt / τ&lt;/td&gt;&lt;td&gt;契约确定 / [0,1]&lt;/td&gt;&lt;td&gt;未来动作物理时间间隔 / flow 生成时间；两者不能混用。&lt;/td&gt;&lt;/tr&gt;
+      &lt;/tbody&gt;
+    &lt;/table&gt;
+    &lt;table aria-label=&quot;主要张量的输入输出维度&quot;&gt;
+      &lt;thead&gt;&lt;tr&gt;&lt;th scope=&quot;col&quot;&gt;符号&lt;/th&gt;&lt;th scope=&quot;col&quot;&gt;维度&lt;/th&gt;&lt;th scope=&quot;col&quot;&gt;含义&lt;/th&gt;&lt;/tr&gt;&lt;/thead&gt;
+      &lt;tbody&gt;
+        &lt;tr&gt;&lt;td&gt;Oₜ, ℓ&lt;/td&gt;&lt;td&gt;Cₛ 组 RGB-D；B 条指令&lt;/td&gt;&lt;td&gt;每相机 RGB 为 [B,3,Hₛ,Wₛ]，depth 为 [B,Hₛ,Wₛ]；相机标定另传。&lt;/td&gt;&lt;/tr&gt;
+        &lt;tr&gt;&lt;td&gt;Pₜ&lt;/td&gt;&lt;td&gt;B 个 [Nᵢ,3]，RGB 同形&lt;/td&gt;&lt;td&gt;融合世界点云；Nᵢ 可变，代码使用 tensor list。&lt;/td&gt;&lt;/tr&gt;
+        &lt;tr&gt;&lt;td&gt;Rᶜ, Rᶠ / Xᶜ, Xᶠ&lt;/td&gt;&lt;td&gt;[B,3,3,224,224]&lt;/td&gt;&lt;td&gt;分别为虚拟 RGB / 对齐的 XYZ；不是同一个三通道张量。&lt;/td&gt;&lt;/tr&gt;
+        &lt;tr&gt;&lt;td&gt;Fᶜ, Fᶠ&lt;/td&gt;&lt;td&gt;[B,768,2048]&lt;/td&gt;&lt;td&gt;对应 [B,3,2048,16,16]；内部常展平为 [3B,2048,16,16]。&lt;/td&gt;&lt;/tr&gt;
+        &lt;tr&gt;&lt;td&gt;U / Lᵣ / Lₒ&lt;/td&gt;&lt;td&gt;[B,S,128] / [B,S,2] / [B,S]&lt;/td&gt;&lt;td&gt;无序 slots / T-R 分类 logits / objectness logits。&lt;/td&gt;&lt;/tr&gt;
+        &lt;tr&gt;&lt;td&gt;Mˢ / M&lt;/td&gt;&lt;td&gt;[B,3,S,16,16] / [B,3,2,16,16]&lt;/td&gt;&lt;td&gt;每 slot 的响应 / 混合后的 T-R 软响应。固定 role-query 分支不使用 Lᵣ、Lₒ。&lt;/td&gt;&lt;/tr&gt;
+        &lt;tr&gt;&lt;td&gt;Z / pNULL / v&lt;/td&gt;&lt;td&gt;[B,2,128] / [B] / [B,2]&lt;/td&gt;&lt;td&gt;soft role tokens / Reference NULL posterior / 几何有效性；不是同一概念。&lt;/td&gt;&lt;/tr&gt;
+        &lt;tr&gt;&lt;td&gt;G / g&lt;/td&gt;&lt;td&gt;[B,2,128,3] / [B,17]&lt;/td&gt;&lt;td&gt;采样的 T/R 点 / 中心6、extent或spread6、位移3、有效性2。&lt;/td&gt;&lt;/tr&gt;
+        &lt;tr&gt;&lt;td&gt;H / z / qₐ / A&lt;/td&gt;&lt;td&gt;[3B,16,16,16] / [B,3,2,16] / [B,3,16] / [B,3,16,16]&lt;/td&gt;&lt;td&gt;relation hidden / 按 map 池化的视觉向量 / anchor query / sigmoid 空间门控。&lt;/td&gt;&lt;/tr&gt;
+        &lt;tr&gt;&lt;td&gt;Tᶜ, Tᶠ / ŵᶜ&lt;/td&gt;&lt;td&gt;[B,3,224,224] / [B,3]&lt;/td&gt;&lt;td&gt;translation logits / coarse 3D waypoint；ŵᶜ 在当前 cube 坐标。&lt;/td&gt;&lt;/tr&gt;
+        &lt;tr&gt;&lt;td&gt;aᵏᵉʸ&lt;/td&gt;&lt;td&gt;RLBench [B,9]；OHT [B,8]&lt;/td&gt;&lt;td&gt;world XYZ3 + xyzw4 + open1；RLBench 再含 collision flag1。&lt;/td&gt;&lt;/tr&gt;
+        &lt;tr&gt;&lt;td&gt;sᴼ² / sᶜʰ&lt;/td&gt;&lt;td&gt;[B,3] / [B,14]&lt;/td&gt;&lt;td&gt;O2：开闭与 finger state2；chunk：实测 TCP7 + q6 + 实测开度1。&lt;/td&gt;&lt;/tr&gt;
+        &lt;tr&gt;&lt;td&gt;Xᶜʷ, Xᶠʷ / Vᶜ, Vᶠ&lt;/td&gt;&lt;td&gt;[B,768,3] / [B,768]&lt;/td&gt;&lt;td&gt;chunk patch 对应的 world 可见表面 XYZ / bool 有效性。&lt;/td&gt;&lt;/tr&gt;
+        &lt;tr&gt;&lt;td&gt;𝓜 / Q&lt;/td&gt;&lt;td&gt;[B,1537,256] / [B,16,256]&lt;/td&gt;&lt;td&gt;state-chunk：1536 个视觉 tokens + 1 个状态 token / K 个动作 queries。&lt;/td&gt;&lt;/tr&gt;
+        &lt;tr&gt;&lt;td&gt;Y / b / Â&lt;/td&gt;&lt;td&gt;[B,16,9] / [B,16] / [B,16,8]&lt;/td&gt;&lt;td&gt;局部平移3+rot6 / 夹爪 logits / 还原后的 world 绝对动作。&lt;/td&gt;&lt;/tr&gt;
+        &lt;tr&gt;&lt;td&gt;A* / m*&lt;/td&gt;&lt;td&gt;[B,16,8] / [B,16]&lt;/td&gt;&lt;td&gt;未来动作 GT 与 bool 标签有效性；只用于训练/评估，不作为部署输入。&lt;/td&gt;&lt;/tr&gt;
+      &lt;/tbody&gt;
+    &lt;/table&gt;
+    &lt;p class=&quot;text-small&quot;&gt;[B,K,8] 是数学 batch 表示；当前单观测服务输出 actions 为 [K,8]。旧 flow（未启用 state_conditioning）另有一个 key memory token，因此 memory 长度为 1538，而非 1537。&lt;/p&gt;
+  &lt;/details&gt;
+
+  &lt;details&gt;
+    &lt;summary&gt;训练、推理与执行：不要混淆的三个环节&lt;/summary&gt;
+    &lt;h3&gt;O2：GT 是辅助监督，不是预测策略输入&lt;/h3&gt;
+    &lt;p&gt;预测角色图对照 GT T/R 点投影 prior，结合匹配、objectness 与 NULL 辅助监督；同时学习 key-action。Gaussian teacher 不是严格实例边界。标准 RLBench key-action 训练使用 GT waypoint 及其扰动构造 refine crop，部署使用预测 coarse waypoint，存在需要验收的 teacher-forcing 差异。&lt;/p&gt;
+    &lt;pre&gt;L_O2 = L_key-action + λ_mask L_mask + λ_presence L_presence + 可选辅助项&lt;/pre&gt;
+    &lt;h3&gt;OHT chunk：训练条件使用预测 key/crop&lt;/h3&gt;
+    &lt;p&gt;joint 模式另算 GT key-action loss；chunk 条件分支走 prediction-only 路径，GT key 不替换 decoder 输入。key 的离散解码和 crop 不可微；joint 可训练共享视觉特征，但不代表 chunk loss 穿过 key 的 argmax。&lt;/p&gt;
+    &lt;pre&gt;L_joint = λ_key L_key + L_chunk [+ λ_flow L_flow]
+L_chunk = λ_p L_position + λ_R L_rotation + λ_g BCE
+        + λ_Δ L_displacement + λ_Δ² L_second-difference&lt;/pre&gt;
+    &lt;p&gt;位置用物理尺度下 Smooth L1，旋转比较旋转矩阵；二阶差分匹配 GT 的位移变化，不是把所有转弯压平。所有未来标签损失按 m* 屏蔽，不跨缺帧/padding。Flow 的训练重建误差不能替代独立噪声采样的部署误差。&lt;/p&gt;
+    &lt;h3&gt;滚动执行：一次预测 K，只执行前 Hₑ&lt;/h3&gt;
+    &lt;pre&gt;观测 Oₜ → 预测 Â₁:K → 消费 Â₁:Hₑ → 重新观测 → 再预测
+K = 16，Hₑ = 4；物理前缀时长 = Hₑ × Δt&lt;/pre&gt;
+    &lt;p&gt;Δt 从 V4 时间戳与 frame_stride 解析并绑定契约，不能从 observation sample_stride 猜测。ChunkExecutor 在 tick 间插值位置和旋转，夹爪在对应 tick 边界切换；不等待到达远期 key 后才推进。跟踪误差、关节越限或环境终止可能提前中断，因此并非每次一定执行完 Hₑ 项。&lt;/p&gt;
+    &lt;p&gt;当前 HTTP 等待暂停物理；包含网络/推理墙钟开销，不是异步实时系统。原有 waypoint 执行器与 timed chunk 是不同协议。OHT 输出不含有监督的 collision flag，也不等于具备碰撞规划。&lt;/p&gt;
+  &lt;/details&gt;
+
+  &lt;details&gt;
+    &lt;summary&gt;当前实现边界与配置选择&lt;/summary&gt;
+    &lt;ul&gt;
+      &lt;li&gt;O2 soft-coarse：rlbench_o2_internal_slots_soft_coarse.yaml；两级独立无序 slots，soft_coarse_queries=True，旧动作/context 路由，objectness 阈值 0.25。&lt;/li&gt;
+      &lt;li&gt;旧固定 T/R queries、硬继承与高分辨率 mask head 仍是独立实验；不是 soft-coarse 模式默认执行的模块。打开 shared_action_features 才让 anchor-enhanced feature 同时进入 R/G/C 的 global/local 路由。&lt;/li&gt;
+      &lt;li&gt;OHT 当前已获用户轨迹改善确认的基线为 oht_chunk_v4_regression_state_8x40.yaml；不等于已有完整定量闭环结果。delta_state 与 flow_state 需要独立验收。&lt;/li&gt;
+      &lt;li&gt;V4 chunk 目前只支持 baseline + EEF。不能在图上把 T/R → anchor → chunk 画成已实现直连；数据中有 object 标注也不会自动启用条件化。&lt;/li&gt;
+      &lt;li&gt;regression_state 继承链文件名包含 flow，但最终 decoder_type=regression；较早 oht_chunk_v4_flow_8x40.yaml 不含后续 state/AdaLN/尺度等整套改动。&lt;/li&gt;
+      &lt;li&gt;时序卷积处理一次预测内的 K 个未来动作，并不是历史帧 memory；当前没有持久 object bank、显式 phase 识别或已证明的坍塌恢复能力。&lt;/li&gt;
+      &lt;li&gt;角色身份用于“操作谁”；局部接触、方向和间隙的增强属于待验证设计，不能把当前 anchor 响应解释成经过监督的接触点。&lt;/li&gt;
+    &lt;/ul&gt;
+  &lt;/details&gt;
+
+  &lt;details&gt;
+    &lt;summary&gt;代码与形状核对位置&lt;/summary&gt;
+    &lt;table aria-label=&quot;实现函数映射&quot;&gt;
+      &lt;thead&gt;&lt;tr&gt;&lt;th scope=&quot;col&quot;&gt;模块&lt;/th&gt;&lt;th scope=&quot;col&quot;&gt;对应入口&lt;/th&gt;&lt;/tr&gt;&lt;/thead&gt;
+      &lt;tbody&gt;
+        &lt;tr&gt;&lt;td&gt;两级投影、crop、角色接线&lt;/td&gt;&lt;td&gt;mvt/mvt.py：MVT.forward(), render()&lt;/td&gt;&lt;/tr&gt;
+        &lt;tr&gt;&lt;td&gt;VLM patch features、动作热图&lt;/td&gt;&lt;td&gt;mvt/mvt_single.py：MVT.forward()&lt;/td&gt;&lt;/tr&gt;
+        &lt;tr&gt;&lt;td&gt;slots、relation、anchor&lt;/td&gt;&lt;td&gt;models/oracle_prior.py：InternalObjectSlotPredictor, _encode_relation(), forward_with_anchor()&lt;/td&gt;&lt;/tr&gt;
+        &lt;tr&gt;&lt;td&gt;coarse 软 query 提示&lt;/td&gt;&lt;td&gt;models/soft_coarse_queries.py：SoftCoarseQueryConditioner.forward()&lt;/td&gt;&lt;/tr&gt;
+        &lt;tr&gt;&lt;td&gt;patch 几何与 world 恢复&lt;/td&gt;&lt;td&gt;mvt/chunk_geometry.py：pool_chunk_geometry(), chunk_geometry_to_world()&lt;/td&gt;&lt;/tr&gt;
+        &lt;tr&gt;&lt;td&gt;chunk 条件与联合训练&lt;/td&gt;&lt;td&gt;OHT/chunk_model.py：ChunkAgent._context(), update(), predict()&lt;/td&gt;&lt;/tr&gt;
+        &lt;tr&gt;&lt;td&gt;状态、空间 attention、回归/flow&lt;/td&gt;&lt;td&gt;OHT/spatial_chunk.py：memory(), field(), sample(), training_prediction(), decode()&lt;/td&gt;&lt;/tr&gt;
+        &lt;tr&gt;&lt;td&gt;q6 与开度归一化&lt;/td&gt;&lt;td&gt;OHT/chunk_normalization.py：proprio_statistics(), resolve_training_normalization()&lt;/td&gt;&lt;/tr&gt;
+        &lt;tr&gt;&lt;td&gt;未来动作与物理时间&lt;/td&gt;&lt;td&gt;OHT/data/chunk_actions.py：resolve_chunk_timing(), make_chunk_targets()&lt;/td&gt;&lt;/tr&gt;
+        &lt;tr&gt;&lt;td&gt;前缀执行&lt;/td&gt;&lt;td&gt;OHT/runtime/chunk_executor.py：ChunkExecutor.execute()&lt;/td&gt;&lt;/tr&gt;
+      &lt;/tbody&gt;
+    &lt;/table&gt;
+    &lt;p class=&quot;text-small&quot;&gt;mvt/ 与 models/ 位于 finetune/bridgevla/；OHT/ 位于 finetune/。详细命令仍由现有 O2 指南与 docs/oht/ 三份文档维护。&lt;/p&gt;
+  &lt;/details&gt;
+&lt;/main&gt;
+
+&lt;style&gt;
+  #bridgevla-algorithm-overview { max-width: 100%; overflow-wrap: anywhere; }
+  #bridgevla-algorithm-overview strong { font-weight: 500; }
+  #bridgevla-algorithm-overview details { margin-block: 1.5rem; }
+  #bridgevla-algorithm-overview summary { cursor: pointer; font-weight: 500; }
+  #bridgevla-algorithm-overview table { width: 100%; table-layout: fixed; border-collapse: collapse; margin-block: 1rem; }
+  #bridgevla-algorithm-overview th, #bridgevla-algorithm-overview td { text-align: left; vertical-align: top; padding: .55rem .35rem; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+  #bridgevla-algorithm-overview th { font-weight: 500; }
+  #bridgevla-algorithm-overview pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+  #bridgevla-algorithm-overview #algorithm-graph { position: relative; padding: 1rem .4rem; }
+  #bridgevla-algorithm-overview #algorithm-nodes { position: relative; display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 2.6rem 1.4rem; }
+  #bridgevla-algorithm-overview .algorithm-edges { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; color: var(--muted-foreground); }
+  #bridgevla-algorithm-overview .step-symbol, #bridgevla-algorithm-overview .step-shape { display: block; }
+  #bridgevla-algorithm-overview .step-cell { min-width: 0; }
+  #bridgevla-algorithm-overview .comparison-lanes { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 1.4rem; margin-block: 1rem; }
+  #bridgevla-algorithm-overview .comparison-lanes article { min-width: 0; }
+  #bridgevla-algorithm-overview .state-wiring { display: block; width: 100%; height: auto; max-width: 340px; margin-inline: auto; }
+  #bridgevla-algorithm-overview .comparison-node rect { fill: var(--background); stroke: var(--border); stroke-width: 1; }
+  #bridgevla-algorithm-overview .comparison-vision rect { fill: color-mix(in srgb,var(--viz-series-5) 14%,var(--background)); }
+  #bridgevla-algorithm-overview .comparison-state rect { fill: color-mix(in srgb,var(--viz-series-1) 14%,var(--background)); }
+  #bridgevla-algorithm-overview .comparison-node text, #bridgevla-algorithm-overview .comparison-edge-label { fill: var(--foreground); text-anchor: middle; font-family: var(--font-sans); font-size: var(--font-size-base); }
+  #bridgevla-algorithm-overview .comparison-wires { fill: none; stroke: currentColor; stroke-width: 1.2; color: var(--muted-foreground); }
+  #bridgevla-algorithm-overview .comparison-state-wire { color: var(--viz-series-1); }
+  #bridgevla-algorithm-overview .comparison-edge-label { paint-order: stroke; stroke: var(--background); stroke-width: 5px; stroke-linejoin: round; }
+  @media (max-width: 540px) {
+    #bridgevla-algorithm-overview #algorithm-nodes { grid-template-columns: 1fr; gap: 2rem; }
+    #bridgevla-algorithm-overview .comparison-lanes { grid-template-columns: 1fr; }
+  }
+&lt;/style&gt;
+
+&lt;script&gt;
+(() =&gt; {
+  const root = document.getElementById(&#x27;bridgevla-algorithm-overview&#x27;);
+  const find = id =&gt; root.querySelector(&#x27;#&#x27; + id);
+  const shape = (symbol, dimensions, meaning) =&gt; [symbol, dimensions, meaning];
+  const step = (id, title, symbol, dims, description, equation, rows, source) =&gt;
+    ({id, title, symbol, dims, description, equation, rows, source});
+  const input = step(&#x27;input&#x27;,&#x27;观测与指令&#x27;,&#x27;Oₜ, ℓ&#x27;,&#x27;RGB-D + 标定&#x27;,
+    &#x27;输入当前可见 RGB-D 与任务指令。物理相机 Cₛ 与虚拟视角 V=3 不同；将深度反投影并融合成带颜色点云。虚拟视角不能恢复物理相机从未看见的表面。&#x27;,
+    &#x27;Pₜ = Fuse(BackProject(Oₜ, intrinsics, extrinsics))&#x27;,
+    [shape(&#x27;Oₜ&#x27;,&#x27;Cₛ 组 RGB-D&#x27;,&#x27;每张图具有自己的相机参数&#x27;),shape(&#x27;Pₜ&#x27;,&#x27;B 个 [Nᵢ,3] + RGB&#x27;,&#x27;world 米制点；按样本可变长度&#x27;),shape(&#x27;ℓ&#x27;,&#x27;B 条字符串&#x27;,&#x27;VLM 内部转为可变长度 text tokens&#x27;)],
+    &#x27;bridgevla/data/observations.py；mvt.MVT.render()&#x27;);
+  const coarse = step(&#x27;coarse&#x27;,&#x27;全局三视角 + VLM&#x27;,&#x27;Fᶜ, Xᶜ&#x27;,&#x27;[B,768,2048]&#x27;,
+    &#x27;全局点云归一化到工作 cube，再渲染三个正交 RGB 视角。共享 PaliGemma 在指令条件下输出每视角 16×16 个图像 tokens；XYZ 另保留作几何信息。&#x27;,
+    &#x27;Rᶜ, Xᶜ = Render₃(Pₜ)\nFᶜ = VLM(Rᶜ, ℓ)&#x27;,
+    [shape(&#x27;Rᶜ / Xᶜ&#x27;,&#x27;[B,3,3,224,224]&#x27;,&#x27;RGB 与 XYZ 分别各三通道&#x27;),shape(&#x27;Fᶜ&#x27;,&#x27;[B,768,2048]&#x27;,&#x27;等价 [3B,2048,16,16]&#x27;)],
+    &#x27;mvt.MVT.render()；mvt_single.MVT.forward()&#x27;);
+  const crop = step(&#x27;crop&#x27;,&#x27;解码与局部裁剪&#x27;,&#x27;Tᶜ → ŵᶜ → Rᶠ&#x27;,&#x27;[B,3] → 三视图&#x27;,
+    &#x27;coarse translation logits 经跨视角 3D 解码得到 waypoint，再以它为中心缩放点云并重新渲染。Refine 重新运行共享 VLM；不是把 coarse 图直接 resize。O2 训练可能用 GT crop；OHT chunk 条件路径始终使用预测 crop。&#x27;,
+    &#x27;Tᶜ = TranslationHead(Fᶜ_conditioned)\nŵᶜ = Decode3D(Tᶜ)\nxᶠ = s_crop (xᶜ − ŵᶜ)\nFᶠ = VLM(Render₃(xᶠ), ℓ)&#x27;,
+    [shape(&#x27;Tᶜ&#x27;,&#x27;[B,3,224,224]&#x27;,&#x27;每视角位置 logits&#x27;),shape(&#x27;ŵᶜ&#x27;,&#x27;[B,3]&#x27;,&#x27;当前 cube 坐标，非 world TCP 状态&#x27;),shape(&#x27;Fᶠ&#x27;,&#x27;[B,768,2048]&#x27;,&#x27;与 coarse 共用 VLM 权重&#x27;)],
+    &#x27;mvt.MVT.forward()；get_wpt()；trans_pc()&#x27;);
+  const slots = (suffix, local) =&gt; step(&#x27;slots-&#x27; + suffix,
+    local ? &#x27;独立局部 slots&#x27; : &#x27;无序 slots → T/R&#x27;, &#x27;U&#x27; + suffix + &#x27;, M&#x27; + suffix + &#x27;, Z&#x27; + suffix,
+    &#x27;[B,2,128] / [B,3,2,16,16]&#x27;,
+    local ? &#x27;局部 selector 仍从自己的图像特征预测 mask、objectness、T/R 和 NULL。Coarse soft tokens 只通过零初始化提示修改初始 queries；不传 coarse valid、几何或热图，所以不会因 coarse 判无效而强制关闭局部预测。&#x27; :
+      &#x27;S 个无序 queries 读取当前三视角特征，输出每 slot 的 mask、objectness、角色分数，再软混合成 T/R 响应和 tokens。Reference posterior 包含 NULL。响应图不等于具有精确边界的实例分割。&#x27;,
+    local ? &#x27;Qᶠ′ = Qᶠ + Wₒ Attn(Qᶠ, Zᶜ ; non-NULL weight)\nWₒ 初始为 0\n(Uᶠ, Mᶠ, pNULLᶠ) = SlotDecoder(Fᶠ, Qᶠ′)&#x27; :
+      &#x27;U = Decoder(Q, F)\nMˢ = sigmoid(MaskHead(U,F))\nM_T = Σₛ π_T,s Mˢ_s\nM_R = Σₛ π_R,s Mˢ_s（质量含非 NULL 概率）&#x27;,
+    [shape(&#x27;U / Lᵣ / Lₒ&#x27;,&#x27;[B,S,128] / [B,S,2] / [B,S]&#x27;,&#x27;slots、角色与 objectness logits&#x27;),shape(&#x27;M&#x27;,&#x27;[B,3,2,16,16]&#x27;,&#x27;T/R 软响应&#x27;),shape(&#x27;Z / pNULL&#x27;,&#x27;[B,2,128] / [B]&#x27;,&#x27;soft role tokens 与语义 absence 后验&#x27;),shape(&#x27;G / v&#x27;,&#x27;[B,2,128,3] / [B,2]&#x27;,&#x27;采样 XYZ 与几何有效性&#x27;)],
+    &#x27;InternalObjectSlotPredictor.forward()；SoftCoarseQueryConditioner.forward()&#x27;);
+  const relation = suffix =&gt; step(&#x27;relation-&#x27; + suffix,&#x27;关系条件与 anchor&#x27;,&#x27;g, qₐ, A&#x27; + suffix,&#x27;[B,17] / [B,3,16,16]&#x27;,
+    &#x27;旧 soft-coarse 动作路由编码采样点的中心、范围和相对位移，并用 T/R 图池化视觉特征形成 anchor query。Anchor 是 sigmoid 空间门控，增强特征；不是物体 mask、3D 点或最终 translation heatmap。其输出投影零初始化。&#x27;,
+    &#x27;z_r = Σᵢ M_r(i) Hᵢ / (Σᵢ M_r(i)+ε)\nqₐ = MLP([z_T, z_R, g, sᴼ²])\nA(i) = sigmoid(qₐᵀ WₖHᵢ / √dₐ)\nF′ = F_shared + v_T Wₒ(GELU(H) ⊙ A)&#x27;,
+    [shape(&#x27;sᴼ²&#x27;,&#x27;[B,3]&#x27;,&#x27;当前夹爪开闭与 finger state2，不是目标 pose/phase&#x27;),shape(&#x27;g&#x27;,&#x27;[B,17]&#x27;,&#x27;几何统计与有效性；不是完整物体位姿&#x27;),shape(&#x27;z&#x27;,&#x27;[B,3,2,16]&#x27;,&#x27;map 池化后的视觉向量，不等同于 Z&#x27;),shape(&#x27;qₐ / A&#x27;,&#x27;[B,3,16] / [B,3,16,16]&#x27;,&#x27;查询 / 空间门控&#x27;),shape(&#x27;F′&#x27;,&#x27;[3B,2048,16,16]&#x27;,&#x27;translation 的增强特征&#x27;)],
+    &#x27;OracleRelationGatedFeatureAdapter._encode_relation()；OracleRelationAnchorFeatureAdapter.forward_with_anchor()&#x27;);
+  const key = (oht) =&gt; step(&#x27;key&#x27;,&#x27;最终关键动作&#x27;,&#x27;Tᶠ → aᵏᵉʸ&#x27;,oht ? &#x27;[B,8]&#x27; : &#x27;[B,9]&#x27;,
+    &#x27;最终 translation head 产生高分辨率热图；先解码最终 waypoint，再在相应位置读取 R/G/C。最终 pose 还原 world 米制、单位 xyzw 四元数。Anchor 不直接执行，也不在 translation 后再融合。&#x27;,
+    &#x27;Tᶠ = TranslationHead(Fᶠ′)\np_key = World(Decode3D(Tᶠ))\naᵏᵉʸ = [p_key, quat_xyzw, open01&#x27; + (oht ? &#x27;]&#x27; : &#x27;, collision]&#x27;),
+    [shape(&#x27;Tᶠ&#x27;,&#x27;[B,3,224,224]&#x27;,&#x27;位置 logits，非 anchor 图&#x27;),shape(&#x27;rotation logits&#x27;,&#x27;三组 [B,72]&#x27;,&#x27;当前 key-action 旋转分类；并非 chunk rot6&#x27;),shape(&#x27;gripper / collision logits&#x27;,&#x27;[B,2] / [B,2]&#x27;,&#x27;OHT 不提供有监督的 collision 输出&#x27;),shape(&#x27;aᵏᵉʸ&#x27;,oht ? &#x27;[B,8]&#x27; : &#x27;[B,9]&#x27;,&#x27;world XYZ3 + xyzw4 + open1&#x27; + (oht ? &#x27;&#x27; : &#x27; + collision1&#x27;))],
+    &#x27;mvt_single.MVT.forward()；RVTAgent.get_pred() / act()&#x27;);
+  const executeKey = step(&#x27;execute&#x27;,&#x27;执行并重新观测&#x27;,&#x27;aᵏᵉʸ → Oₜ₊₁&#x27;,&#x27;单个 key-action&#x27;,
+    &#x27;RLBench key-action 交给现有动作执行器，再观测并预测下一关键动作。它不是固定 Δt 的 K 步轨迹；不可将其执行耗时直接等同于 OHT chunk 的时间预算。&#x27;,
+    &#x27;Oₜ → aᵏᵉʸ → Executor → Oₜ₊₁&#x27;,
+    [shape(&#x27;输入&#x27;,&#x27;[9]（单样本）&#x27;,&#x27;RLBench 单个完整动作&#x27;),shape(&#x27;输出&#x27;,&#x27;下一次观测&#x27;,&#x27;控制步数由执行器/环境决定&#x27;)],
+    &#x27;RVTAgent.act()；RLBench rollout / action mode&#x27;);
+  const context = step(&#x27;context&#x27;,&#x27;组合当前条件&#x27;,&#x27;Fᶜ,Fᶠ,Xʷ,sᶜʰ,aᵏᵉʸ&#x27;,&#x27;𝓜: [B,1537,256]&#x27;,
+    &#x27;以下是 OHT baseline 路径，不执行 O2 slots/relation/anchor。读取当前实测 TCP、q6 和开度，合并 coarse/refine 视觉 tokens。几何先撤销真实 crop/cube 变换到 world，再转当前 TCP 局部坐标；key 为预测值，不用 GT key 替换。&#x27;,
+    &#x27;sᶜʰ = [TCP7, q6, opening1]\nx̃ᵢ = Rₜᵀ(xᵂᵢ − pₜ) / s_geometry\n𝓜 = [W_v Fᶜ, W_v Fᶠ, state_token]\n|𝓜| = 768 + 768 + 1 = 1537&#x27;,
+    [shape(&#x27;sᶜʰ&#x27;,&#x27;[B,14]&#x27;,&#x27;TCP定义坐标；q6/开度归一化后编码，局部TCP固定为identity&#x27;),shape(&#x27;Xᶜʷ, Xᶠʷ&#x27;,&#x27;各 [B,768,3]&#x27;,&#x27;当前观察到的 patch 表面，不是历史/补全点&#x27;),shape(&#x27;Vᶜ, Vᶠ&#x27;,&#x27;各 [B,768] bool&#x27;,&#x27;缺少有效表面的 token 被 attention 屏蔽&#x27;),shape(&#x27;𝓜 / XYZ / valid&#x27;,&#x27;[B,1537,256] / [B,1537,3] / [B,1537]&#x27;,&#x27;含一个始终可读的状态 token&#x27;)],
+    &#x27;ChunkAgent._context()；chunk_geometry_to_world()；SpatialChunkDecoder.memory()&#x27;);
+  const decoder = flow =&gt; step(&#x27;decoder&#x27;,flow ? &#x27;条件 Flow 生成&#x27; : &#x27;状态条件回归&#x27;,flow ? &#x27;Yτ, vθ, Q&#x27; : &#x27;Q → Y,b&#x27;,flow ? &#x27;[B,16,9]&#x27; : &#x27;[B,16,10]&#x27;,
+    flow ? &#x27;Flow-state 与 regression-state 共用当前视觉/几何、实测状态、门控 key、物理时间和 AdaLN。这里 τ 是生成时间，不是动作时钟。训练给未来轨迹加噪并预测速度；部署从独立噪声积分，不输入未来 GT。&#x27; :
+      &#x27;K 个 queries 对应 K 个未来物理时刻。实测状态与门控的预测 key 注入 queries 和各层 AdaLN；3D 相对位置 bias 用于动作间和动作到场景的 attention。末端时序卷积只处理本次 K 项，不提供历史 memory。&#x27;,
+    flow ? &#x27;训练：Yτ = (1−τ)ε + τY*\nvθ(Yτ,τ,condition) ≈ Y*−ε\n部署：Y₀~N(0,I)，Yⱼ₊₁=Yⱼ+vθ(Yⱼ,j/J,c)/J\nJ=8；τ=1 再读出 gripper logits&#x27; :
+      &#x27;c = E_time(τ=1) + E_state(s_local) + sigmoid(γ) E_key(k_relative)\nQ_k = learned_k + E_tick(kΔt) + E_action(Y_init,k) + c\n(Y,b) = SpatialDecoder(Q,𝓜,XYZ,valid;c)&#x27;,
+    [shape(&#x27;Q&#x27;,&#x27;[B,16,256]&#x27;,&#x27;未来动作 queries&#x27;),shape(&#x27;c&#x27;,&#x27;[B,256]&#x27;,&#x27;状态/生成时间/门控 key 条件；gate 初值0.1&#x27;),shape(&#x27;Y&#x27;,&#x27;[B,16,9]&#x27;,&#x27;局部位置3 + 连续旋转6&#x27;),shape(&#x27;b&#x27;,&#x27;[B,16]&#x27;,&#x27;夹爪 logit；不是连续开度回归&#x27;),shape(&#x27;τ / kΔt&#x27;,&#x27;[B] / 16 个物理时间&#x27;,&#x27;生成时间与未来 tick 时间各自编码&#x27;)],
+    &#x27;SpatialChunkDecoder.field() / sample() / training_prediction()；SpatialBlock.forward()&#x27;);
+  const world = step(&#x27;world&#x27;,&#x27;还原 world 轨迹&#x27;,&#x27;Y,b → Â&#x27;,&#x27;[B,16,8]&#x27;,
+    &#x27;regression_state 与 flow_state 的每个未来 pose 都相对同一次实测 TCP，不是逐步累加预测误差。内部 rot6 正交化成旋转矩阵，再转换单位 xyzw。夹爪按 logit 是否≥0二值化。delta_state 是另一个显式增量表示，不能混用公式。&#x27;,
+    &#x27;u_k = Rₜᵀ(p*_k−pₜ) / s_action\np̂_k = pₜ + Rₜ s_action û_k\nR̂_k = Rₜ Rot6(r̂_k)\nÂ_k = [p̂_k, quat_xyzw(R̂_k), 1(b_k≥0)]&#x27;,
+    [shape(&#x27;s_action / s_geometry&#x27;,&#x27;checkpoint 保存 / 默认0.25m&#x27;,&#x27;动作尺度与场景几何尺度不同&#x27;),shape(&#x27;Y / rot6&#x27;,&#x27;[B,16,9] / [B,16,6]&#x27;,&#x27;训练内部坐标&#x27;),shape(&#x27;Â&#x27;,&#x27;[B,16,8]&#x27;,&#x27;world 绝对 TCP pose + 二值夹爪&#x27;),shape(&#x27;服务返回 actions&#x27;,&#x27;[16,8]&#x27;,&#x27;当前单样本部署 API 不保留 B 轴&#x27;)],
+    &#x27;SpatialChunkDecoder.encode_target() / decode()；ChunkAgent.predict()&#x27;);
+  const executeChunk = step(&#x27;execute&#x27;,&#x27;执行前缀，再规划&#x27;,&#x27;Â₁:Hₑ → Oₜ′&#x27;,&#x27;[Hₑ,8]，Hₑ=4&#x27;,
+    &#x27;只消费预测的前4个动作；剩余后缀丢弃，重新观测并预测新的16步。每个动作在对应物理 tick 执行，位置/旋转可细分插值；不是要求 chunk 末点到达远期 key。提前停止由环境/跟踪/越限状态决定。&#x27;,
+    &#x27;K=16，Hₑ=4\n预测覆盖 KΔt；正常消费 HₑΔt\n重新观测 → 重新定义当前TCP → 新 chunk&#x27;,
+    [shape(&#x27;模型预测&#x27;,&#x27;[16,8]&#x27;,&#x27;完整未来窗口&#x27;),shape(&#x27;执行前缀&#x27;,&#x27;[4,8]&#x27;,&#x27;典型设置，可由契约协商&#x27;),shape(&#x27;Δt&#x27;,&#x27;由 V4 时间契约确定&#x27;,&#x27;必须是控制间隔的正整数倍&#x27;)],
+    &#x27;ChunkExecutor.execute()；chunk_spec / validate_prediction()&#x27;);
+
+  const anchorSteps = [
+    step(&#x27;a-input&#x27;,&#x27;输入空间特征与角色图&#x27;,&#x27;H, M, g, sᴼ²&#x27;,&#x27;H:[3B,16,16,16]&#x27;,
+      &#x27;Anchor 在原 relation-gated adapter 内，不是另一个策略。Relation hidden 保留空间网格；角色图与几何提供操作上下文。&#x27;,
+      &#x27;H = RelationHidden(F,M,G)\ng = [centers6, extent或spread6, displacement3, validity2]&#x27;,
+      [shape(&#x27;F&#x27;,&#x27;[3B,2048,16,16]&#x27;,&#x27;当前级视觉特征&#x27;),shape(&#x27;H&#x27;,&#x27;[3B,r,16,16]，r=16&#x27;,&#x27;低秩关系特征&#x27;),shape(&#x27;M / g / sᴼ²&#x27;,&#x27;[B,3,2,16,16] / [B,17] / [B,3]&#x27;,&#x27;角色响应、几何统计、夹爪状态&#x27;)],
+      &#x27;OracleRelationGatedFeatureAdapter._relation_components()&#x27;),
+    step(&#x27;a-pool&#x27;,&#x27;按角色加权池化&#x27;,&#x27;M,H → z&#x27;,&#x27;[B,3,2,16]&#x27;,
+      &#x27;得到每个视角的 T/R 视觉向量。这里的 z 维度为 r=16，而 slot predictor 的 Z 为128维；二者不能混称。无可靠 Reference 时使用占位 token；启用 role_conditioning 后才有额外 UNKNOWN/NULL 处理。&#x27;,
+      &#x27;z_r = Σᵢ M_r(i)Hᵢ / (Σᵢ M_r(i)+ε)&#x27;,
+      [shape(&#x27;z_T,z_R&#x27;,&#x27;各 [B,3,16]&#x27;,&#x27;mask-pooled relation features&#x27;),shape(&#x27;Z（可选额外输入）&#x27;,&#x27;[B,2,128]&#x27;,&#x27;shared-action role conditioning 时可投影加入&#x27;)],
+      &#x27;OracleRelationAnchorFeatureAdapter.forward_with_anchor()&#x27;),
+    step(&#x27;a-query&#x27;,&#x27;生成查询&#x27;,&#x27;z,g,sᴼ² → qₐ&#x27;,&#x27;[B,3,16]&#x27;,
+      &#x27;qₐ 表示当前角色条件下如何读取空间特征，不是一个3D坐标，也没有 phase GT。可选 instruction context 来自同次 VLM；当前 soft-coarse 配置未开启该额外注入。&#x27;,
+      &#x27;qₐ = MLP([z_T,z_R,g,sᴼ²])\n输入维度 = 2r + 17 + 3 = 52\n可选：qₐ += Project(text_context)&#x27;,
+      [shape(&#x27;拼接输入&#x27;,&#x27;[B,3,52]&#x27;,&#x27;每视角2个视觉向量 + 全局几何/状态&#x27;),shape(&#x27;qₐ&#x27;,&#x27;[B,3,16]&#x27;,&#x27;当前 anchor_rank=16&#x27;)],
+      &#x27;anchor_query_encoder；context_projection（opt-in）&#x27;),
+    step(&#x27;a-map&#x27;,&#x27;逐位置匹配&#x27;,&#x27;qₐ,K(H) → A&#x27;,&#x27;[B,3,16,16]&#x27;,
+      &#x27;每个位置得到独立的 sigmoid 权重。A 不要求概率和为1，也不一定落在物体表面；不能把其峰值当经过监督的接触点。&#x27;,
+      &#x27;A(i)=sigmoid(qₐᵀ WₖHᵢ / √dₐ)&#x27;,
+      [shape(&#x27;WₖH&#x27;,&#x27;[3B,16,16,16]&#x27;,&#x27;空间 keys&#x27;),shape(&#x27;A&#x27;,&#x27;[B,3,16,16]&#x27;,&#x27;soft spatial gate，不是 translation heatmap&#x27;)],
+      &#x27;anchor_key；anchor_logits；sigmoid()&#x27;),
+    step(&#x27;a-residual&#x27;,&#x27;空间门控增强&#x27;,&#x27;A,H → F′&#x27;,&#x27;[3B,2048,16,16]&#x27;,
+      &#x27;输出投影零初始化，所以新分支初始不改变已有 adapter 输出。它依靠动作 loss 学习；没有独立的接触/轴线 GT。Target 有效性仍控制该残差，这是局部预测自己的有效性，不是 soft-coarse 强制继承的 coarse valid。&#x27;,
+      &#x27;ΔF = Wₒ(GELU(H) ⊙ A)\nF′ = F_shared + v_T ΔF\nWₒ 初始为 0&#x27;,
+      [shape(&#x27;A,H&#x27;,&#x27;空间网格对齐&#x27;,&#x27;逐位置特征增强&#x27;),shape(&#x27;F′&#x27;,&#x27;[3B,2048,16,16]&#x27;,&#x27;输入原 translation head&#x27;)],
+      &#x27;anchor_expand；target_valid&#x27;),
+    step(&#x27;a-action&#x27;,&#x27;原动作解码器&#x27;,&#x27;F′ → T → aᵏᵉʸ&#x27;,&#x27;T:[B,3,224,224]&#x27;,
+      &#x27;关键区别：M表示哪里像T/R；A表示哪里需要增强特征；T表示末端应该去哪。默认旧路由只有translation使用anchor增强；shared_action_features=True才统一R/G/C的global/local特征。&#x27;,
+      &#x27;T = up0(F′)\nwaypoint = Decode3D(T)\nR/G/C 在最终 waypoint 处取局部特征&#x27;,
+      [shape(&#x27;T&#x27;,&#x27;[B,3,224,224]&#x27;,&#x27;最终 translation logits&#x27;),shape(&#x27;aᵏᵉʸ&#x27;,&#x27;[B,9]（RLBench）&#x27;,&#x27;执行的是动作，不执行anchor图&#x27;)],
+      &#x27;mvt_single.MVT.forward()；action_feature_routes()&#x27;)
+  ];
+  const modes = {
+    o2: {summary:&#x27;RLBench O2 · independent slots + soft coarse hints。完整场景始终保留，refine 不继承 coarse 的硬有效性。&#x27;,
+      steps:[input,coarse,slots(&#x27;ᶜ&#x27;,false),relation(&#x27;ᶜ&#x27;),crop,slots(&#x27;ᶠ&#x27;,true),relation(&#x27;ᶠ&#x27;),key(false),executeKey],
+      edge:&#x27;实线是主数据流；Zᶜ 另外软条件化局部 Qᶠ（点“独立局部 slots”查看），不是硬继承对象或裁掉场景。&#x27;},
+    anchor: {summary:&#x27;Anchor 内部展开 · 它是角色条件的空间特征增强，不是目标点、物体mask或独立的接触预测器。&#x27;,
+      steps:anchorSteps,edge:&#x27;这里的 z、qₐ、A 与 slot tokens Z、translation logits T 分别具有不同含义。&#x27;},
+    regression: {summary:&#x27;OHT V4 regression_state · baseline + EEF；K=16、Hₑ=4；当前不接 T/R role packet。&#x27;,
+      steps:[input,coarse,crop,key(true),context,decoder(false),world,executeChunk],
+      edge:&#x27;Fᶜ/Fᶠ 与对齐的 XYZ 同时进入 𝓜；预测 key 既影响 crop，也进入显式门控条件。不是到 key 的直线插值。&#x27;},
+    flow: {summary:&#x27;OHT V4 flow_state · 与 state 回归共用条件；部署从噪声积分生成轨迹，不输入未来动作 GT。&#x27;,
+      steps:[input,coarse,crop,key(true),context,decoder(true),world,executeChunk],
+      edge:&#x27;训练 τ∈[0,1] 是 flow 生成时间；未来 kΔt 是动作物理时间。旧 flow_8x40 不等于这里的 flow_state 配置。&#x27;}
+  };
+  let mode = &#x27;o2&#x27;, selected = 0;
+  const ns = &#x27;http://www.w3.org/2000/svg&#x27;;
+  function showDetail(index) {
+    selected = index;
+    const node = modes[mode].steps[index];
+    find(&#x27;node-heading&#x27;).textContent = (index + 1) + &#x27; · &#x27; + node.title;
+    find(&#x27;node-description&#x27;).textContent = node.description;
+    find(&#x27;node-equation&#x27;).textContent = node.equation;
+    find(&#x27;node-source&#x27;).textContent = &#x27;对应代码：&#x27; + node.source;
+    find(&#x27;node-dimensions&#x27;).replaceChildren(...node.rows.map(row =&gt; {
+      const tr = document.createElement(&#x27;tr&#x27;);
+      row.forEach(value =&gt; { const td = document.createElement(&#x27;td&#x27;); td.textContent = value; tr.append(td); });
+      return tr;
+    }));
+    root.querySelectorAll(&#x27;[data-step]&#x27;).forEach(button =&gt; button.setAttribute(&#x27;aria-pressed&#x27;,
+      String(Number(button.dataset.step) === selected)));
+  }
+  function layout() {
+    if(mode === &#x27;comparison&#x27;) return;
+    const mobile = window.matchMedia(&#x27;(max-width: 540px)&#x27;).matches;
+    const cells = [...root.querySelectorAll(&#x27;.step-cell&#x27;)];
+    cells.forEach((cell,i) =&gt; {
+      const row = mobile ? i : Math.floor(i / 3), column = i % 3;
+      cell.style.gridRow = String(row + 1);
+      cell.style.gridColumn = String(mobile ? 1 : (row % 2 ? 3 - column : column + 1));
+    });
+    requestAnimationFrame(drawEdges);
+  }
+  function drawEdges() {
+    if(mode === &#x27;comparison&#x27;) return;
+    const graph = find(&#x27;algorithm-graph&#x27;), svg = find(&#x27;algorithm-edges&#x27;);
+    const bounds = graph.getBoundingClientRect();
+    svg.setAttribute(&#x27;viewBox&#x27;, `0 0 ${bounds.width} ${bounds.height}`);
+    svg.replaceChildren();
+    const defs = document.createElementNS(ns,&#x27;defs&#x27;);
+    const marker = document.createElementNS(ns,&#x27;marker&#x27;);
+    marker.setAttribute(&#x27;id&#x27;,&#x27;algorithm-arrow&#x27;); marker.setAttribute(&#x27;viewBox&#x27;,&#x27;0 0 10 10&#x27;);
+    marker.setAttribute(&#x27;refX&#x27;,&#x27;9&#x27;); marker.setAttribute(&#x27;refY&#x27;,&#x27;5&#x27;);
+    marker.setAttribute(&#x27;markerWidth&#x27;,&#x27;6&#x27;); marker.setAttribute(&#x27;markerHeight&#x27;,&#x27;6&#x27;); marker.setAttribute(&#x27;orient&#x27;,&#x27;auto&#x27;);
+    const arrow = document.createElementNS(ns,&#x27;path&#x27;);
+    arrow.setAttribute(&#x27;d&#x27;,&#x27;M 0 0 L 10 5 L 0 10 z&#x27;); arrow.setAttribute(&#x27;fill&#x27;,&#x27;currentColor&#x27;);
+    marker.append(arrow); defs.append(marker); svg.append(defs);
+    const boxes = [...root.querySelectorAll(&#x27;[data-step]&#x27;)].map(button =&gt; button.getBoundingClientRect());
+    boxes.slice(0,-1).forEach((box,i) =&gt; {
+      const next = boxes[i+1], sameRow = Math.abs(box.top-next.top) &lt; 3;
+      let a,b;
+      if(sameRow) {
+        const right = next.left &gt; box.left;
+        a = [right ? box.right : box.left,box.top+box.height/2];
+        b = [right ? next.left : next.right,next.top+next.height/2];
+      } else {
+        a=[box.left+box.width/2,box.bottom]; b=[next.left+next.width/2,next.top];
+      }
+      a=[a[0]-bounds.left,a[1]-bounds.top]; b=[b[0]-bounds.left,b[1]-bounds.top];
+      const path=document.createElementNS(ns,&#x27;path&#x27;);
+      const d=sameRow ? `M${a[0]} ${a[1]} L${b[0]} ${b[1]}` :
+        `M${a[0]} ${a[1]} C${a[0]} ${(a[1]+b[1])/2} ${b[0]} ${(a[1]+b[1])/2} ${b[0]} ${b[1]}`;
+      path.setAttribute(&#x27;d&#x27;,d); path.setAttribute(&#x27;fill&#x27;,&#x27;none&#x27;); path.setAttribute(&#x27;stroke&#x27;,&#x27;currentColor&#x27;);
+      path.setAttribute(&#x27;stroke-width&#x27;,&#x27;1.4&#x27;); path.setAttribute(&#x27;marker-end&#x27;,&#x27;url(#algorithm-arrow)&#x27;); svg.append(path);
+    });
+  }
+  function render(nextMode) {
+    mode=nextMode;
+    root.querySelectorAll(&#x27;[data-mode]&#x27;).forEach(button =&gt; button.setAttribute(&#x27;aria-pressed&#x27;,String(button.dataset.mode===mode)));
+    const comparing = mode === &#x27;comparison&#x27;;
+    find(&#x27;chunk-comparison&#x27;).hidden = !comparing;
+    find(&#x27;route-graph&#x27;).hidden = comparing;
+    find(&#x27;node-detail&#x27;).hidden = comparing;
+    if(comparing) {
+      find(&#x27;route-summary&#x27;).textContent = &#x27;OHT 前后对比：旧 flow_temporal 与当前 regression_state；Gemma 特征保留在 memory，新增状态到 queries / 每层 AdaLN 的直接通路。&#x27;;
+      find(&#x27;route-instructions&#x27;).textContent = &#x27;先看共同的 Gemma 特征来源，再比较两列状态通路；展开下方可核对 state 14 维、开度 0.8 → 0.6 和 AdaLN 公式。&#x27;;
+      return;
+    }
+    find(&#x27;route-instructions&#x27;).textContent = &#x27;按箭头阅读；点击流程节点查看输入、输出、公式和对应函数。B 为 batch 维，不固定为 1。&#x27;;
+    const current=modes[mode];
+    find(&#x27;route-summary&#x27;).textContent=current.summary;
+    find(&#x27;edge-summary&#x27;).textContent=current.edge;
+    find(&#x27;algorithm-nodes&#x27;).replaceChildren(...current.steps.map((node,index) =&gt; {
+      const cell=document.createElement(&#x27;div&#x27;); cell.className=&#x27;step-cell&#x27;;
+      const button=document.createElement(&#x27;button&#x27;);
+      button.className=&#x27;btn btn-block&#x27;; button.type=&#x27;button&#x27;; button.dataset.step=String(index);
+      button.setAttribute(&#x27;aria-controls&#x27;,&#x27;node-detail&#x27;);
+      const content=document.createElement(&#x27;span&#x27;);
+      for(const [value,cls] of [[`${index+1} · ${node.title}`,&#x27;&#x27;],[node.symbol,&#x27;step-symbol&#x27;],[node.dims,&#x27;step-shape text-small&#x27;]]) {
+        const span=document.createElement(&#x27;span&#x27;); span.textContent=value; span.className=cls; content.append(span);
+      }
+      button.append(content);
+      button.addEventListener(&#x27;click&#x27;,()=&gt;showDetail(index)); cell.append(button); return cell;
+    }));
+    showDetail(0); layout();
+  }
+  root.querySelectorAll(&#x27;[data-mode]&#x27;).forEach(button =&gt; button.addEventListener(&#x27;click&#x27;,()=&gt;render(button.dataset.mode)));
+  window.addEventListener(&#x27;resize&#x27;,layout);
+  if(typeof ResizeObserver !== &#x27;undefined&#x27;) new ResizeObserver(drawEdges).observe(find(&#x27;algorithm-nodes&#x27;));
+  render(&#x27;o2&#x27;);
+})();
+&lt;/script&gt;
+
+&lt;script src=&quot;https://unpkg.com/@floating-ui/core@1.7.3/dist/floating-ui.core.umd.min.js&quot;&gt;&lt;/script&gt;
+&lt;script src=&quot;https://unpkg.com/@floating-ui/dom@1.7.4/dist/floating-ui.dom.umd.min.js&quot;&gt;&lt;/script&gt;
+&lt;script&gt;
+(() =&gt; {
+  if (window.FloatingUIDOM == null) {
+    return;
+  }
+  const { autoUpdate, computePosition, flip, offset, shift, size } =
+    window.FloatingUIDOM;
+  const tooltipPlacements = new Set([&quot;top&quot;, &quot;right&quot;, &quot;bottom&quot;, &quot;left&quot;]);
+  const tooltipId = `codex-visualization-tooltip-${
+    window.crypto?.randomUUID?.() ?? Date.now().toString(36)
+  }`;
+  const tooltipGap = 5;
+  const hoverDelay = 700;
+  const skipDelay = 300;
+  let activeTrigger = null;
+  let pendingTrigger = null;
+  let tooltip = null;
+  let openTimeout = null;
+  let autoUpdateCleanup = null;
+  let positionRequest = 0;
+  let skipDelayUntil = 0;
+
+  const getTrigger = (target) =&gt;
+    target?.nodeType === Node.ELEMENT_NODE
+      ? target.closest(&quot;[data-tooltip]&quot;)
+      : null;
+  const containsTarget = (trigger, target) =&gt;
+    target?.nodeType != null &amp;&amp; trigger.contains(target);
+  const getContent = (trigger) =&gt;
+    trigger.getAttribute(&quot;data-tooltip&quot;)?.trim() ?? &quot;&quot;;
+  const getPlacement = (trigger) =&gt; {
+    const placement = trigger.getAttribute(&quot;data-tooltip-placement&quot;);
+    return tooltipPlacements.has(placement) ? placement : &quot;top&quot;;
+  };
+  const getTooltip = () =&gt; {
+    if (tooltip == null) {
+      tooltip = document.createElement(&quot;div&quot;);
+      tooltip.id = tooltipId;
+      tooltip.className = &quot;tooltip&quot;;
+      tooltip.setAttribute(&quot;role&quot;, &quot;tooltip&quot;);
+    }
+    return tooltip;
+  };
+  const setDescribedBy = (trigger, described) =&gt; {
+    const ids = new Set(
+      (trigger.getAttribute(&quot;aria-describedby&quot;) ?? &quot;&quot;)
+        .split(/\s+/)
+        .filter(Boolean),
+    );
+    if (described) {
+      ids.add(tooltipId);
+    } else {
+      ids.delete(tooltipId);
+    }
+    if (ids.size === 0) {
+      trigger.removeAttribute(&quot;aria-describedby&quot;);
+    } else {
+      trigger.setAttribute(&quot;aria-describedby&quot;, [...ids].join(&quot; &quot;));
+    }
+  };
+  const clearOpenTimeout = () =&gt; {
+    if (openTimeout != null) {
+      window.clearTimeout(openTimeout);
+      openTimeout = null;
+    }
+    pendingTrigger = null;
+  };
+  const closeTooltip = (activateSkipDelay = true) =&gt; {
+    clearOpenTimeout();
+    positionRequest += 1;
+    autoUpdateCleanup?.();
+    autoUpdateCleanup = null;
+    if (activeTrigger == null) {
+      return;
+    }
+    setDescribedBy(activeTrigger, false);
+    activeTrigger = null;
+    tooltip?.remove();
+    if (activateSkipDelay) {
+      skipDelayUntil = Date.now() + skipDelay;
+    }
+  };
+  const updatePosition = (trigger, floating) =&gt; {
+    const request = ++positionRequest;
+    void computePosition(trigger, floating, {
+      middleware: [
+        offset(tooltipGap),
+        flip({ padding: tooltipGap }),
+        shift({ padding: tooltipGap }),
+        size({
+          padding: tooltipGap,
+          apply({ availableHeight, availableWidth, elements }) {
+            elements.floating.style.setProperty(
+              &quot;--tooltip-available-width&quot;,
+              `${Math.max(0, availableWidth)}px`,
+            );
+            elements.floating.style.setProperty(
+              &quot;--tooltip-available-height&quot;,
+              `${Math.max(0, availableHeight)}px`,
+            );
+          },
+        }),
+      ],
+      placement: getPlacement(trigger),
+      strategy: &quot;fixed&quot;,
+    })
+      .then(({ x, y }) =&gt; {
+        if (activeTrigger !== trigger || request !== positionRequest) {
+          return;
+        }
+        const scale = window.devicePixelRatio || 1;
+        floating.style.transform = `translate(${Math.round(x * scale) / scale}px, ${Math.round(y * scale) / scale}px)`;
+        floating.style.visibility = &quot;visible&quot;;
+      })
+      .catch(() =&gt; {
+        if (activeTrigger === trigger &amp;&amp; request === positionRequest) {
+          closeTooltip(false);
+        }
+      });
+  };
+  const openTooltip = (trigger) =&gt; {
+    const content = getContent(trigger);
+    if (!trigger.isConnected || content.length === 0) {
+      return;
+    }
+    clearOpenTimeout();
+    if (activeTrigger === trigger) {
+      return;
+    }
+    closeTooltip();
+    const floating = getTooltip();
+    floating.textContent = content;
+    floating.style.visibility = &quot;hidden&quot;;
+    floating.style.transform = &quot;translate(0, 0)&quot;;
+    document.body.appendChild(floating);
+    activeTrigger = trigger;
+    setDescribedBy(trigger, true);
+    autoUpdateCleanup = autoUpdate(trigger, floating, () =&gt; {
+      updatePosition(trigger, floating);
+    });
+  };
+  const requestOpen = (trigger, immediate = false) =&gt; {
+    if (
+      getContent(trigger).length === 0 ||
+      activeTrigger === trigger ||
+      pendingTrigger === trigger
+    ) {
+      return;
+    }
+    clearOpenTimeout();
+    pendingTrigger = trigger;
+    const delay =
+      immediate || activeTrigger != null || Date.now() &lt; skipDelayUntil
+        ? 0
+        : hoverDelay;
+    if (delay === 0) {
+      openTooltip(trigger);
+      return;
+    }
+    openTimeout = window.setTimeout(() =&gt; {
+      openTimeout = null;
+      pendingTrigger = null;
+      openTooltip(trigger);
+    }, delay);
+  };
+  const handlePointerOpen = (event) =&gt; {
+    if (event.pointerType === &quot;touch&quot;) {
+      return;
+    }
+    const trigger = getTrigger(event.target);
+    if (trigger == null || containsTarget(trigger, event.relatedTarget)) {
+      return;
+    }
+    requestOpen(trigger);
+  };
+  const handleLeave = (event) =&gt; {
+    const trigger = getTrigger(event.target);
+    if (trigger == null || containsTarget(trigger, event.relatedTarget)) {
+      return;
+    }
+    if (activeTrigger === trigger || pendingTrigger === trigger) {
+      closeTooltip();
+    }
+  };
+  const handleFocusIn = (event) =&gt; {
+    const trigger = getTrigger(event.target);
+    if (trigger?.matches(&quot;:focus-visible&quot;)) {
+      requestOpen(trigger, true);
+    }
+  };
+  const handleKeyDown = (event) =&gt; {
+    if (event.key === &quot;Escape&quot;) {
+      closeTooltip();
+    }
+  };
+  const handleContextMenu = (event) =&gt; {
+    const trigger = getTrigger(event.target);
+    if (activeTrigger === trigger || pendingTrigger === trigger) {
+      closeTooltip();
+    }
+  };
+  const destroy = () =&gt; {
+    closeTooltip(false);
+    document.removeEventListener(&quot;pointerover&quot;, handlePointerOpen);
+    document.removeEventListener(&quot;pointerout&quot;, handleLeave);
+    document.removeEventListener(&quot;focusin&quot;, handleFocusIn);
+    document.removeEventListener(&quot;focusout&quot;, handleLeave);
+    document.removeEventListener(&quot;keydown&quot;, handleKeyDown);
+    document.removeEventListener(&quot;contextmenu&quot;, handleContextMenu);
+    tooltip = null;
+  };
+
+  document.addEventListener(&quot;pointerover&quot;, handlePointerOpen);
+  document.addEventListener(&quot;pointerout&quot;, handleLeave);
+  document.addEventListener(&quot;focusin&quot;, handleFocusIn);
+  document.addEventListener(&quot;focusout&quot;, handleLeave);
+  document.addEventListener(&quot;keydown&quot;, handleKeyDown);
+  document.addEventListener(&quot;contextmenu&quot;, handleContextMenu);
+  window.addEventListener(&quot;pagehide&quot;, destroy, { once: true });
+})();
+&lt;/script&gt;
+&lt;script id=&quot;codex-visualization-lucide&quot; async src=&quot;https://unpkg.com/lucide@1.17.0/dist/umd/lucide.js&quot;&gt;&lt;/script&gt;
+&lt;script&gt;
+(() =&gt; {
+  const initialize = () =&gt; {
+    globalThis.lucide?.createIcons({ attrs: { width: 16, height: 16 } });
+  };
+  if (globalThis.lucide != null) {
+    initialize();
+    return;
+  }
+  document
+    .getElementById(&quot;codex-visualization-lucide&quot;)
+    ?.addEventListener(&quot;load&quot;, initialize, { once: true });
+})();
+&lt;/script&gt;
+
+&lt;/body&gt;
+&lt;/html&gt;
+"></iframe>
+</body>
+</html>

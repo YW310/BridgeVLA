@@ -1,0 +1,457 @@
+<main id="bridgevla-algorithm-overview">
+  <header>
+    <h1>BridgeVLA 算法总览</h1>
+    <p>从输入、对象与关系，到 key-action 和 Action chunk。按当前代码整理 · 2026-10-30</p>
+    <p><strong>两条已实现路径，不是一条已经接通的模型：</strong>RLBench O2 使用对象条件预测关键动作；OHT V4 chunk 当前只支持 baseline + EEF，不消费 T/R role packet。</p>
+  </header>
+
+  <nav class="viz-controls" aria-label="算法路径">
+    <button class="btn" type="button" data-mode="o2" aria-pressed="true">O2 · 完整流程</button>
+    <button class="btn" type="button" data-mode="anchor" aria-pressed="false">Anchor · 内部展开</button>
+    <button class="btn" type="button" data-mode="regression" aria-pressed="false">Chunk · 回归</button>
+    <button class="btn" type="button" data-mode="flow" aria-pressed="false">Chunk · Flow</button>
+    <button class="btn" type="button" data-mode="comparison" aria-pressed="false">Chunk · 前后对比</button>
+  </nav>
+  <p id="route-summary" aria-live="polite"></p>
+  <p id="route-instructions" class="text-small">按箭头阅读；点击流程节点查看输入、输出、公式和对应函数。B 为 batch 维，不固定为 1。</p>
+
+  <section id="route-graph" aria-label="包含符号与维度的整体流程图">
+    <div id="algorithm-graph">
+      <svg id="algorithm-edges" class="algorithm-edges" aria-hidden="true"></svg>
+      <div id="algorithm-nodes"></div>
+    </div>
+    <p id="edge-summary" class="text-small"></p>
+  </section>
+
+  <section class="card" id="node-detail" aria-label="选中节点的算法解释">
+    <h2 id="node-heading"></h2>
+    <p id="node-description"></p>
+    <pre id="node-equation"></pre>
+    <table aria-label="节点的输入输出维度">
+      <thead><tr><th scope="col">符号</th><th scope="col">维度</th><th scope="col">含义</th></tr></thead>
+      <tbody id="node-dimensions"></tbody>
+    </table>
+    <p class="text-small" id="node-source"></p>
+  </section>
+
+  <section id="chunk-comparison" hidden aria-label="OHT 状态条件前后对比与 Gemma 特征路径">
+    <h2>Gemma 特征保留，状态增加直接通路</h2>
+    <p>渲染图像 → 视觉塔 → Projector → Gemma，与指令 tokens 融合后取最后层图像 tokens。Coarse/refine 分别前向、共享 VLM 权重；这两组特征始终通过视觉 memory 进入动作头。实测状态绕过 Gemma，进入后端 chunk decoder。</p>
+    <div class="comparison-lanes">
+      <article>
+        <h3>之前 · flow_temporal</h3>
+        <svg class="state-wiring" viewBox="0 0 320 510" role="img" aria-labelledby="old-state-title old-state-description">
+          <title id="old-state-title">旧 flow_temporal 的状态只走 memory</title>
+          <desc id="old-state-description">Gemma 视觉 tokens、原始关节与夹爪状态 token、预测 key 合并到 memory，通过 cross-attention 进入动作块。动作 queries 没有直接状态输入，AdaLN 仅接生成时间 tau，最后 flow 采样轨迹。</desc>
+          <defs><marker id="old-state-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0 0L10 5L0 10Z" fill="currentColor"/></marker></defs>
+          <g class="comparison-wires" marker-end="url(#old-state-arrow)">
+            <path d="M75 70V160"/>
+            <path d="M180 120H160V185H140"/>
+            <path d="M180 190H164V220H140"/>
+            <path d="M75 235V350"/>
+            <path d="M180 260H160V375H140"/>
+            <path d="M180 325H166V400H140"/>
+            <path d="M75 425V460"/>
+          </g>
+          <g class="comparison-node comparison-vision"><rect x="10" y="10" width="300" height="60" rx="5"/><text x="160" y="34">Gemma 的 coarse/refine 图像 tokens</text><text x="160" y="55">Fᶜ、Fᶠ → 视觉投影</text></g>
+          <g class="comparison-node"><rect x="180" y="95" width="130" height="50" rx="5"/><text x="245" y="116">实测 q6 / 开度</text><text x="245" y="135">原始状态 token</text></g>
+          <g class="comparison-node"><rect x="180" y="165" width="130" height="50" rx="5"/><text x="245" y="186">预测 key</text><text x="245" y="205">额外 memory token</text></g>
+          <g class="comparison-node"><rect x="10" y="160" width="130" height="75" rx="5"/><text x="75" y="182">Memory</text><text x="75" y="203">视觉 + 状态 + key</text><text x="75" y="224">[B,1538,256]</text></g>
+          <text class="comparison-edge-label" x="75" y="294">Cross-Attention</text>
+          <g class="comparison-node"><rect x="180" y="235" width="130" height="50" rx="5"/><text x="245" y="256">动作 queries</text><text x="245" y="275">动作 / 时间编码</text></g>
+          <g class="comparison-node"><rect x="180" y="300" width="130" height="50" rx="5"/><text x="245" y="321">AdaLN 条件</text><text x="245" y="340">仅 E_time(τ)</text></g>
+          <g class="comparison-node"><rect x="10" y="350" width="130" height="75" rx="5"/><text x="75" y="373">动作 blocks</text><text x="75" y="394">Self / Cross Attn</text><text x="75" y="415">AdaLN(τ)</text></g>
+          <g class="comparison-node"><rect x="10" y="460" width="300" height="40" rx="5"/><text x="160" y="485">Flow 多步采样 → 世界 EEF 轨迹</text></g>
+        </svg>
+      </article>
+      <article>
+        <h3>当前 · regression_state</h3>
+        <svg class="state-wiring" viewBox="0 0 320 510" role="img" aria-labelledby="new-state-title new-state-description">
+          <title id="new-state-title">当前状态直接进入 queries 和每层 AdaLN</title>
+          <desc id="new-state-description">Gemma 视觉 tokens 和归一化后的状态 token 保留在 memory。状态另投影为 s，与门控 key 和时间组成条件 c，直接加到动作 queries 并调制每层 AdaLN。最后确定性回归世界 EEF 轨迹。</desc>
+          <defs><marker id="new-state-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0 0L10 5L0 10Z" fill="currentColor"/></marker></defs>
+          <g class="comparison-wires" marker-end="url(#new-state-arrow)">
+            <path d="M75 70V160"/>
+            <path d="M245 215V245"/>
+            <path d="M75 235V355"/>
+            <path d="M75 430V460"/>
+          </g>
+          <g class="comparison-wires comparison-state-wire" marker-end="url(#new-state-arrow)">
+            <path d="M180 120H160V190H140"/>
+            <path d="M310 120H316V274H310"/>
+            <path d="M245 310V330"/>
+            <path d="M180 277H155V402H140"/>
+            <path d="M180 355H166V377H140"/>
+          </g>
+          <g class="comparison-node comparison-vision"><rect x="10" y="10" width="300" height="60" rx="5"/><text x="160" y="34">Gemma 的 coarse/refine 图像 tokens</text><text x="160" y="55">Fᶜ、Fᶠ → 视觉投影</text></g>
+          <g class="comparison-node comparison-state"><rect x="180" y="95" width="130" height="50" rx="5"/><text x="245" y="116">q6 / 开度归一化</text><text x="245" y="135">投影 s：[B,256]</text></g>
+          <g class="comparison-node"><rect x="180" y="165" width="130" height="50" rx="5"/><text x="245" y="186">预测 key × gate</text><text x="245" y="205">gate 初值 0.1</text></g>
+          <g class="comparison-node"><rect x="10" y="160" width="130" height="75" rx="5"/><text x="75" y="182">视觉 Memory</text><text x="75" y="203">视觉 + 状态 token</text><text x="75" y="224">[B,1537,256]</text></g>
+          <text class="comparison-edge-label" x="75" y="294">Cross-Attention</text>
+          <g class="comparison-node comparison-state"><rect x="180" y="245" width="130" height="65" rx="5"/><text x="245" y="265">条件 c</text><text x="245" y="284">s + gate × key</text><text x="245" y="303">+ E_time(τ=1)</text></g>
+          <g class="comparison-node comparison-state"><rect x="180" y="330" width="130" height="50" rx="5"/><text x="245" y="351">动作 queries + c</text><text x="245" y="370">[B,16,256]</text></g>
+          <g class="comparison-node comparison-state"><rect x="10" y="355" width="130" height="75" rx="5"/><text x="75" y="378">动作 blocks</text><text x="75" y="399">Self / Cross Attn</text><text x="75" y="420">每层 AdaLN(c)</text></g>
+          <g class="comparison-node"><rect x="10" y="460" width="300" height="40" rx="5"/><text x="160" y="485">确定性回归 → 世界 EEF 轨迹</text></g>
+        </svg>
+      </article>
+    </div>
+    <p class="text-small">Gemma 特征节点和新增状态通路分别着色；节点文字同时标明含义。两边均冻结 Gemma 前 16 层、训练后续层。图中省略 XYZ、噪声和预测 key 引导 refine crop 的连接。</p>
+    <details>
+      <summary>state 14 维、归一化与 AdaLN 公式</summary>
+      <table aria-label="原始 state 与学习条件的区别">
+        <thead><tr><th scope="col">字段</th><th scope="col">维度</th><th scope="col">作用</th></tr></thead>
+        <tbody>
+          <tr><td>当前 TCP 位置</td><td>3</td><td>定义当前局部坐标原点和世界轨迹起点。</td></tr>
+          <tr><td>当前 TCP 四元数 xyzw</td><td>4</td><td>定义局部坐标朝向，恢复世界姿态。</td></tr>
+          <tr><td>当前实测关节角</td><td>6</td><td>按训练集逐关节 center/scale 归一化后编码。</td></tr>
+          <tr><td>当前实测夹爪开度</td><td>1</td><td>0..1 映射到 −1..1；0.8 → 0.6 是输入编码，实际仍为 80% 开度。</td></tr>
+        </tbody>
+      </table>
+      <pre>s_raw = [TCP7, q6, opening1]                         # [B,14]
+s_local[:7] = [0,0,0,0,0,0,1]                        # 当前 TCP 自身是 identity
+q_normalized = (q − center_train) / scale_train
+opening_normalized = 2 × opening − 1
+s = Linear14→256(s_local_normalized)
+c = E_time(τ=1) + s + gate × E_key(key_relative)
+Q_k = learned_k + E_tick(kΔt) + E_action(Y_init,k) + c
+h_mod = (1 + scale(c)) ⊙ LayerNorm(h) + shift(c)
+h_out = h + residual_gate(c) ⊙ Branch(h_mod)</pre>
+      <p>各层分别为 self-attention、cross-attention 和 FFN 生成调制参数。当前 TCP 虽在状态投影中固定为 identity，仍参与场景/key 的局部变换和动作的世界坐标恢复；当前没有关节速度、TCP 速度或历史状态。</p>
+      <p>归一化与直接通路减少状态被忽略的机会，回归直接监督部署输出，并沿用位移/二阶差分等物理损失。用户已确认 regression_state 整体解决本次轨迹问题；各项改动的独立贡献仍需消融。</p>
+    </details>
+  </section>
+
+  <details open>
+    <summary>全部符号与维度</summary>
+    <p>以下数字对应当前常用三视角配置，不是任意 checkpoint 都能修改的超参数。B 保留为符号；P 点数按样本变化。Hₑ 是执行前缀，和图像高度没有关系。</p>
+    <table aria-label="基本符号">
+      <thead><tr><th scope="col">符号</th><th scope="col">当前值</th><th scope="col">定义</th></tr></thead>
+      <tbody>
+        <tr><td>B</td><td>可变</td><td>训练 batch；部署通常为 1。</td></tr>
+        <tr><td>Cₛ</td><td>由数据配置确定</td><td>物理 RGB-D 相机数；不等于虚拟视角数。</td></tr>
+        <tr><td>V / Hᵣ / Wᵣ</td><td>3 / 224 / 224</td><td>每级正交虚拟视角数及分辨率；coarse + refine 共 3×2 张。</td></tr>
+        <tr><td>h / w / Nᵥ</td><td>16 / 16 / 768</td><td>每视角 patch 网格；每级 Nᵥ=Vhw 个图像 tokens。</td></tr>
+        <tr><td>C</td><td>2048</td><td>当前 VLM 图像 hidden feature 通道。</td></tr>
+        <tr><td>S / d</td><td>2 / 128</td><td>soft-coarse 配置的无序 slot 数及维度；S=2 不保证两者始终一一对应 T/R。</td></tr>
+        <tr><td>r / dₐ</td><td>16 / 16</td><td>relation adapter 的低秩维及 anchor query 维度，不是类别数。</td></tr>
+        <tr><td>D / K / Hₑ</td><td>256 / 16 / 4</td><td>当前 state-chunk decoder hidden dim、预测长度及执行前缀。</td></tr>
+        <tr><td>Δt / τ</td><td>契约确定 / [0,1]</td><td>未来动作物理时间间隔 / flow 生成时间；两者不能混用。</td></tr>
+      </tbody>
+    </table>
+    <table aria-label="主要张量的输入输出维度">
+      <thead><tr><th scope="col">符号</th><th scope="col">维度</th><th scope="col">含义</th></tr></thead>
+      <tbody>
+        <tr><td>Oₜ, ℓ</td><td>Cₛ 组 RGB-D；B 条指令</td><td>每相机 RGB 为 [B,3,Hₛ,Wₛ]，depth 为 [B,Hₛ,Wₛ]；相机标定另传。</td></tr>
+        <tr><td>Pₜ</td><td>B 个 [Nᵢ,3]，RGB 同形</td><td>融合世界点云；Nᵢ 可变，代码使用 tensor list。</td></tr>
+        <tr><td>Rᶜ, Rᶠ / Xᶜ, Xᶠ</td><td>[B,3,3,224,224]</td><td>分别为虚拟 RGB / 对齐的 XYZ；不是同一个三通道张量。</td></tr>
+        <tr><td>Fᶜ, Fᶠ</td><td>[B,768,2048]</td><td>对应 [B,3,2048,16,16]；内部常展平为 [3B,2048,16,16]。</td></tr>
+        <tr><td>U / Lᵣ / Lₒ</td><td>[B,S,128] / [B,S,2] / [B,S]</td><td>无序 slots / T-R 分类 logits / objectness logits。</td></tr>
+        <tr><td>Mˢ / M</td><td>[B,3,S,16,16] / [B,3,2,16,16]</td><td>每 slot 的响应 / 混合后的 T-R 软响应。固定 role-query 分支不使用 Lᵣ、Lₒ。</td></tr>
+        <tr><td>Z / pNULL / v</td><td>[B,2,128] / [B] / [B,2]</td><td>soft role tokens / Reference NULL posterior / 几何有效性；不是同一概念。</td></tr>
+        <tr><td>G / g</td><td>[B,2,128,3] / [B,17]</td><td>采样的 T/R 点 / 中心6、extent或spread6、位移3、有效性2。</td></tr>
+        <tr><td>H / z / qₐ / A</td><td>[3B,16,16,16] / [B,3,2,16] / [B,3,16] / [B,3,16,16]</td><td>relation hidden / 按 map 池化的视觉向量 / anchor query / sigmoid 空间门控。</td></tr>
+        <tr><td>Tᶜ, Tᶠ / ŵᶜ</td><td>[B,3,224,224] / [B,3]</td><td>translation logits / coarse 3D waypoint；ŵᶜ 在当前 cube 坐标。</td></tr>
+        <tr><td>aᵏᵉʸ</td><td>RLBench [B,9]；OHT [B,8]</td><td>world XYZ3 + xyzw4 + open1；RLBench 再含 collision flag1。</td></tr>
+        <tr><td>sᴼ² / sᶜʰ</td><td>[B,3] / [B,14]</td><td>O2：开闭与 finger state2；chunk：实测 TCP7 + q6 + 实测开度1。</td></tr>
+        <tr><td>Xᶜʷ, Xᶠʷ / Vᶜ, Vᶠ</td><td>[B,768,3] / [B,768]</td><td>chunk patch 对应的 world 可见表面 XYZ / bool 有效性。</td></tr>
+        <tr><td>𝓜 / Q</td><td>[B,1537,256] / [B,16,256]</td><td>state-chunk：1536 个视觉 tokens + 1 个状态 token / K 个动作 queries。</td></tr>
+        <tr><td>Y / b / Â</td><td>[B,16,9] / [B,16] / [B,16,8]</td><td>局部平移3+rot6 / 夹爪 logits / 还原后的 world 绝对动作。</td></tr>
+        <tr><td>A* / m*</td><td>[B,16,8] / [B,16]</td><td>未来动作 GT 与 bool 标签有效性；只用于训练/评估，不作为部署输入。</td></tr>
+      </tbody>
+    </table>
+    <p class="text-small">[B,K,8] 是数学 batch 表示；当前单观测服务输出 actions 为 [K,8]。旧 flow（未启用 state_conditioning）另有一个 key memory token，因此 memory 长度为 1538，而非 1537。</p>
+  </details>
+
+  <details>
+    <summary>训练、推理与执行：不要混淆的三个环节</summary>
+    <h3>O2：GT 是辅助监督，不是预测策略输入</h3>
+    <p>预测角色图对照 GT T/R 点投影 prior，结合匹配、objectness 与 NULL 辅助监督；同时学习 key-action。Gaussian teacher 不是严格实例边界。标准 RLBench key-action 训练使用 GT waypoint 及其扰动构造 refine crop，部署使用预测 coarse waypoint，存在需要验收的 teacher-forcing 差异。</p>
+    <pre>L_O2 = L_key-action + λ_mask L_mask + λ_presence L_presence + 可选辅助项</pre>
+    <h3>OHT chunk：训练条件使用预测 key/crop</h3>
+    <p>joint 模式另算 GT key-action loss；chunk 条件分支走 prediction-only 路径，GT key 不替换 decoder 输入。key 的离散解码和 crop 不可微；joint 可训练共享视觉特征，但不代表 chunk loss 穿过 key 的 argmax。</p>
+    <pre>L_joint = λ_key L_key + L_chunk [+ λ_flow L_flow]
+L_chunk = λ_p L_position + λ_R L_rotation + λ_g BCE
+        + λ_Δ L_displacement + λ_Δ² L_second-difference</pre>
+    <p>位置用物理尺度下 Smooth L1，旋转比较旋转矩阵；二阶差分匹配 GT 的位移变化，不是把所有转弯压平。所有未来标签损失按 m* 屏蔽，不跨缺帧/padding。Flow 的训练重建误差不能替代独立噪声采样的部署误差。</p>
+    <h3>滚动执行：一次预测 K，只执行前 Hₑ</h3>
+    <pre>观测 Oₜ → 预测 Â₁:K → 消费 Â₁:Hₑ → 重新观测 → 再预测
+K = 16，Hₑ = 4；物理前缀时长 = Hₑ × Δt</pre>
+    <p>Δt 从 V4 时间戳与 frame_stride 解析并绑定契约，不能从 observation sample_stride 猜测。ChunkExecutor 在 tick 间插值位置和旋转，夹爪在对应 tick 边界切换；不等待到达远期 key 后才推进。跟踪误差、关节越限或环境终止可能提前中断，因此并非每次一定执行完 Hₑ 项。</p>
+    <p>当前 HTTP 等待暂停物理；包含网络/推理墙钟开销，不是异步实时系统。原有 waypoint 执行器与 timed chunk 是不同协议。OHT 输出不含有监督的 collision flag，也不等于具备碰撞规划。</p>
+  </details>
+
+  <details>
+    <summary>当前实现边界与配置选择</summary>
+    <ul>
+      <li>O2 soft-coarse：rlbench_o2_internal_slots_soft_coarse.yaml；两级独立无序 slots，soft_coarse_queries=True，旧动作/context 路由，objectness 阈值 0.25。</li>
+      <li>旧固定 T/R queries、硬继承与高分辨率 mask head 仍是独立实验；不是 soft-coarse 模式默认执行的模块。打开 shared_action_features 才让 anchor-enhanced feature 同时进入 R/G/C 的 global/local 路由。</li>
+      <li>OHT 当前已获用户轨迹改善确认的基线为 oht_chunk_v4_regression_state_8x40.yaml；不等于已有完整定量闭环结果。delta_state 与 flow_state 需要独立验收。</li>
+      <li>V4 chunk 目前只支持 baseline + EEF。不能在图上把 T/R → anchor → chunk 画成已实现直连；数据中有 object 标注也不会自动启用条件化。</li>
+      <li>regression_state 继承链文件名包含 flow，但最终 decoder_type=regression；较早 oht_chunk_v4_flow_8x40.yaml 不含后续 state/AdaLN/尺度等整套改动。</li>
+      <li>时序卷积处理一次预测内的 K 个未来动作，并不是历史帧 memory；当前没有持久 object bank、显式 phase 识别或已证明的坍塌恢复能力。</li>
+      <li>角色身份用于“操作谁”；局部接触、方向和间隙的增强属于待验证设计，不能把当前 anchor 响应解释成经过监督的接触点。</li>
+    </ul>
+  </details>
+
+  <details>
+    <summary>代码与形状核对位置</summary>
+    <table aria-label="实现函数映射">
+      <thead><tr><th scope="col">模块</th><th scope="col">对应入口</th></tr></thead>
+      <tbody>
+        <tr><td>两级投影、crop、角色接线</td><td>mvt/mvt.py：MVT.forward(), render()</td></tr>
+        <tr><td>VLM patch features、动作热图</td><td>mvt/mvt_single.py：MVT.forward()</td></tr>
+        <tr><td>slots、relation、anchor</td><td>models/oracle_prior.py：InternalObjectSlotPredictor, _encode_relation(), forward_with_anchor()</td></tr>
+        <tr><td>coarse 软 query 提示</td><td>models/soft_coarse_queries.py：SoftCoarseQueryConditioner.forward()</td></tr>
+        <tr><td>patch 几何与 world 恢复</td><td>mvt/chunk_geometry.py：pool_chunk_geometry(), chunk_geometry_to_world()</td></tr>
+        <tr><td>chunk 条件与联合训练</td><td>OHT/chunk_model.py：ChunkAgent._context(), update(), predict()</td></tr>
+        <tr><td>状态、空间 attention、回归/flow</td><td>OHT/spatial_chunk.py：memory(), field(), sample(), training_prediction(), decode()</td></tr>
+        <tr><td>q6 与开度归一化</td><td>OHT/chunk_normalization.py：proprio_statistics(), resolve_training_normalization()</td></tr>
+        <tr><td>未来动作与物理时间</td><td>OHT/data/chunk_actions.py：resolve_chunk_timing(), make_chunk_targets()</td></tr>
+        <tr><td>前缀执行</td><td>OHT/runtime/chunk_executor.py：ChunkExecutor.execute()</td></tr>
+      </tbody>
+    </table>
+    <p class="text-small">mvt/ 与 models/ 位于 finetune/bridgevla/；OHT/ 位于 finetune/。详细命令仍由现有 O2 指南与 docs/oht/ 三份文档维护。</p>
+  </details>
+</main>
+
+<style>
+  #bridgevla-algorithm-overview { max-width: 100%; overflow-wrap: anywhere; }
+  #bridgevla-algorithm-overview strong { font-weight: 500; }
+  #bridgevla-algorithm-overview details { margin-block: 1.5rem; }
+  #bridgevla-algorithm-overview summary { cursor: pointer; font-weight: 500; }
+  #bridgevla-algorithm-overview table { width: 100%; table-layout: fixed; border-collapse: collapse; margin-block: 1rem; }
+  #bridgevla-algorithm-overview th, #bridgevla-algorithm-overview td { text-align: left; vertical-align: top; padding: .55rem .35rem; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+  #bridgevla-algorithm-overview th { font-weight: 500; }
+  #bridgevla-algorithm-overview pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+  #bridgevla-algorithm-overview #algorithm-graph { position: relative; padding: 1rem .4rem; }
+  #bridgevla-algorithm-overview #algorithm-nodes { position: relative; display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 2.6rem 1.4rem; }
+  #bridgevla-algorithm-overview .algorithm-edges { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; color: var(--muted-foreground); }
+  #bridgevla-algorithm-overview .step-symbol, #bridgevla-algorithm-overview .step-shape { display: block; }
+  #bridgevla-algorithm-overview .step-cell { min-width: 0; }
+  #bridgevla-algorithm-overview .comparison-lanes { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 1.4rem; margin-block: 1rem; }
+  #bridgevla-algorithm-overview .comparison-lanes article { min-width: 0; }
+  #bridgevla-algorithm-overview .state-wiring { display: block; width: 100%; height: auto; max-width: 340px; margin-inline: auto; }
+  #bridgevla-algorithm-overview .comparison-node rect { fill: var(--background); stroke: var(--border); stroke-width: 1; }
+  #bridgevla-algorithm-overview .comparison-vision rect { fill: color-mix(in srgb,var(--viz-series-5) 14%,var(--background)); }
+  #bridgevla-algorithm-overview .comparison-state rect { fill: color-mix(in srgb,var(--viz-series-1) 14%,var(--background)); }
+  #bridgevla-algorithm-overview .comparison-node text, #bridgevla-algorithm-overview .comparison-edge-label { fill: var(--foreground); text-anchor: middle; font-family: var(--font-sans); font-size: var(--font-size-base); }
+  #bridgevla-algorithm-overview .comparison-wires { fill: none; stroke: currentColor; stroke-width: 1.2; color: var(--muted-foreground); }
+  #bridgevla-algorithm-overview .comparison-state-wire { color: var(--viz-series-1); }
+  #bridgevla-algorithm-overview .comparison-edge-label { paint-order: stroke; stroke: var(--background); stroke-width: 5px; stroke-linejoin: round; }
+  @media (max-width: 540px) {
+    #bridgevla-algorithm-overview #algorithm-nodes { grid-template-columns: 1fr; gap: 2rem; }
+    #bridgevla-algorithm-overview .comparison-lanes { grid-template-columns: 1fr; }
+  }
+</style>
+
+<script>
+(() => {
+  const root = document.getElementById('bridgevla-algorithm-overview');
+  const find = id => root.querySelector('#' + id);
+  const shape = (symbol, dimensions, meaning) => [symbol, dimensions, meaning];
+  const step = (id, title, symbol, dims, description, equation, rows, source) =>
+    ({id, title, symbol, dims, description, equation, rows, source});
+  const input = step('input','观测与指令','Oₜ, ℓ','RGB-D + 标定',
+    '输入当前可见 RGB-D 与任务指令。物理相机 Cₛ 与虚拟视角 V=3 不同；将深度反投影并融合成带颜色点云。虚拟视角不能恢复物理相机从未看见的表面。',
+    'Pₜ = Fuse(BackProject(Oₜ, intrinsics, extrinsics))',
+    [shape('Oₜ','Cₛ 组 RGB-D','每张图具有自己的相机参数'),shape('Pₜ','B 个 [Nᵢ,3] + RGB','world 米制点；按样本可变长度'),shape('ℓ','B 条字符串','VLM 内部转为可变长度 text tokens')],
+    'bridgevla/data/observations.py；mvt.MVT.render()');
+  const coarse = step('coarse','全局三视角 + VLM','Fᶜ, Xᶜ','[B,768,2048]',
+    '全局点云归一化到工作 cube，再渲染三个正交 RGB 视角。共享 PaliGemma 在指令条件下输出每视角 16×16 个图像 tokens；XYZ 另保留作几何信息。',
+    'Rᶜ, Xᶜ = Render₃(Pₜ)\nFᶜ = VLM(Rᶜ, ℓ)',
+    [shape('Rᶜ / Xᶜ','[B,3,3,224,224]','RGB 与 XYZ 分别各三通道'),shape('Fᶜ','[B,768,2048]','等价 [3B,2048,16,16]')],
+    'mvt.MVT.render()；mvt_single.MVT.forward()');
+  const crop = step('crop','解码与局部裁剪','Tᶜ → ŵᶜ → Rᶠ','[B,3] → 三视图',
+    'coarse translation logits 经跨视角 3D 解码得到 waypoint，再以它为中心缩放点云并重新渲染。Refine 重新运行共享 VLM；不是把 coarse 图直接 resize。O2 训练可能用 GT crop；OHT chunk 条件路径始终使用预测 crop。',
+    'Tᶜ = TranslationHead(Fᶜ_conditioned)\nŵᶜ = Decode3D(Tᶜ)\nxᶠ = s_crop (xᶜ − ŵᶜ)\nFᶠ = VLM(Render₃(xᶠ), ℓ)',
+    [shape('Tᶜ','[B,3,224,224]','每视角位置 logits'),shape('ŵᶜ','[B,3]','当前 cube 坐标，非 world TCP 状态'),shape('Fᶠ','[B,768,2048]','与 coarse 共用 VLM 权重')],
+    'mvt.MVT.forward()；get_wpt()；trans_pc()');
+  const slots = (suffix, local) => step('slots-' + suffix,
+    local ? '独立局部 slots' : '无序 slots → T/R', 'U' + suffix + ', M' + suffix + ', Z' + suffix,
+    '[B,2,128] / [B,3,2,16,16]',
+    local ? '局部 selector 仍从自己的图像特征预测 mask、objectness、T/R 和 NULL。Coarse soft tokens 只通过零初始化提示修改初始 queries；不传 coarse valid、几何或热图，所以不会因 coarse 判无效而强制关闭局部预测。' :
+      'S 个无序 queries 读取当前三视角特征，输出每 slot 的 mask、objectness、角色分数，再软混合成 T/R 响应和 tokens。Reference posterior 包含 NULL。响应图不等于具有精确边界的实例分割。',
+    local ? 'Qᶠ′ = Qᶠ + Wₒ Attn(Qᶠ, Zᶜ ; non-NULL weight)\nWₒ 初始为 0\n(Uᶠ, Mᶠ, pNULLᶠ) = SlotDecoder(Fᶠ, Qᶠ′)' :
+      'U = Decoder(Q, F)\nMˢ = sigmoid(MaskHead(U,F))\nM_T = Σₛ π_T,s Mˢ_s\nM_R = Σₛ π_R,s Mˢ_s（质量含非 NULL 概率）',
+    [shape('U / Lᵣ / Lₒ','[B,S,128] / [B,S,2] / [B,S]','slots、角色与 objectness logits'),shape('M','[B,3,2,16,16]','T/R 软响应'),shape('Z / pNULL','[B,2,128] / [B]','soft role tokens 与语义 absence 后验'),shape('G / v','[B,2,128,3] / [B,2]','采样 XYZ 与几何有效性')],
+    'InternalObjectSlotPredictor.forward()；SoftCoarseQueryConditioner.forward()');
+  const relation = suffix => step('relation-' + suffix,'关系条件与 anchor','g, qₐ, A' + suffix,'[B,17] / [B,3,16,16]',
+    '旧 soft-coarse 动作路由编码采样点的中心、范围和相对位移，并用 T/R 图池化视觉特征形成 anchor query。Anchor 是 sigmoid 空间门控，增强特征；不是物体 mask、3D 点或最终 translation heatmap。其输出投影零初始化。',
+    'z_r = Σᵢ M_r(i) Hᵢ / (Σᵢ M_r(i)+ε)\nqₐ = MLP([z_T, z_R, g, sᴼ²])\nA(i) = sigmoid(qₐᵀ WₖHᵢ / √dₐ)\nF′ = F_shared + v_T Wₒ(GELU(H) ⊙ A)',
+    [shape('sᴼ²','[B,3]','当前夹爪开闭与 finger state2，不是目标 pose/phase'),shape('g','[B,17]','几何统计与有效性；不是完整物体位姿'),shape('z','[B,3,2,16]','map 池化后的视觉向量，不等同于 Z'),shape('qₐ / A','[B,3,16] / [B,3,16,16]','查询 / 空间门控'),shape('F′','[3B,2048,16,16]','translation 的增强特征')],
+    'OracleRelationGatedFeatureAdapter._encode_relation()；OracleRelationAnchorFeatureAdapter.forward_with_anchor()');
+  const key = (oht) => step('key','最终关键动作','Tᶠ → aᵏᵉʸ',oht ? '[B,8]' : '[B,9]',
+    '最终 translation head 产生高分辨率热图；先解码最终 waypoint，再在相应位置读取 R/G/C。最终 pose 还原 world 米制、单位 xyzw 四元数。Anchor 不直接执行，也不在 translation 后再融合。',
+    'Tᶠ = TranslationHead(Fᶠ′)\np_key = World(Decode3D(Tᶠ))\naᵏᵉʸ = [p_key, quat_xyzw, open01' + (oht ? ']' : ', collision]'),
+    [shape('Tᶠ','[B,3,224,224]','位置 logits，非 anchor 图'),shape('rotation logits','三组 [B,72]','当前 key-action 旋转分类；并非 chunk rot6'),shape('gripper / collision logits','[B,2] / [B,2]','OHT 不提供有监督的 collision 输出'),shape('aᵏᵉʸ',oht ? '[B,8]' : '[B,9]','world XYZ3 + xyzw4 + open1' + (oht ? '' : ' + collision1'))],
+    'mvt_single.MVT.forward()；RVTAgent.get_pred() / act()');
+  const executeKey = step('execute','执行并重新观测','aᵏᵉʸ → Oₜ₊₁','单个 key-action',
+    'RLBench key-action 交给现有动作执行器，再观测并预测下一关键动作。它不是固定 Δt 的 K 步轨迹；不可将其执行耗时直接等同于 OHT chunk 的时间预算。',
+    'Oₜ → aᵏᵉʸ → Executor → Oₜ₊₁',
+    [shape('输入','[9]（单样本）','RLBench 单个完整动作'),shape('输出','下一次观测','控制步数由执行器/环境决定')],
+    'RVTAgent.act()；RLBench rollout / action mode');
+  const context = step('context','组合当前条件','Fᶜ,Fᶠ,Xʷ,sᶜʰ,aᵏᵉʸ','𝓜: [B,1537,256]',
+    '以下是 OHT baseline 路径，不执行 O2 slots/relation/anchor。读取当前实测 TCP、q6 和开度，合并 coarse/refine 视觉 tokens。几何先撤销真实 crop/cube 变换到 world，再转当前 TCP 局部坐标；key 为预测值，不用 GT key 替换。',
+    'sᶜʰ = [TCP7, q6, opening1]\nx̃ᵢ = Rₜᵀ(xᵂᵢ − pₜ) / s_geometry\n𝓜 = [W_v Fᶜ, W_v Fᶠ, state_token]\n|𝓜| = 768 + 768 + 1 = 1537',
+    [shape('sᶜʰ','[B,14]','TCP定义坐标；q6/开度归一化后编码，局部TCP固定为identity'),shape('Xᶜʷ, Xᶠʷ','各 [B,768,3]','当前观察到的 patch 表面，不是历史/补全点'),shape('Vᶜ, Vᶠ','各 [B,768] bool','缺少有效表面的 token 被 attention 屏蔽'),shape('𝓜 / XYZ / valid','[B,1537,256] / [B,1537,3] / [B,1537]','含一个始终可读的状态 token')],
+    'ChunkAgent._context()；chunk_geometry_to_world()；SpatialChunkDecoder.memory()');
+  const decoder = flow => step('decoder',flow ? '条件 Flow 生成' : '状态条件回归',flow ? 'Yτ, vθ, Q' : 'Q → Y,b',flow ? '[B,16,9]' : '[B,16,10]',
+    flow ? 'Flow-state 与 regression-state 共用当前视觉/几何、实测状态、门控 key、物理时间和 AdaLN。这里 τ 是生成时间，不是动作时钟。训练给未来轨迹加噪并预测速度；部署从独立噪声积分，不输入未来 GT。' :
+      'K 个 queries 对应 K 个未来物理时刻。实测状态与门控的预测 key 注入 queries 和各层 AdaLN；3D 相对位置 bias 用于动作间和动作到场景的 attention。末端时序卷积只处理本次 K 项，不提供历史 memory。',
+    flow ? '训练：Yτ = (1−τ)ε + τY*\nvθ(Yτ,τ,condition) ≈ Y*−ε\n部署：Y₀~N(0,I)，Yⱼ₊₁=Yⱼ+vθ(Yⱼ,j/J,c)/J\nJ=8；τ=1 再读出 gripper logits' :
+      'c = E_time(τ=1) + E_state(s_local) + sigmoid(γ) E_key(k_relative)\nQ_k = learned_k + E_tick(kΔt) + E_action(Y_init,k) + c\n(Y,b) = SpatialDecoder(Q,𝓜,XYZ,valid;c)',
+    [shape('Q','[B,16,256]','未来动作 queries'),shape('c','[B,256]','状态/生成时间/门控 key 条件；gate 初值0.1'),shape('Y','[B,16,9]','局部位置3 + 连续旋转6'),shape('b','[B,16]','夹爪 logit；不是连续开度回归'),shape('τ / kΔt','[B] / 16 个物理时间','生成时间与未来 tick 时间各自编码')],
+    'SpatialChunkDecoder.field() / sample() / training_prediction()；SpatialBlock.forward()');
+  const world = step('world','还原 world 轨迹','Y,b → Â','[B,16,8]',
+    'regression_state 与 flow_state 的每个未来 pose 都相对同一次实测 TCP，不是逐步累加预测误差。内部 rot6 正交化成旋转矩阵，再转换单位 xyzw。夹爪按 logit 是否≥0二值化。delta_state 是另一个显式增量表示，不能混用公式。',
+    'u_k = Rₜᵀ(p*_k−pₜ) / s_action\np̂_k = pₜ + Rₜ s_action û_k\nR̂_k = Rₜ Rot6(r̂_k)\nÂ_k = [p̂_k, quat_xyzw(R̂_k), 1(b_k≥0)]',
+    [shape('s_action / s_geometry','checkpoint 保存 / 默认0.25m','动作尺度与场景几何尺度不同'),shape('Y / rot6','[B,16,9] / [B,16,6]','训练内部坐标'),shape('Â','[B,16,8]','world 绝对 TCP pose + 二值夹爪'),shape('服务返回 actions','[16,8]','当前单样本部署 API 不保留 B 轴')],
+    'SpatialChunkDecoder.encode_target() / decode()；ChunkAgent.predict()');
+  const executeChunk = step('execute','执行前缀，再规划','Â₁:Hₑ → Oₜ′','[Hₑ,8]，Hₑ=4',
+    '只消费预测的前4个动作；剩余后缀丢弃，重新观测并预测新的16步。每个动作在对应物理 tick 执行，位置/旋转可细分插值；不是要求 chunk 末点到达远期 key。提前停止由环境/跟踪/越限状态决定。',
+    'K=16，Hₑ=4\n预测覆盖 KΔt；正常消费 HₑΔt\n重新观测 → 重新定义当前TCP → 新 chunk',
+    [shape('模型预测','[16,8]','完整未来窗口'),shape('执行前缀','[4,8]','典型设置，可由契约协商'),shape('Δt','由 V4 时间契约确定','必须是控制间隔的正整数倍')],
+    'ChunkExecutor.execute()；chunk_spec / validate_prediction()');
+
+  const anchorSteps = [
+    step('a-input','输入空间特征与角色图','H, M, g, sᴼ²','H:[3B,16,16,16]',
+      'Anchor 在原 relation-gated adapter 内，不是另一个策略。Relation hidden 保留空间网格；角色图与几何提供操作上下文。',
+      'H = RelationHidden(F,M,G)\ng = [centers6, extent或spread6, displacement3, validity2]',
+      [shape('F','[3B,2048,16,16]','当前级视觉特征'),shape('H','[3B,r,16,16]，r=16','低秩关系特征'),shape('M / g / sᴼ²','[B,3,2,16,16] / [B,17] / [B,3]','角色响应、几何统计、夹爪状态')],
+      'OracleRelationGatedFeatureAdapter._relation_components()'),
+    step('a-pool','按角色加权池化','M,H → z','[B,3,2,16]',
+      '得到每个视角的 T/R 视觉向量。这里的 z 维度为 r=16，而 slot predictor 的 Z 为128维；二者不能混称。无可靠 Reference 时使用占位 token；启用 role_conditioning 后才有额外 UNKNOWN/NULL 处理。',
+      'z_r = Σᵢ M_r(i)Hᵢ / (Σᵢ M_r(i)+ε)',
+      [shape('z_T,z_R','各 [B,3,16]','mask-pooled relation features'),shape('Z（可选额外输入）','[B,2,128]','shared-action role conditioning 时可投影加入')],
+      'OracleRelationAnchorFeatureAdapter.forward_with_anchor()'),
+    step('a-query','生成查询','z,g,sᴼ² → qₐ','[B,3,16]',
+      'qₐ 表示当前角色条件下如何读取空间特征，不是一个3D坐标，也没有 phase GT。可选 instruction context 来自同次 VLM；当前 soft-coarse 配置未开启该额外注入。',
+      'qₐ = MLP([z_T,z_R,g,sᴼ²])\n输入维度 = 2r + 17 + 3 = 52\n可选：qₐ += Project(text_context)',
+      [shape('拼接输入','[B,3,52]','每视角2个视觉向量 + 全局几何/状态'),shape('qₐ','[B,3,16]','当前 anchor_rank=16')],
+      'anchor_query_encoder；context_projection（opt-in）'),
+    step('a-map','逐位置匹配','qₐ,K(H) → A','[B,3,16,16]',
+      '每个位置得到独立的 sigmoid 权重。A 不要求概率和为1，也不一定落在物体表面；不能把其峰值当经过监督的接触点。',
+      'A(i)=sigmoid(qₐᵀ WₖHᵢ / √dₐ)',
+      [shape('WₖH','[3B,16,16,16]','空间 keys'),shape('A','[B,3,16,16]','soft spatial gate，不是 translation heatmap')],
+      'anchor_key；anchor_logits；sigmoid()'),
+    step('a-residual','空间门控增强','A,H → F′','[3B,2048,16,16]',
+      '输出投影零初始化，所以新分支初始不改变已有 adapter 输出。它依靠动作 loss 学习；没有独立的接触/轴线 GT。Target 有效性仍控制该残差，这是局部预测自己的有效性，不是 soft-coarse 强制继承的 coarse valid。',
+      'ΔF = Wₒ(GELU(H) ⊙ A)\nF′ = F_shared + v_T ΔF\nWₒ 初始为 0',
+      [shape('A,H','空间网格对齐','逐位置特征增强'),shape('F′','[3B,2048,16,16]','输入原 translation head')],
+      'anchor_expand；target_valid'),
+    step('a-action','原动作解码器','F′ → T → aᵏᵉʸ','T:[B,3,224,224]',
+      '关键区别：M表示哪里像T/R；A表示哪里需要增强特征；T表示末端应该去哪。默认旧路由只有translation使用anchor增强；shared_action_features=True才统一R/G/C的global/local特征。',
+      'T = up0(F′)\nwaypoint = Decode3D(T)\nR/G/C 在最终 waypoint 处取局部特征',
+      [shape('T','[B,3,224,224]','最终 translation logits'),shape('aᵏᵉʸ','[B,9]（RLBench）','执行的是动作，不执行anchor图')],
+      'mvt_single.MVT.forward()；action_feature_routes()')
+  ];
+  const modes = {
+    o2: {summary:'RLBench O2 · independent slots + soft coarse hints。完整场景始终保留，refine 不继承 coarse 的硬有效性。',
+      steps:[input,coarse,slots('ᶜ',false),relation('ᶜ'),crop,slots('ᶠ',true),relation('ᶠ'),key(false),executeKey],
+      edge:'实线是主数据流；Zᶜ 另外软条件化局部 Qᶠ（点“独立局部 slots”查看），不是硬继承对象或裁掉场景。'},
+    anchor: {summary:'Anchor 内部展开 · 它是角色条件的空间特征增强，不是目标点、物体mask或独立的接触预测器。',
+      steps:anchorSteps,edge:'这里的 z、qₐ、A 与 slot tokens Z、translation logits T 分别具有不同含义。'},
+    regression: {summary:'OHT V4 regression_state · baseline + EEF；K=16、Hₑ=4；当前不接 T/R role packet。',
+      steps:[input,coarse,crop,key(true),context,decoder(false),world,executeChunk],
+      edge:'Fᶜ/Fᶠ 与对齐的 XYZ 同时进入 𝓜；预测 key 既影响 crop，也进入显式门控条件。不是到 key 的直线插值。'},
+    flow: {summary:'OHT V4 flow_state · 与 state 回归共用条件；部署从噪声积分生成轨迹，不输入未来动作 GT。',
+      steps:[input,coarse,crop,key(true),context,decoder(true),world,executeChunk],
+      edge:'训练 τ∈[0,1] 是 flow 生成时间；未来 kΔt 是动作物理时间。旧 flow_8x40 不等于这里的 flow_state 配置。'}
+  };
+  let mode = 'o2', selected = 0;
+  const ns = 'http://www.w3.org/2000/svg';
+  function showDetail(index) {
+    selected = index;
+    const node = modes[mode].steps[index];
+    find('node-heading').textContent = (index + 1) + ' · ' + node.title;
+    find('node-description').textContent = node.description;
+    find('node-equation').textContent = node.equation;
+    find('node-source').textContent = '对应代码：' + node.source;
+    find('node-dimensions').replaceChildren(...node.rows.map(row => {
+      const tr = document.createElement('tr');
+      row.forEach(value => { const td = document.createElement('td'); td.textContent = value; tr.append(td); });
+      return tr;
+    }));
+    root.querySelectorAll('[data-step]').forEach(button => button.setAttribute('aria-pressed',
+      String(Number(button.dataset.step) === selected)));
+  }
+  function layout() {
+    if(mode === 'comparison') return;
+    const mobile = window.matchMedia('(max-width: 540px)').matches;
+    const cells = [...root.querySelectorAll('.step-cell')];
+    cells.forEach((cell,i) => {
+      const row = mobile ? i : Math.floor(i / 3), column = i % 3;
+      cell.style.gridRow = String(row + 1);
+      cell.style.gridColumn = String(mobile ? 1 : (row % 2 ? 3 - column : column + 1));
+    });
+    requestAnimationFrame(drawEdges);
+  }
+  function drawEdges() {
+    if(mode === 'comparison') return;
+    const graph = find('algorithm-graph'), svg = find('algorithm-edges');
+    const bounds = graph.getBoundingClientRect();
+    svg.setAttribute('viewBox', `0 0 ${bounds.width} ${bounds.height}`);
+    svg.replaceChildren();
+    const defs = document.createElementNS(ns,'defs');
+    const marker = document.createElementNS(ns,'marker');
+    marker.setAttribute('id','algorithm-arrow'); marker.setAttribute('viewBox','0 0 10 10');
+    marker.setAttribute('refX','9'); marker.setAttribute('refY','5');
+    marker.setAttribute('markerWidth','6'); marker.setAttribute('markerHeight','6'); marker.setAttribute('orient','auto');
+    const arrow = document.createElementNS(ns,'path');
+    arrow.setAttribute('d','M 0 0 L 10 5 L 0 10 z'); arrow.setAttribute('fill','currentColor');
+    marker.append(arrow); defs.append(marker); svg.append(defs);
+    const boxes = [...root.querySelectorAll('[data-step]')].map(button => button.getBoundingClientRect());
+    boxes.slice(0,-1).forEach((box,i) => {
+      const next = boxes[i+1], sameRow = Math.abs(box.top-next.top) < 3;
+      let a,b;
+      if(sameRow) {
+        const right = next.left > box.left;
+        a = [right ? box.right : box.left,box.top+box.height/2];
+        b = [right ? next.left : next.right,next.top+next.height/2];
+      } else {
+        a=[box.left+box.width/2,box.bottom]; b=[next.left+next.width/2,next.top];
+      }
+      a=[a[0]-bounds.left,a[1]-bounds.top]; b=[b[0]-bounds.left,b[1]-bounds.top];
+      const path=document.createElementNS(ns,'path');
+      const d=sameRow ? `M${a[0]} ${a[1]} L${b[0]} ${b[1]}` :
+        `M${a[0]} ${a[1]} C${a[0]} ${(a[1]+b[1])/2} ${b[0]} ${(a[1]+b[1])/2} ${b[0]} ${b[1]}`;
+      path.setAttribute('d',d); path.setAttribute('fill','none'); path.setAttribute('stroke','currentColor');
+      path.setAttribute('stroke-width','1.4'); path.setAttribute('marker-end','url(#algorithm-arrow)'); svg.append(path);
+    });
+  }
+  function render(nextMode) {
+    mode=nextMode;
+    root.querySelectorAll('[data-mode]').forEach(button => button.setAttribute('aria-pressed',String(button.dataset.mode===mode)));
+    const comparing = mode === 'comparison';
+    find('chunk-comparison').hidden = !comparing;
+    find('route-graph').hidden = comparing;
+    find('node-detail').hidden = comparing;
+    if(comparing) {
+      find('route-summary').textContent = 'OHT 前后对比：旧 flow_temporal 与当前 regression_state；Gemma 特征保留在 memory，新增状态到 queries / 每层 AdaLN 的直接通路。';
+      find('route-instructions').textContent = '先看共同的 Gemma 特征来源，再比较两列状态通路；展开下方可核对 state 14 维、开度 0.8 → 0.6 和 AdaLN 公式。';
+      return;
+    }
+    find('route-instructions').textContent = '按箭头阅读；点击流程节点查看输入、输出、公式和对应函数。B 为 batch 维，不固定为 1。';
+    const current=modes[mode];
+    find('route-summary').textContent=current.summary;
+    find('edge-summary').textContent=current.edge;
+    find('algorithm-nodes').replaceChildren(...current.steps.map((node,index) => {
+      const cell=document.createElement('div'); cell.className='step-cell';
+      const button=document.createElement('button');
+      button.className='btn btn-block'; button.type='button'; button.dataset.step=String(index);
+      button.setAttribute('aria-controls','node-detail');
+      const content=document.createElement('span');
+      for(const [value,cls] of [[`${index+1} · ${node.title}`,''],[node.symbol,'step-symbol'],[node.dims,'step-shape text-small']]) {
+        const span=document.createElement('span'); span.textContent=value; span.className=cls; content.append(span);
+      }
+      button.append(content);
+      button.addEventListener('click',()=>showDetail(index)); cell.append(button); return cell;
+    }));
+    showDetail(0); layout();
+  }
+  root.querySelectorAll('[data-mode]').forEach(button => button.addEventListener('click',()=>render(button.dataset.mode)));
+  window.addEventListener('resize',layout);
+  if(typeof ResizeObserver !== 'undefined') new ResizeObserver(drawEdges).observe(find('algorithm-nodes'));
+  render('o2');
+})();
+</script>

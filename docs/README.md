@@ -2,6 +2,8 @@
 
 [项目首页](../README.md) · [代码索引与运行限制](reference/code-map.md)
 
+先看[交互算法总览（HTML）](design/algorithm-overview.html)：输入输出维度、带符号流程图、O2/anchor 与 Action chunk 的公式和函数。浏览器打开后可切换路径、点击节点查看解释；可编辑源文件位于 `assets/algorithm-overview.fragment.html`。
+
 ## OHT
 
 OHT 的数据指南、模型设计、部署说明和交接记录统一合并为以下三份，按流程阅读即可。

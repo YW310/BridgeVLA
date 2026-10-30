@@ -2,6 +2,8 @@
 
 [文档索引](../README.md) · [数据准备与契约](data.md) · [服务与执行](runtime.md)
 
+先理解数据流与张量维度，可看[交互算法总览（HTML）](../design/algorithm-overview.html)，切换到 Chunk 回归或 Flow；O2 对象分支与当前 V4 chunk 尚未接通。
+
 当前主线为 **V4 → 关键目标 + 连续 EEF chunk → 离线评估 → IsaacLab**。所有命令从 BridgeVLA 仓库根目录执行，替换示例路径。数据构建/标注见 [data.md](data.md)，HTTP、客户端、GT 回放和 waypoint 执行见 [runtime.md](runtime.md)。
 
 基于当前结果的后续研究动机、候选方向与实验门槛统一见[设计讨论](../design/role-relation-prior.md#研究动机与候选方向)；本页维护已实现模型与运行方法。

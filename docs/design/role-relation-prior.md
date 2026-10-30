@@ -2,7 +2,10 @@
 
 [文档索引](../README.md) · [论文 survey](../research/object-centric-policy-memory.md) · [实验与命令](../guides/object-conditioning.md#gt-联合对照) · [代码索引](../reference/code-map.md)
 
+简化整体流程、符号与输入输出维度见[交互算法总览（HTML）](algorithm-overview.html)，包含 O2/anchor 和 OHT Action chunk；本文继续维护详细设计与研究边界。
+
 > 代码核对：2026-10-29。本文维护 RLBench O2 的设计与接口，并集中记录基于 OHT 已完成工作的研究动机。OHT 已实现模型与执行契约分别见[训练与模型](../oht/training.md)、[部署与回放](../oht/runtime.md)；下列候选方向是研究假设，未新增运行配置或模型能力。
+> 局部交互几何讨论更新：2026-10-30，见[精细操作](#精细操作角色身份与局部交互几何待验证)。
 
 阅读导航：[研究动机与方向](#研究动机与候选方向) → [架构](#整体架构) → [当前实现与数据](#当前实现与数据契约) → [角色方案](#角色预测与跨尺度调整) → [实验](#实验顺序)；后续查[Memory](#object-centric-memory后续未实现)、[真机部署](#真实机器人部署后续规划)、[投影扩展](#其他可选扩展未实现)。
 
@@ -222,6 +225,28 @@ GT site 体积、点投影 prior 与当前可见实例轮廓不同，role-map �
 当前 teacher 经点投影、Gaussian blur 和峰值归一化生成，未与虚拟视角的深度遮挡逐点核验；它监督角色空间 prior，不能当作严格实例分割 GT。
 有效 replay、点云与 manifest 无需重写。
 
+### 精细操作：角色身份与局部交互几何（待验证）
+
+**显式 T/R 适合表达“操作谁”，但整体对象表示不能单独承担“在哪里接触、怎样对齐”。** 对杯口—挂钩、孔—轴、积木接触面等任务，应检验局部功能部位、方向与间隙的表达，而不只追求 mask 边缘漂亮。
+
+当前 slots 在 16×16 VLM 网格上预测角色响应，teacher 是 Gaussian 点投影，不是严格实例轮廓。`internal_slots_soft_coarse` 沿用旧几何路径：从响应图采样 top-k 点，编码点特征、中心、extent 和相对位移；启用 soft geometry 的模式改用加权中心/spread。两者均不是完整的物体位姿、接触面或插接轴，anchor 的 mask 池化也可能混入邻近表面。因此，边缘粗糙只是可能的误差来源，不能据此认定 relation encoder 已失效。
+
+**相关工作提供动机，不提供本项目的有效性证明：** [R-NDF（CoRL 2022 / PMLR 2023）](https://proceedings.mlr.press/v205/simeonov23a.html)对齐任务相关部件的局部坐标系，其方法使用示范与标注的 3D 关键点；[OmniManip（CVPR 2025）](https://openaccess.thecvf.com/content/CVPR2025/html/Pan_OmniManip_Towards_General_Robotic_Manipulation_via_Object-Centric_Interaction_Primitives_as_CVPR_2025_paper.html)在功能 canonical space 中表达交互点与方向，并结合空间约束和跟踪执行。可借鉴的是“局部交互几何”，不能据此宣称当前 slots 已学会这些结构，或直接获得其泛化/精度。
+
+最小候选调整保持现有 soft-coarse、完整场景和 action decoder：
+
+```text
+T/R tokens（身份与任务上下文）作为软条件
+    → 当前 refine 视觉特征 + 有效 XYZ（局部接触、方向、间隙）
+    → 现有 relation / anchor → translation 与 R/G/C
+```
+
+- 在现有 anchor 内检验局部空间特征读出，必要时复用轻量高分辨率 RGB/XYZ 细节分支；不先把全部关系压缩成两个对象的整体统计量。当前 anchor 已有池化/query/空间门控，新增价值必须来自更细的空间证据，而不是再命名一个 attention 模块。
+- object maps 是软语义提示，不硬裁掉局部场景，不让精确分割、coarse valid 或投影概率成为动作细化的必要条件；不新增显式 phase、部件/接触 GT 或额外 VLM 前向。若后续要求真实边界监督，需另行取得可靠实例标签，不能将现有 Gaussian teacher 当边缘 GT。
+- 先固定角色身份、crop 与 checkpoint，对角色图轻度模糊/腐蚀/膨胀，并同步重算下游几何，报告 waypoint、旋转与闭环敏感性；这是输入扰动诊断，不替代重新训练的消融。再同预算比较局部特征读出，单列其计算开销。若边界改善但动作无收益，不继续堆叠分割模块。
+
+此处仅更新设计；局部交互几何分支尚未实现，也未证明能提升精细任务闭环。现有 replay 与配置不因此改变。
+
 <a id="本轮设计未实现"></a>
 
 ## 角色预测与跨尺度调整
@@ -400,6 +425,7 @@ coarse/refine 分工已有[BridgeVLA++](https://arxiv.org/html/2608.05042#S4)先
 | GT 对照 | 旧 GT anchor → 共享动作特征 → 再加 instruction；另设同预算 BridgeVLA baseline | 对象条件是否改善完整动作与闭环？ |
 | A | 当前独立 slots | 预测基线 |
 | A+S，当前优先 | A 只加 `soft_coarse_queries`；两级仍独立预测与监督 | 软语义提示是否改善局部选择，同时避免硬继承错误？ |
+| L，待实现的独立对照 | 完成[局部几何诊断](#精细操作角色身份与局部交互几何待验证)后，在固定 A 或 A+S 基线上只改 anchor 的局部空间特征读出 | 精细任务需要的是更准确的边界，还是更充分的接触/方向/间隙信息？ |
 | A+M | 只加最终混合 role-map 监督 | 监督与条件错位是否是瓶颈？ |
 | B | A+M 加本步跨尺度继承 | crop 外 Reference 是否仍误切换？ |
 | B+T | B 再启用 token 保留 | 不重选后，crop 外角色条件是否仍被屏蔽？ |
