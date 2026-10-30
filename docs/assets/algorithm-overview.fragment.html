@@ -1,10 +1,20 @@
 <main id="bridgevla-algorithm-overview">
   <header>
-    <h1>BridgeVLA 算法总览</h1>
+    <p class="eyebrow">BRIDGEVLA / ALGORITHM ATLAS</p>
+    <h1>从场景理解，到动作执行</h1>
     <p>从输入、对象与关系，到 key-action 和 Action chunk。按当前代码整理 · 2026-10-30</p>
     <p><strong>两条已实现路径，不是一条已经接通的模型：</strong>RLBench O2 使用对象条件预测关键动作；OHT V4 chunk 当前只支持 baseline + EEF，不消费 T/R role packet。</p>
   </header>
 
+  <nav class="chapter-links" aria-label="文档目录">
+    <a href="#interactive-overview">交互流程</a>
+    <a href="#complete-content">完整算法</a>
+    <a href="#symbols">符号与维度</a>
+    <a href="#training">训练与执行</a>
+    <a href="#implementation-boundary">实现边界</a>
+    <a href="#source-map">函数索引</a>
+  </nav>
+  <h2 id="interactive-overview">01 / 交互流程</h2>
   <nav class="viz-controls" aria-label="算法路径">
     <button class="btn" type="button" data-mode="o2" aria-pressed="true">O2 · 完整流程</button>
     <button class="btn" type="button" data-mode="anchor" aria-pressed="false">Anchor · 内部展开</button>
@@ -121,8 +131,14 @@ h_out = h + residual_gate(c) ⊙ Branch(h_mod)</pre>
     </details>
   </section>
 
-  <details open>
-    <summary>全部符号与维度</summary>
+  <section id="complete-content" aria-labelledby="complete-heading">
+    <h2 id="complete-heading">02 / 完整算法说明</h2>
+    <p>下面保留每一步的输入输出、公式与对应函数，无需逐个点击流程节点。四条路径可分别折叠；共同步骤重复列出，方便独立阅读。状态条件前后对比也完整保留在本节末尾。</p>
+    <div id="complete-chapters"></div>
+  </section>
+
+  <details id="symbols" open>
+    <summary>03 / 全部符号与维度</summary>
     <p>以下数字对应当前常用三视角配置，不是任意 checkpoint 都能修改的超参数。B 保留为符号；P 点数按样本变化。Hₑ 是执行前缀，和图像高度没有关系。</p>
     <table aria-label="基本符号">
       <thead><tr><th scope="col">符号</th><th scope="col">当前值</th><th scope="col">定义</th></tr></thead>
@@ -162,8 +178,8 @@ h_out = h + residual_gate(c) ⊙ Branch(h_mod)</pre>
     <p class="text-small">[B,K,8] 是数学 batch 表示；当前单观测服务输出 actions 为 [K,8]。旧 flow（未启用 state_conditioning）另有一个 key memory token，因此 memory 长度为 1538，而非 1537。</p>
   </details>
 
-  <details>
-    <summary>训练、推理与执行：不要混淆的三个环节</summary>
+  <details id="training" open>
+    <summary>04 / 训练、推理与执行</summary>
     <h3>O2：GT 是辅助监督，不是预测策略输入</h3>
     <p>预测角色图对照 GT T/R 点投影 prior，结合匹配、objectness 与 NULL 辅助监督；同时学习 key-action。Gaussian teacher 不是严格实例边界。标准 RLBench key-action 训练使用 GT waypoint 及其扰动构造 refine crop，部署使用预测 coarse waypoint，存在需要验收的 teacher-forcing 差异。</p>
     <pre>L_O2 = L_key-action + λ_mask L_mask + λ_presence L_presence + 可选辅助项</pre>
@@ -180,8 +196,8 @@ K = 16，Hₑ = 4；物理前缀时长 = Hₑ × Δt</pre>
     <p>当前 HTTP 等待暂停物理；包含网络/推理墙钟开销，不是异步实时系统。原有 waypoint 执行器与 timed chunk 是不同协议。OHT 输出不含有监督的 collision flag，也不等于具备碰撞规划。</p>
   </details>
 
-  <details>
-    <summary>当前实现边界与配置选择</summary>
+  <details id="implementation-boundary" open>
+    <summary>05 / 当前实现边界与配置选择</summary>
     <ul>
       <li>O2 soft-coarse：rlbench_o2_internal_slots_soft_coarse.yaml；两级独立无序 slots，soft_coarse_queries=True，旧动作/context 路由，objectness 阈值 0.25。</li>
       <li>旧固定 T/R queries、硬继承与高分辨率 mask head 仍是独立实验；不是 soft-coarse 模式默认执行的模块。打开 shared_action_features 才让 anchor-enhanced feature 同时进入 R/G/C 的 global/local 路由。</li>
@@ -193,8 +209,8 @@ K = 16，Hₑ = 4；物理前缀时长 = Hₑ × Δt</pre>
     </ul>
   </details>
 
-  <details>
-    <summary>代码与形状核对位置</summary>
+  <details id="source-map" open>
+    <summary>06 / 代码与形状核对位置</summary>
     <table aria-label="实现函数映射">
       <thead><tr><th scope="col">模块</th><th scope="col">对应入口</th></tr></thead>
       <tbody>
@@ -215,14 +231,28 @@ K = 16，Hₑ = 4；物理前缀时长 = Hₑ × Δt</pre>
 </main>
 
 <style>
-  #bridgevla-algorithm-overview { max-width: 100%; overflow-wrap: anywhere; }
+  #bridgevla-algorithm-overview { --font-size-base: 16px; max-width: 1160px; margin-inline: auto; padding: 2rem clamp(.8rem, 4vw, 3rem) 4rem; overflow-wrap: anywhere; }
+  #bridgevla-algorithm-overview header { padding-block: 1rem 1.8rem; border-bottom: 1px solid var(--border); }
+  #bridgevla-algorithm-overview .eyebrow { letter-spacing: .14em; color: var(--muted-foreground); }
+  #bridgevla-algorithm-overview .chapter-links { display: flex; flex-wrap: wrap; gap: .65rem 1.5rem; padding-block: 1.2rem; }
+  #bridgevla-algorithm-overview h2 { margin-block: 2rem 1rem; }
+  #bridgevla-algorithm-overview h3 { margin-block: 1.5rem .75rem; }
+  #bridgevla-algorithm-overview p { max-width: 90ch; }
+  #bridgevla-algorithm-overview [id] { scroll-margin-top: 1.5rem; }
+  #bridgevla-algorithm-overview #route-summary { font-weight: 500; margin-block: 1.5rem .5rem; }
+  #bridgevla-algorithm-overview .full-chapter { margin-block: 2rem; padding-block: 1rem; border-top: 1px solid var(--border); }
+  #bridgevla-algorithm-overview .full-step { padding-block: .7rem 1.2rem; }
+  #bridgevla-algorithm-overview .source-note { color: var(--muted-foreground); }
+  #bridgevla-algorithm-overview .chapter-description { color: var(--muted-foreground); }
   #bridgevla-algorithm-overview strong { font-weight: 500; }
   #bridgevla-algorithm-overview details { margin-block: 1.5rem; }
   #bridgevla-algorithm-overview summary { cursor: pointer; font-weight: 500; }
   #bridgevla-algorithm-overview table { width: 100%; table-layout: fixed; border-collapse: collapse; margin-block: 1rem; }
-  #bridgevla-algorithm-overview th, #bridgevla-algorithm-overview td { text-align: left; vertical-align: top; padding: .55rem .35rem; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
-  #bridgevla-algorithm-overview th { font-weight: 500; }
-  #bridgevla-algorithm-overview pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+  #bridgevla-algorithm-overview th, #bridgevla-algorithm-overview td { text-align: left; vertical-align: top; padding: .8rem .65rem; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+  #bridgevla-algorithm-overview th { font-weight: 500; background: var(--muted); }
+  #bridgevla-algorithm-overview pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 1rem 1.2rem; border-left: 3px solid var(--border); background: var(--muted); }
+  #bridgevla-algorithm-overview table th:first-child { width: 23%; }
+  #bridgevla-algorithm-overview table th:nth-child(2):not(:last-child) { width: 30%; }
   #bridgevla-algorithm-overview #algorithm-graph { position: relative; padding: 1rem .4rem; }
   #bridgevla-algorithm-overview #algorithm-nodes { position: relative; display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 2.6rem 1.4rem; }
   #bridgevla-algorithm-overview .algorithm-edges { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; color: var(--muted-foreground); }
@@ -239,8 +269,15 @@ K = 16，Hₑ = 4；物理前缀时长 = Hₑ × Δt</pre>
   #bridgevla-algorithm-overview .comparison-state-wire { color: var(--viz-series-1); }
   #bridgevla-algorithm-overview .comparison-edge-label { paint-order: stroke; stroke: var(--background); stroke-width: 5px; stroke-linejoin: round; }
   @media (max-width: 540px) {
+    #bridgevla-algorithm-overview { --font-size-base: 14px; padding-top: 1rem; }
+    #bridgevla-algorithm-overview th, #bridgevla-algorithm-overview td { padding: .6rem .3rem; }
     #bridgevla-algorithm-overview #algorithm-nodes { grid-template-columns: 1fr; gap: 2rem; }
     #bridgevla-algorithm-overview .comparison-lanes { grid-template-columns: 1fr; }
+  }
+  @media print {
+    #bridgevla-algorithm-overview .viz-controls, #bridgevla-algorithm-overview #route-graph, #bridgevla-algorithm-overview #node-detail { display: none; }
+    #bridgevla-algorithm-overview { max-width: none; padding: 0; }
+    #bridgevla-algorithm-overview .full-step { break-inside: avoid; }
   }
 </style>
 
@@ -360,6 +397,42 @@ K = 16，Hₑ = 4；物理前缀时长 = Hₑ × Δt</pre>
   };
   let mode = 'o2', selected = 0;
   const ns = 'http://www.w3.org/2000/svg';
+  function renderCompleteContent() {
+    const labels = {o2:'O2 · 对象条件关键动作', anchor:'Anchor · 空间特征增强', regression:'Action chunk · 状态条件回归', flow:'Action chunk · 条件 Flow'};
+    for (const [name, current] of Object.entries(modes)) {
+      const chapter = document.createElement('details');
+      chapter.className = 'full-chapter'; chapter.id = 'full-' + name; chapter.open = true;
+      const summary = document.createElement('summary'); summary.textContent = labels[name];
+      const intro = document.createElement('p'); intro.className = 'chapter-description'; intro.textContent = current.summary;
+      chapter.append(summary, intro);
+      current.steps.forEach((node, index) => {
+        const article = document.createElement('article'); article.className = 'full-step';
+        const heading = document.createElement('h3'); heading.textContent = `${index + 1} · ${node.title}`;
+        const description = document.createElement('p'); description.textContent = node.description;
+        const formula = document.createElement('pre'); const code = document.createElement('code'); code.textContent = node.equation; formula.append(code);
+        const table = document.createElement('table'); table.setAttribute('aria-label', labels[name] + '：' + node.title + '维度');
+        const head = document.createElement('thead'), header = document.createElement('tr');
+        ['符号','维度','含义'].forEach(value => {const th = document.createElement('th'); th.scope = 'col'; th.textContent = value; header.append(th);});
+        head.append(header); const body = document.createElement('tbody');
+        node.rows.forEach(row => {const tr = document.createElement('tr'); row.forEach(value => {const td = document.createElement('td'); td.textContent = value; tr.append(td);}); body.append(tr);});
+        table.append(head, body);
+        const source = document.createElement('p'); source.className = 'source-note text-small'; source.textContent = '对应代码：' + node.source;
+        article.append(heading, description, formula, table, source); chapter.append(article);
+      });
+      find('complete-chapters').append(chapter);
+    }
+    const comparison = find('chunk-comparison').cloneNode(true);
+    comparison.hidden = false;
+    // A complete, independently readable copy must not duplicate SVG marker or ARIA IDs.
+    const idMap = new Map([comparison, ...comparison.querySelectorAll('[id]')].map(el => [el.id, 'full-' + el.id]));
+    [comparison, ...comparison.querySelectorAll('*')].forEach(el => {
+      if (el.id) el.id = idMap.get(el.id);
+      if (el.hasAttribute('aria-labelledby')) el.setAttribute('aria-labelledby', el.getAttribute('aria-labelledby').split(' ').map(id => idMap.get(id) || id).join(' '));
+      if (el.hasAttribute('marker-end')) el.setAttribute('marker-end', el.getAttribute('marker-end').replace(/url\(#([^)]+)\)/g, (_, id) => `url(#${idMap.get(id) || id})`));
+    });
+    comparison.querySelectorAll('details').forEach(el => { el.open = true; });
+    find('complete-chapters').append(comparison);
+  }
   function showDetail(index) {
     selected = index;
     const node = modes[mode].steps[index];
@@ -452,6 +525,10 @@ K = 16，Hₑ = 4；物理前缀时长 = Hₑ × Δt</pre>
   root.querySelectorAll('[data-mode]').forEach(button => button.addEventListener('click',()=>render(button.dataset.mode)));
   window.addEventListener('resize',layout);
   if(typeof ResizeObserver !== 'undefined') new ResizeObserver(drawEdges).observe(find('algorithm-nodes'));
+  renderCompleteContent();
+  let printDetails = [];
+  window.addEventListener('beforeprint', () => { printDetails = [...root.querySelectorAll('details')].filter(el => !el.open); printDetails.forEach(el => { el.open = true; }); });
+  window.addEventListener('afterprint', () => { printDetails.forEach(el => { el.open = false; }); });
   render('o2');
 })();
 </script>
