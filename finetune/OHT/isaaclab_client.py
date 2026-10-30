@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import traceback
 from time import perf_counter
 import numpy as np
 from copy import deepcopy
@@ -129,7 +130,7 @@ def main(argv=None):
                         help='Native raw EE measurement: controller applies body_offset (OHT recorded TCP); body reads the bare link')
     parser.add_argument('--dry-run', action='store_true', help='Save control diagnostics and exit without policy predictions or env.step')
     parser.add_argument('--keep-open-on-error', action='store_true',
-                        help='Keep the GUI open after a recorded rollout error, without more physics or policy requests')
+                        help='Keep an initialized GUI open after a recorded startup/rollout error, without more physics or policy requests')
     parser.add_argument('--log-interval', type=int, default=10,
                         help='Print first/every N action; 0 disables periodic logs. Failed waypoints always print diagnostics')
     display = parser.add_mutually_exclusive_group()
@@ -289,11 +290,20 @@ def _run(args, reference_args):
         raise ValueError('camera-map must map every checkpoint camera to a distinct USD camera')
     runtime_factory = args.runtime_factory or (None if args.reference_client else
                                               'finetune.OHT.runtime.isaaclab_factory:create_runtime')
-    reference = (_factory(runtime_factory)(args=args, model_info=deepcopy(client.info)) if runtime_factory else
-                 load_reference(args.reference_client,
-                                [*reference_args, '--task', args.env_id, '--num_envs', '1', '--seed', str(args.seed)]))
-    env, records, worker, markers = None, [], None, None
+    reference, env, records, worker, markers = None, None, [], None, None
+    output.mkdir(parents=True)
+    startup_state = dict(status='starting', phase='runtime', data_profile=profile,
+                         execution_mode=args.execution_mode, chunk_spec=getattr(client, 'chunk_spec', None))
+    def report_startup(phase):
+        startup_state['phase'] = phase
+        write_json(output / 'startup.json', startup_state)
+        print(f'[BridgeVLA] startup: {phase}', flush=True)
     try:
+        report_startup('runtime')
+        reference = (_factory(runtime_factory)(args=args, model_info=deepcopy(client.info)) if runtime_factory else
+                     load_reference(args.reference_client,
+                                    [*reference_args, '--task', args.env_id, '--num_envs', '1', '--seed', str(args.seed)]))
+        report_startup('environment_reset')
         env = getattr(reference, 'env', None)
         if env is None:
             cfg = reference.parse_env_cfg(args.env_id, device=reference.args_cli.device, num_envs=1)
@@ -301,12 +311,18 @@ def _run(args, reference_args):
             if hasattr(cfg, 'terminations') and hasattr(cfg.terminations, 'time_out'):
                 cfg.terminations.time_out = None
             env = reference.gym.make(args.env_id, cfg=cfg).unwrapped
+        startup_state['env_step_dt'] = float(env.step_dt)
+        if args.execution_mode == 'chunk':
+            print(f'[BridgeVLA] chunk timing: action_dt={client.chunk_spec["action_dt"]} '
+                  f'env_step_dt={startup_state["env_step_dt"]} '
+                  f'K={client.chunk_spec["horizon"]} H={client.chunk_spec["execute_horizon"]}', flush=True)
         robot = env.scene['robot']
         env.reset()
         if args.initialization == 'collection' and not callable(getattr(reference, 'randomize_robot_initial_pose_like_collection', None)):
             raise ValueError('Collection initialization needs legacy helpers; native runtimes use --initialization task')
         if args.reference_client:
             reference.args_cli.oht_collection_task = args.task
+        report_startup('task_runtime')
         task_runtime = TaskRuntime(env, reference, args.task, settings, score=args.score == 'task')
         startup, tracker = None, None
         if args.score == 'disassemble-left':
@@ -314,6 +330,7 @@ def _run(args, reference_args):
             tracker = reference.DisassembleLeftSemanticSuccessTracker(env, robot, startup)
         elif args.score == 'task':
             tracker = task_runtime
+        report_startup('camera_binding')
         # Extend the reference's three-camera discovery to the exact checkpoint camera set.
         bound_cameras = getattr(reference, 'cameras', None)
         if bound_cameras is None:
@@ -332,12 +349,15 @@ def _run(args, reference_args):
             joint = JointPositionExecutor(env, reference.torch, client.action_config,
                                           hold_steps=args.joint_hold_steps, tolerance=args.joint_target_tolerance,
                                           max_step=args.joint_max_step)
+        report_startup('live_markers')
         markers = LiveMarkers(reference, env, enabled=args.visualize and not args.dry_run,
                               history=args.visualize_history)
+        report_startup('control_bridge')
         bridge = IsaacLabBridge(reference, env, client, args.task, profile,
                                 bound_cameras,
                                 max_substeps=args.max_substeps, max_translation=args.max_translation,
                                 max_rotation=args.max_rotation, joint_executor=joint, visualizer=markers)
+        report_startup('executor')
         waypoint = WaypointExecutor(bridge, **waypoint_options) if args.execution_mode == 'waypoint' else None
         chunk_executor = None
         if args.execution_mode == 'chunk':
@@ -349,7 +369,7 @@ def _run(args, reference_args):
                              'use the built-in JointPositionExecutor or select streaming explicitly')
         if replay is not None:
             replay.validate_runtime(env, args)
-        output.mkdir(parents=True)
+        report_startup('control_diagnostics')
         diagnostics = control_report(bridge)
         write_json(output / 'control_diagnostics.json', diagnostics)
         write_json(output / 'run.json', dict(task=args.task, instruction=GOALS[args.task], seed=args.seed,
@@ -384,6 +404,8 @@ def _run(args, reference_args):
             raise ValueError('Gripper action transform does not map +1 to configured open and -1 to close; inspect control_diagnostics.json')
         if diagnostics['gripper']['calibration_direction_matches'] is False:
             raise ValueError('Simulator gripper open/close physical direction disagrees with the training profile; check scene/asset and checkpoint calibration in control_diagnostics.json')
+        startup_state['status'] = 'ready'
+        report_startup('ready')
         if args.dry_run:
             print('[BridgeVLA] dry run complete; no predictions or control steps executed', flush=True)
             return 0
@@ -532,6 +554,22 @@ def _run(args, reference_args):
                 worker.close()
             keep_open_after_error(reference, env)
         return 1 if failed else 0
+    except Exception as exc:
+        if startup_state['status'] != 'ready':
+            startup_state.update(status='failed', error=f'{type(exc).__name__}: {exc}',
+                                 traceback=traceback.format_exc())
+            # Flush the original failure before closing the simulator: SDK shutdown
+            # may terminate the process before Python can report an uncaught error.
+            print(f'[BridgeVLA] startup failed: phase={startup_state["phase"]} '
+                  f'{startup_state["error"]}', file=sys.stderr, flush=True)
+            print(startup_state['traceback'], file=sys.stderr, flush=True)
+            try:
+                write_json(output / 'startup.json', startup_state)
+            except Exception as log_error:
+                print(f'[BridgeVLA] could not save startup.json: {log_error}', file=sys.stderr, flush=True)
+            if args.keep_open_on_error and reference is not None and env is not None:
+                keep_open_after_error(reference, env)
+        raise
     finally:
         if worker is not None:
             worker.close()
@@ -540,7 +578,7 @@ def _run(args, reference_args):
         close = getattr(reference, 'close', None)
         if callable(close):
             close()
-        else:
+        elif reference is not None:
             try:
                 if env is not None:
                     env.close()

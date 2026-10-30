@@ -76,6 +76,34 @@ def fake_simulator(monkeypatch, env):
     return state
 
 
+def test_native_factory_saves_failure_before_app_close_can_exit(tmp_path, monkeypatch, capsys):
+    env = environment('eef')
+    state = fake_simulator(monkeypatch, env)
+    original_launch = native.launch_application
+    output = tmp_path / 'startup'
+    output.mkdir()
+    def launch(extra):
+        app, options = original_launch(extra)
+        def close():
+            saved = json.loads((output / 'startup.json').read_text())
+            assert saved['status'] == 'failed' and saved['phase'] == 'runtime'
+            assert saved['error'] == 'ValueError: camera initialization failed'
+            assert 'Traceback' in saved['traceback']
+            assert 'camera initialization failed' in capsys.readouterr().err
+            state.app_closed = True
+            raise SystemExit(17)
+        app.close = close
+        return app, options
+    monkeypatch.setattr(native, 'launch_application', launch)
+    def broken_cameras(*args):
+        raise ValueError('camera initialization failed')
+    monkeypatch.setattr(native, 'build_cameras', broken_cameras)
+    with pytest.raises(SystemExit, match='17'):
+        native.create_runtime(args=native_arguments(output=str(output)),
+                              model_info={'action_spec': {'mode': 'eef'}, 'cameras': []})
+    assert env.closed and state.app_closed and not env.commands
+
+
 @pytest.mark.parametrize('mode', ['eef', 'relative_eef', 'joint', 'relative_joint'])
 def test_builtin_default_launches_and_runs_http(fixture, replay_fixture, tmp_path, monkeypatch, mode):
     tensors, _, raw = raw_sample(replay_fixture.replay, fixture.policy)

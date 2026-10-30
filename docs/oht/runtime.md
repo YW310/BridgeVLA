@@ -110,7 +110,7 @@ auto 按 checkpoint 选择 chunk 或 waypoint。示例最多 20 次预测，默�
 | `--episodes / --max-steps` | policy 默认 20 / 500；replay 默认 1 / 全部剩余条目 |
 | `--max-translation / --max-rotation` | OSC 每轴物理限幅 0.05 m / 0.15 rad，限幅后除以 live scale |
 | `--dry-run` | 保存启动诊断，不恢复记录初态、不检查恢复后 TCP、不执行 HTTP reset/predict 或控制步 |
-| `--keep-open-on-error` | episode 出错后保存记录并保留 GUI，不再控制；headless 不等待，错误仍返回 1 |
+| `--keep-open-on-error` | 启动检查或 episode 出错后保存记录，环境已创建时保留 GUI，不再控制；headless 不等待，错误仍以非零状态退出 |
 | `--log-interval` | 10；1 逐请求打印，0 关闭周期日志，执行失败仍打印摘要 |
 
 场景预设 oht-v4 与训练 replay/checkpoint 的 chunk V4 是两个版本概念。
@@ -492,6 +492,7 @@ score task 要求真实 success_term/evaluator_factory，或用 success-term 指
 | 文件 / 现象 | 检查 |
 | --- | --- |
 | server info.json / requests.jsonl | checkpoint 路径、部署/契约身份、请求状态、轮转摘要和分段耗时 |
+| client startup.json | 启动阶段与 starting/ready/failed 状态；客户端记录 profile、执行模式、chunk_spec 和环境控制周期，捕获的启动错误含 error/traceback，在关闭 Isaac Sim 前保存 |
 | client run.json / control_diagnostics.json | 实际 USD、scene/config 来源、TCP 变换、控制尺度、顺序、夹爪物理端点及是否关闭 time_out |
 | episode_*.json | action、实际 commands、measured_before/after、errors_before/after、stop_reason |
 | execution | waypoint 阶段/到位/夹爪；chunk consumed_actions/requested_actions、control_substeps、discarded_suffix；streaming 无该字段 |
@@ -501,6 +502,17 @@ score task 要求真实 success_term/evaluator_factory，或用 success-term 指
 | server timing_ms | decode/prepare/policy/total；policy 含结果回传的墙钟耗时，不是 CUDA kernel 时间 |
 | waypoint 停滞 / chunk 超差 | 区分目标错误、限位、接触和跟踪问题；不要仅翻转夹爪或加长训练/预算 |
 | 409 / 429 / 503 | 身份/会话不符 / busy / 未就绪；结果不确定时待空闲后新 episode reset |
+
+窗口在 `native env=... cameras=...` 后退出且没有预测记录时，先读 `startup.json`。
+这行只代表原生环境与相机已建立，后续还有环境 reset、overlay、控制 bridge、chunk 时序和控制诊断检查。
+捕获的 Python 启动异常会先打印并保存，再关闭仿真；环境已返回客户端时，可增加 `--keep-open-on-error`
+保留 GUI。若进程被终止或发生原生崩溃，文件可能停在 starting，需结合退出码及 Kit 日志末尾判断，
+不能仅根据材质/相机 warning 或历史 minidump 提示认定本次崩溃原因。
+
+GT replay 默认不绑定相机，所以不带 `--replay-cameras` 的 replay 正常，不能验证在线 RGB-D 路径。
+可先用在线 client 命令配合新输出目录和 `--dry-run` 检查启动（不预测、不执行控制，TCP overlay 也关闭）；
+通过后去掉 dry-run、保留 `--no-visualize` 测试真实策略，区分启动检查、overlay 与预测/执行阶段。
+`--no-visualize` 只关闭仿真中的 TCP overlay，保留 GUI 和模型所需的 RGB-D 相机。
 
 夹爪正开/负关的命令验证与物理端点方向验证分开记录；相反标定会在 reset/predict/env.step 前停止，
 不自动反号。ee-pose-source 必须按 checkpoint 采集定义选择，不能从历史字段名 ee_link_pose 猜参考点。
