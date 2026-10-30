@@ -45,9 +45,11 @@ GPU_ID=1 bash finetune/OHT/vla_server.sh \
 模型结构、数据契约、动作、相机和渲染配置从 checkpoint 读取，不另传一份训练 YAML。
 
 使用 `train_quantile` 本体状态归一化的 spatial chunk 模型，会在模型输入侧对齐实测关节角的
-`2π` 分支：仅当该关节的训练统计区间跨度小于一整圈，且等价角落在 `center ± scale` 内时调整。
+`2π` 分支：当该关节的训练统计区间跨度小于一整圈时，选择最接近训练 `center` 的等价角。
 例如训练 elbow 约为 `+1.68 rad`，IsaacLab 上报 `−4.60 rad`，会先对齐再归一化。
-这不是把所有关节包装到 `[-π, π]`，也不截断越出统计区间的状态；多圈区间不自动选择分支。
+`center ± scale` 是分位数统计区间，不是硬限位，不能用来开关分支对齐。
+越出统计区间时仍保留对齐，归一化值允许超出 `[-1, 1]`，不会截断或突然切回原始角度。
+这不是把所有关节包装到 `[-π, π]`；多圈统计区间不自动选择分支。
 同一路径用于训练、离线评估和在线推理，原始观测、TCP、夹爪开度及控制器关节角保持原值。
 推理首次发生调整时，server 输出 `Chunk joint input aligned to training branch`，记录原始角度、
 对齐角度和归一化值。已有 checkpoint 可直接使用，无需重建数据或重新训练；更新代码后重启 server。
@@ -543,6 +545,9 @@ relative EEF 解码绝对目标；joint 只画实测 TCP/辅助热图，不伪�
 CPU writer 最多两个任务，满时跳过；PNG/NPZ/JSON 完成后发布 latest，可视化错误不重跑模型。
 每次启动独立 visualizations/run-* 目录；原始 RGB-D 会增加磁盘与拷贝开销。
 GUI 默认显示 TCP/目标轨迹，no-visualize 关闭，visualize-history 默认 200；
+绿线记录实测 TCP，红线记录已发送的绝对目标，两者每个控制步更新（chunk 内也逐步记录）。
+红线不是完整 K 点未来预测：当前 H 步执行前缀会跨请求连接，重新预测的目标有变化时红线也会变化。
+两种颜色的 TCP 还带 4 cm 姿态坐标轴短线；这些短线不表示平移路径。
 采集前清除标记，快照完成后恢复，防止其进入模型图像。缺 debug-draw 时降级继续。
 latest 可能早于当前 step，应按 episode/step 对照，不把旧诊断当作刚执行的动作。
 

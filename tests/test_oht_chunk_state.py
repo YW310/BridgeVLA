@@ -111,7 +111,36 @@ def test_live_joint_branches_match_training_state_features_without_changing_meas
     assert caplog.text.count('Chunk joint input aligned to training branch') == 1
 
 
-def test_joint_branch_alignment_preserves_unsupported_and_ambiguous_states():
+@pytest.mark.parametrize('training', [True, False])
+@pytest.mark.parametrize('kind,representation', [('regression', 'relative_pose'),
+    ('regression', 'delta_pose'), ('flow_matching', 'relative_pose')])
+def test_joint_branch_alignment_stays_continuous_across_training_quantile(training, kind, representation):
+    # Consecutive wrist_2 measurements at steps 108/109 of the failed episode.
+    # Crossing a statistical quantile is not a change of physical angle branch.
+    center, scale = -1.7244551002979278, .8967279732227327
+    config = state_config(kind, representation)
+    config['chunk_policy'].update(proprio_center=[0.] * 4 + [center, 0., .5],
+                                  proprio_scale=[.5] * 4 + [scale, .5, .5])
+    decoder = SpatialChunkDecoder(4, chunk_settings(config), 3, 1 / 60).train(training)
+    _, context, _, _ = inputs()
+    state = context[2]
+    state[:, 11] = torch.tensor([3.663771152496338, 3.660543203353882])
+    original = state.clone()
+    captured = []
+    handle = decoder.state.register_forward_pre_hook(lambda module, args: captured.append(args[0].clone()))
+    try:
+        decoder.memory(*context)
+    finally:
+        handle.remove()
+    normalized = captured[0][:, 11]
+    expected = (original[:, 11] - 2 * np.pi - center) / scale
+    torch.testing.assert_close(normalized, expected, atol=3e-6, rtol=1e-5)
+    assert normalized[0] > -1 and normalized[1] < -1  # Preserve the small excursion.
+    assert abs((normalized[1] - normalized[0]).item()) < .01
+    torch.testing.assert_close(state, original, rtol=0, atol=0)
+
+
+def test_joint_branch_alignment_preserves_quantile_excursions_and_ambiguous_states():
     config = state_config()
     config['chunk_policy'].update(proprio_center=[0.] * 6 + [.5],
                                   proprio_scale=[.5, 4., .5, .5, .5, .5, .5])
@@ -128,6 +157,7 @@ def test_joint_branch_alignment_preserves_unsupported_and_ambiguous_states():
     finally:
         handle.remove()
     expected = original[:, 7:].clone()
+    expected[:, 0] -= 2 * np.pi  # Still above +1 after normalization; do not clamp.
     expected[:, 2] = .2
     expected = (expected - decoder.proprio_center) / decoder.proprio_scale
     torch.testing.assert_close(captured[0][:, 7:], expected, atol=3e-6, rtol=1e-5)

@@ -146,14 +146,15 @@ class SpatialChunkDecoder(nn.Module):
         if self.proprio_center is not None:
             # OHT's six revolute joints can be reported on different 2*pi
             # branches by the simulator and recorded demonstrations. Align
-            # only model features, and only when the training interval admits
-            # one equivalent angle. Preserve genuinely out-of-range inputs and
-            # ambiguous multi-turn distributions rather than clipping them.
+            # only model features to the training center for sub-turn ranges.
+            # Quantiles set a scale, NOT a gate: crossing +/-scale must not
+            # switch back to raw angles. Keep normalized excursions beyond
+            # +/-1 and leave ambiguous multi-turn distributions unchanged.
             joints = state[:, 7:13]
             center, scale = self.proprio_center[:6], self.proprio_scale[:6]
             turns = torch.round((joints - center) / (2 * math.pi))
             aligned = joints - turns * (2 * math.pi)
-            supported = (scale < math.pi) & ((aligned - center).abs() <= scale)
+            supported = scale < math.pi
             aligned = torch.where(supported, aligned, joints)
             if not self.training and not getattr(self, '_joint_branch_reported', False):
                 corrected = supported & (turns != 0)
