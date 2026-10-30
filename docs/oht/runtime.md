@@ -106,7 +106,7 @@ auto 按 checkpoint 选择 chunk 或 waypoint。示例最多 20 次预测，默�
 | `--ee-link`、`--quaternion-order` | EE 默认取 OSC body_name；SDK 四元数默认 wxyz |
 | `--camera-source` | auto 优先完整注册 Camera；usd 使用现有 USD/Replicator 相机；sensors 使用注册 Camera |
 | `--camera-map` | 完整且互异的 checkpoint 相机名→sensor/USD 名或路径映射 |
-| `--data-profile` | task 无法唯一匹配时，从 model_info.raw_observation.data_profiles 显式选择 |
+| `--data-profile` | 自动匹配服务公布的 task 或普通/`-seg` 任务目录名；唯一且无任务限制的 profile 也自动选择；多个候选时从 model_info.raw_observation.data_profiles 显式选择 |
 | `--episodes / --max-steps` | policy 默认 20 / 500；replay 默认 1 / 全部剩余条目 |
 | `--max-translation / --max-rotation` | OSC 每轴物理限幅 0.05 m / 0.15 rad，限幅后除以 live scale |
 | `--dry-run` | 保存启动诊断，不恢复记录初态、不检查恢复后 TCP、不执行 HTTP reset/predict 或控制步 |
@@ -116,6 +116,31 @@ auto 按 checkpoint 选择 chunk 或 waypoint。示例最多 20 次预测，默�
 场景预设 oht-v4 与训练 replay/checkpoint 的 chunk V4 是两个版本概念。
 注册 ID 的 OSC-v2 后缀不能证明实际 USD 版本。joint 模式选匹配的 registry 关节位置环境，
 不能直接用上述 OSC 预设。body_offset 与 link_to_tcp 各只应用一次。
+
+### 普通版与分割版 data profile
+
+四个任务均支持普通目录 `<task>/lerobot_dataset` 和分割目录 `<task>-seg/lerobot_dataset`，例如
+`disassemble_left/lerobot_dataset` 与 `disassemble_left-seg/lerobot_dataset`。
+客户端优先按服务公布的 task 匹配，未声明 task 时解析这两种目录名；仅有一个且无任务限制的
+profile（如 `default`、`.`、`lerobot_dataset`）也可自动选择。
+
+同一 checkpoint 中普通版与分割版都匹配当前任务时，必须显式指定 `--data-profile`，不会任选一项。
+先在 IsaacLab 服务器查询当前 checkpoint 公布的完整名称：
+
+```bash
+curl -fsS http://109.105.46.126:8004/model_info | python -c '
+import json, sys
+for name, spec in json.load(sys.stdin)["raw_observation"]["data_profiles"].items():
+    print(name, "task=", spec.get("task"))
+'
+```
+
+在上面的 client 启动命令中增加 `--data-profile disassemble_left/lerobot_dataset`（普通版），
+或 `--data-profile disassemble_left-seg/lerobot_dataset`（分割版）；名称必须存在于查询结果中，
+并与实际部署所需的训练数据标定一致。该参数选择 checkpoint 中保存的数据标定，不切换模型权重。
+
+旧代码漏识别 `-seg` 后缀，可能在进入仿真前报 `Select --data-profile explicitly from /model_info`。
+此兼容修复不改变数据或模型格式，无需重建 replay 或重新训练；部署时同步两端代码并重启服务。
 
 <a id="HTTP与观测协议"></a>
 

@@ -66,14 +66,18 @@ class BridgeVLAClient:
 
     def profile(self, task, name=None):
         profiles = self.info['raw_observation']['data_profiles']
+        tasks = {key: profile['task'] if profile['task'] is not None else profile_task(key)
+                 for key, profile in profiles.items()}
         if name is None:
-            matches = [key for key in profiles if profile_task(key) == task]
-            if not matches and set(profiles) == {'default'}:
-                matches = ['default']
+            matches = [key for key in profiles if tasks[key] == task]
+            if not matches and len(profiles) == 1 and next(iter(tasks.values())) is None:
+                matches = list(profiles)
             if len(matches) != 1:
-                raise ValueError('Select --data-profile explicitly from /model_info')
+                available = ', '.join(f'{key!r} (task={value})' for key, value in tasks.items()) or '(none)'
+                raise ValueError(f'Select --data-profile explicitly from /model_info: '
+                                 f'task={task!r} matched {len(matches)} profiles; available: {available}')
             name = matches[0]
-        if name not in profiles or profiles[name]['task'] not in (None, task):
+        if name not in profiles or tasks[name] not in (None, task):
             raise ValueError('Unknown/mismatched data profile')
         return name
 
