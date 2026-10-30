@@ -272,6 +272,43 @@ def fake_bridge(control_dt=.01):
     return bridge, sent
 
 
+@pytest.mark.parametrize('action_dt,substeps', [
+    (0.01666666666666572, 1),  # Measured source timing from the real startup failure.
+    (float(np.nextafter(1 / 60, 0.)), 1),
+    (float(np.nextafter(1 / 60, np.inf)), 1),
+    (3 / 60 * (1 - 1e-14), 3),
+])
+def test_chunk_timing_accepts_float_roundoff_at_positive_integer_ratios(action_dt, substeps):
+    bridge, sent = fake_bridge(1 / 60)
+    spec = chunk_spec(chunk_settings(settings_config()), {'chunk': {'action_dt': action_dt}})
+    executor = ChunkExecutor(bridge, spec)
+    assert executor.substeps == substeps
+    assert executor.spec['action_dt'] == action_dt
+    actions = np.tile([.02, 0, .5, 0, 0, 0, 1, 1], (4, 1)).astype(np.float32)
+    executor.execute(actions, {})
+    assert len(sent) == spec['execute_horizon'] * substeps
+    assert executor.last_result['consumed_actions'] == spec['execute_horizon']
+
+
+@pytest.mark.parametrize('control_dt,action_dt', [
+    (1 / 60, .5 / 60),
+    (1 / 60, 1e-12),
+    (1 / 60, .999 / 60),
+    (1 / 60, 1.001 / 60),
+    (1 / 60, 1.5 / 60),
+    (0., 1 / 60),
+    (-1., 1 / 60),
+    (float('nan'), 1 / 60),
+    (float('inf'), 1 / 60),
+])
+def test_chunk_timing_rejects_noninteger_or_invalid_control_intervals(control_dt, action_dt):
+    bridge, sent = fake_bridge(control_dt)
+    spec = chunk_spec(chunk_settings(settings_config()), {'chunk': {'action_dt': action_dt}})
+    with pytest.raises(ValueError, match='integer multiple'):
+        ChunkExecutor(bridge, spec)
+    assert not sent
+
+
 def test_chunk_timing_absolute_targets_gripper_ticks_and_prefix_discard():
     bridge, sent = fake_bridge()
     settings = chunk_settings(settings_config())

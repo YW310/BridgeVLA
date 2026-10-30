@@ -15,9 +15,12 @@ class ChunkExecutor:
             raise ValueError('Timed chunks require absolute EEF execution')
         dt = float(bridge.env.step_dt)
         ratio = spec['action_dt'] / dt if np.isfinite(dt) and dt > 0 else np.nan
-        if not np.isfinite(ratio) or ratio < 1 or not np.isclose(ratio, round(ratio), atol=1e-5, rtol=1e-5):
-            raise ValueError('Chunk action_dt must be an integer multiple of the simulator control interval')
-        self.substeps = int(round(ratio))
+        # Timestamp roundoff can put a valid unit ratio just below 1.
+        substeps = int(round(ratio)) if np.isfinite(ratio) else 0
+        if substeps < 1 or not np.isclose(ratio, substeps, atol=1e-5, rtol=1e-5):
+            raise ValueError('Chunk action_dt must be an integer multiple of the simulator control interval: '
+                             f'action_dt={spec["action_dt"]}, env.step_dt={dt}, ratio={ratio}')
+        self.substeps = substeps
         if not np.isfinite([max_translation_error, max_rotation_error]).all() or min(max_translation_error, max_rotation_error) <= 0:
             raise ValueError('Chunk tracking error limits must be finite and positive')
         self.max_translation_error, self.max_rotation_error = max_translation_error, max_rotation_error
