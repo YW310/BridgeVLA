@@ -2,6 +2,10 @@
 
 [项目首页](../README.md) · [代码索引与运行限制](reference/code-map.md)
 
+完整阅读入口：[图解完整手册（单页 HTML）](handbook.html)。它将 docs 全部 Markdown、项目首页和 OHT README 整理为连贯主题章节，包含八张理解图、完整算法交互、正文、命令、表格及论文链接。合并重复导航、收起长示例，手机端宽表转为逐项阅读；固定浅色，可离线阅读和打印。原 Markdown 继续作为维护源，入口说明与历史内容分区保留。
+
+更新完整手册：先 `python -m pip install -r tools/requirements-docs.txt`，再运行 `python tools/build_docs_handbook.py`；加 `--check` 检查是否同步。生成器自动发现 docs 新增的 Markdown，并将文档互链转换为页内跳转；本地图像内嵌，代码/配置链接仍指向仓库文件，论文外链仍需联网。
+
 先看[交互算法总览（HTML）](design/algorithm-overview.html)：固定浅色、离线可读，包含输入输出维度、带符号流程图、O2/anchor 与 Action chunk 的完整公式和函数。顶部可切换路径、点击节点；下方可连续阅读全部步骤与状态条件前后对比，也可折叠章节或打印。
 
 可编辑源文件为 `assets/algorithm-overview.fragment.html`；修改后在仓库根目录运行 `python tools/render_algorithm_overview.py`，用 `--check` 检查生成页面是否同步。

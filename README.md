@@ -29,6 +29,8 @@ As illustrated in the following figure, BridgeVLA employs a dual-phase training 
 
 ## 快速开始
 
+完整阅读可打开[图解手册（单页 HTML）](docs/handbook.html)：汇总设计、全部文档、数据/训练/部署命令与算法流程，浅色、离线可读。源文档仍按主题维护。
+
 以下命令面向 Linux / Bash。安装脚本中的路径、模拟器环境变量，以及训练配置中的数据和权重路径，需要先按机器修改；不同 benchmark 建议使用独立 Conda 环境，并提前取得 PaliGemma 权重访问权限。
 
 <a id=installation></a>

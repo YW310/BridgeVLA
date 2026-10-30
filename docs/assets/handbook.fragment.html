@@ -1,0 +1,314 @@
+<div id="bridgevla-handbook">
+  <header id="handbook-home" class="book-header">
+    <p class="book-eyebrow">BRIDGEVLA / THE COMPLETE HANDBOOK</p>
+    <h1>理解系统，再走通实验</h1>
+    <p>架构、数据、对象与关系、Action chunk、训练、部署、评估与研究依据，收进同一本手册。</p>
+    <p class="text-small">将 docs、项目首页和 OHT 入口说明整理为连贯章节，而非按文件拼接。保留正文、命令与证据边界；新增图帮助理解数据和动作，不改变实现或验收结论。</p>
+    <p class="text-small" id="book-coverage"><!--COVERAGE--></p>
+  </header>
+
+  <div class="book-layout">
+    <aside aria-label="全书目录" class="book-navigation">
+      <details class="book-toc-shell" open>
+        <summary>阅读目录</summary>
+      <nav>
+        <a href="#visual-guide">先看图解</a>
+        <a href="#book-algorithm">算法、公式与维度</a>
+        <!--CONTENTS-->
+        <a href="#handbook-home">回到开头 ↑</a>
+      </nav>
+      </details>
+    </aside>
+
+    <div class="book-content">
+      <section id="visual-guide" aria-labelledby="visual-guide-heading">
+        <h2 id="visual-guide-heading">先看八张图，建立整体认知</h2>
+        <p>实线表示当前数据路径；虚线只用于辅助监督或明确标出的后续方案。示意图不表示实验成功率或性能承诺，详细条件以对应正文为准。</p>
+
+        <figure id="book-architecture" class="book-figure">
+          <figcaption><h3>图 1 · 共同骨架，两条当前独立的策略路线</h3></figcaption>
+          <ol class="book-process">
+            <li><strong>当前观测</strong><span>多相机 RGB-D、标定、指令</span></li>
+            <li><strong>场景表示</strong><span>融合点云 → 三个正交投影视图</span></li>
+            <li><strong>共享 VLM</strong><span>coarse 全局 + refine 局部，权重共享</span></li>
+          </ol>
+          <div class="book-lanes">
+            <section aria-label="O2 路线">
+              <h4>RLBench O2 · 关键动作</h4>
+              <ol class="book-process book-vertical">
+                <li><strong>T/R 角色表示</strong><span>Oracle、外部预测或内部 slots 三选一；Reference 可为 NULL</span></li>
+                <li><strong>relation / anchor</strong><span>保留场景，通过角色与几何增强动作特征</span></li>
+                <li><strong>关键动作 → 执行</strong><span>translation、rotation、gripper、collision；然后重新观测</span></li>
+              </ol>
+            </section>
+            <section aria-label="OHT 连续轨迹路线">
+              <h4>OHT V4 · 连续 EEF chunk</h4>
+              <ol class="book-process book-vertical">
+                <li><strong>视觉 / XYZ + 当前状态</strong><span>预测 key、TCP7、q6、实测开度；baseline + EEF</span></li>
+                <li><strong>state-conditioned decoder</strong><span>当前基线 regression_state；delta / flow 是独立对照</span></li>
+                <li><strong>K=16 → 执行前 H=4</strong><span>输出 world 绝对 TCP 轨迹，然后重新观测</span></li>
+              </ol>
+            </section>
+          </div>
+          <p class="book-boundary">当前边界：OHT V4 chunk 不消费 O2 的 T/R role packet；“角色条件 chunk”仍是待接通、待验证方向。不能把两列连成一条已实现的策略。</p>
+          <p class="text-small">对应：<a href="#doc-docs-design-role-relation-prior">整体设计</a> · <a href="#doc-docs-oht-training">OHT 模型</a></p>
+        </figure>
+
+        <figure id="book-data-lineage" class="book-figure">
+          <figcaption><h3>图 2 · 数据从哪里来，分别监督什么</h3></figcaption>
+          <div class="book-lanes">
+            <section>
+              <h4>RLBench：动作 replay 与角色增强</h4>
+              <ol class="book-process book-vertical">
+                <li><strong>同批 stored demos</strong><span>RGB-D、相机参数、关键动作</span></li>
+                <li><strong>基础 replay</strong><span>保留原有观测和动作字段</span></li>
+                <li><strong>demo_events manifest + role YAML</strong><span>绑定 episode、T/R 语义与 handle 对齐证据</span></li>
+                <li><strong>Semantic-GT replay</strong><span>补充角色点集、valid、审计；读取时兼容派生 presence</span></li>
+                <li><strong>两种用途，不能混称</strong><span>GT 模式：动作条件；预测模式：仅辅助监督</span></li>
+              </ol>
+            </section>
+            <section>
+              <h4>OHT：当前观测与未来轨迹分开</h4>
+              <ol class="book-process book-vertical">
+                <li><strong>Parquet + RGB / depth 视频</strong><span>读取真实导出约定，不能从视频格式猜深度值</span></li>
+                <li><strong>audit / split / geometry</strong><span>轨迹分组、可选场景分组；核对时刻与坐标</span></li>
+                <li><strong>V4 observations</strong><span>当前 RGB-D、实测 TCP、关节和夹爪</span></li>
+                <li><strong>V4 targets</strong><span>未来实测动作与 valid、key 与 key_valid；独立存储并绑定哈希</span></li>
+                <li><strong>训练 / val / test</strong><span>train 拟合归一化；val 调参；test 固定评估</span></li>
+              </ol>
+            </section>
+          </div>
+          <p class="book-boundary">OHT raw action 仅用于审计；未来动作不能变成当前状态。T/R 标注存在，也不意味着当前 chunk 自动使用对象条件。</p>
+          <p class="text-small">对应：<a href="#doc-docs-guides-semantic-gt">Semantic-GT</a> · <a href="#doc-docs-oht-data">OHT 数据契约</a></p>
+        </figure>
+
+        <figure id="book-coordinate-guide" class="book-figure">
+          <figcaption><h3>图 3 · 投影视图变了，但几何必须能回到同一 world</h3></figcaption>
+          <ol class="book-process">
+            <li><strong>相机 optical 坐标</strong><span>depth + K 反投影；先确认 z / ray</span></li>
+            <li><strong>world 点云</strong><span>使用完整外参变换；五相机不等于五个虚拟视角</span></li>
+            <li><strong>coarse cube</strong><span>归一化后生成三视图与对齐 XYZ</span></li>
+          </ol>
+          <ol class="book-process">
+            <li><strong>coarse waypoint</strong><span>三张 translation heatmap 解码 3D 点</span></li>
+            <li><strong>refine crop / cube</strong><span>围绕预测点缩放、重新渲染，不是 resize 全局图</span></li>
+            <li><strong>撤销 crop → 撤销 cube</strong><span>两级 patch XYZ 恢复 world，再统一到当前 TCP 坐标</span></li>
+          </ol>
+          <div class="book-lanes">
+            <section><h4>场景几何进入 decoder</h4><pre><code>x_local = R₀ᵀ (x_world − p₀) / s_geometry</code></pre><p>RGB 与 XYZ 共享渲染对齐关系；无有效表面的 patch 必须屏蔽。</p></section>
+            <section><h4>relative-pose 动作恢复 world</h4><pre><code>p̂ₖ = p₀ + R₀ s_action ûₖ
+R̂ₖ = R₀ Rot6(r̂ₖ)</code></pre><p>每个未来动作相对同一次当前 TCP；delta 配置另有累积定义。</p></section>
+          </div>
+          <p class="book-boundary">s_geometry 与 s_action 不同；虚拟视角只能重排已观测点，不能补出从未观测的表面。移动物体的旧几何也不能直接当当前几何。</p>
+          <p class="text-small">对应：<a href="#doc-docs-oht-data">相机与深度</a> · <a href="#doc-docs-oht-training">空间 attention 与动作表示</a></p>
+        </figure>
+
+        <figure id="book-soft-transfer" class="book-figure">
+          <figcaption><h3>图 4 · coarse 给软提示，refine 仍自己判断局部对象</h3></figcaption>
+          <div class="book-lanes">
+            <section><h4>coarse：全局语义提示</h4><ol class="book-process book-vertical">
+              <li><strong>全局 Fᶜ → 无序 slots</strong><span>soft mixing 得到 Zᶜ_T、Zᶜ_R 与 Reference NULL posterior</span></li>
+              <li><strong>软 cross-attention 提示</strong><span>Reference non-NULL 只对提示值做软加权</span></li>
+              <li><strong>零初始化输出投影 Wₒ</strong><span>新分支初始不改变旧局部 queries</span></li>
+            </ol></section>
+            <section><h4>refine：局部预测与监督</h4><ol class="book-process book-vertical">
+              <li><strong>局部 Fᶠ + 自己的 Qᶠ</strong><span>接收提示：Qᶠ′ = Qᶠ + hint(Zᶜ, Qᶠ)</span></li>
+              <li><strong>独立预测</strong><span>masks、objectness、T/R、NULL，不被 coarse invalid 强制关闭</span></li>
+              <li><strong>复用原 relation / anchor</strong><span>生成关键动作；两级分别匹配、分别监督</span></li>
+            </ol></section>
+          </div>
+          <p>该图对应 <code>internal_slots_soft_coarse</code>，不是所有配置的统一行为。它不传 coarse 的 hard valid、几何或投影热图，不增加 VLM 前向，也不承诺绝不换错对象。</p>
+          <p class="text-small">旧 hard inheritance / refine masks 是独立实验分支，不能混进此消融。对应：<a href="#doc-docs-design-role-relation-prior">角色预测与跨尺度调整</a></p>
+        </figure>
+
+        <figure id="book-role-states" class="book-figure">
+          <figcaption><h3>图 5 · 三个容易混淆的角色状态</h3></figcaption>
+          <div class="book-three">
+            <section><h4>存在，而且几何可用</h4><p>角色语义已知，当前点云有可靠支持。</p><pre><code>present = 1
+geometry_valid = 1</code></pre><p>可以提供角色 token 与相应空间条件。</p></section>
+            <section><h4>存在，但几何 unknown</h4><p>例如局部 crop 外没有足够支持；不是语义消失。</p><pre><code>present = 1
+geometry_valid = 0</code></pre><p>屏蔽不可信几何；可信 token 是否保留由配置决定。</p></section>
+            <section><h4>语义上没有 Reference</h4><p>确实没有参照角色，且有可靠 absence 标签。</p><pre><code>Reference present = 0
+NULL supervision eligible</code></pre><p>监督推理使用的 NULL posterior，不用 ~valid 冒充标签。</p></section>
+          </div>
+          <p class="book-boundary">缺少 presence 标签是“标签未知”，上述三类都不能靠猜补齐；终止占位不参与角色监督。当前没有独立 visibility GT/head。</p>
+          <p class="text-small">对应：<a href="#doc-docs-design-role-relation-prior">核心定义与 teacher 契约</a></p>
+        </figure>
+
+        <figure id="book-teacher-isolation" class="book-figure">
+          <figcaption><h3>图 6 · 预测策略的条件，与训练 teacher 分开</h3></figcaption>
+          <div class="book-lanes">
+            <section><h4>策略前向：部署可获得</h4><ol class="book-process book-vertical">
+              <li><strong>当前观测、指令、实测状态</strong><span>预测角色 / 预测 key / 预测 crop</span></li>
+              <li><strong>动作 decoder</strong><span>O2 key-action 或 OHT chunk，各自按配置运行</span></li>
+              <li><strong>动作输出 → 执行</strong><span>部署不得读取未来 GT 或 oracle T/R teacher</span></li>
+            </ol></section>
+            <section class="book-teacher"><h4>辅助监督：仅训练可获得</h4><ol class="book-process book-vertical">
+              <li><strong>角色 teacher</strong><span>T/R 点投影 prior + 可靠 presence → 角色 / NULL loss</span></li>
+              <li><strong>动作 teacher</strong><span>关键动作或未来实测轨迹 + 有效 mask → 动作 loss</span></li>
+              <li><strong>梯度更新</strong><span>训练共享特征不等于 argmax / crop 可微</span></li>
+            </ol></section>
+          </div>
+          <p class="book-boundary">标准 RLBench key-action 训练仍可使用 GT crop teacher forcing；OHT chunk 条件路径使用预测 key/crop。Oracle-GT 诊断模式则明确允许 GT 作条件，不能当预测-only 结果。</p>
+          <p class="text-small">对应：<a href="#doc-docs-guides-object-conditioning">O2 训练</a> · <a href="#doc-docs-oht-training">joint 与 frozen_key</a></p>
+        </figure>
+
+        <figure id="book-chunk-timeline" class="book-figure">
+          <figcaption><h3>图 7 · 一次预测 16 步，不等于一次执行完 16 步</h3></figcaption>
+          <div class="book-timeline" role="img" aria-label="16 个未来动作，仅前 4 步执行；第 4 步后重新观测，丢弃旧后缀并重新预测">
+            <p>当前观测 t₀ → 预测 1…16</p>
+            <div class="book-ticks"><span class="consumed">1</span><span class="consumed">2</span><span class="consumed">3</span><span class="consumed">4</span><span>5</span><span>6</span><span>7</span><span>8</span><span>9</span><span>10</span><span>11</span><span>12</span><span>13</span><span>14</span><span>15</span><span>16</span></div>
+            <p>执行前 H=4 项 <span aria-hidden="true">↓</span> 重新观测 t₁ ≈ t₀+4Δt</p>
+            <div class="book-ticks"><span class="consumed">1</span><span class="consumed">2</span><span class="consumed">3</span><span class="consumed">4</span><span>5</span><span>6</span><span>7</span><span>8</span><span>9</span><span>10</span><span>11</span><span>12</span><span>13</span><span>14</span><span>15</span><span>16</span></div>
+          </div>
+          <p>着色项是本轮实际消费的前缀，其余是计划后缀；下轮不接着执行旧第 5 项，而是基于新观测重新预测。跟踪异常、越限或终止可提前截断。</p>
+          <pre><code>物理未来时间：kΔt，k=1…16
+生成时间：τ∈[0,1]，仅 flow 的积分变量
+正常消费时长：HΔt；不是 KΔt，也不是到达远期 key 的时间</code></pre>
+          <p class="book-boundary">当前 HTTP 等待会暂停物理，不是异步实时控制。夹爪在对应 tick 边界切换；EEF 输出不自带碰撞规划保证。</p>
+          <p class="text-small">对应：<a href="#doc-docs-oht-runtime">chunk 执行与时间预算</a></p>
+        </figure>
+
+        <figure id="book-evidence-guide" class="book-figure">
+          <figcaption><h3>图 8 · 从“图像看起来对”到“闭环确实有效”</h3></figcaption>
+          <ol class="book-process">
+            <li><strong>数据 / 几何</strong><span>原始时刻、四元数、深度、点云与标签验收</span></li>
+            <li><strong>离线预测</strong><span>decoded waypoint、预测位置下 R/G/C、chunk 前缀物理误差</span></li>
+            <li><strong>执行链路</strong><span>GT 回放对照、跟踪误差、停止原因与时间预算</span></li>
+          </ol>
+          <ol class="book-process">
+            <li><strong>固定 cases 与预算</strong><span>相同 episodes、训练范围、初始化和执行器</span></li>
+            <li><strong>至少 3 个训练 seeds</strong><span>配对成功率差与 95% CI；失败 / 超时不能删分母</span></li>
+            <li><strong>再决定是否加模块</strong><span>GT 角色无收益时，先定位动作瓶颈，不先扩预测器</span></li>
+          </ol>
+          <p>mask 更漂亮、loss 更低、单条轨迹变顺，都不能独立证明闭环成功率提升。历史实验表只保留其原始证据范围。</p>
+          <p class="book-boundary">后续 memory 需要历史依赖数据、身份关联与几何过期规则；当前单帧 / 本步跨尺度条件不等于已有 temporal object bank、恢复或因果能力。</p>
+          <p class="text-small">对应：<a href="#doc-docs-guides-object-conditioning">闭环准入</a> · <a href="#doc-docs-experiments-results">历史结果</a> · <a href="#doc-docs-research-object-centric-policy-memory">研究依据</a></p>
+        </figure>
+      </section>
+
+      <section id="book-algorithm" aria-label="完整交互算法、张量维度与公式">
+        <!--ALGORITHM-->
+      </section>
+
+      <!--DOCUMENTS-->
+
+      <footer class="book-footer"><p>本手册由仓库源文档自动生成。更新 Markdown 或图解源后运行 <code>python tools/build_docs_handbook.py</code>，用 <code>--check</code> 检查同步。命令、外链论文和历史测试记录被保留，不表示构建本页时执行或重新验证了它们。</p><a href="#handbook-home">回到开头 ↑</a></footer>
+    </div>
+  </div>
+</div>
+
+<style>
+  #bridgevla-handbook { max-width: 1480px; margin: auto; padding: 2rem clamp(1rem, 3vw, 3rem) 4rem; overflow-wrap: anywhere; }
+  #bridgevla-handbook .book-header { max-width: 1000px; padding-block: 1rem 2rem; border-bottom: 1px solid var(--border); }
+  #bridgevla-handbook .book-header p { margin-block: 1rem; }
+  #bridgevla-handbook .book-eyebrow { letter-spacing: .12em; color: var(--muted-foreground); }
+  #bridgevla-handbook .book-layout { display: grid; grid-template-columns: 230px minmax(0, 1fr); gap: 2.5rem; align-items: start; margin-top: 2rem; }
+  #bridgevla-handbook .book-navigation nav > a { display: block; margin-block: .8rem; }
+  #bridgevla-handbook .book-navigation details { margin-block: 1rem; }
+  #bridgevla-handbook .book-navigation > .book-toc-shell { margin-top: 0; }
+  #bridgevla-handbook .book-toc-shell > summary { margin-bottom: 1rem; }
+  #bridgevla-handbook .book-navigation ul { list-style: none; padding-left: .7rem; }
+  #bridgevla-handbook .book-navigation li { margin-block: .7rem; }
+  #bridgevla-handbook summary { cursor: pointer; font-weight: 500; }
+  #bridgevla-handbook strong { font-weight: 500; }
+  #bridgevla-handbook .book-content { min-width: 0; }
+  #bridgevla-handbook .book-content p, #bridgevla-handbook .book-content ul, #bridgevla-handbook .book-content ol { margin-block: 1rem; }
+  #bridgevla-handbook .book-content h2 { margin-block: 2.5rem 1rem; }
+  #bridgevla-handbook .book-content h3, #bridgevla-handbook .book-content h4 { margin-block: 1.5rem 1rem; }
+  #bridgevla-handbook [id] { scroll-margin-top: 1rem; }
+  #bridgevla-handbook .book-figure { margin: 2rem 0 3rem; padding-block: 1rem; border-top: 1px solid var(--border); }
+  #bridgevla-handbook .book-lanes { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 2rem; }
+  #bridgevla-handbook .book-three { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 1.5rem; }
+  #bridgevla-handbook .book-process { list-style: none; padding: 0; display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 1.8rem; }
+  #bridgevla-handbook .book-process li { position: relative; min-width: 0; padding-block: .7rem; border-top: 1px solid var(--border); }
+  #bridgevla-handbook .book-process li:not(:last-child)::after { content: '→'; position: absolute; right: -1.35rem; top: .7rem; color: var(--muted-foreground); }
+  #bridgevla-handbook .book-process strong, #bridgevla-handbook .book-process span { display: block; }
+  #bridgevla-handbook .book-process span { margin-top: .5rem; }
+  #bridgevla-handbook .book-vertical { grid-template-columns: 1fr; gap: 1.4rem; }
+  #bridgevla-handbook .book-vertical li:not(:last-child)::after { content: '↓'; top: auto; right: auto; bottom: -1.4rem; left: 1rem; }
+  #bridgevla-handbook .book-boundary, #bridgevla-handbook .doc-body blockquote { margin-inline: 0; padding-left: 1rem; border-left: 3px solid var(--border); }
+  #bridgevla-handbook .book-teacher { border-left: 1px dashed var(--border); padding-left: 1rem; }
+  #bridgevla-handbook .book-ticks { display: grid; grid-template-columns: repeat(16, minmax(0,1fr)); gap: .2rem; }
+  #bridgevla-handbook .book-ticks span { text-align: center; padding-block: .7rem; background: var(--muted); }
+  #bridgevla-handbook .book-ticks .consumed { background: color-mix(in srgb, var(--viz-series-1) 24%, var(--background)); }
+  #bridgevla-handbook .book-part { margin-top: 4rem; padding-top: 1rem; border-top: 1px solid var(--border); }
+  #bridgevla-handbook .book-document { margin-block: 2rem; padding-block: 1rem; }
+  #bridgevla-handbook .book-document > header { padding-block: 1rem; border-bottom: 1px solid var(--border); }
+  #bridgevla-handbook .doc-introduction { color: var(--muted-foreground); }
+  #bridgevla-handbook .doc-source { margin-block: 2rem; }
+  #bridgevla-handbook .long-example { margin-block: 1.5rem; }
+  #bridgevla-handbook .doc-provenance { color: var(--muted-foreground); }
+  #bridgevla-handbook .doc-toc { margin-block: 1rem 2rem; }
+  #bridgevla-handbook .doc-toc ul { columns: 2; padding-left: 1.3rem; }
+  #bridgevla-handbook .doc-toc li { break-inside: avoid; margin-block: .4rem; }
+  #bridgevla-handbook table { width: 100%; border-collapse: collapse; table-layout: fixed; margin-block: 1.5rem; }
+  #bridgevla-handbook th, #bridgevla-handbook td { text-align: left; vertical-align: top; padding: .65rem .45rem; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+  #bridgevla-handbook th { font-weight: 500; background: var(--muted); }
+  #bridgevla-handbook pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 1rem; border-left: 3px solid var(--border); background: var(--muted); }
+  #bridgevla-handbook pre code { background: transparent; padding: 0; font-size: inherit; }
+  #bridgevla-handbook img { display: block; max-width: 100%; height: auto; margin-block: 1.5rem; }
+  #bridgevla-handbook .book-footer { border-top: 1px solid var(--border); padding-block: 2rem; margin-top: 3rem; }
+  #bridgevla-handbook #bridgevla-algorithm-overview { max-width: none; padding: 1rem 0; }
+  #bridgevla-handbook .original-diagram { margin-block: 1rem; }
+  @media (max-width: 980px) {
+    #bridgevla-handbook .book-layout { grid-template-columns: 1fr; gap: 1rem; }
+    #bridgevla-handbook .book-navigation nav { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: .5rem 1.5rem; }
+    #bridgevla-handbook .book-navigation h2 { grid-column: 1 / -1; }
+  }
+  @media (max-width: 600px) {
+    #bridgevla-handbook { --font-size-base: 14px; padding-top: 1rem; }
+    #bridgevla-handbook .book-lanes, #bridgevla-handbook .book-three, #bridgevla-handbook .book-process, #bridgevla-handbook .book-navigation nav { grid-template-columns: 1fr; }
+    #bridgevla-handbook .book-process li:not(:last-child)::after { content: '↓'; top: auto; right: auto; bottom: -1.4rem; left: 1rem; }
+    #bridgevla-handbook .doc-toc ul { columns: 1; }
+    #bridgevla-handbook .book-ticks { gap: .08rem; }
+    #bridgevla-handbook .book-ticks span { padding-block: .4rem; }
+    #bridgevla-handbook th, #bridgevla-handbook td { padding: .5rem .25rem; }
+    #bridgevla-handbook .wide-table, #bridgevla-handbook .wide-table tbody, #bridgevla-handbook .wide-table tr { display: block; }
+    #bridgevla-handbook .wide-table thead { display: none; }
+    #bridgevla-handbook .wide-table tr { margin-block: 1.5rem; border-top: 1px solid var(--border); }
+    #bridgevla-handbook .wide-table td { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 1rem; }
+    #bridgevla-handbook .wide-table td::before { content: attr(data-label); font-weight: 500; }
+  }
+  @media print {
+    #bridgevla-handbook { padding: 0; max-width: none; }
+    #bridgevla-handbook .book-navigation, #bridgevla-handbook .doc-toc { display: none; }
+    #bridgevla-handbook .book-layout { display: block; }
+    #bridgevla-handbook .book-part { break-before: page; }
+    #bridgevla-handbook .book-figure { break-inside: avoid; }
+  }
+</style>
+
+<script>
+(() => {
+  const root = document.getElementById('bridgevla-handbook');
+  const compact = window.matchMedia('(max-width: 980px)');
+  const toc = root.querySelector('.book-toc-shell');
+  const adaptNavigation = () => { toc.open = !compact.matches; };
+  compact.addEventListener('change', adaptNavigation);
+  adaptNavigation();
+  function revealHash() {
+    let id;
+    try { id = decodeURIComponent(location.hash.slice(1)); } catch (_) { return; }
+    const target = id && document.getElementById(id);
+    if (!target || !root.contains(target)) return;
+    for (let element = target.parentElement; element; element = element.parentElement) {
+      if (element.tagName === 'DETAILS') element.open = true;
+    }
+    if (target.tagName === 'DETAILS') target.open = true;
+    requestAnimationFrame(() => target.scrollIntoView());
+  }
+  root.addEventListener('click', event => {
+    const link = event.target.closest('a[href^="#"]');
+    if (link) requestAnimationFrame(revealHash);
+  });
+  window.addEventListener('hashchange', revealHash);
+  let closed = [];
+  window.addEventListener('beforeprint', () => {
+    closed = [...root.querySelectorAll('details')].filter(element => !element.open);
+    closed.forEach(element => { element.open = true; });
+  });
+  window.addEventListener('afterprint', () => { closed.forEach(element => { element.open = false; }); });
+  revealHash();
+})();
+</script>
