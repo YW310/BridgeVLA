@@ -2,7 +2,7 @@
 
 [文档索引](../README.md) · [配置流程](../guides/object-conditioning.md#配置选择) · [接口契约](../design/role-relation-prior.md#当前实现与数据契约) · [联合实验](../guides/object-conditioning.md#gt-联合对照)
 
-> 2026-10-29 按代码入口核对。本页维护函数索引、配置入口与当前运行限制；操作命令见各指南。O2、OHT 单关键点与 V4 chunk 分别选择数据和配置，验证结果不能互用。
+> 2026-10-29 按代码入口核对。本页维护函数索引、配置入口与当前运行限制；操作命令见各指南。对象条件策略、OHT 单关键点与 V4 chunk 分别选择数据和配置，验证结果不能互用。
 
 ## Semantic-GT 数据流
 
@@ -92,7 +92,7 @@ V4 chunk 当前要求 `mode=baseline`、`action_mode=eef`，不接入 role cache
 | 尚未实现 | 设计入口 |
 | --- | --- |
 | 跨步 object bank、序列 loader、act/reset 状态 | [Memory](../design/role-relation-prior.md#object-centric-memory后续未实现) |
-| RLBench O2 的独立 visibility / 当前 EE pose / phase graph / object-local views / risk head | 不进入当前 O2 主线，按标签与瓶颈另验；OHT chunk 已有实测 TCP/proprio 输入 |
+| RLBench 对象条件策略的独立 visibility / 当前 EE pose / phase graph / object-local views / risk head | 不进入当前对象条件策略主线，按标签与瓶颈另验；OHT chunk 已有实测 TCP/proprio 输入 |
 
 predictor 内的 attention `memory` 不是历史 bank。`RVTAgent.reset()` 会清理 simulator alignment 的锁与计数，
 但当前没有学习式 role memory/object bank。
@@ -119,7 +119,7 @@ resume 签名对 checkpoint 使用 path/size/mtime，对 raw data 使用目录�
 
 <a id="模型与数据审查结论"></a>
 
-模型输入、监督隔离与角色有效性以[当前数据契约](../design/role-relation-prior.md#当前实现与数据契约)为准；训练和评估步骤集中在[O2 指南](../guides/object-conditioning.md)。mask-only 身份证书不认证整场景 XYZ，presence 不等于几何可用，预测模式的 teacher 只用于辅助监督。
+模型输入、监督隔离与角色有效性以[当前数据契约](../design/role-relation-prior.md#当前实现与数据契约)为准；训练和评估步骤集中在[对象条件策略指南](../guides/object-conditioning.md)。mask-only 身份证书不认证整场景 XYZ，presence 不等于几何可用，预测模式的 teacher 只用于辅助监督。
 
 <a id="验证与下一步"></a>
 

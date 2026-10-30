@@ -33,6 +33,15 @@ class AlgorithmOverviewDocumentTest(unittest.TestCase):
         self.assertIn("idMap", fragment)
         self.assertIn("beforeprint", fragment)
 
+    def test_policy_display_name_changes_without_renaming_legacy_mode(self):
+        fragment = renderer.SOURCE.read_text(encoding="utf-8")
+        self.assertIn("Object-conditioned BridgeVLA", fragment)
+        self.assertIn('data-mode="o2"', fragment)
+        self.assertIn("render('o2')", fragment)
+        self.assertIn("rlbench_o2_internal_slots_soft_coarse.yaml", fragment)
+        self.assertNotIn(">O2 ·", fragment)
+        self.assertNotIn("sᴼ²", fragment)
+
 
 if __name__ == "__main__":
     unittest.main()

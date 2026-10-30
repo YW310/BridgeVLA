@@ -1,10 +1,14 @@
-# Object-centric Policy：整体设计与实现契约
+<a id="object-centric-policy整体设计与实现契约"></a>
+
+# Object-conditioned BridgeVLA：对象条件策略设计与实现契约
 
 [文档索引](../README.md) · [论文 survey](../research/object-centric-policy-memory.md) · [实验与命令](../guides/object-conditioning.md#gt-联合对照) · [代码索引](../reference/code-map.md)
 
-简化整体流程、符号与输入输出维度见[交互算法总览（HTML）](algorithm-overview.html)，包含 O2/anchor 和 OHT Action chunk；本文继续维护详细设计与研究边界。
+本文统一使用 **对象条件策略（Object-conditioned BridgeVLA）**，替代历史实验代号 O2。它以 Target/Reference 的任务角色表示及关系条件指导动作预测，涵盖 Oracle 与预测对象来源；Reference 可为 NULL。名称不表示只有两个物体或两个 slots，也不代表已实现显式 phase 或跨步 memory。已有 `rlbench_o2_*` 配置、`o2_gt_instance` 模式和代码接口保留原名以兼容已有实验。
 
-> 代码核对：2026-10-29。本文维护 RLBench O2 的设计与接口，并集中记录基于 OHT 已完成工作的研究动机。OHT 已实现模型与执行契约分别见[训练与模型](../oht/training.md)、[部署与回放](../oht/runtime.md)；下列候选方向是研究假设，未新增运行配置或模型能力。
+简化整体流程、符号与输入输出维度见[交互算法总览（HTML）](algorithm-overview.html)，包含对象条件策略/anchor 和 OHT Action chunk；本文继续维护详细设计与研究边界。
+
+> 代码核对：2026-10-29。本文维护 RLBench 对象条件策略的设计与接口，并集中记录基于 OHT 已完成工作的研究动机。OHT 已实现模型与执行契约分别见[训练与模型](../oht/training.md)、[部署与回放](../oht/runtime.md)；下列候选方向是研究假设，未新增运行配置或模型能力。
 > 局部交互几何讨论更新：2026-10-30，见[精细操作](#精细操作角色身份与局部交互几何待验证)。
 
 阅读导航：[研究动机与方向](#研究动机与候选方向) → [架构](#整体架构) → [当前实现与数据](#当前实现与数据契约) → [角色方案](#角色预测与跨尺度调整) → [实验](#实验顺序)；后续查[Memory](#object-centric-memory后续未实现)、[真机部署](#真实机器人部署后续规划)、[投影扩展](#其他可选扩展未实现)。
@@ -18,7 +22,7 @@
 | 已有基础 | 可以支持的判断 | 尚待证明 |
 | --- | --- | --- |
 | `regression_state` 整体配置获用户轨迹解决确认 | 已有可继续研究的短期动作基线 | 尚无完整 run/checkpoint/定量报告，也未独立证明 q6、AdaLN、key gate 各自的贡献 |
-| O2 已有 T/R 预测、NULL/unknown 区分、soft-coarse 与局部 refine 对照 | 已有研究任务角色与局部几何的实现入口 | 尚未证明这些分支改善 OHT 连续轨迹；V4 chunk 当前仍只支持 baseline+EEF，不消费 role packet |
+| 对象条件策略已有 T/R 预测、NULL/unknown 区分、soft-coarse 与局部 refine 对照 | 已有研究任务角色与局部几何的实现入口 | 尚未证明这些分支改善 OHT 连续轨迹；V4 chunk 当前仍只支持 baseline+EEF，不消费 role packet |
 | chunk 使用实测 TCP/q6/开度、预测 key 及 coarse/refine 特征 | 可以拆开诊断状态、目标和视觉的信息作用 | key gate 仅控制显式条件，refine crop 仍受预测 key 影响；开口稳定不等于抓取/装配成功 |
 | 已有 K/dt/H 协商、GT 回放与执行诊断 | 可以区分预测误差、跟踪误差及时间预算 | 当前 HTTP 等待暂停物理，CPU 回归和离线误差不提供真实实时/闭环成功率证据 |
 
@@ -76,7 +80,7 @@
 
 ## 整体架构
 
-以下架构、实现状态与既有实验矩阵针对 RLBench O2；上节的 OHT 角色条件 chunk 仍为待实现、待验证方向。
+以下架构、实现状态与既有实验矩阵针对 RLBench 对象条件策略；上节的 OHT 角色条件 chunk 仍为待实现、待验证方向。
 
 保留 BridgeVLA 的 coarse/refine、每级三视角、共享 VLM 权重和 translation heatmap。
 当前优先验证：**以旧无序 slots 为基线，coarse 提供软语义提示，refine 独立预测局部对象。** 硬角色继承与热图残差保留为实验分支，不再作为默认有效的前提；完整动作共享特征仍是独立对照。
@@ -443,7 +447,7 @@ GT waypoint/crop teacher forcing 与推理预测 crop 的差距另行诊断；�
 
 ### 训练设置
 
-冻结范围、学习率、microbatch/有效 batch 和实际 steps 以各 YAML/overrides 为准，命令及 checkpoint 规则统一见[O2 训练](../guides/object-conditioning.md#训练)和[Loss 与 Checkpoint](../guides/object-conditioning.md#loss与checkpoint)。soft-coarse/refine 冻结 projector，joint/role-query 训练 projector，不能直接把不同配置称为单因素对照。
+冻结范围、学习率、microbatch/有效 batch 和实际 steps 以各 YAML/overrides 为准，命令及 checkpoint 规则统一见[对象条件策略训练](../guides/object-conditioning.md#训练)和[Loss 与 Checkpoint](../guides/object-conditioning.md#loss与checkpoint)。soft-coarse/refine 冻结 projector，joint/role-query 训练 projector，不能直接把不同配置称为单因素对照。
 
 架构/路由变化用 init，跨 slots→role queries 联合重置 predictor/adapter，保留兼容 backbone/action；同架构才严格 resume。base diagnostic 不是独立 baseline。配对工具只核对已读 journals，先核对预定 episodes 完整性；入口/resume 依赖限制见[代码索引](../reference/code-map.md#项目审查2026-09-29)。对象交换或指令干预检验条件依赖，不证明因果推理；成功 demos 不承诺失败恢复。
 

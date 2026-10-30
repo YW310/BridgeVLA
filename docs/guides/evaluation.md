@@ -30,7 +30,7 @@ DISPLAY 使用实际可用的显示/Xvfb 配置，不沿用脚本中机器专属
 同一路径续跑需显式 `EVAL_RESUME=1`；更换 checkpoint、配置或任务预算时使用独立实验目录。
 
 多 GPU 评估见 [8×40GB 说明](training.md#rlbench-8x40)；
-Oracle/GT replay 与训练后模型评估的差异见 [O2 评估](object-conditioning.md#closed-loop评估)。
+Oracle/GT replay 与训练后模型评估的差异见 [对象条件策略评估](object-conditioning.md#closed-loop评估)。
 
 ## COLOSSEUM
 

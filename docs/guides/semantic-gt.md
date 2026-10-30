@@ -6,7 +6,7 @@
 
 # 严格 Semantic-GT Target/Reference
 
-评估命令、成功率统计、逐步日志/视频及 heatmap/对象对齐诊断统一见[O2 操作指南](object-conditioning.md#closed-loop评估)。
+评估命令、成功率统计、逐步日志/视频及 heatmap/对象对齐诊断统一见[对象条件策略操作指南](object-conditioning.md#closed-loop评估)。
 本页仅维护数据生成、handle 验证、manifest 与 replay 契约。
 
 本流程把 RLBench 当前 phase 的语义角色写入 replay，供 Oracle adapter、relation anchor，
@@ -18,7 +18,7 @@ expert action。闭环测试使用 live success-condition predicates 选择当�
 role YAML、角色语义、`[N,3]` 点集、点数及 NULL/presence 契约。这里追求动作输入尽量一致，
 不要求 phase 边界来源完全一致。
 
-训练配置默认非严格，兼容旧 buffer 缺少新审计字段或全量报告；不会因此自动补写来源摘要。严格审计需显式开启 `oracle_semantic_audit` 和 `oracle_semantic_contract.enforce`，见[O2 指南](object-conditioning.md#数据与角色契约)。本页的数据生成、handle 认证和独立全量验证规则不变。
+训练配置默认非严格，兼容旧 buffer 缺少新审计字段或全量报告；不会因此自动补写来源摘要。严格审计需显式开启 `oracle_semantic_audit` 和 `oracle_semantic_contract.enforce`，见[对象条件策略指南](object-conditioning.md#数据与角色契约)。本页的数据生成、handle 认证和独立全量验证规则不变。
 
 ```mermaid
 flowchart LR
@@ -26,7 +26,7 @@ flowchart LR
     B --> C[严格对齐与审计]
     C --> D[重写 Oracle T/R 字段]
     D --> E[全量校验 + 抽样可视化]
-    E --> F[O2 / internal-slot 训练]
+    E --> F[对象条件策略 / internal-slot 训练]
 ```
 
 | 阶段 | 输出 | 主要函数 |
@@ -140,7 +140,7 @@ relocation 记录 `registered_centered_geometry_relocation`，shifted 记录
 输出到独立 buffer。正式几何可信的 upper-bound 实验仍应先定位并修复深度偏差，
 不能将 mask 身份验证通过描述为几何验证通过。
 
-正式 O2 upper-bound 不再使用最近距离、运动幅度、Qwen 或时域 ID 猜测角色。唯一语义
+正式对象条件策略 upper-bound 不再使用最近距离、运动幅度、Qwen 或时域 ID 猜测角色。唯一语义
 契约是 `finetune/RLBench/configs/rlbench_o2_semantic_roles.yaml`：Target 是当前未完成
 子目标中必须直接接触、抓取或控制的实体；Reference 是该子目标终止条件中与 Target
 构成空间关系的唯一物体或 site。单物体关节任务没有 Reference。一个语义实体可合并
@@ -502,6 +502,6 @@ semantic name、kind、几何来源、原始 handle 集合、`oracle_phase_sourc
 SHA-256 覆盖整个 role YAML 的原始字节，不是逐 task hash；注释/格式修改也使旧摘要不匹配。
 保持有效 buffer 与原 YAML 配套，不通过放宽 contract 或只更新摘要来宣称迁移完成。
 
-训练命令与各模式差异见 [O2 操作指南](object-conditioning.md#训练)；
+训练命令与各模式差异见 [对象条件策略操作指南](object-conditioning.md#训练)；
 checkpoint 初始化、resume、既有 demo checkpoint 的评估兼容例外见[Loss与Checkpoint](object-conditioning.md#loss与checkpoint)。
 严格模式仍拒绝不匹配的 contract；默认非严格不会要求或验证这些来源证据。checkpoint 结构兼容、数据重写工具的全量 validation、handle alignment 和 `source_alignment_validated` 检查不受此默认值影响。

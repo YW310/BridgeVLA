@@ -2,7 +2,7 @@
 
 [文档索引](../README.md) · [数据准备与契约](data.md) · [服务与执行](runtime.md)
 
-先理解数据流与张量维度，可看[交互算法总览（HTML）](../design/algorithm-overview.html)，切换到 Chunk 回归或 Flow；O2 对象分支与当前 V4 chunk 尚未接通。
+先理解数据流与张量维度，可看[交互算法总览（HTML）](../design/algorithm-overview.html)，切换到 Chunk 回归或 Flow；对象条件分支与当前 V4 chunk 尚未接通。
 
 当前主线为 **V4 → 关键目标 + 连续 EEF chunk → 离线评估 → IsaacLab**。所有命令从 BridgeVLA 仓库根目录执行，替换示例路径。数据构建/标注见 [data.md](data.md)，HTTP、客户端、GT 回放和 waypoint 执行见 [runtime.md](runtime.md)。
 
@@ -352,7 +352,7 @@ full 同为 60/40000/batch16/83300 上限，实际约 33.32 采样轮；冻结�
 
 两个固定 T/R queries 从当前渲染特征/任务上下文预测角色，coarse/refine 继承角色与几何。teacher 只监督 maps、Reference NULL 和可见表面 T/R 分离，推理不读 GT 对象；角色顺序不是持久实例 ID。
 
-`role_loss.diversity/refine_diversity` 各 0.01，后者只在 `object.refine_role_masks: true` 的局部 head 生效，该 head 默认关闭。只在可靠、可见、XYZ 一致且 footprint 不重叠的另一角色表面抑制响应，不把 NULL/unknown/遮挡当背景；允许角色共享对象区域时关闭分离或提供互斥标签。[O2 分离边界](../guides/object-conditioning.md#tr-分离监督与日志)
+`role_loss.diversity/refine_diversity` 各 0.01，后者只在 `object.refine_role_masks: true` 的局部 head 生效，该 head 默认关闭。只在可靠、可见、XYZ 一致且 footprint 不重叠的另一角色表面抑制响应，不把 NULL/unknown/遮挡当背景；允许角色共享对象区域时关闭分离或提供互斥标签。[对象条件策略分离边界](../guides/object-conditioning.md#tr-分离监督与日志)
 
 ```bash
 ROLE_CACHE=/path/to/role-teacher

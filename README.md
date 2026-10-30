@@ -75,7 +75,7 @@ GPUS_PER_NODE=2 bash train_8x40.sh --exp_cfg_path configs/rlbench_config.yaml \
 RLBench 通过环境变量设置任务和 checkpoint 路径后执行 `bash finetune/RLBench/eval.sh`，完整命令见[评估说明](docs/guides/evaluation.md#rlbench)。
 长时间测试可加 `EVAL_RESUME=1`，按 episode 自动恢复；参数签名、限制和结果位置见
 [闭环日志与恢复限制](docs/guides/object-conditioning.md#评估日志与最终统计)。
-其他 benchmark 见 [评估说明](docs/guides/evaluation.md)；O2 的 GT、预测与 no-prior 对照见 [O2 评估](docs/guides/object-conditioning.md#closed-loop评估)。
+其他 benchmark 见 [评估说明](docs/guides/evaluation.md)；对象条件策略的 GT、预测与 no-prior 对照见 [对象条件策略评估](docs/guides/object-conditioning.md#closed-loop评估)。
 
 ## 文档导航
 
@@ -88,15 +88,15 @@ RLBench 通过环境变量设置任务和 checkpoint 路径后执行 `bash finet
 | Raw 数据转 replay | [Replay 生成](docs/guides/replay.md) |
 | Oracle 实例字段、参数和排错 | [Oracle replay](docs/guides/oracle-replay.md) |
 | 严格 simulator-GT 角色标注 | [Semantic-GT](docs/guides/semantic-gt.md) |
-| O2 配置、GT/预测训练、闭环、可视化与验收 | [统一操作指南](docs/guides/object-conditioning.md) |
+| 对象条件策略配置、GT/预测训练、闭环、可视化与验收 | [统一操作指南](docs/guides/object-conditioning.md) |
 | 各 benchmark 评估命令 | [评估](docs/guides/evaluation.md) |
 | 论文结果、发布记录 | [结果与历史](docs/experiments/results.md) |
-| O2 整体架构与精简角色方案（研究设计） | [架构图](docs/design/role-relation-prior.md#整体架构) |
+| 对象条件策略整体架构与精简角色方案（研究设计） | [架构图](docs/design/role-relation-prior.md#整体架构) |
 | 无 GT 的真实机器人部署路线 | [Real-world 设计](docs/design/role-relation-prior.md#真实机器人部署后续规划) |
 | 数据流、对应函数与项目审查 | [代码索引](docs/reference/code-map.md) |
 | Object-centric policy / memory 论文调研 | [Survey](docs/research/object-centric-policy-memory.md) |
 
-完整阅读路径见 [文档索引](docs/README.md)。O2 的 GT 配置是 Oracle 上界实验；external
+完整阅读路径见 [文档索引](docs/README.md)。对象条件策略（Object-conditioned BridgeVLA，旧代号 O2）的 GT 配置是 Oracle 上界实验；external
 prediction 和 internal slots 才是无 Oracle 的部署路线。研究设计文档中的扩展方案不等同于已实现功能。
 
 <a id=experimental-results></a>

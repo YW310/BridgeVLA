@@ -72,7 +72,7 @@ GPUS_PER_NODE=2 bash train_8x40.sh --exp_cfg_path configs/rlbench_config.yaml \
 
 ### RLBench config 与数据目录
 
-配置位于 `finetune/RLBench/configs/`，决定所需字段；实际 replay 根目录由 `--train_replay_storage_dir` 指定，不按配置名自动选择。O2 必须显式传入；baseline 也建议显式指定，避免使用旧服务器默认路径。
+配置位于 `finetune/RLBench/configs/`，决定所需字段；实际 replay 根目录由 `--train_replay_storage_dir` 指定，不按配置名自动选择。对象条件策略必须显式传入；baseline 也建议显式指定，避免使用旧服务器默认路径。
 
 语义配置默认 `oracle_semantic_audit: False`、`oracle_semantic_contract.enforce: False`，兼容缺少新审计字段或只有抽样报告的旧 buffer，不要求重新生成数据；这不等于数据已通过契约验收。[严格校验 opt-in](object-conditioning.md#数据与角色契约) 仍保留。
 
@@ -90,7 +90,7 @@ GPUS_PER_NODE=2 bash train_8x40.sh --exp_cfg_path configs/rlbench_config.yaml \
 
 `config_small` 不自动绑定 TINY 数据。按用户提供的目录快照（2026-10-16），TINY buffers 仍有 18 个任务目录，实际 episode/transition 数需统计；`BridgeVLA_RLBench_TASK_OBJECT_Buffer` 只有 `close_jar`，仅用于对应单任务实验（设置 `tasks=close_jar`）。目录存在不代表已完整生成或验收通过。
 
-`BridgeVLA_RLBench_TRAIN_DATA/train` 是 raw → replay 的输入，`BridgeVLA_RLBench_EVAL_DATA` 用于闭环评估；`BridgeVLA/checkpoints` 用于初始化，`BridgeVLA/pretrain_data` 用于预训练，`semantic_role_visualizations` 不参与训练。生成与验收见 [标准 Replay](replay.md)、[启发式实例增强](oracle-replay.md)及 [Semantic-GT](semantic-gt.md)；训练／预测输入隔离见 [O2 指南](object-conditioning.md#数据与角色契约)。
+`BridgeVLA_RLBench_TRAIN_DATA/train` 是 raw → replay 的输入，`BridgeVLA_RLBench_EVAL_DATA` 用于闭环评估；`BridgeVLA/checkpoints` 用于初始化，`BridgeVLA/pretrain_data` 用于预训练，`semantic_role_visualizations` 不参与训练。生成与验收见 [标准 Replay](replay.md)、[启发式实例增强](oracle-replay.md)及 [Semantic-GT](semantic-gt.md)；训练／预测输入隔离见 [对象条件策略指南](object-conditioning.md#数据与角色契约)。
 
 <a id=rlbench-8x40></a>
 
@@ -138,8 +138,8 @@ python eval_parallel.py \
 
 The runner creates a unique run directory, merges the 18 task CSV files, and
 writes `summary.json` with the macro success rate. It does not record videos.
-It currently exposes no Oracle provider, O2 config override, or episode-resume flags;
-use [O2 evaluation](object-conditioning.md#closed-loop评估) for those runs.
+It currently exposes no Oracle provider, object-conditioning config override, or episode-resume flags;
+use [object-conditioned evaluation](object-conditioning.md#closed-loop评估) for those runs.
 
 <a id=rlbench-training-logs></a>
 

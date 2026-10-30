@@ -1,8 +1,12 @@
-# O2 操作指南：配置、训练与闭环评估
+<a id="o2-操作指南配置训练与闭环评估"></a>
+
+# 对象条件策略：配置、训练与闭环评估
 
 [文档索引](../README.md) · [统一设计](../design/role-relation-prior.md) · [Semantic-GT 数据](semantic-gt.md) · [代码索引](../reference/code-map.md)
 
-> 本页合并原 O2 模式、配置流程、GT/anchor、外部预测、internal slots 与 joint 实验说明。
+统一名称为 **Object-conditioned BridgeVLA（对象条件策略）**，旧代号为 O2。下文配置文件、模式值、checkpoint 路径和命令仍保留 `o2` 标识，不需要迁移或重新训练。
+
+> 本页合并原对象条件策略模式、配置流程、GT/anchor、外部预测、internal slots 与 joint 实验说明。
 > 描述现有代码，包含 opt-in 跨尺度继承与固定 T/R queries；跨步 memory 仍未实现。除 CI/测试外，命令从仓库根目录先 `cd finetune/RLBench`；独立示例重新指定工作目录。
 
 阅读路径：[配置](#配置选择) → [数据](#数据与角色契约) → [训练](#训练) → [Checkpoint](#loss与checkpoint) → [闭环](#closed-loop评估) → [诊断](#测试诊断与可视化) → [验证](#最小验证)。
@@ -207,7 +211,7 @@ GPUS_PER_NODE=2 bash train_8x40.sh \
 
 | Joint 配置 | 冻结 | 训练 |
 | --- | --- | --- |
-| GT | vision tower、projector、Gemma 前 6 层 | 其余 Gemma、action decoder、O2 |
+| GT | vision tower、projector、Gemma 前 6 层 | 其余 Gemma、action decoder、对象条件模块 |
 | Internal slots | vision tower、Gemma 前 18 层 | projector、其余 Gemma、action decoder、slots/adapter |
 
 沿用已有 embedding/lm_head 冻结；非 Gemma LR `4e-5`、Gemma `1e-5`。
@@ -440,7 +444,7 @@ strict 模式缺字段直接报错。低于配置 confidence 阈值则无效；
 
 | 操作 | 使用方式 |
 | --- | --- |
-| baseline → O2 / 新结构 | `--init_checkpoint`；新增 residual 输出零初始化，epoch/optimizer 重新开始 |
+| baseline → 对象条件策略 / 新结构 | `--init_checkpoint`；新增 residual 输出零初始化，epoch/optimizer 重新开始 |
 | 同架构、同路由续训 | `--resume_checkpoint` |
 | 改变路由、解冻范围或 fusion 参数组 | 不沿用旧 optimizer resume |
 | 旧 Adapter+Fusion 初始化 | init 保留 adapter，忽略已废弃 fusion tensors；其他参数差异仍校验 |
@@ -461,7 +465,7 @@ GT 用 `rlbench_gt`；独立 baseline 与 internal slots 用 `none`。
 ```bash
 cd finetune/RLBench
 
-# 普通 O2 GT / GT joint：使用训练保存的配置
+# 普通对象条件策略 GT / GT joint：使用训练保存的配置
 TASKS=place_cups MODEL_FOLDER=/path/to/o2 MODEL_NAME=model_last.pth \
 EXP_CFG_PATH=/path/to/o2/exp_cfg.yaml EVAL_DATAFOLDER=/path/to/raw_eval \
 ORACLE_PROVIDER=rlbench_gt ORACLE_STRICT=1 ORACLE_DEBUG=0 \
@@ -472,7 +476,7 @@ TASKS=place_cups MODEL_FOLDER=/path/to/predicted MODEL_NAME=model_last.pth \
 EXP_CFG_PATH=/path/to/predicted/exp_cfg.yaml EVAL_DATAFOLDER=/path/to/raw_eval \
 ORACLE_PROVIDER=none ORACLE_DEBUG=0 EVAL_RESUME=1 SAVE_VIDEO=0 VISUALIZE=0 bash eval.sh
 
-# 同一 O2 checkpoint 的 no-prior control，不是独立 baseline
+# 同一对象条件策略 checkpoint 的 no-prior control，不是独立 baseline
 ORACLE_PROVIDER=none TASKS=place_cups \
 MODEL_FOLDER=/path/to/o2 MODEL_NAME=model_last.pth \
 EXP_CFG_PATH=/path/to/o2/exp_cfg.yaml EVAL_DATAFOLDER=/path/to/raw_eval \

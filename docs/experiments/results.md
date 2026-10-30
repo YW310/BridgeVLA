@@ -4,7 +4,7 @@
 
 # Experimental Results
 
-本页保留原 BridgeVLA 发布结果，未重新计算；不是当前 O2/slots/memory 的复现实验报告。
+本页保留原 BridgeVLA 发布结果，未重新计算；不是当前对象条件策略/slots/memory 的复现实验报告。
 新增实验应保存训练配置与版本、完整 episode journals 和配对 CI；COLOSSEUM 历史统计口径限制见[评估](../guides/evaluation.md)。
 
 当前扩展的验收状态单独记录，不能用下方历史表格替代：
@@ -13,7 +13,7 @@
 | --- | --- | --- |
 | OHT regression_state | 用户确认整体配置解决本次轨迹问题；无各项改动的独立归因或新增成功率 | [已确认基线与交接](../oht/training.md#已确认基线与交接) |
 | OHT delta_state / flow_state | 已实现独立配置，不能继承 regression_state 的确认 | [当前轨迹模型](../oht/training.md#连续轨迹模型) |
-| O2 slots / 角色与跨尺度扩展 | opt-in 实现及 CPU 回归不构成闭环收益证明 | [实验与准入](../guides/object-conditioning.md#闭环统计与准入) |
+| 对象条件策略 slots / 角色与跨尺度扩展 | opt-in 实现及 CPU 回归不构成闭环收益证明 | [实验与准入](../guides/object-conditioning.md#闭环统计与准入) |
 | 跨步 object memory | 尚未实现，不提供性能结论 | [后续设计](../design/role-relation-prior.md#object-centric-memory后续未实现) |
 
 以下为原发布的三项仿真 benchmark 结果，成功率为百分比，Avg. Rank 为名次。RLBench 的两张表合计 18 个任务；Part 1 的平均值/排名是全任务统计，不是该半表的平均值。各方法的实验条件和误差项沿用原发布材料，本页未补推缺失的 seeds 或置信区间。

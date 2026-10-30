@@ -141,7 +141,7 @@ MemoryVLA 提供检索/融合/容量管理；PAM 用少量不同时间跨度 que
 
 ## 7. Motivation 与创新主张
 
-基于 OHT 状态条件回归与现有 O2 角色实现的新增问题、优先级和否定条件，统一维护在[设计中的研究动机](../design/role-relation-prior.md#研究动机与候选方向)；本页只记录相关工作对主张的限制。
+基于 OHT 状态条件回归与现有对象条件策略角色实现的新增问题、优先级和否定条件，统一维护在[设计中的研究动机](../design/role-relation-prior.md#研究动机与候选方向)；本页只记录相关工作对主张的限制。
 
 已有工作已经包含 object slots、relation queries、task-conditioned role binder、轻量 slot 适配、SSM、scene/object memory 和验证后更新。将这些模块组合不能单独构成创新，也不能把“隐式阶段”“失败恢复”“因果能力”当作架构自带属性。[SlotVLA](https://arxiv.org/html/2511.06754)、[SR-WM](https://arxiv.org/abs/2608.22294)、[STORM](https://arxiv.org/abs/2601.20381)分别限制了这些新颖性表述。
 

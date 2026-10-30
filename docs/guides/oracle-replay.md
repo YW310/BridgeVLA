@@ -7,7 +7,7 @@
 # RLBench Oracle 3D 物体 Replay 数据准备
 
 > 本节导航：[参数表](#oracle-parameters) · [关键行为与检查](#oracle-checks) ·
-> [O2 Target/Reference 训练](object-conditioning.md#gt-adapter-only)
+> [对象条件策略 Target/Reference 训练](object-conditioning.md#gt-adapter-only)
 
 `tools/augment_replay_with_oracle_objects.py` 可直接为已有 BridgeVLA replay 追加
 RLBench GT instance 点云，无需重新采集数据或重建原始 replay。脚本用每个
@@ -324,6 +324,6 @@ robot 结果会影响后续 task slot，因此刷新顺序
 --exp_cfg_opts "use_oracle_objects True oracle_max_objects 32 oracle_num_points 512"
 ```
 
-`use_oracle_objects` 默认 False；设为 True 仅声明 replay 要加载 Oracle 字段，不会自动启用某种 prior/adapter。实际模型路由由训练配置决定，张量尺寸须与生成阶段一致，见 [O2 模式选择](object-conditioning.md#gt-adapter-only)。
+`use_oracle_objects` 默认 False；设为 True 仅声明 replay 要加载 Oracle 字段，不会自动启用某种 prior/adapter。实际模型路由由训练配置决定，张量尺寸须与生成阶段一致，见 [对象条件策略模式选择](object-conditioning.md#gt-adapter-only)。
 
-> 上述启发式角色不是严格 semantic-GT。正式 O2 角色标注请继续阅读 [Semantic-GT](semantic-gt.md)。
+> 上述启发式角色不是严格 semantic-GT。正式对象条件策略角色标注请继续阅读 [Semantic-GT](semantic-gt.md)。

@@ -752,7 +752,8 @@ svg {
     <p class="eyebrow">BRIDGEVLA / ALGORITHM ATLAS</p>
     <h1>从场景理解，到动作执行</h1>
     <p>从输入、对象与关系，到 key-action 和 Action chunk。按当前代码整理 · 2026-10-30</p>
-    <p><strong>两条已实现路径，不是一条已经接通的模型：</strong>RLBench O2 使用对象条件预测关键动作；OHT V4 chunk 当前只支持 baseline + EEF，不消费 T/R role packet。</p>
+    <p class="text-small">对象条件策略 = Object-conditioned BridgeVLA；历史代号 O2 只保留在配置与兼容标识中。Target/Reference 是任务角色，Reference 可为 NULL，不是固定两个物体或固定 slot 数。</p>
+    <p><strong>两条已实现路径，不是一条已经接通的模型：</strong>RLBench 对象条件策略预测关键动作；OHT V4 chunk 当前只支持 baseline + EEF，不消费 T/R role packet。</p>
   </header>
 
   <nav class="chapter-links" aria-label="文档目录">
@@ -765,7 +766,7 @@ svg {
   </nav>
   <h2 id="interactive-overview">01 / 交互流程</h2>
   <nav class="viz-controls" aria-label="算法路径">
-    <button class="btn" type="button" data-mode="o2" aria-pressed="true">O2 · 完整流程</button>
+    <button class="btn" type="button" data-mode="o2" aria-pressed="true">对象条件策略 · 完整流程</button>
     <button class="btn" type="button" data-mode="anchor" aria-pressed="false">Anchor · 内部展开</button>
     <button class="btn" type="button" data-mode="regression" aria-pressed="false">Chunk · 回归</button>
     <button class="btn" type="button" data-mode="flow" aria-pressed="false">Chunk · Flow</button>
@@ -917,7 +918,7 @@ h_out = h + residual_gate(c) ⊙ Branch(h_mod)</pre>
         <tr><td>H / z / qₐ / A</td><td>[3B,16,16,16] / [B,3,2,16] / [B,3,16] / [B,3,16,16]</td><td>relation hidden / 按 map 池化的视觉向量 / anchor query / sigmoid 空间门控。</td></tr>
         <tr><td>Tᶜ, Tᶠ / ŵᶜ</td><td>[B,3,224,224] / [B,3]</td><td>translation logits / coarse 3D waypoint；ŵᶜ 在当前 cube 坐标。</td></tr>
         <tr><td>aᵏᵉʸ</td><td>RLBench [B,9]；OHT [B,8]</td><td>world XYZ3 + xyzw4 + open1；RLBench 再含 collision flag1。</td></tr>
-        <tr><td>sᴼ² / sᶜʰ</td><td>[B,3] / [B,14]</td><td>O2：开闭与 finger state2；chunk：实测 TCP7 + q6 + 实测开度1。</td></tr>
+        <tr><td>s_grip / sᶜʰ</td><td>[B,3] / [B,14]</td><td>对象条件策略：开闭与 finger state2；chunk：实测 TCP7 + q6 + 实测开度1。</td></tr>
         <tr><td>Xᶜʷ, Xᶠʷ / Vᶜ, Vᶠ</td><td>[B,768,3] / [B,768]</td><td>chunk patch 对应的 world 可见表面 XYZ / bool 有效性。</td></tr>
         <tr><td>𝓜 / Q</td><td>[B,1537,256] / [B,16,256]</td><td>state-chunk：1536 个视觉 tokens + 1 个状态 token / K 个动作 queries。</td></tr>
         <tr><td>Y / b / Â</td><td>[B,16,9] / [B,16] / [B,16,8]</td><td>局部平移3+rot6 / 夹爪 logits / 还原后的 world 绝对动作。</td></tr>
@@ -929,9 +930,9 @@ h_out = h + residual_gate(c) ⊙ Branch(h_mod)</pre>
 
   <details id="training" open>
     <summary>04 / 训练、推理与执行</summary>
-    <h3>O2：GT 是辅助监督，不是预测策略输入</h3>
+    <h3>对象条件策略：GT 是辅助监督，不是预测策略输入</h3>
     <p>预测角色图对照 GT T/R 点投影 prior，结合匹配、objectness 与 NULL 辅助监督；同时学习 key-action。Gaussian teacher 不是严格实例边界。标准 RLBench key-action 训练使用 GT waypoint 及其扰动构造 refine crop，部署使用预测 coarse waypoint，存在需要验收的 teacher-forcing 差异。</p>
-    <pre>L_O2 = L_key-action + λ_mask L_mask + λ_presence L_presence + 可选辅助项</pre>
+    <pre>L_obj = L_key-action + λ_mask L_mask + λ_presence L_presence + 可选辅助项</pre>
     <h3>OHT chunk：训练条件使用预测 key/crop</h3>
     <p>joint 模式另算 GT key-action loss；chunk 条件分支走 prediction-only 路径，GT key 不替换 decoder 输入。key 的离散解码和 crop 不可微；joint 可训练共享视觉特征，但不代表 chunk loss 穿过 key 的 argmax。</p>
     <pre>L_joint = λ_key L_key + L_chunk [+ λ_flow L_flow]
@@ -948,7 +949,7 @@ K = 16，Hₑ = 4；物理前缀时长 = Hₑ × Δt</pre>
   <details id="implementation-boundary" open>
     <summary>05 / 当前实现边界与配置选择</summary>
     <ul>
-      <li>O2 soft-coarse：rlbench_o2_internal_slots_soft_coarse.yaml；两级独立无序 slots，soft_coarse_queries=True，旧动作/context 路由，objectness 阈值 0.25。</li>
+      <li>对象条件策略 soft-coarse：rlbench_o2_internal_slots_soft_coarse.yaml；两级独立无序 slots，soft_coarse_queries=True，旧动作/context 路由，objectness 阈值 0.25。</li>
       <li>旧固定 T/R queries、硬继承与高分辨率 mask head 仍是独立实验；不是 soft-coarse 模式默认执行的模块。打开 shared_action_features 才让 anchor-enhanced feature 同时进入 R/G/C 的 global/local 路由。</li>
       <li>OHT 当前已获用户轨迹改善确认的基线为 oht_chunk_v4_regression_state_8x40.yaml；不等于已有完整定量闭环结果。delta_state 与 flow_state 需要独立验收。</li>
       <li>V4 chunk 目前只支持 baseline + EEF。不能在图上把 T/R → anchor → chunk 画成已实现直连；数据中有 object 标注也不会自动启用条件化。</li>
@@ -975,7 +976,7 @@ K = 16，Hₑ = 4；物理前缀时长 = Hₑ × Δt</pre>
         <tr><td>前缀执行</td><td>OHT/runtime/chunk_executor.py：ChunkExecutor.execute()</td></tr>
       </tbody>
     </table>
-    <p class="text-small">mvt/ 与 models/ 位于 finetune/bridgevla/；OHT/ 位于 finetune/。详细命令仍由现有 O2 指南与 docs/oht/ 三份文档维护。</p>
+    <p class="text-small">mvt/ 与 models/ 位于 finetune/bridgevla/；OHT/ 位于 finetune/。详细命令仍由现有对象条件策略指南与 docs/oht/ 三份文档维护。</p>
   </details>
 </main>
 
@@ -1048,7 +1049,7 @@ K = 16，Hₑ = 4；物理前缀时长 = Hₑ × Δt</pre>
     [shape('Rᶜ / Xᶜ','[B,3,3,224,224]','RGB 与 XYZ 分别各三通道'),shape('Fᶜ','[B,768,2048]','等价 [3B,2048,16,16]')],
     'mvt.MVT.render()；mvt_single.MVT.forward()');
   const crop = step('crop','解码与局部裁剪','Tᶜ → ŵᶜ → Rᶠ','[B,3] → 三视图',
-    'coarse translation logits 经跨视角 3D 解码得到 waypoint，再以它为中心缩放点云并重新渲染。Refine 重新运行共享 VLM；不是把 coarse 图直接 resize。O2 训练可能用 GT crop；OHT chunk 条件路径始终使用预测 crop。',
+    'coarse translation logits 经跨视角 3D 解码得到 waypoint，再以它为中心缩放点云并重新渲染。Refine 重新运行共享 VLM；不是把 coarse 图直接 resize。对象条件策略训练可能用 GT crop；OHT chunk 条件路径始终使用预测 crop。',
     'Tᶜ = TranslationHead(Fᶜ_conditioned)\nŵᶜ = Decode3D(Tᶜ)\nxᶠ = s_crop (xᶜ − ŵᶜ)\nFᶠ = VLM(Render₃(xᶠ), ℓ)',
     [shape('Tᶜ','[B,3,224,224]','每视角位置 logits'),shape('ŵᶜ','[B,3]','当前 cube 坐标，非 world TCP 状态'),shape('Fᶠ','[B,768,2048]','与 coarse 共用 VLM 权重')],
     'mvt.MVT.forward()；get_wpt()；trans_pc()');
@@ -1063,8 +1064,8 @@ K = 16，Hₑ = 4；物理前缀时长 = Hₑ × Δt</pre>
     'InternalObjectSlotPredictor.forward()；SoftCoarseQueryConditioner.forward()');
   const relation = suffix => step('relation-' + suffix,'关系条件与 anchor','g, qₐ, A' + suffix,'[B,17] / [B,3,16,16]',
     '旧 soft-coarse 动作路由编码采样点的中心、范围和相对位移，并用 T/R 图池化视觉特征形成 anchor query。Anchor 是 sigmoid 空间门控，增强特征；不是物体 mask、3D 点或最终 translation heatmap。其输出投影零初始化。',
-    'z_r = Σᵢ M_r(i) Hᵢ / (Σᵢ M_r(i)+ε)\nqₐ = MLP([z_T, z_R, g, sᴼ²])\nA(i) = sigmoid(qₐᵀ WₖHᵢ / √dₐ)\nF′ = F_shared + v_T Wₒ(GELU(H) ⊙ A)',
-    [shape('sᴼ²','[B,3]','当前夹爪开闭与 finger state2，不是目标 pose/phase'),shape('g','[B,17]','几何统计与有效性；不是完整物体位姿'),shape('z','[B,3,2,16]','map 池化后的视觉向量，不等同于 Z'),shape('qₐ / A','[B,3,16] / [B,3,16,16]','查询 / 空间门控'),shape('F′','[3B,2048,16,16]','translation 的增强特征')],
+    'z_r = Σᵢ M_r(i) Hᵢ / (Σᵢ M_r(i)+ε)\nqₐ = MLP([z_T, z_R, g, s_grip])\nA(i) = sigmoid(qₐᵀ WₖHᵢ / √dₐ)\nF′ = F_shared + v_T Wₒ(GELU(H) ⊙ A)',
+    [shape('s_grip','[B,3]','当前夹爪开闭与 finger state2，不是目标 pose/phase'),shape('g','[B,17]','几何统计与有效性；不是完整物体位姿'),shape('z','[B,3,2,16]','map 池化后的视觉向量，不等同于 Z'),shape('qₐ / A','[B,3,16] / [B,3,16,16]','查询 / 空间门控'),shape('F′','[3B,2048,16,16]','translation 的增强特征')],
     'OracleRelationGatedFeatureAdapter._encode_relation()；OracleRelationAnchorFeatureAdapter.forward_with_anchor()');
   const key = (oht) => step('key','最终关键动作','Tᶠ → aᵏᵉʸ',oht ? '[B,8]' : '[B,9]',
     '最终 translation head 产生高分辨率热图；先解码最终 waypoint，再在相应位置读取 R/G/C。最终 pose 还原 world 米制、单位 xyzw 四元数。Anchor 不直接执行，也不在 translation 后再融合。',
@@ -1077,7 +1078,7 @@ K = 16，Hₑ = 4；物理前缀时长 = Hₑ × Δt</pre>
     [shape('输入','[9]（单样本）','RLBench 单个完整动作'),shape('输出','下一次观测','控制步数由执行器/环境决定')],
     'RVTAgent.act()；RLBench rollout / action mode');
   const context = step('context','组合当前条件','Fᶜ,Fᶠ,Xʷ,sᶜʰ,aᵏᵉʸ','𝓜: [B,1537,256]',
-    '以下是 OHT baseline 路径，不执行 O2 slots/relation/anchor。读取当前实测 TCP、q6 和开度，合并 coarse/refine 视觉 tokens。几何先撤销真实 crop/cube 变换到 world，再转当前 TCP 局部坐标；key 为预测值，不用 GT key 替换。',
+    '以下是 OHT baseline 路径，不执行对象条件策略 slots/relation/anchor。读取当前实测 TCP、q6 和开度，合并 coarse/refine 视觉 tokens。几何先撤销真实 crop/cube 变换到 world，再转当前 TCP 局部坐标；key 为预测值，不用 GT key 替换。',
     'sᶜʰ = [TCP7, q6, opening1]\nx̃ᵢ = Rₜᵀ(xᵂᵢ − pₜ) / s_geometry\n𝓜 = [W_v Fᶜ, W_v Fᶠ, state_token]\n|𝓜| = 768 + 768 + 1 = 1537',
     [shape('sᶜʰ','[B,14]','TCP定义坐标；q6/开度归一化后编码，局部TCP固定为identity'),shape('Xᶜʷ, Xᶠʷ','各 [B,768,3]','当前观察到的 patch 表面，不是历史/补全点'),shape('Vᶜ, Vᶠ','各 [B,768] bool','缺少有效表面的 token 被 attention 屏蔽'),shape('𝓜 / XYZ / valid','[B,1537,256] / [B,1537,3] / [B,1537]','含一个始终可读的状态 token')],
     'ChunkAgent._context()；chunk_geometry_to_world()；SpatialChunkDecoder.memory()');
@@ -1100,19 +1101,19 @@ K = 16，Hₑ = 4；物理前缀时长 = Hₑ × Δt</pre>
     'ChunkExecutor.execute()；chunk_spec / validate_prediction()');
 
   const anchorSteps = [
-    step('a-input','输入空间特征与角色图','H, M, g, sᴼ²','H:[3B,16,16,16]',
+    step('a-input','输入空间特征与角色图','H, M, g, s_grip','H:[3B,16,16,16]',
       'Anchor 在原 relation-gated adapter 内，不是另一个策略。Relation hidden 保留空间网格；角色图与几何提供操作上下文。',
       'H = RelationHidden(F,M,G)\ng = [centers6, extent或spread6, displacement3, validity2]',
-      [shape('F','[3B,2048,16,16]','当前级视觉特征'),shape('H','[3B,r,16,16]，r=16','低秩关系特征'),shape('M / g / sᴼ²','[B,3,2,16,16] / [B,17] / [B,3]','角色响应、几何统计、夹爪状态')],
+      [shape('F','[3B,2048,16,16]','当前级视觉特征'),shape('H','[3B,r,16,16]，r=16','低秩关系特征'),shape('M / g / s_grip','[B,3,2,16,16] / [B,17] / [B,3]','角色响应、几何统计、夹爪状态')],
       'OracleRelationGatedFeatureAdapter._relation_components()'),
     step('a-pool','按角色加权池化','M,H → z','[B,3,2,16]',
       '得到每个视角的 T/R 视觉向量。这里的 z 维度为 r=16，而 slot predictor 的 Z 为128维；二者不能混称。无可靠 Reference 时使用占位 token；启用 role_conditioning 后才有额外 UNKNOWN/NULL 处理。',
       'z_r = Σᵢ M_r(i)Hᵢ / (Σᵢ M_r(i)+ε)',
       [shape('z_T,z_R','各 [B,3,16]','mask-pooled relation features'),shape('Z（可选额外输入）','[B,2,128]','shared-action role conditioning 时可投影加入')],
       'OracleRelationAnchorFeatureAdapter.forward_with_anchor()'),
-    step('a-query','生成查询','z,g,sᴼ² → qₐ','[B,3,16]',
+    step('a-query','生成查询','z,g,s_grip → qₐ','[B,3,16]',
       'qₐ 表示当前角色条件下如何读取空间特征，不是一个3D坐标，也没有 phase GT。可选 instruction context 来自同次 VLM；当前 soft-coarse 配置未开启该额外注入。',
-      'qₐ = MLP([z_T,z_R,g,sᴼ²])\n输入维度 = 2r + 17 + 3 = 52\n可选：qₐ += Project(text_context)',
+      'qₐ = MLP([z_T,z_R,g,s_grip])\n输入维度 = 2r + 17 + 3 = 52\n可选：qₐ += Project(text_context)',
       [shape('拼接输入','[B,3,52]','每视角2个视觉向量 + 全局几何/状态'),shape('qₐ','[B,3,16]','当前 anchor_rank=16')],
       'anchor_query_encoder；context_projection（opt-in）'),
     step('a-map','逐位置匹配','qₐ,K(H) → A','[B,3,16,16]',
@@ -1132,7 +1133,7 @@ K = 16，Hₑ = 4；物理前缀时长 = Hₑ × Δt</pre>
       'mvt_single.MVT.forward()；action_feature_routes()')
   ];
   const modes = {
-    o2: {summary:'RLBench O2 · independent slots + soft coarse hints。完整场景始终保留，refine 不继承 coarse 的硬有效性。',
+    o2: {summary:'RLBench 对象条件策略 · independent slots + soft coarse hints。完整场景始终保留，refine 不继承 coarse 的硬有效性。',
       steps:[input,coarse,slots('ᶜ',false),relation('ᶜ'),crop,slots('ᶠ',true),relation('ᶠ'),key(false),executeKey],
       edge:'实线是主数据流；Zᶜ 另外软条件化局部 Qᶠ（点“独立局部 slots”查看），不是硬继承对象或裁掉场景。'},
     anchor: {summary:'Anchor 内部展开 · 它是角色条件的空间特征增强，不是目标点、物体mask或独立的接触预测器。',
@@ -1147,7 +1148,7 @@ K = 16，Hₑ = 4；物理前缀时长 = Hₑ × Δt</pre>
   let mode = 'o2', selected = 0;
   const ns = 'http://www.w3.org/2000/svg';
   function renderCompleteContent() {
-    const labels = {o2:'O2 · 对象条件关键动作', anchor:'Anchor · 空间特征增强', regression:'Action chunk · 状态条件回归', flow:'Action chunk · 条件 Flow'};
+    const labels = {o2:'对象条件策略 · 关键动作', anchor:'Anchor · 空间特征增强', regression:'Action chunk · 状态条件回归', flow:'Action chunk · 条件 Flow'};
     for (const [name, current] of Object.entries(modes)) {
       const chapter = document.createElement('details');
       chapter.className = 'full-chapter'; chapter.id = 'full-' + name; chapter.open = true;

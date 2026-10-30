@@ -128,6 +128,14 @@ class HandbookRenderingTest(unittest.TestCase):
         self.assertIn('data-label="Model"', self.document)
         self.assertIn("Qᶠ′ = Qᶠ + W_o", self.document)
 
+    def test_canonical_policy_name_and_legacy_links_are_both_present(self):
+        self.assertIn("Object-conditioned BridgeVLA", self.document)
+        parsed = Inventory()
+        parsed.feed(self.document)
+        self.assertIn("doc-docs-guides-object-conditioning--o2-操作指南配置训练与闭环评估", parsed.ids)
+        self.assertIn("doc-docs-readme--通用环境与-rlbench--o2", parsed.ids)
+        self.assertIn("rlbench_o2_internal_slots_soft_coarse.yaml", self.document)
+
     def test_every_fenced_command_and_source_diagram_is_retained(self):
         from markdown_it import MarkdownIt
         parser = MarkdownIt("commonmark", {"html": True})

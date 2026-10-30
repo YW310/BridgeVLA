@@ -3,6 +3,7 @@
     <p class="book-eyebrow">BRIDGEVLA / THE COMPLETE HANDBOOK</p>
     <h1>理解系统，再走通实验</h1>
     <p>架构、数据、对象与关系、Action chunk、训练、部署、评估与研究依据，收进同一本手册。</p>
+    <p class="text-small">对象条件策略统一称为 Object-conditioned BridgeVLA；旧代号 O2 只保留在已有配置、接口与兼容链接中。Target/Reference 的角色含义与 NULL 契约不变。</p>
     <p class="text-small">将 docs、项目首页和 OHT 入口说明整理为连贯章节，而非按文件拼接。保留正文、命令与证据边界；新增图帮助理解数据和动作，不改变实现或验收结论。</p>
     <p class="text-small" id="book-coverage"><!--COVERAGE--></p>
   </header>
@@ -33,8 +34,8 @@
             <li><strong>共享 VLM</strong><span>coarse 全局 + refine 局部，权重共享</span></li>
           </ol>
           <div class="book-lanes">
-            <section aria-label="O2 路线">
-              <h4>RLBench O2 · 关键动作</h4>
+            <section aria-label="对象条件策略路线">
+              <h4>RLBench 对象条件策略 · 关键动作</h4>
               <ol class="book-process book-vertical">
                 <li><strong>T/R 角色表示</strong><span>Oracle、外部预测或内部 slots 三选一；Reference 可为 NULL</span></li>
                 <li><strong>relation / anchor</strong><span>保留场景，通过角色与几何增强动作特征</span></li>
@@ -50,7 +51,7 @@
               </ol>
             </section>
           </div>
-          <p class="book-boundary">当前边界：OHT V4 chunk 不消费 O2 的 T/R role packet；“角色条件 chunk”仍是待接通、待验证方向。不能把两列连成一条已实现的策略。</p>
+          <p class="book-boundary">当前边界：OHT V4 chunk 不消费对象条件策略的 T/R role packet；“角色条件 chunk”仍是待接通、待验证方向。不能把两列连成一条已实现的策略。</p>
           <p class="text-small">对应：<a href="#doc-docs-design-role-relation-prior">整体设计</a> · <a href="#doc-docs-oht-training">OHT 模型</a></p>
         </figure>
 
@@ -140,7 +141,7 @@ NULL supervision eligible</code></pre><p>监督推理使用的 NULL posterior，
           <div class="book-lanes">
             <section><h4>策略前向：部署可获得</h4><ol class="book-process book-vertical">
               <li><strong>当前观测、指令、实测状态</strong><span>预测角色 / 预测 key / 预测 crop</span></li>
-              <li><strong>动作 decoder</strong><span>O2 key-action 或 OHT chunk，各自按配置运行</span></li>
+              <li><strong>动作 decoder</strong><span>对象条件策略 key-action 或 OHT chunk，各自按配置运行</span></li>
               <li><strong>动作输出 → 执行</strong><span>部署不得读取未来 GT 或 oracle T/R teacher</span></li>
             </ol></section>
             <section class="book-teacher"><h4>辅助监督：仅训练可获得</h4><ol class="book-process book-vertical">
@@ -150,7 +151,7 @@ NULL supervision eligible</code></pre><p>监督推理使用的 NULL posterior，
             </ol></section>
           </div>
           <p class="book-boundary">标准 RLBench key-action 训练仍可使用 GT crop teacher forcing；OHT chunk 条件路径使用预测 key/crop。Oracle-GT 诊断模式则明确允许 GT 作条件，不能当预测-only 结果。</p>
-          <p class="text-small">对应：<a href="#doc-docs-guides-object-conditioning">O2 训练</a> · <a href="#doc-docs-oht-training">joint 与 frozen_key</a></p>
+          <p class="text-small">对应：<a href="#doc-docs-guides-object-conditioning">对象条件策略训练</a> · <a href="#doc-docs-oht-training">joint 与 frozen_key</a></p>
         </figure>
 
         <figure id="book-chunk-timeline" class="book-figure">
