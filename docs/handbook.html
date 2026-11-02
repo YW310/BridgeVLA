@@ -4205,6 +4205,12 @@ bash train.sh --exp_cfg_path  configs/gembench_config.yaml \
 <td><code>none</code></td>
 </tr>
 <tr>
+<td><code>internal_slots_soft_coarse_matched</code></td>
+<td>与当前 <code>internal_slots</code> 严格匹配的 2 个无序 slots</td>
+<td>除实验名外，只增加 <code>soft_coarse_queries=True</code>；用于单因素 A/B</td>
+<td><code>none</code></td>
+</tr>
+<tr>
 <td><code>semantic_gt_joint</code></td>
 <td>Semantic-GT</td>
 <td>instruction + 完整动作共享</td>
@@ -4249,6 +4255,13 @@ GPUS_PER_NODE=2 bash train_8x40.sh \
 <p>唯一新增 object-conditioning 开关为 <code>soft_coarse_queries: True</code>。refine 从自己的特征预测 masks/objectness/T/R/NULL；coarse 的两个 soft role tokens 仅作为零初始化 query 提示，不传 coarse valid、几何或投影热图。原 <code>internal_slots_refine</code> 不改，继续作为硬继承/热图残差实验。</p>
 <p>阈值恢复使用旧 slots 的 <strong>objectness 0.25</strong>，不是固定 role-query 的 mask 峰值 0.05。关闭新开关可做独立 slots 对照，但结构切换须重新 init，不能直接 resume optimizer。</p>
 <p>TensorBoard 保留旧平均指标，并新增 <code>object_slot_{coarse,refine}_{target,reference}_{confidence,valid_rate}</code>。评估用该 run 保存的 <code>exp_cfg.yaml</code>，provider 为 <code>none</code>；真实闭环收益尚未验证。</p>
+<h6 id="doc-docs-guides-object-conditioning--严格单因素-ab-配置">严格单因素 A/B 配置</h6>
+<p>使用 <a href="../finetune/RLBench/configs/rlbench_o2_internal_slots_soft_coarse_matched.yaml">rlbench_o2_internal_slots_soft_coarse_matched.yaml</a> 作为本次 B：它与仓库当前 <code>rlbench_o2_internal_slots.yaml</code> 的 YAML 及默认值合并结果相比，只改变实验名与 <code>object_conditioning.soft_coarse_queries=True</code>。保持 2 个无序 slots、旧动作路由、loss/阈值、workers、pinning 默认值、可视化间隔及冻结配置不变。原 <code>soft_coarse.yaml</code> 仍保留，它另外设置了 vision 冻结、workers、pinning 和可视化间隔，不是这组严格单因素配置。</p>
+<p>在 A 的原训练命令中，将配置参数替换为：</p>
+<pre><code class="language-bash">--exp_cfg_path configs/rlbench_o2_internal_slots_soft_coarse_matched.yaml \
+--init_checkpoint &quot;$BASE_RUN/model_last.pth&quot;
+</code></pre>
+<p>A 使用 <code>configs/rlbench_o2_internal_slots.yaml</code>，也从相同 checkpoint 用 <code>--init_checkpoint</code> 开始同预算训练；两边都重新创建 optimizer，不是一边 resume、一边 init。相同 replay、MVT 配置、seed、卡数、实际 steps 和 CLI 冻结参数必须一起保留。本配置匹配的是当前仓库基线；若 <code>09_22_03_18/exp_cfg.yaml</code> 不同，以该保存配置为准，并对 A/B 同步应用其差异。配置差异回归见 <code>tests/test_soft_coarse_matched_config.py</code>。</p>
 <p><code>rlbench_o2_semantic_roles.yaml</code> <strong>不是训练配置</strong>：它定义任务/variation 的 T/R、顺序与 NULL 语义，摘要进入数据/checkpoint contract。
 摘要是整个 YAML 文件字节的 SHA-256，不是逐 task 语义摘要；修改注释/格式也会改变 contract。
 旧 buffer 不会自动迁移，不能声称未改动的 task 仍满足新摘要；保留旧 YAML 配套运行，迁移时另行审计，不自动重写有效数据。</p>
@@ -4979,7 +4992,7 @@ python -m pytest -q tests/test_role_feature_config.py tests/test_mixed_role_supe
 隔离的 uv/PyTorch CPU 环境已通过相关回归（包括新增 role-query 配置/前向测试）；
 这不代表角色准确率或闭环收益。完整 PaliGemma/CUDA 训练和模拟器闭环仍需在目标环境验收。</p>
 <p>函数路径统一见<a href="#doc-docs-reference-code-map--policy-数据流">代码索引</a>，架构、teacher 隔离和后续设计统一见<a href="#doc-docs-design-role-relation-prior">主设计</a>。</p>
-</div><details class="doc-source"><summary>来源与维护</summary><p class="doc-provenance text-small">docs/guides/object-conditioning.md · SHA-256：9096a507e0ac</p></details></article>
+</div><details class="doc-source"><summary>来源与维护</summary><p class="doc-provenance text-small">docs/guides/object-conditioning.md · SHA-256：256a46aad5bb</p></details></article>
 <article class="book-document" id="doc-docs-oht-training"><header><h3 id="doc-docs-oht-training--oht-模型训练与评估">OHT：连续轨迹模型与训练</h3><p class="doc-introduction">先看已确认 regression_state 基线及证据边界，再看动作表示、状态注入、损失和运行命令。</p></header><nav class="doc-toc" aria-label="OHT：连续轨迹模型与训练的章节"><ul><li><a href="#doc-docs-oht-training--已确认基线与交接">已确认基线与交接</a></li><li><a href="#doc-docs-oht-training--连续轨迹模型">连续轨迹模型</a></li><li><a href="#doc-docs-oht-training--训练与评估">训练与评估</a></li><li><a href="#doc-docs-oht-training--单关键点与物体辅助">单关键点与物体辅助</a></li><li><a href="#doc-docs-oht-training--单动作表示">单动作表示</a></li></ul></nav><div class="doc-body">
 <p>先理解数据流与张量维度，可看<a href="#book-algorithm">交互算法总览（HTML）</a>，切换到 Chunk 回归或 Flow；对象条件分支与当前 V4 chunk 尚未接通。</p>
 <p>当前主线为 <strong>V4 → 关键目标 + 连续 EEF chunk → 离线评估 → IsaacLab</strong>。所有命令从 BridgeVLA 仓库根目录执行，替换示例路径。数据构建/标注见 <a href="#doc-docs-oht-data">data.md</a>，HTTP、客户端、GT 回放和 waypoint 执行见 <a href="#doc-docs-oht-runtime">runtime.md</a>。</p>
@@ -5015,7 +5028,7 @@ python -m pytest -q tests/test_role_feature_config.py tests/test_mixed_role_supe
 </tbody>
 </table>
 <h4 id="doc-docs-oht-training--已确认基线与交接">已确认基线与交接</h4>
-<p>更新日期：<strong>2026-10-29</strong>。用户确认 OHT 轨迹问题已解决，有效配置为 <a href="../finetune/OHT/configs/oht_chunk_v4_regression_state_8x40.yaml">oht_chunk_v4_regression_state_8x40.yaml</a>，后续以此为已确认有效的基线。</p>
+<p>更新日期：<strong>2026-11-02</strong>。2026-10-29 用户反馈 <a href="../finetune/OHT/configs/oht_chunk_v4_regression_state_8x40.yaml">oht_chunk_v4_regression_state_8x40.yaml</a> 的轨迹预测已有改善；后续在线测试仍报告抓取前碰边、动作抖动或跳变。当前将其作为回归调试基线，闭环任务成功尚未完成验收。</p>
 <p>这是用户对实际运行的确认，反馈未附成功 run 路径、checkpoint 或完整定量报告，复现时应补存。结论不扩展为所有任务/样本的误差统计或闭环成功率；<code>delta_state</code>、<code>flow_state</code> 尚未获得相同确认，也没有独立消融可以将效果全部归因于下列某一项。</p>
 <h5 id="doc-docs-oht-training--核心修改">核心修改</h5>
 <table>
@@ -5069,7 +5082,7 @@ python -m pytest -q tests/test_role_feature_config.py tests/test_mixed_role_supe
 <tr>
 <td><a href="../finetune/OHT/configs/oht_chunk_v4_regression_state_8x40.yaml">regression_state</a></td>
 <td>相对当前 TCP 的未来 pose</td>
-<td>确定性回归；已获用户解决确认</td>
+<td>确定性回归；轨迹改善有反馈，闭环待验证</td>
 </tr>
 <tr>
 <td><a href="../finetune/OHT/configs/oht_chunk_v4_delta_state_8x40.yaml">delta_state</a></td>
@@ -5442,6 +5455,11 @@ python -u -m finetune.OHT.eval open-loop \
 <p>先检查少量样本可加 <code>--limit 8 --visualize-every 1</code>，正式去掉 limit；默认每 50 样本保存图，0 关闭。报告/图片用新路径，默认图目录为 <code>&lt;报告名&gt;_visualizations/</code>。V4 <code>index.html/sample_*/chunk.png/npz</code> 展示轨迹及可用 coarse/refine 图，JSON 按未来 offset 统计误差、有效数与 key 指标。</p>
 <p>PNG 热图逐视图拉伸，不能用颜色比较置信度。采样计时含诊断载荷采集、图片写盘在外；<code>--progress-interval 5</code> 调心跳，<code>--quiet</code> 关闭。首次推理可能构建反投影缓存，结合后续速度和 GPU 指标判断，不以心跳证明 GPU 正在计算。</p>
 <p>离线误差不等于闭环成功率；闭环、模型/GT 回放、任务评分与自定义工厂见 <a href="#doc-docs-oht-runtime">runtime.md</a>。原生客户端默认 <code>--score none</code> 不报成功率，实际成绩须有真实初始化、成功条件和完整 cases，失败保留分母。</p>
+<p>open-loop 每次从记录的真实当前观测预测，上一预测不会改变下一输入；closed-loop 的下一观测则来自
+实际执行后的状态，跟踪偏差、接触和预测误差都可能改变后续条件。默认 K=16、dt=1/60 只覆盖约
+0.267 秒，短片段位置误差小不能单独证明任务会持续推进；应同时查看前 H 项误差、运动方向及
+保持当前 TCP 的对照。离线准确而在线来回摆动时，优先核对同状态下的 RGB-D/本体输入、实际跟踪
+及相邻 chunk 的同时间预测变化。<a href="#doc-docs-oht-runtime--v4-chunk">可选时间对齐融合</a> 用于减轻重规划抖动，不能替代这些核对。</p>
 <h5 id="doc-docs-oht-training--本地验证">本地验证</h5>
 <p>按变化范围选测试；本次文档合并没有重跑 GPU 或历史整组测试。动作、归一化和状态回归入口：</p>
 <pre><code class="language-bash">python -m pytest -q \
@@ -5575,7 +5593,7 @@ agent:
 </code></pre>
 <p>相对继承路径按该 YAML 目录解析。向量模式必须关闭全局 transform_augmentation；action 的 hidden_dim 默认 256，translation/rotation/joint scale 默认 1，auxiliary_translation_weight 默认 1 且需大于 0。这些 scale 是训练归一化，输出还原物理单位，不是控制器 gain。adapter_only 时新动作头仍训练。</p>
 <p>checkpoint 保存完整动作配置，strict load/resume 拒绝不匹配；显式 init 可迁移骨干并在动作设置改变时重建回归头，必须重训。不能只改 EEF 配置就部署为 joint；预算/卡数/RNG 限制沿用<a href="#doc-docs-oht-training--初始化与续训">初始化与续训</a>。完整 CUDA/IsaacLab 四模式仍需现场验收。</p>
-</div><details class="doc-source"><summary>来源与维护</summary><p class="doc-provenance text-small">docs/oht/training.md · SHA-256：f33106e89f69</p></details></article>
+</div><details class="doc-source"><summary>来源与维护</summary><p class="doc-provenance text-small">docs/oht/training.md · SHA-256：c805709cc68c</p></details></article>
 </section>
 <section class="book-part" id="book-part-4"><h2>4 / 评估、部署与执行</h2><a class="text-small" href="#handbook-home">↑ 全书目录</a>
 <article class="book-document" id="doc-docs-guides-evaluation"><header><h3>Benchmark 闭环评估</h3><p class="doc-introduction">RLBench、COLOSSEUM 和 GemBench 的评估入口；对象条件策略的诊断与统计细节见对象条件策略专节。</p></header><nav class="doc-toc" aria-label="Benchmark 闭环评估的章节"><ul><li><a href="#doc-docs-guides-evaluation--rlbench">RLBench</a></li><li><a href="#doc-docs-guides-evaluation--colosseum">COLOSSEUM</a></li><li><a href="#doc-docs-guides-evaluation--gembench">GemBench</a></li></ul></nav><div class="doc-body"><blockquote>
@@ -5702,6 +5720,15 @@ GPU_ID=1 bash finetune/OHT/vla_server.sh \
 <p><code>--model-path</code> 接受 checkpoint 文件或含 model_last.pth 的 run 目录；<code>--checkpoint</code> 为互斥别名。
 <code>GPU_ID=1</code> 选物理卡 1，进程内仍用 cuda:0。<code>serve.sh</code> 是同一服务的兼容启动入口。
 模型结构、数据契约、动作、相机和渲染配置从 checkpoint 读取，不另传一份训练 YAML。</p>
+<p>使用 <code>train_quantile</code> 本体状态归一化的 spatial chunk 模型，会在模型输入侧对齐实测关节角的
+<code>2π</code> 分支：当该关节的训练统计区间跨度小于一整圈时，选择最接近训练 <code>center</code> 的等价角。
+例如训练 elbow 约为 <code>+1.68 rad</code>，IsaacLab 上报 <code>−4.60 rad</code>，会先对齐再归一化。
+<code>center ± scale</code> 是分位数统计区间，不是硬限位，不能用来开关分支对齐。
+越出统计区间时仍保留对齐，归一化值允许超出 <code>[-1, 1]</code>，不会截断或突然切回原始角度。
+这不是把所有关节包装到 <code>[-π, π]</code>；多圈统计区间不自动选择分支。
+同一路径用于训练、离线评估和在线推理，原始观测、TCP、夹爪开度及控制器关节角保持原值。
+推理首次发生调整时，server 输出 <code>Chunk joint input aligned to training branch</code>，记录原始角度、
+对齐角度和归一化值。已有 checkpoint 可直接使用，无需重建数据或重新训练；更新代码后重启 server。</p>
 <table>
 <thead>
 <tr>
@@ -5803,7 +5830,7 @@ python /home/yiwei/BridgeVLA/tools/oht_bridgevla_client.py \
 </tr>
 <tr>
 <td><code>--data-profile</code></td>
-<td>task 无法唯一匹配时，从 model_info.raw_observation.data_profiles 显式选择</td>
+<td>自动匹配服务公布的 task 或普通/<code>-seg</code> 任务目录名；唯一且无任务限制的 profile 也自动选择；多个候选时从 model_info.raw_observation.data_profiles 显式选择</td>
 </tr>
 <tr>
 <td><code>--episodes / --max-steps</code></td>
@@ -5819,7 +5846,7 @@ python /home/yiwei/BridgeVLA/tools/oht_bridgevla_client.py \
 </tr>
 <tr>
 <td><code>--keep-open-on-error</code></td>
-<td>episode 出错后保存记录并保留 GUI，不再控制；headless 不等待，错误仍返回 1</td>
+<td>启动检查或 episode 出错后保存记录，环境已创建时保留 GUI，不再控制；headless 不等待，错误仍以非零状态退出</td>
 </tr>
 <tr>
 <td><code>--log-interval</code></td>
@@ -5830,6 +5857,24 @@ python /home/yiwei/BridgeVLA/tools/oht_bridgevla_client.py \
 <p>场景预设 oht-v4 与训练 replay/checkpoint 的 chunk V4 是两个版本概念。
 注册 ID 的 OSC-v2 后缀不能证明实际 USD 版本。joint 模式选匹配的 registry 关节位置环境，
 不能直接用上述 OSC 预设。body_offset 与 link_to_tcp 各只应用一次。</p>
+<h5 id="doc-docs-oht-runtime--普通版与分割版-data-profile">普通版与分割版 data profile</h5>
+<p>四个任务均支持普通目录 <code>&lt;task&gt;/lerobot_dataset</code> 和分割目录 <code>&lt;task&gt;-seg/lerobot_dataset</code>，例如
+<code>disassemble_left/lerobot_dataset</code> 与 <code>disassemble_left-seg/lerobot_dataset</code>。
+客户端优先按服务公布的 task 匹配，未声明 task 时解析这两种目录名；仅有一个且无任务限制的
+profile（如 <code>default</code>、<code>.</code>、<code>lerobot_dataset</code>）也可自动选择。</p>
+<p>同一 checkpoint 中普通版与分割版都匹配当前任务时，必须显式指定 <code>--data-profile</code>，不会任选一项。
+先在 IsaacLab 服务器查询当前 checkpoint 公布的完整名称：</p>
+<pre><code class="language-bash">curl -fsS http://109.105.46.126:8004/model_info | python -c '
+import json, sys
+for name, spec in json.load(sys.stdin)[&quot;raw_observation&quot;][&quot;data_profiles&quot;].items():
+    print(name, &quot;task=&quot;, spec.get(&quot;task&quot;))
+'
+</code></pre>
+<p>在上面的 client 启动命令中增加 <code>--data-profile disassemble_left/lerobot_dataset</code>（普通版），
+或 <code>--data-profile disassemble_left-seg/lerobot_dataset</code>（分割版）；名称必须存在于查询结果中，
+并与实际部署所需的训练数据标定一致。该参数选择 checkpoint 中保存的数据标定，不切换模型权重。</p>
+<p>旧代码漏识别 <code>-seg</code> 后缀，可能在进入仿真前报 <code>Select --data-profile explicitly from /model_info</code>。
+此兼容修复不改变数据或模型格式，无需重建 replay 或重新训练；部署时同步两端代码并重启服务。</p>
 <p><a id="doc-docs-oht-runtime--HTTP与观测协议"></a></p>
 <h4 id="doc-docs-oht-runtime--http-与观测协议">HTTP 与观测协议</h4>
 <p>新 HTTP 外层版本为 bridgevla_predict_v1；旧 /act 结构不同，不能只更改端口后混用。
@@ -6030,7 +6075,26 @@ OSC 将 TCP 目标还原到控制点，再变换到实时 robot-root，构造 7 
 action_dt 必须是 env.step_dt 的正整数倍；首段从本次实测 TCP 开始，
 相邻 tick 间线性插值位置、SLERP 姿态；夹爪到该项 tick 才切换，中间保持上一命令。
 执行前 H 项后丢弃后缀、重新观察，不等待关键点到位或夹爪稳定。
-每个控制步检查跟踪误差；超限、硬限位异常或任务/环境停止后不继续后缀。</p>
+每个控制步发送命令前、执行后都检查跟踪误差；超限、硬限位异常或任务/环境停止后不继续后缀。
+异常目标在发送前已超限时，不先执行一次再停止；<code>execution.tracking_check_phase</code> 记录
+<code>before_step</code> / <code>after_step</code>，<code>execution.errors</code> 保留触发检查的实际误差。
+<code>before_step</code> 停止时的 <code>target</code> 是被拒绝的目标；可视化可能显示它，但不代表已经发送了该控制步。
+这些阈值是跟踪停止门槛，不是碰撞检查或精度保证，也不会把错误预测修正到正确路径。</p>
+<p>默认执行器直接消费新预测前缀。<code>regression_state</code> 的训练期
+时序卷积只关联同一 chunk 内的动作，不能保证相邻请求的预测连续。发生抖动时，应先对照原始
+预测、已发送目标与实测 TCP，区分预测边界变化和控制响应；不要直接跨不同未来时刻平均位姿。</p>
+<p>可在 policy chunk 客户端添加 <code>--chunk-temporal-ensemble</code> 做可选的时间对齐融合，无需修改
+checkpoint 或重训。按观测的仿真 timestamp 对齐重叠未来点：例如执行 H=4 后，新预测第 1 点
+应与上一预测第 5 点对应。位置加权平均，姿态采用 SO(3) 加权均值，夹爪始终保留最新预测。
+旧预测权重为 <code>exp(-decay * age_ticks)</code>；只融合夹爪相同、且与最新预测位置/姿态差异在门槛内的点。
+过期、时间不对齐或明显不一致的预测不参与融合，不外推缺失轨迹。历史缓存保留原始预测并逐 episode 清空。
+该选项默认关闭，GT replay 与单目标模式不支持；它不能修正持续偏位、观测错误或提供碰撞规划。
+<code>run.json.chunk_temporal_ensemble</code> 记录设置；episode 的 <code>action</code> 仍为原始预测，
+<code>ensemble_action</code> 为融合后的 K 点，<code>temporal_ensemble</code> 记录逐点参与数、排除数与最大调整量。
+实际执行的前缀长度看 <code>execution</code>；server 网页仍显示原始预测，IsaacSim 红线显示客户端控制目标。</p>
+<p>周期比按现有浮点容差与最近的正整数比较。例如记录的 <code>action_dt=0.01666666666666572</code>
+和仿真的 <code>env.step_dt=1/60</code> 都对应一个控制步；比值略小于 1 时也接受，不修改 checkpoint
+或重建 replay。真正短于控制周期或非整数倍且超出容差的配置仍在启动时拒绝，错误会列出两个周期及比值。</p>
 <table>
 <thead>
 <tr>
@@ -6050,6 +6114,22 @@ action_dt 必须是 env.step_dt 的正整数倍；首段从本次实测 TCP 开�
 <tr>
 <td>--chunk-max-tracking-rotation</td>
 <td>0.5 rad，姿态误差上限</td>
+</tr>
+<tr>
+<td>--chunk-temporal-ensemble</td>
+<td>默认关闭，启用同一未来时刻的跨 chunk 融合</td>
+</tr>
+<tr>
+<td>--chunk-ensemble-decay</td>
+<td>0.1，每个控制 tick 的旧预测权重衰减系数</td>
+</tr>
+<tr>
+<td>--chunk-ensemble-max-translation</td>
+<td>0.02 m，旧/最新预测允许融合的位置差异</td>
+</tr>
+<tr>
+<td>--chunk-ensemble-max-rotation</td>
+<td>0.15 rad，旧/最新预测允许融合的姿态差异</td>
 </tr>
 <tr>
 <td>--execution-mode</td>
@@ -6357,12 +6437,20 @@ score task 要求真实 success_term/evaluator_factory，或用 success-term 指
 <td>checkpoint 路径、部署/契约身份、请求状态、轮转摘要和分段耗时</td>
 </tr>
 <tr>
+<td>client startup.json</td>
+<td>启动阶段与 starting/ready/failed 状态；客户端记录 profile、执行模式、chunk_spec 和环境控制周期，捕获的启动错误含 error/traceback，在关闭 Isaac Sim 前保存</td>
+</tr>
+<tr>
 <td>client run.json / control_diagnostics.json</td>
 <td>实际 USD、scene/config 来源、TCP 变换、控制尺度、顺序、夹爪物理端点及是否关闭 time_out</td>
 </tr>
 <tr>
 <td>episode_*.json</td>
-<td>action、实际 commands、measured_before/after、errors_before/after、stop_reason</td>
+<td>episode 结束时保存完整 action、实际 commands、measured_before/after、errors_before/after、stop_reason</td>
+</tr>
+<tr>
+<td>episode_*.jsonl</td>
+<td>运行中逐条追加并关闭刷新：episode_start、发指令前的 prediction、完成后的 action、episode_end；无需等 episode 结束</td>
 </tr>
 <tr>
 <td>execution</td>
@@ -6394,6 +6482,21 @@ score task 要求真实 success_term/evaluator_factory，或用 success-term 指
 </tr>
 </tbody>
 </table>
+<p>若窗口还在运行而没有 <code>episode_0000.json</code>，先看同一 <code>--output</code> 目录的
+<code>episode_0000.jsonl</code>，而不是反复等待最终 JSON。<code>prediction</code> 只证明模型已返回目标，
+不证明动作已经执行；<code>action</code> 含完成后的实测与误差。日志按行追加，不逐步重写全部历史。
+正常 episode 结束或 Ctrl+C 收尾后仍生成完整 JSON；Ctrl+C 记录 <code>stop_reason=interrupted</code> 并退出，
+即使设置 keep-open-on-error 也不继续留窗等待。原生崩溃或强制结束可绕过 Python finally，
+因此最终 JSON 可能缺失；JSONL 已完成的行仍可用于排查，崩溃中的最后一行可能不完整。</p>
+<p>窗口在 <code>native env=... cameras=...</code> 后退出且没有预测记录时，先读 <code>startup.json</code>。
+这行只代表原生环境与相机已建立，后续还有环境 reset、overlay、控制 bridge、chunk 时序和控制诊断检查。
+捕获的 Python 启动异常会先打印并保存，再关闭仿真；环境已返回客户端时，可增加 <code>--keep-open-on-error</code>
+保留 GUI。若进程被终止或发生原生崩溃，文件可能停在 starting，需结合退出码及 Kit 日志末尾判断，
+不能仅根据材质/相机 warning 或历史 minidump 提示认定本次崩溃原因。</p>
+<p>GT replay 默认不绑定相机，所以不带 <code>--replay-cameras</code> 的 replay 正常，不能验证在线 RGB-D 路径。
+可先用在线 client 命令配合新输出目录和 <code>--dry-run</code> 检查启动（不预测、不执行控制，TCP overlay 也关闭）；
+通过后去掉 dry-run、保留 <code>--no-visualize</code> 测试真实策略，区分启动检查、overlay 与预测/执行阶段。
+<code>--no-visualize</code> 只关闭仿真中的 TCP overlay，保留 GUI 和模型所需的 RGB-D 相机。</p>
 <p>夹爪正开/负关的命令验证与物理端点方向验证分开记录；相反标定会在 reset/predict/env.step 前停止，
 不自动反号。ee-pose-source 必须按 checkpoint 采集定义选择，不能从历史字段名 ee_link_pose 猜参考点。
 注册 Camera 开启实时位姿更新；USD 外参检查记录实际来源，不硬编码 90° 补偿。
@@ -6408,8 +6511,14 @@ relative EEF 解码绝对目标；joint 只画实测 TCP/辅助热图，不伪�
 CPU writer 最多两个任务，满时跳过；PNG/NPZ/JSON 完成后发布 latest，可视化错误不重跑模型。
 每次启动独立 visualizations/run-* 目录；原始 RGB-D 会增加磁盘与拷贝开销。
 GUI 默认显示 TCP/目标轨迹，no-visualize 关闭，visualize-history 默认 200；
+绿线记录实测 TCP，红线记录绝对控制目标，两者每个控制步更新（chunk 内也逐步记录）。
+红线不是完整 K 点未来预测：当前 H 步执行前缀会跨请求连接，重新预测的目标有变化时红线也会变化。
+两种颜色的 TCP 还带 4 cm 姿态坐标轴短线；这些短线不表示平移路径。
 采集前清除标记，快照完成后恢复，防止其进入模型图像。缺 debug-draw 时降级继续。
 latest 可能早于当前 step，应按 episode/step 对照，不把旧诊断当作刚执行的动作。</p>
+<p>USD 相机的 <code>cameraProjection</code> 按 Replicator 行向量约定解码，主点偏移来自 <code>[2,0]</code> / <code>[2,1]</code>。
+偏心相机若误用 <code>[0,2]</code> / <code>[1,2]</code> 会造成点云空间偏移；居中相机的结果不受这处索引修复影响。
+矩阵约定见 <a href="https://nvidia-omniverse.github.io/ovrtx/sensors/cameras/decoding_outputs.html#camera-parameters">NVIDIA CameraParams</a>。</p>
 <p><a id="doc-docs-oht-runtime--检查与-replay-烟测"></a></p>
 <p>在 BridgeVLA 根目录使用匹配 replay 做 HTTP 烟测，无其他客户端占用该服务：</p>
 <pre><code class="language-bash">python tools/smoke_oht_vla_server.py \
@@ -6424,7 +6533,7 @@ CUDA 前向、传感器/接触和闭环成功率仍须真实服务器验证；CP
 <a href="../finetune/OHT/isaaclab_client.py">isaaclab_client.py</a>、<a href="../finetune/OHT/runtime">runtime</a>。
 协议与执行回归集中在 test_oht_vla_server、test_oht_isaaclab_http、test_oht_chunk_pipeline、
 test_oht_waypoint_executor 和 test_oht_policy_initialization；本页不将历史测试数量当作当前验收成绩。</p>
-</div><details class="doc-source"><summary>来源与维护</summary><p class="doc-provenance text-small">docs/oht/runtime.md · SHA-256：78484b7c337e</p></details></article>
+</div><details class="doc-source"><summary>来源与维护</summary><p class="doc-provenance text-small">docs/oht/runtime.md · SHA-256：bf08118bc809</p></details></article>
 </section>
 <section class="book-part" id="book-part-5"><h2>5 / 研究依据与边界</h2><a class="text-small" href="#handbook-home">↑ 全书目录</a>
 <article class="book-document" id="doc-docs-research-object-centric-policy-memory"><header><h3 id="doc-docs-research-object-centric-policy-memory--object-centric-policy--memory-调研">相关工作：可以借鉴什么，不能推导什么</h3><p class="doc-introduction">保留原调研版本、监督前提与局限，不将论文方法或历史代码状态视为当前实验结论。</p></header><nav class="doc-toc" aria-label="相关工作：可以借鉴什么，不能推导什么的章节"><ul><li><a href="#doc-docs-research-object-centric-policy-memory--1-先明确需要解决的问题">1. 先明确需要解决的问题</a></li><li><a href="#doc-docs-research-object-centric-policy-memory--2-相关工作与适用条件">2. 相关工作与适用条件</a></li><li><a href="#doc-docs-research-object-centric-policy-memory--3-深读后影响设计的结论">3. 深读后影响设计的结论</a></li><li><a href="#doc-docs-research-object-centric-policy-memory--4-与当前代码和数据的差距">4. 与当前代码和数据的差距</a></li><li><a href="#doc-docs-research-object-centric-policy-memory--5-推荐的最小方案与后续-memory">5. 推荐的最小方案与后续 memory</a></li><li><a href="#doc-docs-research-object-centric-policy-memory--6-实验应怎样证明有效">6. 实验应怎样证明有效</a></li><li><a href="#doc-docs-research-object-centric-policy-memory--7-motivation-与创新主张">7. Motivation 与创新主张</a></li><li><a href="#doc-docs-research-object-centric-policy-memory--8-阅读与复现实验优先级">8. 阅读与复现实验优先级</a></li><li><a href="#doc-docs-research-object-centric-policy-memory--9-oht-连续轨迹与执行的相关工作边界">9. OHT 连续轨迹与执行的相关工作边界</a></li></ul></nav><div class="doc-body">
@@ -8158,5 +8267,5 @@ prediction 和 internal slots 才是无 Oracle 的部署路线。研究设计文
 })();
 </script>
 
-<script type="application/json" id="book-source-manifest">[{"source": "docs/design/role-relation-prior.md", "id": "doc-docs-design-role-relation-prior", "sha256": "39fe889916d8b44feb7c43a1283b6d8ea230262432e415795d5d3469f77e7a5a"}, {"source": "docs/guides/replay.md", "id": "doc-docs-guides-replay", "sha256": "d48a1fc97615472cd72bec9ab8d885ace93eed715da3ff3990a3a91fdfc60f47"}, {"source": "docs/guides/oracle-replay.md", "id": "doc-docs-guides-oracle-replay", "sha256": "842cafb030c3eb9a0ac8c206e6731935dea08c212d25392edb22215b9247731c"}, {"source": "docs/guides/semantic-gt.md", "id": "doc-docs-guides-semantic-gt", "sha256": "dd0d68b21a56fc7199cae4fd85fb83adc7142533e4a95900a254957871a0f5e7"}, {"source": "docs/oht/data.md", "id": "doc-docs-oht-data", "sha256": "d9e69d746df03ebb2bd276d62aedd1969f0a66e8efcb1dc77715ae56b4c57d72"}, {"source": "docs/guides/installation.md", "id": "doc-docs-guides-installation", "sha256": "d92f5023ee6d51a7401e7cd1bce861840f76077842d4e47ac770632771c52ee7"}, {"source": "docs/guides/training.md", "id": "doc-docs-guides-training", "sha256": "c9eb30c6b87f19d33533b65446258db97b58ab1e9b2d578431e33db8c0404114"}, {"source": "docs/guides/object-conditioning.md", "id": "doc-docs-guides-object-conditioning", "sha256": "9096a507e0ac2014e9218b28e906bfefc3f87d988293a5cf099f9861bd9eb9b9"}, {"source": "docs/oht/training.md", "id": "doc-docs-oht-training", "sha256": "f33106e89f694f98b3eac159264cbc39076046744e90ea663d27d2ee28cf964a"}, {"source": "docs/guides/evaluation.md", "id": "doc-docs-guides-evaluation", "sha256": "38bf662bb3e1914cb834965820bf31715e2429cf3f9327f6a86b6aa586833aee"}, {"source": "docs/oht/runtime.md", "id": "doc-docs-oht-runtime", "sha256": "78484b7c337e0c64a1ec13699b960645004fd1dd51247e5c8b5400ee5095922e"}, {"source": "docs/research/object-centric-policy-memory.md", "id": "doc-docs-research-object-centric-policy-memory", "sha256": "a9c2ebc5db0ddc90c05d9a81796573ac6e124bf50e957dc96232cc34f8197808"}, {"source": "docs/experiments/results.md", "id": "doc-docs-experiments-results", "sha256": "b8c24c690e67e406fed54fe51c2a217d23b32ca6cce3c357d92c68bf9a71ae3d"}, {"source": "docs/reference/code-map.md", "id": "doc-docs-reference-code-map", "sha256": "f3b760f41472f286758c116e572e882b6ee8b6405c51a28e112bd8d11c8cb005"}, {"source": "README.md", "id": "doc-readme", "sha256": "0d899c2ae6a9d8f73647ccc33a61b4e0d89bede90b5899ce3995ca839cdd3391"}, {"source": "finetune/OHT/README.md", "id": "doc-finetune-oht-readme", "sha256": "a6472eadf30576a5f37797f94e69a016c35b45c0f317c63334c2eaf73321d5ad"}, {"source": "docs/README.md", "id": "doc-docs-readme", "sha256": "ee3621da40bbad52abb9764a91eba04842257ce7b983900f92b0a9601d80e72e"}, {"source": "docs/assets/algorithm-overview.fragment.html", "sha256": "d229a285623a00a9701b1a125127772cef70658c6827b49b4224fd86ae48ecb4"}]</script><noscript>所有 Markdown 正文均可直接阅读；节点交互和动态生成的算法逐步说明需要启用 JavaScript。</noscript>
+<script type="application/json" id="book-source-manifest">[{"source": "docs/design/role-relation-prior.md", "id": "doc-docs-design-role-relation-prior", "sha256": "39fe889916d8b44feb7c43a1283b6d8ea230262432e415795d5d3469f77e7a5a"}, {"source": "docs/guides/replay.md", "id": "doc-docs-guides-replay", "sha256": "d48a1fc97615472cd72bec9ab8d885ace93eed715da3ff3990a3a91fdfc60f47"}, {"source": "docs/guides/oracle-replay.md", "id": "doc-docs-guides-oracle-replay", "sha256": "842cafb030c3eb9a0ac8c206e6731935dea08c212d25392edb22215b9247731c"}, {"source": "docs/guides/semantic-gt.md", "id": "doc-docs-guides-semantic-gt", "sha256": "dd0d68b21a56fc7199cae4fd85fb83adc7142533e4a95900a254957871a0f5e7"}, {"source": "docs/oht/data.md", "id": "doc-docs-oht-data", "sha256": "d9e69d746df03ebb2bd276d62aedd1969f0a66e8efcb1dc77715ae56b4c57d72"}, {"source": "docs/guides/installation.md", "id": "doc-docs-guides-installation", "sha256": "d92f5023ee6d51a7401e7cd1bce861840f76077842d4e47ac770632771c52ee7"}, {"source": "docs/guides/training.md", "id": "doc-docs-guides-training", "sha256": "c9eb30c6b87f19d33533b65446258db97b58ab1e9b2d578431e33db8c0404114"}, {"source": "docs/guides/object-conditioning.md", "id": "doc-docs-guides-object-conditioning", "sha256": "256a46aad5bb430020738b4d71341156d2b74d902b3669eaf83ea90f2756de73"}, {"source": "docs/oht/training.md", "id": "doc-docs-oht-training", "sha256": "c805709cc68c72731954043d0876f3492de69f757a5b610c564cb2c47bfb6935"}, {"source": "docs/guides/evaluation.md", "id": "doc-docs-guides-evaluation", "sha256": "38bf662bb3e1914cb834965820bf31715e2429cf3f9327f6a86b6aa586833aee"}, {"source": "docs/oht/runtime.md", "id": "doc-docs-oht-runtime", "sha256": "bf08118bc809b2ac4a2eb93ff9fed6ec7d3004020493359fc05cac1ecffa956e"}, {"source": "docs/research/object-centric-policy-memory.md", "id": "doc-docs-research-object-centric-policy-memory", "sha256": "a9c2ebc5db0ddc90c05d9a81796573ac6e124bf50e957dc96232cc34f8197808"}, {"source": "docs/experiments/results.md", "id": "doc-docs-experiments-results", "sha256": "b8c24c690e67e406fed54fe51c2a217d23b32ca6cce3c357d92c68bf9a71ae3d"}, {"source": "docs/reference/code-map.md", "id": "doc-docs-reference-code-map", "sha256": "f3b760f41472f286758c116e572e882b6ee8b6405c51a28e112bd8d11c8cb005"}, {"source": "README.md", "id": "doc-readme", "sha256": "0d899c2ae6a9d8f73647ccc33a61b4e0d89bede90b5899ce3995ca839cdd3391"}, {"source": "finetune/OHT/README.md", "id": "doc-finetune-oht-readme", "sha256": "a6472eadf30576a5f37797f94e69a016c35b45c0f317c63334c2eaf73321d5ad"}, {"source": "docs/README.md", "id": "doc-docs-readme", "sha256": "ee3621da40bbad52abb9764a91eba04842257ce7b983900f92b0a9601d80e72e"}, {"source": "docs/assets/algorithm-overview.fragment.html", "sha256": "d229a285623a00a9701b1a125127772cef70658c6827b49b4224fd86ae48ecb4"}]</script><noscript>所有 Markdown 正文均可直接阅读；节点交互和动态生成的算法逐步说明需要启用 JavaScript。</noscript>
 </body></html>
