@@ -112,6 +112,7 @@ def main(argv=None):
                 state_conditioning=settings['state_conditioning'],
                 proprio_normalization=settings['proprio_normalization'],
                 key_condition_gate=settings['key_condition_gate'],
+                spatial_key_token=settings['spatial_key_token'],
                 prediction_representation=settings['prediction_representation'])), flush=True)
             if config.get('chunk_normalization'):
                 write_json(output / 'chunk_normalization.json', config['chunk_normalization'])

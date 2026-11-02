@@ -246,6 +246,37 @@ chunk_spec 声明 schema、horizon K、execute_horizon H、action_dt、
 frame=world、quaternion_order=xyzw、reference_point=tcp、gripper=1=open,0=close、action_size=8。
 time_offsets 固定为 dt,2dt,…,Kdt。执行的是 actions 前 H 项，key_action 不是轨迹替代物。
 
+`delta_state` 与 `regression_state` 使用相同的 HTTP/client 动作协议。前者的逐步增量只在
+模型内部累积一次：平移增量使用本次初始 TCP 的轴，旋转增量依次做 SO(3) 复合；server
+输出的仍是绝对 world TCP pose。client 不再累积、加当前 TCP 或切换到 relative_eef。
+server 按 checkpoint 中保存的 config 建模，不读取客户端当前打开的 YAML。
+
+部署 `oht_chunk_v4_delta_state_8x40.yaml` 训练的权重时，先核对实际服务：
+
+```bash
+curl -fsS http://109.105.46.126:8004/model_info | python -c '
+import json, sys
+m = json.load(sys.stdin)
+p = m.get("chunk_policy") or {}
+print("checkpoint:", m.get("checkpoint"))
+print("model_id:", m.get("model_id"))
+for k in ("decoder_type", "prediction_representation", "state_conditioning",
+          "proprio_normalization", "action_position_scale", "proprio_center", "proprio_scale"):
+    print(k + ":", p.get(k))
+print("chunk_spec:", m.get("chunk_spec"))'
+```
+
+预期为 `decoder_type=regression`、`prediction_representation=delta_pose`、
+`state_conditioning=true`，归一化尺度与 center/scale 应是该 checkpoint 训练后保存的数值。
+`contract_sha256` 绑定数据契约，不能单独证明模型使用 delta/relative/flow 中的哪种表示。
+client 在启动模拟器前保存完整 `model_info.json` 并打印模型信息；`run.json` 同时记录
+checkpoint 和 chunk_policy，便于核对真正运行的权重。无需为 delta 更换 client 执行器。
+
+空间 key guidance 对照使用 `oht_chunk_v4_delta_state_guided_8x40.yaml` 训练的新 checkpoint。
+`chunk_policy.spatial_key_token=true` 由 server 按 checkpoint 恢复；目标 token/XYZ 引导在模型内部，
+HTTP 仍返回绝对 world TCP，client 不额外朝 key 插值。该对照需新 run 训练，方法和命令见
+[training.md](training.md#独立空间关键目标引导新增对照)。
+
 | HTTP 状态 | 含义 |
 | --- | --- |
 | 400 / 422 | 无效 JSON / 字段、观测或 prediction schema 不匹配 |
@@ -528,6 +559,7 @@ score task 要求真实 success_term/evaluator_factory，或用 success-term 指
 | 文件 / 现象 | 检查 |
 | --- | --- |
 | server info.json / requests.jsonl | checkpoint 路径、部署/契约身份、请求状态、轮转摘要和分段耗时 |
+| client model_info.json | 启动模拟器前保存服务的完整模型信息，含 checkpoint、chunk_policy、归一化数值和动作协议 |
 | client startup.json | 启动阶段与 starting/ready/failed 状态；客户端记录 profile、执行模式、chunk_spec 和环境控制周期，捕获的启动错误含 error/traceback，在关闭 Isaac Sim 前保存 |
 | client run.json / control_diagnostics.json | 实际 USD、scene/config 来源、TCP 变换、控制尺度、顺序、夹爪物理端点及是否关闭 time_out |
 | episode_*.json | episode 结束时保存完整 action、实际 commands、measured_before/after、errors_before/after、stop_reason |

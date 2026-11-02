@@ -137,6 +137,10 @@ def test_builtin_default_launches_and_runs_http(fixture, replay_fixture, tmp_pat
     metadata = json.loads((output / 'run.json').read_text(encoding='utf-8'))
     assert metadata['runtime_factory'] == 'finetune.OHT.runtime.isaaclab_factory:create_runtime'
     assert metadata['dry_run'] is False
+    advertised = json.loads((output / 'model_info.json').read_text(encoding='utf-8'))
+    assert metadata['checkpoint'] == advertised['checkpoint']
+    assert metadata['model_id'] == advertised['model_id']
+    assert metadata['chunk_policy'] is None
     assert metadata['reference_client'] is None and metadata['camera_source'] == 'sensors'
     assert metadata['ee_link'] == 'tool'
     summary = json.loads((output / 'summary.json').read_text(encoding='utf-8'))
@@ -192,6 +196,8 @@ def test_client_chunk_ensemble_is_opt_in_and_preserves_raw_predictions(fixture, 
             super().__init__('http://testserver', opener=opener)
             self.chunk_spec = chunk_spec({'horizon': 4, 'execute_horizon': 2}, {'chunk': {'action_dt': env.step_dt}})
             self.info['chunk_spec'] = self.chunk_spec
+            self.info['chunk_policy'] = dict(decoder_type='regression', prediction_representation='delta_pose',
+                                             proprio_center=[0.] * 6 + [.5], proprio_scale=[1.] * 6 + [.5])
 
         def predict(self, tensors, instruction, timestamp, **kwargs):
             link = tensors['ee_link_pose']
@@ -210,6 +216,10 @@ def test_client_chunk_ensemble_is_opt_in_and_preserves_raw_predictions(fixture, 
             *(['--chunk-temporal-ensemble'] if enabled else [])]) == 0
     record = json.loads((output / 'episode_0000.json').read_text(encoding='utf-8'))
     run = json.loads((output / 'run.json').read_text(encoding='utf-8'))
+    advertised = json.loads((output / 'model_info.json').read_text(encoding='utf-8'))
+    assert run['chunk_policy'] == advertised['chunk_policy']
+    assert run['chunk_policy']['prediction_representation'] == 'delta_pose'
+    assert run['checkpoint'] == advertised['checkpoint']
     assert env.common_step_counter == 4 and record['stop_reason'] == 'max_steps'
     if enabled:
         assert run['chunk_temporal_ensemble']['alignment'] == 'simulation_timestamp'

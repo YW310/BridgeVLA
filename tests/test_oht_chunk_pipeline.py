@@ -209,12 +209,42 @@ def test_open_loop_chunk_exports_current_scene_without_changing_predictions(chun
             np.testing.assert_array_equal(saved[key], value)
 
 
-@pytest.mark.parametrize('goal_conditioning', ['absolute', 'relative_tcp'])
-def test_chunk_prepared_http_and_native_client_negotiate_explicit_actions(chunk_fixture, tmp_path, goal_conditioning):
-    agent, data, _ = agent_data(chunk_fixture, training=False)
+@pytest.mark.parametrize('goal_conditioning,representation,spatial_key_token', [
+    ('absolute', None, False), ('relative_tcp', None, False),
+    ('relative_tcp', 'delta_pose', False), ('relative_tcp', 'delta_pose', True)])
+def test_chunk_prepared_http_and_native_client_negotiate_explicit_actions(
+        chunk_fixture, tmp_path, goal_conditioning, representation, spatial_key_token):
+    from scipy.spatial.transform import Rotation
+    if representation == 'delta_pose':
+        from tests.test_oht_chunk_state import state_config
+        from tests.test_oht_chunk_temporal import temporal_agent
+        config = state_config(representation=representation)
+        config['chunk_policy']['spatial_key_token'] = spatial_key_token
+        agent, data, config = temporal_agent(chunk_fixture.root, config=config)
+        agent._net_mod.eval()
+    else:
+        agent, data, config = agent_data(chunk_fixture, training=False)
     agent.settings['goal_conditioning'] = goal_conditioning
     policy = Policy(agent, data.contract, 'cpu', 'baseline')
+    policy.training_config = config
     sample = data[0]
+    expected = None
+    if representation == 'delta_pose':
+        # Known per-tick increments under a nonidentity initial TCP. Expected
+        # world poses are computed independently of the model's decode method.
+        sample['tcp_pose'] = np.r_[[.4, .1, .8], Rotation.from_euler('xyz', [20, -30, 60], degrees=True).as_quat()].astype(np.float32)
+        increment = Rotation.from_euler('z', 2, degrees=True)
+        with torch.no_grad():
+            head = agent._net_mod.decoder.head
+            head.weight.zero_()
+            head.bias[:3] = torch.tensor([.1, -.05, .025])
+            matrix = increment.as_matrix()
+            head.bias[3:9] = torch.tensor(np.r_[matrix[:, 0], matrix[:, 1]])
+            head.bias[9] = 1.
+        initial = Rotation.from_quat(sample['tcp_pose'][3:7])
+        expected = np.stack([np.r_[sample['tcp_pose'][:3] + initial.apply(
+            np.array([.1, -.05, .025]) * agent.settings['action_position_scale'] * tick),
+            (initial * increment ** tick).as_quat(), 1.] for tick in range(1, 5)])
     observation = {key: value for key, value in sample.items() if key in
         {'low_dim_state', 'tcp_pose', 'joint_positions', 'gripper_open01'} or any(key.endswith('_' + suffix)
         for suffix in ('rgb', 'depth', 'point_cloud', 'camera_intrinsics', 'camera_extrinsics'))}
@@ -234,6 +264,11 @@ def test_chunk_prepared_http_and_native_client_negotiate_explicit_actions(chunk_
         result = response.json()
         assert 'action' not in result and np.shape(result['actions']) == (4, 8)
         validate_prediction(result, info['chunk_spec'])
+        if expected is not None:
+            assert info['chunk_policy']['prediction_representation'] == 'delta_pose'
+            assert info['chunk_policy']['decoder_type'] == 'regression'
+            assert info['chunk_policy']['spatial_key_token'] is spatial_key_token
+            np.testing.assert_allclose(result['actions'], expected, atol=3e-7)
         assert client.post('/predict', json=body).status_code == 409
 
         class Opener:
@@ -265,14 +300,22 @@ def test_chunk_prepared_http_and_native_client_negotiate_explicit_actions(chunk_
                         name + '_pose': np.r_[transform[:3, 3], quat[[3, 0, 1, 2]]].astype(np.float32)})
         actions, reply = native.predict(raw, sample['goal'], 0., task=data.samples[0]['task'], data_profile=profile)
         assert actions.shape == (4, 8) and native.step == 1 and not native.uncertain
+        if expected is not None:
+            np.testing.assert_allclose(actions, expected, atol=3e-7)
+            bridge, sent = fake_bridge(info['chunk_spec']['action_dt'], sample['tcp_pose'])
+            executor = ChunkExecutor(bridge, info['chunk_spec'])
+            executor.execute(actions, {})
+            assert executor.last_result['consumed_actions'] == 2
+            # Client sends absolute world TCPs without another cumsum or transform.
+            np.testing.assert_allclose([target for target, _ in sent], expected[:2], atol=3e-7)
         request = dict(**envelope(info, 'other', 'different'), step=0, timestamp=1., instruction=sample['goal'],
                        observation_format=OBSERVATION_FORMAT, observation=pack_observation(observation),
                        prediction_schema=info['chunk_spec']['schema'])
         assert client.post('/predict', json=request).status_code == 409
 
 
-def fake_bridge(control_dt=.01):
-    state = np.array([0., 0, .5, 0, 0, 0, 1])
+def fake_bridge(control_dt=.01, start_pose=None):
+    state = np.array([0., 0, .5, 0, 0, 0, 1] if start_pose is None else start_pose, dtype=float)
     sent = []
     bridge = SimpleNamespace(client=SimpleNamespace(action_config={'mode': 'eef'}),
         env=SimpleNamespace(step_dt=control_dt), last_done=False, last_stopped=False, last_target=None)

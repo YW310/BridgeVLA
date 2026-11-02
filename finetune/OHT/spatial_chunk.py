@@ -36,7 +36,7 @@ class RelativeAttention(nn.Module):
         self.query, self.key, self.value, self.output = (nn.Linear(dim, dim) for _ in range(4))
         self.bias = nn.Sequential(nn.Linear(4, dim), nn.SiLU(), nn.Linear(dim, heads))
 
-    def forward(self, query, memory, query_xyz, memory_xyz, memory_valid):
+    def forward(self, query, memory, query_xyz, memory_xyz, memory_valid, memory_log_prior=None):
         batch, count, dim = query.shape
         split = lambda value: value.reshape(batch, -1, self.heads, dim // self.heads).transpose(1, 2)
         delta = memory_xyz[:, None] - query_xyz[:, :, None]
@@ -45,6 +45,8 @@ class RelativeAttention(nn.Module):
         # context without raw large cube coordinates dominating attention.
         relative = torch.cat((delta / (1 + distance), distance.log1p()), -1)
         bias = self.bias(relative).permute(0, 3, 1, 2)
+        if memory_log_prior is not None:
+            bias = bias + memory_log_prior[:, None, None, :]
         bias = bias.masked_fill(~memory_valid[:, None, None], float('-inf'))
         value = F.scaled_dot_product_attention(split(self.query(query)), split(self.key(memory)),
                     split(self.value(memory)), attn_mask=bias,
@@ -64,7 +66,7 @@ class SpatialBlock(nn.Module):
             nn.init.zeros_(self.modulation[-1].weight)
             nn.init.zeros_(self.modulation[-1].bias)
 
-    def forward(self, query, xyz, memory, positions, valid, time=None):
+    def forward(self, query, xyz, memory, positions, valid, time=None, memory_log_prior=None):
         if self.modulation is not None:
             if time is None:
                 raise ValueError('AdaLN block requires a conditioning vector')
@@ -74,13 +76,13 @@ class SpatialBlock(nn.Module):
             query = query + gate1 * self.self_attention(normalized, normalized, xyz, xyz,
                                             torch.ones_like(xyz[..., 0], dtype=torch.bool))
             normalized = self.norms[1](query) * (1 + scale2) + shift2
-            query = query + gate2 * self.cross_attention(normalized, memory, xyz, positions, valid)
+            query = query + gate2 * self.cross_attention(normalized, memory, xyz, positions, valid, memory_log_prior)
             normalized = self.norms[2](query) * (1 + scale3) + shift3
             return query + gate3 * self.ffn(normalized)
         normalized = self.norms[0](query)
         query = query + self.self_attention(normalized, normalized, xyz, xyz,
                                            torch.ones_like(xyz[..., 0], dtype=torch.bool))
-        query = query + self.cross_attention(self.norms[1](query), memory, xyz, positions, valid)
+        query = query + self.cross_attention(self.norms[1](query), memory, xyz, positions, valid, memory_log_prior)
         return query + self.ffn(self.norms[2](query))
 
 
@@ -93,6 +95,7 @@ class SpatialChunkDecoder(nn.Module):
         chunk_scale(settings, 'action_position_scale')
         self.is_flow = settings['decoder_type'] == 'flow_matching'
         self.direct_state = settings.get('state_conditioning', False)
+        self.spatial_key_token = settings.get('spatial_key_token', False)
         self.delta_pose = settings.get('prediction_representation', 'relative_pose') == 'delta_pose'
         normalized = settings.get('proprio_normalization', 'none') != 'none'
         if normalized and settings.get('proprio_center') is None:
@@ -173,16 +176,25 @@ class SpatialChunkDecoder(nn.Module):
         features.append(state_token[:, None])
         positions.append(torch.zeros_like(state[:, None, :3]))
         validity.append(torch.ones_like(state[:, :1], dtype=torch.bool))
-        if not self.direct_state:
+        if not self.direct_state or self.spatial_key_token:
             features.append(goal_token[:, None])
             positions.append(relative_goal[:, None, :3])
             validity.append(torch.ones_like(state[:, :1], dtype=torch.bool))
         memory = torch.cat(features, 1), torch.cat(positions, 1).to(dtype), torch.cat(validity, 1)
         if self.direct_state:
-            # Explicit key information has one gated route. Refine visual
-            # features still retain their existing predicted-key crop.
+            # The legacy condition stays intact; optional spatial guidance also
+            # exposes the key as a separate, gated cross-attention memory token.
             gate = self.key_gate_logit.sigmoid() if self.key_gate_logit is not None else 1.
             memory += (state_token + gate * goal_token,)
+            if self.spatial_key_token:
+                # Apply the gate to attention probability, not just token values:
+                # a zero-valued token would still leak its key/XYZ through logits.
+                # Normalize its prior against the number of other valid tokens
+                # so adding views/patches does not dilute the one goal token.
+                count = memory[2][:, :-1].sum(-1).to(dtype)
+                key_prior = F.logsigmoid(self.key_gate_logit) + count.log()
+                memory += (torch.cat((state_token.new_zeros(memory[2].shape[0], memory[2].shape[1] - 1),
+                                      key_prior[:, None].to(dtype)), -1),)
         return memory
 
     def field(self, pose, tau, memory):
@@ -200,8 +212,9 @@ class SpatialChunkDecoder(nn.Module):
         xyz = pose[..., :3].cumsum(1) if self.delta_pose else pose[..., :3]
         xyz = xyz * (chunk_scale(self.settings, 'action_position_scale') /
                                 chunk_scale(self.settings, 'geometry_scale'))
+        attention_options = {'memory_log_prior': memory[4]} if self.spatial_key_token else {}
         for block in self.blocks:
-            query = block(query, xyz, features, positions, valid, time)
+            query = block(query, xyz, features, positions, valid, time, **attention_options)
         if self.temporal is not None:
             query = query + self.temporal(query.transpose(1, 2)).transpose(1, 2)
         raw = self.head(query)

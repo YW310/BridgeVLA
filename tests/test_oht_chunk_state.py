@@ -319,6 +319,11 @@ def test_state_training_checkpoint_and_deployed_predictions_exclude_future_label
     load_weights(other, checkpoint)
     np.testing.assert_array_equal(agent.predict(sample, sample['goal'])['actions'], other.predict(sample, sample['goal'])['actions'])
     # Changing normalization/representation must not silently reuse old decoder weights.
+    if kind == 'regression':
+        other.settings['prediction_representation'] = 'relative_pose' if representation == 'delta_pose' else 'delta_pose'
+        with pytest.raises(ValueError, match='mismatch'):
+            load_weights(other, checkpoint)
+        other.settings['prediction_representation'] = representation
     other.settings['proprio_center'] = [v + .01 for v in other.settings['proprio_center']]
     with pytest.raises(ValueError, match='mismatch'):
         load_weights(other, checkpoint)

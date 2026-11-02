@@ -311,7 +311,14 @@ def _run(args, reference_args):
                                               'finetune.OHT.runtime.isaaclab_factory:create_runtime')
     reference, env, records, worker, markers = None, None, [], None, None
     output.mkdir(parents=True)
+    # Persist the actual server identity before launching the simulator. A data
+    # contract alone cannot distinguish delta, relative-pose and flow checkpoints.
+    write_json(output / 'model_info.json', client.info)
+    print(f'[BridgeVLA] model: checkpoint={client.info.get("checkpoint")} '
+          f'model_id={client.info["model_id"]} '
+          f'chunk_policy={json.dumps(client.info.get("chunk_policy"), ensure_ascii=False)}', flush=True)
     startup_state = dict(status='starting', phase='runtime', data_profile=profile,
+                         model_id=client.info['model_id'], checkpoint=client.info.get('checkpoint'),
                          execution_mode=args.execution_mode, chunk_spec=getattr(client, 'chunk_spec', None))
     def report_startup(phase):
         startup_state['phase'] = phase
@@ -397,6 +404,7 @@ def _run(args, reference_args):
                    execution_mode=args.execution_mode, waypoint_options=asdict(waypoint.options) if waypoint else None,
                    motion_path='direct_target_tracking_no_collision_planner',
                    model_id=client.info['model_id'], contract_sha256=client.info['contract_sha256'],
+                   checkpoint=client.info.get('checkpoint'), chunk_policy=client.info.get('chunk_policy'),
                    action_spec=client.info['action_spec'], data_profile=profile, task_settings=settings,
                    chunk_spec=getattr(client, 'chunk_spec', None),
                    chunk_execute_horizon=chunk_executor.horizon if chunk_executor else None,

@@ -14,7 +14,7 @@ DEFAULTS = dict(enabled=False, horizon=16, execute_horizon=4, hidden_dim=256,
                 second_difference_weight=0., second_difference_scale=.001,
                 state_conditioning=False, proprio_normalization='none',
                 proprio_center=None, proprio_scale=None, proprio_min_scale=.1,
-                key_condition_gate=False, key_condition_gate_init=.1,
+                key_condition_gate=False, key_condition_gate_init=.1, spatial_key_token=False,
                 prediction_representation='relative_pose')
 
 
@@ -74,13 +74,15 @@ def chunk_settings(config, contract=None):
         raise ValueError('chunk_policy.spatial_conditioning must be boolean')
     if result['decoder_type'] not in ('regression', 'flow_matching'):
         raise ValueError('chunk_policy.decoder_type must be regression or flow_matching')
-    for name in ('state_conditioning', 'key_condition_gate'):
+    for name in ('state_conditioning', 'key_condition_gate', 'spatial_key_token'):
         if type(result[name]) is not bool:
             raise ValueError(f'chunk_policy.{name} must be boolean')
     if result['state_conditioning'] and not (result['spatial_conditioning'] and result['adaln']):
         raise ValueError('Direct state conditioning requires spatial_conditioning=true and adaln=true')
     if result['key_condition_gate'] and not result['state_conditioning']:
         raise ValueError('Key condition gate requires state_conditioning=true')
+    if result['spatial_key_token'] and not (result['state_conditioning'] and result['key_condition_gate']):
+        raise ValueError('Spatial key token requires state_conditioning=true and key_condition_gate=true')
     if not 0 < result['key_condition_gate_init'] < 1:
         raise ValueError('chunk_policy.key_condition_gate_init must be between 0 and 1')
     if result['proprio_normalization'] not in ('none', 'train_quantile') or result['proprio_min_scale'] <= 0:

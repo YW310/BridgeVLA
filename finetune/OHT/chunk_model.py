@@ -430,7 +430,8 @@ def load_chunk_weights(agent, checkpoint, initialize=False):
                            'displacement_weight', 'displacement_scale', 'goal_conditioning',
                            'flow_weight', 'flow_steps', 'flow_inference_seed', 'flow_time_sampling',
                            'position_loss_scale', 'second_difference_weight', 'second_difference_scale',
-                           'normalization_quantile', 'normalization_min_scale', 'normalization_max_samples'}:
+                           'normalization_quantile', 'normalization_min_scale', 'normalization_max_samples',
+                           'spatial_key_token'}:
                 state = checkpoint['model_state']
                 if 'goal_conditioning' in changed:
                     # Same dimensions, different meaning: relearn only the goal
@@ -439,6 +440,13 @@ def load_chunk_weights(agent, checkpoint, initialize=False):
                     for name, value in agent._net_mod.state_dict().items():
                         if name.startswith('decoder.goal.'):
                             state[name] = value
+                if 'spatial_key_token' in changed and agent.settings['spatial_key_token']:
+                    # A previously suppressed key gate must not silence the new
+                    # route before its first training update. Other compatible
+                    # encoder/decoder weights are retained for this new run.
+                    state = dict(state)
+                    state['decoder.key_gate_logit'] = agent._net_mod.decoder.key_gate_logit.detach().clone()
+                    print('Chunk initialization: spatial key token enabled; key gate reset to configured initial value', flush=True)
                 agent._net_mod.load_state_dict(state, strict=True)
             else:
                 encoder = {key.removeprefix('encoder.'): value for key, value in checkpoint['model_state'].items()

@@ -60,6 +60,7 @@
 | --- | --- | --- |
 | [regression_state](../../finetune/OHT/configs/oht_chunk_v4_regression_state_8x40.yaml) | 相对当前 TCP 的未来 pose | 确定性回归；轨迹改善有反馈，闭环待验证 |
 | [delta_state](../../finetune/OHT/configs/oht_chunk_v4_delta_state_8x40.yaml) | 逐步平移/旋转增量 | 回归后累积，监督完整轨迹 |
+| [delta_state_guided](../../finetune/OHT/configs/oht_chunk_v4_delta_state_guided_8x40.yaml) | 同 delta_state，增加独立空间 key token | 新增目标引导对照，尚未验证闭环收益 |
 | [flow_state](../../finetune/OHT/configs/oht_chunk_v4_flow_state_8x40.yaml) | 相对当前 TCP 的未来 pose | conditional flow matching |
 
 三组共用 coarse/refine 视觉、实测本体状态、相对 key、三维 attention、AdaLN、时序卷积与物理监督。当前只支持 `mode=baseline`、`action_mode=eef`，不接历史帧、role cache、异步执行或碰撞规划。
@@ -83,9 +84,33 @@ c = time_embedding(tau) + s + sigmoid(key_gate_logit) * g
 
 `c` 同时加入初始 queries 和各层 AdaLN 的 self-attention、cross-attention、FFN 调制。AdaLN 残差 gate 零初始化时，状态仍能通过初始 queries 影响输出。回归 tau=1；flow tau 是生成时间，与未来物理时间 `k*action_dt` 不同。
 
-保留一个始终有效的状态 memory token；全部视觉 patch 无效时仍可读状态。显式 key 只有 gate 这条路径，不另作未门控 memory/XYZ token；gate 初值 0.1，记录为 `chunk_key_condition_gate`。refine 仍依赖 key 裁剪，gate 接近 0 不等于网络完全不使用 key。
+保留一个始终有效的状态 memory token；全部视觉 patch 无效时仍可读状态。原 state 配置的显式 key 只有上述 gate 路径；gate 初值 0.1，记录为 `chunk_key_condition_gate`。refine 仍依赖 key 裁剪，gate 接近 0 不等于网络完全不使用 key。
 
-q6 使用 train 1%/99% 分位数的中点/半区间归一化，scale 下限 0.1 rad；实测夹爪固定 center=0.5、scale=0.5。不裁剪分位区间外值，也不改变关节角分支；原始 TCP 状态保留用于坐标恢复。
+### 独立空间关键目标引导（新增对照）
+
+`oht_chunk_v4_delta_state_guided_8x40.yaml` 继承 delta_state，仅启用
+`chunk_policy.spatial_key_token=true`。原配置默认 false，旧 checkpoint 按原路径加载。
+
+```text
+预测 key pose/gripper → 相对当前 TCP 编码 → 独立 goal memory token
+                                   └→ TCP-local XYZ / geometry_scale
+coarse/fine 特征 + 实测状态 token ────────────┤
+                                           ↓
+                   每层三维 cross-attention → delta chunk → world TCP
+```
+
+目标 token 与场景 patch 使用相同的 TCP 局部几何坐标，读取的是本次模型预测的 key；
+原有 `s + gate*g` queries/AdaLN 条件保留。新 token 的 attention logits 增加
+`log(sigmoid(key_gate_logit)) + log(N)`，N 是其余有效 memory token 数（包括状态 token）。
+这样只增加无效 patch 或改变有效 patch 数不会单凭数量稀释目标的 attention 先验；实际权重仍由
+内容、空间 bias 和 gate 共同决定，gate=0.1 不代表实际 attention 固定为 10%。
+门控趋近 0 时，新 token 的语义和 XYZ 路径一起关闭；视觉全无效时仍保留状态 token，避免全屏蔽 attention。
+
+训练 loss、数据、K/H、冻结和预算继承 delta_state；不加入朝 key 的直线插值、每步距离递减或
+窗口终点到达约束，因此允许示范中的绕行。预测离散 key/crop 仍 detach，新增条件不把 chunk
+梯度反传到离散关键目标坐标。该实验需要新 run 训练，现有 V4 replay 可直接复用，无需重建数据。
+
+q6 使用 train 1%/99% 分位数的中点/半区间归一化，scale 下限 0.1 rad；实测夹爪固定 center=0.5、scale=0.5。不裁剪分位区间外值；scale<π 的关节仅在模型特征中对齐到最接近训练中心的 2π 分支，原始测量和物理控制不变。原始 TCP 状态保留用于坐标恢复。
 
 ### 几何与空间 attention
 
@@ -203,6 +228,21 @@ GPUS_PER_NODE=2 bash finetune/OHT/train_8x40.sh \
 
 delta/flow 对照分别改为 `oht_chunk_v4_delta_state_8x40.yaml`、`oht_chunk_v4_flow_state_8x40.yaml`，并用新 EXP；初始化来源和 seed 保持一致。joint 不要求旧 OHT checkpoint，复用 encoder 时另加 `--init-checkpoint /path/to/model_last.pth`。
 
+新增的空间 key guidance 对照可直接运行：
+
+```bash
+GPUS_PER_NODE=2 bash finetune/OHT/train_8x40.sh \
+  --config finetune/OHT/configs/oht_chunk_v4_delta_state_guided_8x40.yaml \
+  --replay "$OUT/replay-source-v4" --pretrain-path "$PRETRAIN" \
+  --log-dir "$OUT/runs" --exp-id oht-seg-v4-delta-state-guided-s0
+```
+
+已有相同数据/归一化的 delta_state 权重时，可额外加
+`--init-checkpoint /path/to/delta-state/model_last.pth` 做新实验：保留兼容 encoder/decoder 权重，
+启用新空间 token 时将共享 key gate 重置为配置初值 0.1，避免继承旧实验已接近关闭的 gate。
+这会重新开始 optimizer/采样；不能用旧实验的 `--resume` 来切换 guidance。
+训练日志打印 `spatial_key_token=true`，server 从新 checkpoint 自动恢复此设置，client 动作协议不变。
+
 ### 预算与卡数
 
 | 当前三组共用设置 | 值 |
@@ -229,7 +269,7 @@ delta/flow 对照分别改为 `oht_chunk_v4_delta_state_8x40.yaml`、`oht_chunk_
 | 新实验初始化 | `--init-checkpoint /path/to/model_last.pth` | 兼容权重，optimizer/采样重新开始 |
 | 原实验续训 | `--resume /path/to/model_last.pth` | 模型、optimizer、已完成采样位置 |
 
-结构、状态/本体归一化或动作尺度变化时 init 新 run，保留 encoder、重建 decoder；仅允许的 loss/采样设置变化可保留 decoder，边界由 `load_chunk_weights()` 检查。单关键点 checkpoint 只初始化匹配 data profiles/标定的 encoder，不能 resume 为 chunk。frozen_key 必须加载已训练网络。
+结构、状态/本体归一化或动作尺度变化时 init 新 run，保留 encoder、重建 decoder；允许的 loss/采样设置变化可保留 decoder。`spatial_key_token` 只改变路由，可在 init 新 run 时保留兼容 decoder，首次启用时重置共享 key gate；边界由 `load_chunk_weights()` 检查。单关键点 checkpoint 只初始化匹配 data profiles/标定的 encoder，不能 resume 为 chunk。frozen_key 必须加载已训练网络。
 
 ```bash
 RUN=/path/to/actual/run
