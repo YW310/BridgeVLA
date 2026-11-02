@@ -26,6 +26,10 @@ class ChunkExecutor:
         self.max_translation_error, self.max_rotation_error = max_translation_error, max_rotation_error
         self.last_result = None
 
+    def _tracking_failed(self, errors):
+        return (errors['translation_m'] > self.max_translation_error or
+                errors['rotation_rad'] > self.max_rotation_error)
+
     def execute(self, actions, measured, after_step=None):
         bridge = self.bridge
         actions = validate_prediction(dict(actions=actions, key_action=actions[0]), self.spec)['actions']
@@ -34,6 +38,7 @@ class ChunkExecutor:
         commands, consumed = [], 0
         last_gripper = int(opening)
         status = 'completed'
+        errors, check_phase = None, None
         bridge.last_done = bridge.last_stopped = False
         for tick, action in enumerate(actions[:self.horizon]):
             rotations = Slerp([0., 1.], Rotation.from_quat(np.stack((start[3:7], action[3:7]))))
@@ -49,16 +54,20 @@ class ChunkExecutor:
                 if hard and hard['outside']:
                     status = 'joint_limit'
                     break
+                errors, check_phase = bridge.tracking_errors(before), 'before_step'
+                if self._tracking_failed(errors):
+                    status = 'tracking_error'
+                    break
                 commands.extend(bridge.step_target(target, grip, after_step))
                 last_gripper = grip
                 if sub == self.substeps:
                     consumed = tick + 1
                 state = bridge.measured_state()
-                errors = bridge.tracking_errors(state)
+                errors, check_phase = bridge.tracking_errors(state), 'after_step'
                 if bridge.last_done or bridge.last_stopped:
                     status = 'environment_done' if bridge.last_done else 'task_stopped'
                     break
-                if (errors['translation_m'] > self.max_translation_error or errors['rotation_rad'] > self.max_rotation_error):
+                if self._tracking_failed(errors):
                     status = 'tracking_error'
                     break
             if status != 'completed':
@@ -68,6 +77,7 @@ class ChunkExecutor:
         self.last_result = dict(status=status, completed=status in ('completed', 'environment_done', 'task_stopped'),
                                 steps=len(commands), consumed_actions=consumed, requested_actions=self.horizon,
                                 action_dt=self.spec['action_dt'], control_substeps=self.substeps,
+                                errors=errors, tracking_check_phase=check_phase,
                                 last_commanded_gripper=last_gripper,
                                 discarded_suffix=self.spec['horizon'] - consumed)
         return commands

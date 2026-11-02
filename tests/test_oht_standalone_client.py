@@ -362,7 +362,7 @@ def test_camera_binding_is_unambiguous():
 def test_projection_and_usd_units_match_metric_geometry():
     projection = np.eye(4)
     projection[0, 0], projection[1, 1] = 2., 3.
-    projection[0, 2], projection[1, 2] = .2, -.1
+    projection[2, 0], projection[2, 1] = .2, -.1
     params = dict(cameraProjection=projection, renderProductResolution=[640, 480], cameraModel='pinhole')
     np.testing.assert_allclose(projection_intrinsics(params, 640, 480), [[640, 0, 256], [0, 720, 216], [0, 0, 1]])
     with pytest.raises(ValueError, match='resolution'):
@@ -376,6 +376,22 @@ def test_projection_and_usd_units_match_metric_geometry():
     value = usd_rigid_matrix(None, Usd, geom, .01)
     np.testing.assert_allclose(value[:3, :3], np.eye(3))
     np.testing.assert_allclose(value[:3, 3], [1., 2., 3.])
+
+
+@pytest.mark.parametrize('offset', [(0., 0.), (.2, -.1), (-.15, .3)])
+def test_camera_intrinsics_match_replicator_row_vector_projection(offset):
+    # SyntheticData/Replicator matrices multiply OpenGL row vectors.
+    projection = np.array([[2., 0, 0, 0], [0, 3., 0, 0],
+                           [*offset, 0, -1.], [0, 0, 1., 0]])
+    params = dict(cameraProjection=projection.reshape(-1), renderProductResolution=[640, 480])
+    intrinsic = projection_intrinsics(params, 640, 480)
+    points = np.array([[0., 0., -1., 1.], [.1, -.2, -2., 1.], [-.2, .1, -.5, 1.]])
+    clip = points @ projection
+    ndc = clip[:, :2] / clip[:, 3:4]
+    expected = (ndc + [1., -1.]) * [320., -240.]
+    optical = points[:, :3] * [1., -1., -1.]
+    pixels = optical @ intrinsic.T
+    np.testing.assert_allclose(pixels[:, :2] / pixels[:, 2:3], expected, atol=1e-5)
 
 
 def test_wrist_pose_uses_live_body_and_snapshot_has_no_gt():
@@ -495,7 +511,7 @@ def test_usd_capture_through_http_without_reference_script(fixture, replay_fixtu
         k = tensors[name + '_intrinsics']
         projection = np.eye(4)
         projection[0, 0], projection[1, 1] = 2 * k[0, 0] / width, 2 * k[1, 1] / height
-        projection[0, 2], projection[1, 2] = 1 - 2 * k[0, 2] / width, 2 * k[1, 2] / height - 1
+        projection[2, 0], projection[2, 1] = 1 - 2 * k[0, 2] / width, 2 * k[1, 2] / height - 1
         data_by_path[path] = dict(rgb=tensors[name + '_rgb'], distance_to_image_plane=tensors[name + '_depth'],
                                   camera_params=dict(cameraProjection=projection, renderProductResolution=[width, height]))
     products, detached = [], []

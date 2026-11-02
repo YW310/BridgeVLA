@@ -270,7 +270,15 @@ OSC 将 TCP 目标还原到控制点，再变换到实时 robot-root，构造 7 
 action_dt 必须是 env.step_dt 的正整数倍；首段从本次实测 TCP 开始，
 相邻 tick 间线性插值位置、SLERP 姿态；夹爪到该项 tick 才切换，中间保持上一命令。
 执行前 H 项后丢弃后缀、重新观察，不等待关键点到位或夹爪稳定。
-每个控制步检查跟踪误差；超限、硬限位异常或任务/环境停止后不继续后缀。
+每个控制步发送命令前、执行后都检查跟踪误差；超限、硬限位异常或任务/环境停止后不继续后缀。
+异常目标在发送前已超限时，不先执行一次再停止；`execution.tracking_check_phase` 记录
+`before_step` / `after_step`，`execution.errors` 保留触发检查的实际误差。
+`before_step` 停止时的 `target` 是被拒绝的目标；可视化可能显示它，但不代表已经发送了该控制步。
+这些阈值是跟踪停止门槛，不是碰撞检查或精度保证，也不会把错误预测修正到正确路径。
+
+当前执行器直接消费新预测前缀，尚无跨 chunk 的时间对齐融合。`regression_state` 的训练期
+时序卷积只关联同一 chunk 内的动作，不能保证相邻请求的预测连续。发生抖动时，应先对照原始
+预测、已发送目标与实测 TCP，区分预测边界变化和控制响应；不要直接跨不同未来时刻平均位姿。
 
 周期比按现有浮点容差与最近的正整数比较。例如记录的 `action_dt=0.01666666666666572`
 和仿真的 `env.step_dt=1/60` 都对应一个控制步；比值略小于 1 时也接受，不修改 checkpoint
@@ -545,11 +553,15 @@ relative EEF 解码绝对目标；joint 只画实测 TCP/辅助热图，不伪�
 CPU writer 最多两个任务，满时跳过；PNG/NPZ/JSON 完成后发布 latest，可视化错误不重跑模型。
 每次启动独立 visualizations/run-* 目录；原始 RGB-D 会增加磁盘与拷贝开销。
 GUI 默认显示 TCP/目标轨迹，no-visualize 关闭，visualize-history 默认 200；
-绿线记录实测 TCP，红线记录已发送的绝对目标，两者每个控制步更新（chunk 内也逐步记录）。
+绿线记录实测 TCP，红线记录绝对控制目标，两者每个控制步更新（chunk 内也逐步记录）。
 红线不是完整 K 点未来预测：当前 H 步执行前缀会跨请求连接，重新预测的目标有变化时红线也会变化。
 两种颜色的 TCP 还带 4 cm 姿态坐标轴短线；这些短线不表示平移路径。
 采集前清除标记，快照完成后恢复，防止其进入模型图像。缺 debug-draw 时降级继续。
 latest 可能早于当前 step，应按 episode/step 对照，不把旧诊断当作刚执行的动作。
+
+USD 相机的 `cameraProjection` 按 Replicator 行向量约定解码，主点偏移来自 `[2,0]` / `[2,1]`。
+偏心相机若误用 `[0,2]` / `[1,2]` 会造成点云空间偏移；居中相机的结果不受这处索引修复影响。
+矩阵约定见 [NVIDIA CameraParams](https://nvidia-omniverse.github.io/ovrtx/sensors/cameras/decoding_outputs.html#camera-parameters)。
 
 <a id="检查与-replay-烟测"></a>
 

@@ -18,7 +18,7 @@
 
 ## 已确认基线与交接
 
-更新日期：**2026-10-29**。用户确认 OHT 轨迹问题已解决，有效配置为 [oht_chunk_v4_regression_state_8x40.yaml](../../finetune/OHT/configs/oht_chunk_v4_regression_state_8x40.yaml)，后续以此为已确认有效的基线。
+更新日期：**2026-11-02**。2026-10-29 用户反馈 [oht_chunk_v4_regression_state_8x40.yaml](../../finetune/OHT/configs/oht_chunk_v4_regression_state_8x40.yaml) 的轨迹预测已有改善；后续在线测试仍报告抓取前碰边、动作抖动或跳变。当前将其作为回归调试基线，闭环任务成功尚未完成验收。
 
 这是用户对实际运行的确认，反馈未附成功 run 路径、checkpoint 或完整定量报告，复现时应补存。结论不扩展为所有任务/样本的误差统计或闭环成功率；`delta_state`、`flow_state` 尚未获得相同确认，也没有独立消融可以将效果全部归因于下列某一项。
 
@@ -58,7 +58,7 @@
 
 | 配置 | 内部表示 | 生成方式 |
 | --- | --- | --- |
-| [regression_state](../../finetune/OHT/configs/oht_chunk_v4_regression_state_8x40.yaml) | 相对当前 TCP 的未来 pose | 确定性回归；已获用户解决确认 |
+| [regression_state](../../finetune/OHT/configs/oht_chunk_v4_regression_state_8x40.yaml) | 相对当前 TCP 的未来 pose | 确定性回归；轨迹改善有反馈，闭环待验证 |
 | [delta_state](../../finetune/OHT/configs/oht_chunk_v4_delta_state_8x40.yaml) | 逐步平移/旋转增量 | 回归后累积，监督完整轨迹 |
 | [flow_state](../../finetune/OHT/configs/oht_chunk_v4_flow_state_8x40.yaml) | 相对当前 TCP 的未来 pose | conditional flow matching |
 

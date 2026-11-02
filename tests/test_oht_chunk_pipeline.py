@@ -334,11 +334,28 @@ def test_chunk_executor_does_not_continue_after_tracking_or_task_stop():
     bridge.tracking_errors = lambda state: dict(translation_m=.2, rotation_rad=0)
     executor = ChunkExecutor(bridge, spec)
     executor.execute(actions, {})
-    assert len(sent) == 1 and executor.last_result['status'] == 'tracking_error'
+    assert not sent and executor.last_result['status'] == 'tracking_error'
+    assert executor.last_result['consumed_actions'] == 0
+    assert executor.last_result['discarded_suffix'] == 4
+    assert executor.last_result['tracking_check_phase'] == 'before_step'
+    assert executor.last_result['errors']['translation_m'] == .2
     bridge, sent = fake_bridge()
     executor = ChunkExecutor(bridge, spec)
     executor.execute(actions, {}, lambda grip: True)
     assert len(sent) == 1 and executor.last_result['completed']
+
+
+def test_chunk_tracking_guard_still_checks_response_after_each_control_tick():
+    settings = chunk_settings(settings_config())
+    spec = chunk_spec(settings, {'chunk': {'action_dt': .01}})
+    actions = np.tile([.02, 0, .5, 0, 0, 0, 1, 0], (4, 1)).astype(np.float32)
+    bridge, sent = fake_bridge()
+    bridge.tracking_errors = lambda state: dict(translation_m=.2 if sent else 0., rotation_rad=0.)
+    executor = ChunkExecutor(bridge, spec)
+    executor.execute(actions, {})
+    assert len(sent) == 1 and executor.last_result['status'] == 'tracking_error'
+    assert executor.last_result['tracking_check_phase'] == 'after_step'
+    assert executor.last_result['consumed_actions'] == 1
 
 
 def test_chunk_online_export_keeps_predictions_without_future_labels(chunk_fixture, tmp_path):
