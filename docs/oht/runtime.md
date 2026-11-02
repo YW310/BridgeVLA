@@ -276,9 +276,19 @@ action_dt 必须是 env.step_dt 的正整数倍；首段从本次实测 TCP 开�
 `before_step` 停止时的 `target` 是被拒绝的目标；可视化可能显示它，但不代表已经发送了该控制步。
 这些阈值是跟踪停止门槛，不是碰撞检查或精度保证，也不会把错误预测修正到正确路径。
 
-当前执行器直接消费新预测前缀，尚无跨 chunk 的时间对齐融合。`regression_state` 的训练期
+默认执行器直接消费新预测前缀。`regression_state` 的训练期
 时序卷积只关联同一 chunk 内的动作，不能保证相邻请求的预测连续。发生抖动时，应先对照原始
 预测、已发送目标与实测 TCP，区分预测边界变化和控制响应；不要直接跨不同未来时刻平均位姿。
+
+可在 policy chunk 客户端添加 `--chunk-temporal-ensemble` 做可选的时间对齐融合，无需修改
+checkpoint 或重训。按观测的仿真 timestamp 对齐重叠未来点：例如执行 H=4 后，新预测第 1 点
+应与上一预测第 5 点对应。位置加权平均，姿态采用 SO(3) 加权均值，夹爪始终保留最新预测。
+旧预测权重为 `exp(-decay * age_ticks)`；只融合夹爪相同、且与最新预测位置/姿态差异在门槛内的点。
+过期、时间不对齐或明显不一致的预测不参与融合，不外推缺失轨迹。历史缓存保留原始预测并逐 episode 清空。
+该选项默认关闭，GT replay 与单目标模式不支持；它不能修正持续偏位、观测错误或提供碰撞规划。
+`run.json.chunk_temporal_ensemble` 记录设置；episode 的 `action` 仍为原始预测，
+`ensemble_action` 为融合后的 K 点，`temporal_ensemble` 记录逐点参与数、排除数与最大调整量。
+实际执行的前缀长度看 `execution`；server 网页仍显示原始预测，IsaacSim 红线显示客户端控制目标。
 
 周期比按现有浮点容差与最近的正整数比较。例如记录的 `action_dt=0.01666666666666572`
 和仿真的 `env.step_dt=1/60` 都对应一个控制步；比值略小于 1 时也接受，不修改 checkpoint
@@ -289,6 +299,10 @@ action_dt 必须是 env.step_dt 的正整数倍；首段从本次实测 TCP 开�
 | --chunk-execute-horizon | 默认用服务的 H；覆盖值须在 1..K 内 |
 | --chunk-max-tracking-translation | 0.10 m，跟踪误差上限 |
 | --chunk-max-tracking-rotation | 0.5 rad，姿态误差上限 |
+| --chunk-temporal-ensemble | 默认关闭，启用同一未来时刻的跨 chunk 融合 |
+| --chunk-ensemble-decay | 0.1，每个控制 tick 的旧预测权重衰减系数 |
+| --chunk-ensemble-max-translation | 0.02 m，旧/最新预测允许融合的位置差异 |
+| --chunk-ensemble-max-rotation | 0.15 rad，旧/最新预测允许融合的姿态差异 |
 | --execution-mode | auto 自动选 chunk；chunk checkpoint 拒绝显式 waypoint/streaming |
 
 ### 单目标与 waypoint
@@ -516,7 +530,8 @@ score task 要求真实 success_term/evaluator_factory，或用 success-term 指
 | server info.json / requests.jsonl | checkpoint 路径、部署/契约身份、请求状态、轮转摘要和分段耗时 |
 | client startup.json | 启动阶段与 starting/ready/failed 状态；客户端记录 profile、执行模式、chunk_spec 和环境控制周期，捕获的启动错误含 error/traceback，在关闭 Isaac Sim 前保存 |
 | client run.json / control_diagnostics.json | 实际 USD、scene/config 来源、TCP 变换、控制尺度、顺序、夹爪物理端点及是否关闭 time_out |
-| episode_*.json | action、实际 commands、measured_before/after、errors_before/after、stop_reason |
+| episode_*.json | episode 结束时保存完整 action、实际 commands、measured_before/after、errors_before/after、stop_reason |
+| episode_*.jsonl | 运行中逐条追加并关闭刷新：episode_start、发指令前的 prediction、完成后的 action、episode_end；无需等 episode 结束 |
 | execution | waypoint 阶段/到位/夹爪；chunk consumed_actions/requested_actions、control_substeps、discarded_suffix；streaming 无该字段 |
 | joint_diagnostics | 实际关节、硬/软限位来源和余量；缺失硬限位为 null |
 | camera_observation | 本次源分辨率、K、pose 和外参来源；USD 优先有效渲染 view，回退 USD/物理 body × 相机局部变换 |
@@ -524,6 +539,13 @@ score task 要求真实 success_term/evaluator_factory，或用 success-term 指
 | server timing_ms | decode/prepare/policy/total；policy 含结果回传的墙钟耗时，不是 CUDA kernel 时间 |
 | waypoint 停滞 / chunk 超差 | 区分目标错误、限位、接触和跟踪问题；不要仅翻转夹爪或加长训练/预算 |
 | 409 / 429 / 503 | 身份/会话不符 / busy / 未就绪；结果不确定时待空闲后新 episode reset |
+
+若窗口还在运行而没有 `episode_0000.json`，先看同一 `--output` 目录的
+`episode_0000.jsonl`，而不是反复等待最终 JSON。`prediction` 只证明模型已返回目标，
+不证明动作已经执行；`action` 含完成后的实测与误差。日志按行追加，不逐步重写全部历史。
+正常 episode 结束或 Ctrl+C 收尾后仍生成完整 JSON；Ctrl+C 记录 `stop_reason=interrupted` 并退出，
+即使设置 keep-open-on-error 也不继续留窗等待。原生崩溃或强制结束可绕过 Python finally，
+因此最终 JSON 可能缺失；JSONL 已完成的行仍可用于排查，崩溃中的最后一行可能不完整。
 
 窗口在 `native env=... cameras=...` 后退出且没有预测记录时，先读 `startup.json`。
 这行只代表原生环境与相机已建立，后续还有环境 reset、overlay、控制 bridge、chunk 时序和控制诊断检查。

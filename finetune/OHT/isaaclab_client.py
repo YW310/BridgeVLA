@@ -24,6 +24,13 @@ from .runtime.live_markers import LiveMarkers
 from .runtime.waypoint_executor import WaypointExecutor, WaypointOptions
 
 
+def _append_episode_event(path, event, **payload):
+    # Close after each append so completed records survive process termination.
+    # A native crash can still leave the final line incomplete; prior lines stay usable.
+    with path.open('a', encoding='utf-8') as stream:
+        stream.write(json.dumps(dict(event=event, **payload), ensure_ascii=False, allow_nan=False) + '\n')
+
+
 def load_reference(path, argv):
     """Import trusted runtime helpers without executing its __main__/JEPA loop."""
     path = Path(path).expanduser().resolve(strict=True)
@@ -154,6 +161,11 @@ def main(argv=None):
     parser.add_argument('--chunk-execute-horizon', type=int, help='Override advertised H; requests still return K actions')
     parser.add_argument('--chunk-max-tracking-translation', type=float, default=.10)
     parser.add_argument('--chunk-max-tracking-rotation', type=float, default=.5)
+    parser.add_argument('--chunk-temporal-ensemble', action='store_true',
+                        help='Fuse agreeing chunk predictions at the same simulation time; opt-in')
+    parser.add_argument('--chunk-ensemble-decay', type=float, default=.1, help='Older prediction weight exp(-decay * age_ticks)')
+    parser.add_argument('--chunk-ensemble-max-translation', type=float, default=.02, help='Maximum position disagreement to fuse (m)')
+    parser.add_argument('--chunk-ensemble-max-rotation', type=float, default=.15, help='Maximum orientation disagreement to fuse (rad)')
     parser.add_argument('--waypoint-max-steps', type=int, default=600)
     parser.add_argument('--waypoint-position-tolerance', type=float, default=.005)
     parser.add_argument('--waypoint-rotation-tolerance', type=float, default=.05)
@@ -277,6 +289,13 @@ def _run(args, reference_args):
             args.execution_mode = 'chunk'
         elif args.execution_mode == 'chunk' or args.chunk_execute_horizon is not None:
             raise ValueError('Chunk execution options require a chunk checkpoint')
+    ensemble = None
+    if args.chunk_temporal_ensemble:
+        if replay is not None or getattr(client, 'chunk_spec', None) is None:
+            raise ValueError('Chunk temporal ensemble requires a policy chunk checkpoint; replay is unchanged')
+        from .runtime.chunk_ensemble import ChunkTemporalEnsemble
+        ensemble = ChunkTemporalEnsemble(client.chunk_spec, decay=args.chunk_ensemble_decay,
+            max_translation=args.chunk_ensemble_max_translation, max_rotation=args.chunk_ensemble_max_rotation)
     profile = client.profile(args.task, args.data_profile)
     if args.initial_state_root:
         from .runtime.trajectory_initialization import InitialState
@@ -381,9 +400,10 @@ def _run(args, reference_args):
                    action_spec=client.info['action_spec'], data_profile=profile, task_settings=settings,
                    chunk_spec=getattr(client, 'chunk_spec', None),
                    chunk_execute_horizon=chunk_executor.horizon if chunk_executor else None,
+                   chunk_temporal_ensemble=ensemble.info if ensemble else None,
                    initialization=args.initialization, score=args.score, runtime_factory=runtime_factory,
                    policy_wait='background_http_render_only' if replay is None else None,
-                   keep_open_on_error=args.keep_open_on_error,
+                   keep_open_on_error=args.keep_open_on_error, dry_run=args.dry_run,
                    visualization=markers.info,
                    isaaclab_root=args.isaaclab_root,
                    env_id=args.env_id, env_config=args.env_config, ee_link=getattr(reference, 'ee_link', args.ee_link),
@@ -425,9 +445,14 @@ def _run(args, reference_args):
             row = dict(episode=episode, task=args.task, success=None if tracker is None else False,
                        stop_reason='max_steps', steps=0, actions=[])
             records.append(row)
+            journal = output / f'episode_{episode:04d}.jsonl'
             try:
+                _append_episode_event(journal, 'episode_start', episode=episode, task=args.task,
+                                      model_id=client.info['model_id'], contract_sha256=client.info['contract_sha256'])
                 markers.reset()
                 bridge.reset_execution_state()
+                if ensemble is not None:
+                    ensemble.reset()
                 env.reset()
                 if startup is not None:
                     reference.restore_rigid_object_to_startup_state(env, startup)
@@ -481,8 +506,16 @@ def _run(args, reference_args):
                     if not reference.simulation_app.is_running():
                         raise RuntimeError('Simulation application stopped before executing policy action')
                     executor = chunk_executor if chunk_executor is not None else waypoint
-                    commands = (executor.execute(action, measured, after_step) if executor is not None else
-                                bridge.execute(action, measured, after_step))
+                    control_action = action
+                    if ensemble is not None:
+                        control_action = ensemble.update(action, timestamp)
+                        source_details.update(ensemble_action=control_action.tolist(),
+                                              temporal_ensemble=deepcopy(ensemble.last_result))
+                    _append_episode_event(journal, 'prediction', step=step, timestamp=timestamp,
+                                          action=action.tolist(), control_action=control_action.tolist(),
+                                          measured_before=bridge.measured_state(measured), **source_details)
+                    commands = (executor.execute(control_action, measured, after_step) if executor is not None else
+                                bridge.execute(control_action, measured, after_step))
                     execution = executor.last_result if executor is not None else None
                     executed = perf_counter()
                     before = bridge.measured_state(measured)
@@ -514,6 +547,7 @@ def _run(args, reference_args):
                               f'gripper_physical={before["gripper_position"]:.6g}->{after["gripper_position"]:.6g} '
                               f'client_ms={client_timing} server_ms={response["timing_ms"]}', flush=True)
                     row['steps'] = step + 1
+                    _append_episode_event(journal, 'action', **row['actions'][-1])
                     if tracker is not None and tracker.success:
                         row['success'] = True
                         row['stop_reason'] = 'success'
@@ -529,6 +563,10 @@ def _run(args, reference_args):
                         break
                 if replay is not None and row['stop_reason'] == 'max_steps' and row['steps'] == replay.length:
                     row['stop_reason'] = 'trajectory_end'
+            except KeyboardInterrupt:
+                row['error'], row['stop_reason'] = 'KeyboardInterrupt', 'interrupted'
+                print('[BridgeVLA] interrupted; saving completed actions before shutdown', flush=True)
+                break
             except Exception as exc:
                 row['error'] = f'{type(exc).__name__}: {exc}'
                 row['stop_reason'] = 'error'
@@ -536,6 +574,7 @@ def _run(args, reference_args):
                 print(f'[BridgeVLA] stopped: {row["error"]}', flush=True)
                 break
             finally:
+                _append_episode_event(journal, 'episode_end', **{key: value for key, value in row.items() if key != 'actions'})
                 write_json(output / f'episode_{episode:04d}.json', row)
                 successes = sum(item['success'] is True for item in records)
                 write_json(output / 'summary.json', dict(
@@ -549,7 +588,7 @@ def _run(args, reference_args):
             if 'error' in row:
                 break
         failed = any('error' in row for row in records)
-        if failed and args.keep_open_on_error:
+        if failed and args.keep_open_on_error and not any(item['stop_reason'] == 'interrupted' for item in records):
             if worker is not None:
                 worker.close()
             keep_open_after_error(reference, env)

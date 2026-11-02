@@ -111,6 +111,13 @@ def test_builtin_default_launches_and_runs_http(fixture, replay_fixture, tmp_pat
     original = fixture.policy.act
     def act(*args):
         original(*args)
+        if len(fixture.policy.calls) == 2:
+            # The first completed action must be available while the episode
+            # is still running, before its aggregate JSON has been written.
+            assert not (output / 'episode_0000.json').exists()
+            events = [json.loads(line) for line in (output / 'episode_0000.jsonl').read_text(encoding='utf-8').splitlines()]
+            assert [item['event'] for item in events] == ['episode_start', 'prediction', 'action']
+            assert events[-1]['step'] == 0 and events[-1]['measured_after']
         return (np.array([.2, 0, .5, 0, 0, 0, 1, 1], np.float32) if mode == 'eef' else
                 np.array([.01, 0, 0, 0, 0, 0, 1], np.float32))
     fixture.policy.act = act
@@ -129,6 +136,7 @@ def test_builtin_default_launches_and_runs_http(fixture, replay_fixture, tmp_pat
     assert env.closed and state.app_closed and sys.argv == previous_argv
     metadata = json.loads((output / 'run.json').read_text(encoding='utf-8'))
     assert metadata['runtime_factory'] == 'finetune.OHT.runtime.isaaclab_factory:create_runtime'
+    assert metadata['dry_run'] is False
     assert metadata['reference_client'] is None and metadata['camera_source'] == 'sensors'
     assert metadata['ee_link'] == 'tool'
     summary = json.loads((output / 'summary.json').read_text(encoding='utf-8'))
@@ -137,6 +145,82 @@ def test_builtin_default_launches_and_runs_http(fixture, replay_fixture, tmp_pat
     episode = json.loads((output / 'episode_0000.json').read_text(encoding='utf-8'))
     assert 'gripper_position' in episode['actions'][0]['measured_after']
     assert episode['actions'][0]['errors_after']
+    events = [json.loads(line) for line in (output / 'episode_0000.jsonl').read_text(encoding='utf-8').splitlines()]
+    assert [item['event'] for item in events] == ['episode_start', 'prediction', 'action', 'prediction', 'action', 'episode_end']
+    assert events[-1]['steps'] == 2 and events[-1]['stop_reason'] == 'max_steps'
+
+
+def test_keyboard_interrupt_saves_progress_and_unexecuted_prediction(fixture, replay_fixture, tmp_path, monkeypatch):
+    tensors, _, raw = raw_sample(replay_fixture.replay, fixture.policy)
+    env = environment('eef', raw['task'])
+    env.action_manager.get_term('arm_action').cfg = SimpleNamespace(body_name='tool', position_scale=1., orientation_scale=1.)
+    env.scene.sensors = sensors_for(tensors, fixture.policy.contract['data_config']['cameras'])
+    state = fake_simulator(monkeypatch, env)
+    original = env.step
+    def interrupt(value):
+        if env.common_step_counter == 1:
+            raise KeyboardInterrupt
+        return original(value)
+    env.step = interrupt
+    output = tmp_path / 'interrupted-run'
+    with TestClient(fixture.app()) as server:
+        monkeypatch.setattr(runner, 'BridgeVLAClient',
+                            lambda *args: BridgeVLAClient('http://testserver', opener=Opener(server)))
+        assert runner.main(['--env-id', 'OHT-test', '--ee-link', 'tool', '--task', raw['task'], '--episodes', '1',
+            '--execution-mode', 'streaming', '--max-steps', '5', '--output', str(output), '--headless',
+            '--keep-open-on-error']) == 1
+    record = json.loads((output / 'episode_0000.json').read_text(encoding='utf-8'))
+    assert record['steps'] == 1 and record['stop_reason'] == 'interrupted'
+    events = [json.loads(line) for line in (output / 'episode_0000.jsonl').read_text(encoding='utf-8').splitlines()]
+    assert [item['event'] for item in events] == ['episode_start', 'prediction', 'action', 'prediction', 'episode_end']
+    assert events[-2]['step'] == 1 and events[-1]['steps'] == 1
+    assert env.common_step_counter == 1 and env.closed and state.app_closed
+
+
+@pytest.mark.parametrize('enabled', [False, True])
+def test_client_chunk_ensemble_is_opt_in_and_preserves_raw_predictions(fixture, replay_fixture, tmp_path, monkeypatch, enabled):
+    from finetune.OHT.data.geometry import tcp_pose
+    from finetune.OHT.runtime.chunk_protocol import chunk_spec
+    tensors, _, raw = raw_sample(replay_fixture.replay, fixture.policy)
+    env = environment('eef', raw['task'])
+    env.action_manager.get_term('arm_action').cfg = SimpleNamespace(body_name='tool', position_scale=1., orientation_scale=1.)
+    env.scene.sensors = sensors_for(tensors, fixture.policy.contract['data_config']['cameras'])
+    fake_simulator(monkeypatch, env)
+
+    class ChunkClient(BridgeVLAClient):
+        def __init__(self, opener):
+            super().__init__('http://testserver', opener=opener)
+            self.chunk_spec = chunk_spec({'horizon': 4, 'execute_horizon': 2}, {'chunk': {'action_dt': env.step_dt}})
+            self.info['chunk_spec'] = self.chunk_spec
+
+        def predict(self, tensors, instruction, timestamp, **kwargs):
+            link = tensors['ee_link_pose']
+            current = tcp_pose(link[:3], link[3:][[1, 2, 3, 0]],
+                               fixture.policy.contract['data_config']['link_to_tcp'])
+            predicted = np.tile(np.r_[current, 1.], (4, 1)).astype(np.float32)
+            predicted[:, 0] += np.arange(1, 5) * .001 + self.step * .002
+            self.step += 1
+            return predicted, dict(timing_ms={})
+
+    output = tmp_path / 'ensemble-run'
+    with TestClient(fixture.app()) as server:
+        monkeypatch.setattr(runner, 'BridgeVLAClient', lambda *args: ChunkClient(Opener(server)))
+        assert runner.main(['--env-id', 'OHT-test', '--ee-link', 'tool', '--task', raw['task'], '--episodes', '1',
+            '--max-steps', '2', '--output', str(output), '--headless',
+            *(['--chunk-temporal-ensemble'] if enabled else [])]) == 0
+    record = json.loads((output / 'episode_0000.json').read_text(encoding='utf-8'))
+    run = json.loads((output / 'run.json').read_text(encoding='utf-8'))
+    assert env.common_step_counter == 4 and record['stop_reason'] == 'max_steps'
+    if enabled:
+        assert run['chunk_temporal_ensemble']['alignment'] == 'simulation_timestamp'
+        first, second = record['actions']
+        np.testing.assert_array_equal(first['action'], first['ensemble_action'])
+        assert second['temporal_ensemble']['contributors'] == [2, 2, 1, 1]
+        assert second['action'][0][0] != second['ensemble_action'][0][0]
+        np.testing.assert_allclose(second['target'][:3], second['ensemble_action'][1][:3])
+    else:
+        assert run['chunk_temporal_ensemble'] is None
+        assert all('ensemble_action' not in row for row in record['actions'])
 
 
 @pytest.mark.parametrize('outcome', ['success', 'closed', 'late_closed', 'timeout'])
@@ -272,6 +356,8 @@ def test_dry_run_saves_control_contract_without_predictions_or_actions(fixture, 
         assert runner.main(['--env-id', 'OHT-test', '--task', raw['task'], '--dry-run', '--output', str(output), '--headless']) == 0
         assert server.get('/health').json()['episode_id'] is None
     assert not env.commands and not fixture.policy.calls and env.closed and state.app_closed
+    assert json.loads((output / 'run.json').read_text(encoding='utf-8'))['dry_run'] is True
+    assert not (output / 'episode_0000.jsonl').exists()
     report = json.loads((output / 'control_diagnostics.json').read_text(encoding='utf-8'))
     assert report['action_spec']['gripper'] == 'open01'
     assert report['ee_pose_source'] == 'controller' and report['gripper']['open_command'] == 1.
