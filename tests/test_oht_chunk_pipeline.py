@@ -193,6 +193,22 @@ def test_v4_training_validate_only_and_offline_metrics(chunk_fixture, tmp_path, 
     assert report['all_actions']['samples'] >= 2
 
 
+def test_open_loop_chunk_exports_current_scene_without_changing_predictions(chunk_fixture, tmp_path):
+    from finetune.OHT.chunk_eval import open_loop_chunk
+    from finetune.OHT.chunk_visualization import scene_background
+    agent, data, _ = agent_data(chunk_fixture, training=False)
+    policy = Policy(agent, data.contract, 'cpu', 'baseline')
+    visualizer = SimpleNamespace(root=tmp_path / 'eval-viz', due=lambda index: True)
+    visualizer.root.mkdir()
+    expected = open_loop_chunk(policy, chunk_fixture.root, 'val', limit=1)
+    actual = open_loop_chunk(policy, chunk_fixture.root, 'val', limit=1, visualizer=visualizer)
+    assert actual['all_actions'] == expected['all_actions']
+    sample = OHTChunkDataset(chunk_fixture.root, 'val')[0]
+    with np.load(visualizer.root / 'sample_000000/chunk.npz', allow_pickle=False) as saved:
+        for key, value in scene_background(sample).items():
+            np.testing.assert_array_equal(saved[key], value)
+
+
 @pytest.mark.parametrize('goal_conditioning', ['absolute', 'relative_tcp'])
 def test_chunk_prepared_http_and_native_client_negotiate_explicit_actions(chunk_fixture, tmp_path, goal_conditioning):
     agent, data, _ = agent_data(chunk_fixture, training=False)
@@ -376,5 +392,10 @@ def test_chunk_online_export_keeps_predictions_without_future_labels(chunk_fixtu
     assert len(record['chunk']['actions']) == 4
     assert 'target' not in record['chunk']
     assert (writer.root / job['entry_id'] / 'chunk.png').exists()
+    from finetune.OHT.chunk_visualization import scene_background
+    with np.load(writer.root / job['entry_id'] / 'chunk.npz', allow_pickle=False) as saved:
+        assert 'target' not in saved and 'action_chunk' not in saved
+        for key, value in scene_background(data[0]).items():
+            np.testing.assert_array_equal(saved[key], value)
     scene = json.loads((writer.root / job['entry_id'] / 'scene.json').read_text())
     assert len(scene['trajectories']) == 2

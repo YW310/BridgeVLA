@@ -5,7 +5,7 @@ import numpy as np
 from .data.chunk_dataset import OHTChunkDataset
 from .data.common import write_json
 from .data.geometry import rotation_error
-from .chunk_visualization import path_panel
+from .chunk_visualization import path_panel, scene_background
 from .runtime.chunk_protocol import chunk_spec, validate_prediction
 
 
@@ -48,11 +48,12 @@ def open_loop_chunk(policy, replay, split='val', limit=None, *, progress=None, v
         if due:
             folder = visualizer.root / f'sample_{index:06d}'
             folder.mkdir(parents=True, exist_ok=False)
+            scene = scene_background(sample)
             path_panel(actions, target, valid, current=sample['tcp_pose'][:3], sample_id=meta['id'],
-                       action_dt=spec['action_dt']).save(folder / 'chunk.png')
+                       action_dt=spec['action_dt'], **scene).save(folder / 'chunk.png')
             np.savez_compressed(folder / 'chunk.npz', actions=actions, target=target, valid=valid,
                                 key_action=prediction['key_action'], key_valid=sample['key_valid'],
-                                current=sample['tcp_pose'][:3], sample_id=meta['id'], action_dt=spec['action_dt'])
+                                current=sample['tcp_pose'][:3], sample_id=meta['id'], action_dt=spec['action_dt'], **scene)
             if captured:
                 from .runtime.online_visualization import _montage
                 for name, stage in captured[0]['stages'].items():

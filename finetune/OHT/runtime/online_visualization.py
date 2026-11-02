@@ -110,10 +110,12 @@ class OnlineVisualizer:
                             heatmap_waypoint_world=np.asarray(payload['heatmap_waypoint_world']).copy())
             if 'chunk' in payload:
                 from .chunk_protocol import validate_prediction
+                from ..chunk_visualization import scene_background
                 chunk = payload['chunk']
                 validated = validate_prediction(chunk, chunk['spec'])
                 snapshot['chunk'] = dict(spec=dict(chunk['spec']), actions=validated['actions'].copy(),
                                          key_action=validated['key_action'].copy())
+                snapshot.update(scene_background(observation))
             identity = {key: request.get(key) for key in
                         ('request_id', 'episode_id', 'step', 'timestamp', 'instruction', 'model_id')}
             raw_observation = request.get('observation', {})
@@ -182,8 +184,11 @@ class OnlineVisualizer:
             if 'chunk' in payload:
                 from ..chunk_visualization import path_panel
                 chunk = payload['chunk']
-                path_panel(chunk['actions']).save(temporary / 'chunk.png')
-                np.savez_compressed(temporary / 'chunk.npz', actions=chunk['actions'], key_action=chunk['key_action'])
+                scene = {key: payload[key] for key in ('scene_points', 'scene_colors') if key in payload}
+                path_panel(chunk['actions'], current=current_tcp, action_dt=chunk['spec']['action_dt'],
+                           **scene).save(temporary / 'chunk.png')
+                np.savez_compressed(temporary / 'chunk.npz', actions=chunk['actions'], key_action=chunk['key_action'],
+                                    current=np.asarray(current_tcp if current_tcp is not None else []), **scene)
                 record['chunk'] = dict(spec=chunk['spec'], actions=chunk['actions'].tolist(),
                     key_action=chunk['key_action'].tolist(), png=f'/visualization/files/{entry_id}/chunk.png',
                     arrays=f'/visualization/files/{entry_id}/chunk.npz')

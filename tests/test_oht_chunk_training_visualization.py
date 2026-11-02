@@ -69,16 +69,20 @@ def test_training_snapshot_matches_same_sample_and_loss_forward(chunk_fixture, t
     np.testing.assert_array_equal(payload['current'], data[tail]['tcp_pose'][:3])
     np.testing.assert_array_equal(payload['target'], data[tail]['action_chunk'][:, :3])
     np.testing.assert_array_equal(payload['valid'], data[tail]['action_valid'])
+    expected_scene = visualization.scene_background(data[tail])
+    for key in ('scene_points', 'scene_colors'):
+        np.testing.assert_array_equal(payload[key], expected_scene[key])
     # Check exported coordinates, not a fresh post-optimizer prediction.
     expected = visualization.path_panel(payload['predicted'], payload['target'], payload['valid'],
-        current=payload['current'], sample_id=payload['sample_id'], step=500, action_dt=payload['action_dt'])
+        current=payload['current'], sample_id=payload['sample_id'], step=500, action_dt=payload['action_dt'],
+        scene_points=payload['scene_points'], scene_colors=payload['scene_colors'])
     settings = dict(output_dir='images', save_png=True, tensorboard=True)
     with TensorBoardLogger(tmp_path / 'tensorboard') as logger:
         visualization.record(payload, 500, tmp_path, settings, logger)
     with Image.open(tmp_path / 'images/chunk_step_00000500.png') as saved:
         np.testing.assert_array_equal(np.asarray(saved), np.asarray(expected))
     with np.load(tmp_path / 'images/chunk_step_00000500.npz', allow_pickle=False) as arrays:
-        for key in ('predicted', 'target', 'valid', 'current'):
+        for key in ('predicted', 'target', 'valid', 'current', 'scene_points', 'scene_colors'):
             np.testing.assert_array_equal(arrays[key], payload[key])
         assert arrays['sample_id'].item() == data[tail]['sample_id'] and arrays['step'] == 500
     events = EventAccumulator(str(tmp_path / 'tensorboard')).Reload()

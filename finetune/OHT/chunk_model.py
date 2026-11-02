@@ -297,6 +297,7 @@ class ChunkAgent:
 
     def update(self, batch, loss_scale=1., reset_gradients=True, step_optimizer=True, return_visualization=False):
         payload = []
+        scene = {}
         batch_size = batch['tcp_pose'].shape[0]
         joint = self.settings['stage'] == 'joint'
         def context_builder():
@@ -309,6 +310,9 @@ class ChunkAgent:
                 while isinstance(goal, (list, tuple)):
                     goal = goal[0]
                 sample['goal'] = goal
+                if return_visualization and i == 0:
+                    from .chunk_visualization import scene_background
+                    scene.update(scene_background(sample))
                 contexts.append(self._context(sample, payload.append if return_visualization and i == 0 else None,
                                               with_grad=joint))
             return tuple(torch.cat([row[j] for row in contexts], 0) for j in range(len(contexts[0])))
@@ -365,6 +369,7 @@ class ChunkAgent:
         result = dict(total_loss=reported_loss, **metrics)
         if return_visualization:
             result['train_visualization'] = dict(chunk=True, policy=payload[0] if payload else None,
+                **scene,
                 predicted=prediction[0][0].detach().float().cpu().numpy(),
                 target=batch['action_chunk'][0, 0, :self.settings['horizon'], :3].detach().float().cpu().numpy(),
                 valid=batch['action_valid'][0, 0, :self.settings['horizon']].cpu().numpy(),

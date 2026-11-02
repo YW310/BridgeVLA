@@ -283,6 +283,8 @@ rank 0 写日志，通常是本地 microbatch/累积平均，不是跨卡均值�
 
 `mvt1/mvt2` 对应实际 coarse/refine；chunk 图红色预测、绿色有效未来、白色当前 TCP，采用世界坐标、相同时间和等比例轴。PNG/NPZ 含预测、标签、mask、状态和 sample ID；GT 只监督/绘图，不进入部署。flow 复用观测 memory 做 eval/no-grad 独立部署采样，不重跑 VLM。
 
+Chunk 轨迹图默认将同一帧多相机 RGB/世界点云投影为 XY/XZ/YZ 彩色场景背景，使用浅色网格，背景与轨迹共用坐标与比例。背景最多确定性采样 24,000 点，视窗围绕有效轨迹与当前 TCP 保留局部上下文；远处场景不改变轨迹比例。没有有效点云时显示浅色网格。训练、离线评估及在线 chunk 图均使用该显示，NPZ 同时保存 `scene_points` / `scene_colors`；现有 replay 和 checkpoint 可继续使用，重启训练/评估/服务后新生成的图片生效，旧 PNG 不自动更新。
+
 | 指标 | 解读 |
 | --- | --- |
 | `chunk_position_error_m` | 完整部署预测的平均位置误差 |
