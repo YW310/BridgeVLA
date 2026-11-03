@@ -18,13 +18,24 @@ from .video import EpisodeVideos, metric_depth
 from .visualization import PreviewWriter
 
 
-def _target_bounds(targets, bounds):
+def _target_bounds(targets, bounds, sample_id=None):
     bounds = np.asarray(bounds, dtype=float)
-    points = targets['action_chunk'][targets['action_valid'], :3]
+    indices = np.flatnonzero(targets['action_valid'])
+    points = targets['action_chunk'][indices, :3]
+    labels = [f'action_chunk[{index}]' for index in indices]
     if bool(targets['key_valid']):
         points = np.concatenate((points, targets['key_action'][None, :3]))
-    if not ((points >= bounds[:3]) & (points < bounds[3:])).all():
-        raise ValueError('V4 measured action target outside scene_bounds; inspect bounds, never clip GT')
+        labels.append('key_action')
+    outside = ~((points >= bounds[:3]) & (points < bounds[3:])).all(-1)
+    if outside.any():
+        first = np.flatnonzero(outside)[0]
+        axes = [axis for index, axis in enumerate('xyz')
+                if not bounds[index] <= points[first, index] < bounds[index + 3]]
+        raise ValueError('V4 measured action target outside scene_bounds; '
+                         f'sample={sample_id} target={labels[first]} xyz={points[first].tolist()} '
+                         f'outside_axes={axes} bounds={bounds.tolist()} '
+                         f'valid_target_min={points.min(0).tolist()} valid_target_max={points.max(0).tolist()}; '
+                         'inspect bounds, never clip GT')
 
 
 def build(root, manifest_path, config, output, sample_stride=10, *, chunk_config=None,
@@ -112,12 +123,13 @@ def build(root, manifest_path, config, output, sample_stride=10, *, chunk_config
                   f"action_dt={options['action_dt']:.9g}", file=sys.stderr, flush=True)
         try:
             for frame in frames:
+                sample_id = f"{record['task']}/{record['episode_index']:06d}/{frame:06d}"
                 targets, reason = make_chunk_targets(poses, joints, grip, stamps, frame, keys, options)
                 if targets is None:
                     skipped_windows.append(dict(task=record['task'], episode_index=record['episode_index'],
                                                 frame=frame, reason=reason))
                     continue
-                _target_bounds(targets, data['scene_bounds'])
+                _target_bounds(targets, data['scene_bounds'], sample_id)
                 if videos is None:
                     videos = EpisodeVideos(inside(root, record['dataset']),
                                            data.get('video_timestamp_tolerance', 1 / 120 + .0001),
@@ -131,8 +143,10 @@ def build(root, manifest_path, config, output, sample_stride=10, *, chunk_config
                     depth = metric_depth(root, record, columns, camera, frame, videos, depth_config)
                     observation.update(camera_observation(
                         camera, rgb, depth, columns[f'observation.{camera}_extrinsic'][frame], data))
-                validate_observation(observation, data)
-                sample_id = f"{record['task']}/{record['episode_index']:06d}/{frame:06d}"
+                try:
+                    validate_observation(observation, data)
+                except ValueError as exc:
+                    raise ValueError(f'{sample_id}: {exc}') from exc
                 relative_obs, relative_targets = f'observations/{sample_id}.npz', f'targets/{sample_id}.npz'
                 for relative, values in ((relative_obs, observation), (relative_targets, targets)):
                     path = inside(output, relative)

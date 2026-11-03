@@ -114,7 +114,7 @@ class OHTChunkDataset:
         validate_observation(observation, data)
         validate_chunk_targets(targets, self.contract['chunk'], row)
         from .chunk_replay import _target_bounds
-        _target_bounds(targets, data['scene_bounds'])
+        _target_bounds(targets, data['scene_bounds'], row['id'])
         if (observation['tcp_pose'].dtype != np.float32 or
                 observation['joint_positions'].dtype != np.float32 or
                 np.asarray(observation['gripper_open01']).dtype != np.float32):

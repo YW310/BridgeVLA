@@ -39,11 +39,12 @@ bash finetune/OHT/prepare_seg_data.sh \
   --chunk-horizon 16 --action-frame-stride 1
 ```
 
-依次执行 **audit → V4 replay → 完整校验 → 分割角色标注 → 角色预览**，任一步失败即停止。原始目录无需预先包含 audit、replay 或 contract。`OUT` 必须尚不存在；任务目录 `disassemble_left-seg` 会规范为 `disassemble_left`，只有这一个任务也可运行。新旧同名任务目录不能混用，也不能按 episode 编号给旧轨迹补分割。
+依次执行 **audit → GT 工作区预检 → V4 replay → 完整校验 → 分割角色标注 → 角色预览**，任一步失败即停止。原始目录无需预先包含 audit、replay 或 contract。`OUT` 必须尚不存在；任务目录 `disassemble_left-seg` 会规范为 `disassemble_left`，只有这一个任务也可运行。新旧同名任务目录不能混用，也不能按 episode 编号给旧轨迹补分割。
 
 | 参数 | 默认值与作用 |
 | --- | --- |
 | `--config` | [dataset.yaml](../../finetune/OHT/configs/dataset.yaml)，相机/深度/状态/ROI 配置 |
+| `--audit-manifest` | 原始数据未变时复用有效 audit.json，复制到新输出并跳过 audit；划分/seed 沿用该 manifest |
 | `--mapping` | [seg_roles.yaml](../../finetune/OHT/configs/seg_roles.yaml)，T/R 语义映射 |
 | `--chunk-horizon` / `--action-frame-stride` | 16 / 1；未来动作数量 / 原始帧间隔 |
 | `--sample-stride` | 10；只控制输入观测采样 |
@@ -53,6 +54,17 @@ bash finetune/OHT/prepare_seg_data.sh \
 | `--dry-run` | 仅打印命令，不解码、不创建输出 |
 
 脚本在 `OUT` 保存配置快照和 `pipeline.json`，记录完成阶段或失败原因。可用 `PYTHON_BIN=/path/to/python` 指定解释器，或直接调用 `python tools/prepare_oht_seg_data.py`。修改仓库 YAML 不会更新已有快照。
+
+V4 的 `workspace` 阶段只读 Parquet 和元数据，按相同 sample stride、chunk horizon 和时间规则
+检查全部选中 key/future TCP 目标，不解码视频；`workspace.json` 保存越界样本/轴、实际目标
+min/max 和带 2 cm 余量、只扩不缩的 suggested_scene_bounds。它不检查点云可见性或碰撞，
+仍须后续 replay/完整校验。各阶段完整 stdout/stderr 同步保存到 `OUT/logs/<stage>.log`；
+失败时 pipeline.json 另含 log_file、error_tail，终端仍实时显示进度。
+
+若旧 pipeline.json 只含 `returned non-zero exit status 1`，那是子进程退出状态，不是具体原因；
+需查看原终端 traceback。新版本会保留阶段日志。遇到
+`V4 measured action target outside scene_bounds` 时，应扩大动作工作区覆盖实测 GT，
+保留 keep_bounds 作为背景过滤；不裁剪/跳过越界标签，也不因 audit 成功就认为几何覆盖已验证。
 
 ### 手动构建 V4
 
@@ -89,6 +101,64 @@ OUT/
 ```
 
 手动路线只生成指定的 audit/replay，不自动复制配置或导出分割角色。
+
+### 修改范围后快速重建
+
+修改 scene_bounds/点云过滤后，使用新输出目录，复用原始数据。下面的完整分割流水线关闭
+replay PNG/HTML 和 role-preview，仍生成完整 V4、执行完整校验并导出分割角色标注：
+
+```bash
+ROOT=/common-data-32t/data/robot_data/oht_curobo_pd_v423-seg
+OUT="$ROOT/bridgevla-seg-v4-roi-$(date +%Y%m%d-%H%M%S)"
+
+bash finetune/OHT/prepare_seg_data.sh \
+  --root "$ROOT" --output "$OUT" \
+  --config finetune/OHT/configs/dataset.yaml \
+  --replay-version 4 --chunk-horizon 16 --action-frame-stride 1 \
+  --sample-stride 10 --visualize-every 0 --workers 4
+```
+
+训练改用 `$OUT/replay-source-v4`。保持 action-frame-stride=1 和 horizon=16，未来动作仍为
+16 个连续实测 tick；关闭预览不改变样本和标签。若希望生成时直接检查过滤，可改为
+`--visualize-every 500` 降低预览频率。关闭后也可从完整 replay 单独导出稀疏预览：
+
+```bash
+python tools/export_oht_replay_viewer.py \
+  --replay "$OUT/replay-source-v4" \
+  --role-annotations "$OUT/seg-role-annotations/annotations.jsonl" \
+  --output "$OUT/role-preview" --every 500
+```
+
+当前 replay 构建仍按 episode 串行解码视频、保存压缩 NPZ；完整流水线的 `--workers`
+只控制 validate 阶段的并发检查，不会并行 replay 构建或分割导出。提高它不等于提高解码速度。
+优先减少预览开销；可使用空间足够的本地 SSD 作为输出目录，避免共享盘大量小文件写入瓶颈，
+但实际收益需测量。原始数据未改变且旧 audit 仍有效时，走上方手动路线复用原 MANIFEST，
+跳过 audit；新的 replay 仍需完整校验并重新绑定角色标注，不能修改旧 contract 后复用。
+
+上次在 replay 失败时，保留失败目录并直接复用其 audit，新运行使用仓库中的最新配置
+（失败目录的 dataset.yaml 快照仍是旧值，不会自动更新）：
+
+```bash
+FAILED="$ROOT/bridgevla-seg-v4-roi-20261103-150956"
+OUT="$ROOT/bridgevla-seg-v4-roi-retry-$(date +%Y%m%d-%H%M%S)"
+
+bash finetune/OHT/prepare_seg_data.sh \
+  --root "$ROOT" --output "$OUT" --audit-manifest "$FAILED/audit.json" \
+  --config finetune/OHT/configs/dataset.yaml \
+  --chunk-horizon 16 --action-frame-stride 1 --sample-stride 10 \
+  --visualize-every 0 --workers 4
+```
+
+也可先单独运行只读预检，确认范围后再重建：
+
+```bash
+python tools/check_oht_workspace.py \
+  --root "$ROOT" --manifest "$FAILED/audit.json" \
+  --config finetune/OHT/configs/dataset.yaml \
+  --chunk-horizon 16 --action-frame-stride 1 --sample-stride 10
+```
+
+预检失败返回 1，但仍输出完整 JSON；建议范围在 `suggested_scene_bounds`，不会自动修改配置。
 
 ## 数据契约与划分
 
@@ -172,14 +242,14 @@ depth:
 ### 工作区与点云过滤
 
 ```yaml
-scene_bounds: [-0.4, -0.75, 0.4, 1.0, 0.8, 1.75]
+scene_bounds: [-0.5, -1.0, 0.3, 1.5, 1.0, 2.0]
 point_cloud_filter:
   enabled: true
   keep_bounds: [-0.3, -0.65, 0.5, 0.9, 0.7, 1.65]
   exclude_boxes: []
 ```
 
-均为 world 米制 `[xmin,ymin,zmin,xmax,ymax,zmax]`，下界包含、上界不包含。scene_bounds 影响动作空间/归一化；上述范围由用户指定，尚未通过全量轨迹覆盖验证。必须覆盖四任务抓取、放置、最高抬升及夹具/Reference，不能静默裁剪 GT。
+均为 world 米制 `[xmin,ymin,zmin,xmax,ymax,zmax]`，下界包含、上界不包含。scene_bounds 影响动作空间/归一化；较紧的 `[-0.4,-0.75,0.4,1.0,0.8,1.75]` 已在重建时排除实际 GT，因此恢复较大的动作工作区，保留用户指定的新 keep_bounds。完整目标覆盖仍以 workspace 预检报告为准。必须覆盖四任务抓取、放置、最高抬升及夹具/Reference，不能静默裁剪 GT。
 
 此数据配置统一适用于所有 OHT 训练 preset：baseline/full、各动作模式、role_queries/
 predicted_external，以及 regression/delta/flow/guided chunk。训练 YAML 不重复声明范围，模型
