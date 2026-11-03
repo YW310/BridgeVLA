@@ -172,14 +172,20 @@ depth:
 ### 工作区与点云过滤
 
 ```yaml
-scene_bounds: [-0.5, -1.0, 0.3, 1.5, 1.0, 2.0]
+scene_bounds: [-0.4, -0.75, 0.4, 1.0, 0.8, 1.75]
 point_cloud_filter:
   enabled: true
-  keep_bounds: [-0.3, -0.8, 0.4, 1.2, 0.8, 1.9]
+  keep_bounds: [-0.3, -0.65, 0.5, 0.9, 0.7, 1.65]
   exclude_boxes: []
 ```
 
-均为 world 米制 `[xmin,ymin,zmin,xmax,ymax,zmax]`，下界包含、上界不包含。scene_bounds 影响动作空间/归一化；keep_bounds 是经验保留区，不是全量实测边界。必须覆盖四任务抓取、放置、最高抬升及夹具/Reference，不能静默裁剪 GT。
+均为 world 米制 `[xmin,ymin,zmin,xmax,ymax,zmax]`，下界包含、上界不包含。scene_bounds 影响动作空间/归一化；上述范围由用户指定，尚未通过全量轨迹覆盖验证。必须覆盖四任务抓取、放置、最高抬升及夹具/Reference，不能静默裁剪 GT。
+
+此数据配置统一适用于所有 OHT 训练 preset：baseline/full、各动作模式、role_queries/
+predicted_external，以及 regression/delta/flow/guided chunk。训练 YAML 不重复声明范围，模型
+按传入 replay 的 contract 读取；server 按 checkpoint 保存的 contract 读取。使用新范围时，
+给数据构建命令传入此 `dataset.yaml` 并选择新输出目录，再用新 replay 训练各 preset。
+已有 replay/checkpoint 不会随仓库 YAML 自动改变，也不要手工修改其 contract。
 
 `keep_bounds: null` 不额外裁剪，`enabled: false` 关闭过滤，旧配置缺该块时默认关闭；落入任意 exclude_boxes 的点被删除。过滤前保留像素对应关系，排除 XYZ 写 NaN，原 RGB/depth/TCP/动作/presence 不改。缓存、训练 coarse/refine、在线 predictor/agent 前及 CPU 预览共用规则；refine 继承过滤后的点，不会从原始点云恢复表面。单相机可空，全场无工作区点则报错。teacher 无可见几何时保留 present，不改成 NULL。
 

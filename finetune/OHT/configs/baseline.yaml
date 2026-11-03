@@ -1,3 +1,6 @@
+# Shared geometry/filtering for all OHT presets is configured in dataset.yaml
+# when building replay. Training uses that replay contract; do not duplicate
+# scene_bounds/point_cloud_filter here. Server uses the checkpoint contract.
 mode: baseline
 action_mode: eef  # eef / relative_eef / joint / relative_joint
 seed: 0
