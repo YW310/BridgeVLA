@@ -1,6 +1,7 @@
 # Matched B arm: legacy internal_slots + frozen vision + soft coarse hints.
-# For matched A, use rlbench_o2_internal_slots.yaml with --freeze_vision_tower.
-# Once vision freezing is matched, only exp_id and soft_coarse_queries differ.
+# For A, use rlbench_o2_internal_slots.yaml with --freeze_vision_tower and
+# --exp_cfg_opts "bs 24 pin_memory False" to match B's runtime settings.
+# Once runtime settings match, only exp_id and soft_coarse_queries differ.
 # Matched to that baseline setting, not an unavailable historical run config.
 # Initialize BOTH arms from the same checkpoint with a fresh optimizer.
 # Keep replay, MVT config, CLI freeze flags, seed and extra training budget equal.
@@ -8,6 +9,7 @@ exp_id: rlbench_o2_internal_slots_soft_coarse_matched
 tasks: all
 bs: 24
 num_workers: 4
+pin_memory: False
 epochs: 50
 train_iter: 38400
 global_batch_size: 192
@@ -45,7 +47,7 @@ oracle_relation_gated_adapter: True
 oracle_adapter_translation_only: False
 oracle_relation_anchor_rank: 16
 
-# Only conditioning delta after matching A's vision freeze; keep other defaults.
+# Only conditioning delta after matching A's runtime settings; keep other defaults.
 object_conditioning:
   soft_coarse_queries: True
 

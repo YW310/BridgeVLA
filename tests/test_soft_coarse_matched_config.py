@@ -1,4 +1,4 @@
-"""Match soft-query B to legacy slots A with the same frozen vision tower."""
+"""Match soft-query B to legacy slots A with identical runtime overrides."""
 
 import importlib.util
 from pathlib import Path
@@ -11,6 +11,7 @@ BASELINE = CONFIGS / "rlbench_o2_internal_slots.yaml"
 CANDIDATE = CONFIGS / "rlbench_o2_internal_slots_soft_coarse_matched.yaml"
 HAS_YAML = importlib.util.find_spec("yaml") is not None
 HAS_YACS = importlib.util.find_spec("yacs") is not None
+A_RUNTIME_OVERRIDES = {"bs": 24, "pin_memory": False, "freeze_vision_tower": True}
 
 
 @unittest.skipUnless(HAS_YAML, "PyYAML is required for configuration checks")
@@ -19,11 +20,12 @@ class SoftCoarseMatchedConfigTest(unittest.TestCase):
         import yaml
         return yaml.safe_load(path.read_text(encoding="utf-8"))
 
-    def test_only_exp_id_and_soft_query_differ_after_matching_vision_freeze(self):
+    def test_only_exp_id_and_soft_query_differ_after_matching_runtime(self):
         base, candidate = self.read(BASELINE), self.read(CANDIDATE)
-        # A's original file stays unchanged; its launcher must pass the same freeze.
-        self.assertIs(candidate["freeze_vision_tower"], True)
-        base["freeze_vision_tower"] = True
+        # A's original file stays unchanged; pass these documented overrides.
+        for key, value in A_RUNTIME_OVERRIDES.items():
+            self.assertEqual(candidate[key], value)
+        base.update(A_RUNTIME_OVERRIDES)
         self.assertNotEqual(base.pop("exp_id"), candidate.pop("exp_id"))
         self.assertEqual(candidate.pop("object_conditioning"), {"soft_coarse_queries": True})
         self.assertEqual(base, candidate)
@@ -36,7 +38,7 @@ class SoftCoarseMatchedConfigTest(unittest.TestCase):
         spec.loader.exec_module(module)
         base, candidate = module.get_cfg_defaults(), module.get_cfg_defaults()
         base.merge_from_file(str(BASELINE))
-        base.merge_from_list(["freeze_vision_tower", True])
+        base.merge_from_list([item for pair in A_RUNTIME_OVERRIDES.items() for item in pair])
         candidate.merge_from_file(str(CANDIDATE))
         self.assertTrue(base.freeze_vision_tower)
         self.assertTrue(candidate.freeze_vision_tower)
@@ -53,12 +55,13 @@ class SoftCoarseMatchedConfigTest(unittest.TestCase):
         self.assertEqual(candidate["rvt"]["object_prediction_confidence_threshold"], .25)
         self.assertEqual(candidate["rvt"]["object_slot_diversity_loss_weight"], 0.)
         self.assertEqual(candidate["global_batch_size"], 192)
+        self.assertEqual(candidate["bs"], 24)
         self.assertEqual(candidate["num_workers"], 4)
         self.assertEqual(candidate["train_visualization"]["interval"], 500)
         self.assertIs(candidate["freeze_vision_tower"], True)
         self.assertEqual(candidate["freeze_gemma_prefix_layers"], 18)
         self.assertIs(candidate["freeze_multimodal_projector"], True)
-        self.assertNotIn("pin_memory", candidate)
+        self.assertIs(candidate["pin_memory"], False)
 
 
 if __name__ == "__main__":
