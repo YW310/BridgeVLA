@@ -3,7 +3,7 @@
 exp_id: rlbench_o2_internal_slots_soft_coarse
 seed: 0
 tasks: all
-bs: 48
+bs: 24
 num_workers: 2
 pin_memory: False
 epochs: 50

@@ -6,7 +6,7 @@
 # Keep replay, MVT config, CLI freeze flags, seed and extra training budget equal.
 exp_id: rlbench_o2_internal_slots_soft_coarse_matched
 tasks: all
-bs: 48
+bs: 24
 num_workers: 4
 epochs: 50
 train_iter: 38400
