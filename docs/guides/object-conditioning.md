@@ -25,7 +25,7 @@ baseline 的安装/预训练/其他 benchmark 命令仍见[训练](training.md)�
 | `predicted_objects` | 外部 predictor 的 T/R XYZ | 原 relation + anchor | `none`，须另接 predictor wrapper |
 | `internal_slots` | 2 个无序 slots | 原 relation + anchor，无 instruction context | `none` |
 | `internal_slots_soft_coarse` | 两级独立的 2 个无序 slots；局部 queries 接收 coarse soft tokens | 保留旧动作路由；不继承 coarse valid/NULL，不叠加热图残差 | `none` |
-| `internal_slots_soft_coarse_matched` | 与当前 `internal_slots` 严格匹配的 2 个无序 slots | 除实验名外，只增加 `soft_coarse_queries=True`；用于单因素 A/B | `none` |
+| `internal_slots_soft_coarse_matched` | 2 个无序 slots，显式冻结 vision tower | A 同样冻结 vision 后，除实验名外只增加 `soft_coarse_queries=True` | `none` |
 | `semantic_gt_joint` | Semantic-GT | instruction + 完整动作共享 | `rlbench_gt` |
 | `internal_slots_joint` | 6 个无序 slots，128 dim | soft tokens/geometry + instruction + 完整动作共享 | `none` |
 | `internal_slots_cross_scale` | 同一 coarse 的 6 slots | joint + 混合 map 监督 + 本步继承 + token 保留 | `none` |
@@ -55,7 +55,7 @@ TensorBoard 保留旧平均指标，并新增 `object_slot_{coarse,refine}_{targ
 
 #### 严格单因素 A/B 配置
 
-使用 [rlbench_o2_internal_slots_soft_coarse_matched.yaml](../../finetune/RLBench/configs/rlbench_o2_internal_slots_soft_coarse_matched.yaml) 作为本次 B：它与仓库当前 `rlbench_o2_internal_slots.yaml` 的 YAML 及默认值合并结果相比，只改变实验名与 `object_conditioning.soft_coarse_queries=True`。保持 2 个无序 slots、旧动作路由、loss/阈值、workers、pinning 默认值、可视化间隔及冻结配置不变。原 `soft_coarse.yaml` 仍保留，它另外设置了 vision 冻结、workers、pinning 和可视化间隔，不是这组严格单因素配置。
+使用 [rlbench_o2_internal_slots_soft_coarse_matched.yaml](../../finetune/RLBench/configs/rlbench_o2_internal_slots_soft_coarse_matched.yaml) 作为本次 B：显式设置 `freeze_vision_tower=True`，继续冻结 Gemma 前 18 层和 projector。A 使用当前 `rlbench_o2_internal_slots.yaml` 并增加 `--freeze_vision_tower`；匹配这一冻结设置后，两者只改变实验名与 `object_conditioning.soft_coarse_queries=True`。保持 2 个无序 slots、旧动作路由、loss/阈值、workers、pinning 默认值和可视化间隔不变。原 `soft_coarse.yaml` 仍保留，它另有 workers、pinning 和可视化间隔设置，不是这组严格单因素配置。
 
 在 A 的原训练命令中，将配置参数替换为：
 
@@ -64,7 +64,7 @@ TensorBoard 保留旧平均指标，并新增 `object_slot_{coarse,refine}_{targ
 --init_checkpoint "$BASE_RUN/model_last.pth"
 ```
 
-A 使用 `configs/rlbench_o2_internal_slots.yaml`，也从相同 checkpoint 用 `--init_checkpoint` 开始同预算训练；两边都重新创建 optimizer，不是一边 resume、一边 init。相同 replay、MVT 配置、seed、卡数、实际 steps 和 CLI 冻结参数必须一起保留。本配置匹配的是当前仓库基线；若 `09_22_03_18/exp_cfg.yaml` 不同，以该保存配置为准，并对 A/B 同步应用其差异。配置差异回归见 `tests/test_soft_coarse_matched_config.py`。
+A 使用 `configs/rlbench_o2_internal_slots.yaml`，**必须额外传 `--freeze_vision_tower`**（原始 A 配置文件未改）；也从相同 checkpoint 用 `--init_checkpoint` 开始同预算训练。两边都重新创建 optimizer，不是一边 resume、一边 init。相同 replay、MVT 配置、seed、卡数、实际 steps 和其余 CLI 参数必须一起保留。本配置匹配的是当前仓库基线加 vision 冻结；若 `09_22_03_18/exp_cfg.yaml` 不同，以该保存配置为准，并对 A/B 同步应用其差异。冻结减少显存压力但不保证原 microbatch 一定可用；必要时两边同样降低 `bs`、保持 `global_batch_size` 并开启 gradient checkpointing。配置差异回归见 `tests/test_soft_coarse_matched_config.py`。
 
 `rlbench_o2_semantic_roles.yaml` **不是训练配置**：它定义任务/variation 的 T/R、顺序与 NULL 语义，摘要进入数据/checkpoint contract。
 摘要是整个 YAML 文件字节的 SHA-256，不是逐 task 语义摘要；修改注释/格式也会改变 contract。

@@ -1,4 +1,4 @@
-"""Keep the single-factor soft-query experiment matched to legacy slots."""
+"""Match soft-query B to legacy slots A with the same frozen vision tower."""
 
 import importlib.util
 from pathlib import Path
@@ -19,8 +19,11 @@ class SoftCoarseMatchedConfigTest(unittest.TestCase):
         import yaml
         return yaml.safe_load(path.read_text(encoding="utf-8"))
 
-    def test_only_exp_id_and_soft_query_switch_differ_in_yaml(self):
+    def test_only_exp_id_and_soft_query_differ_after_matching_vision_freeze(self):
         base, candidate = self.read(BASELINE), self.read(CANDIDATE)
+        # A's original file stays unchanged; its launcher must pass the same freeze.
+        self.assertIs(candidate["freeze_vision_tower"], True)
+        base["freeze_vision_tower"] = True
         self.assertNotEqual(base.pop("exp_id"), candidate.pop("exp_id"))
         self.assertEqual(candidate.pop("object_conditioning"), {"soft_coarse_queries": True})
         self.assertEqual(base, candidate)
@@ -33,7 +36,10 @@ class SoftCoarseMatchedConfigTest(unittest.TestCase):
         spec.loader.exec_module(module)
         base, candidate = module.get_cfg_defaults(), module.get_cfg_defaults()
         base.merge_from_file(str(BASELINE))
+        base.merge_from_list(["freeze_vision_tower", True])
         candidate.merge_from_file(str(CANDIDATE))
+        self.assertTrue(base.freeze_vision_tower)
+        self.assertTrue(candidate.freeze_vision_tower)
         self.assertFalse(base.object_conditioning.soft_coarse_queries)
         self.assertTrue(candidate.object_conditioning.soft_coarse_queries)
         candidate.exp_id = base.exp_id
@@ -49,7 +55,9 @@ class SoftCoarseMatchedConfigTest(unittest.TestCase):
         self.assertEqual(candidate["global_batch_size"], 192)
         self.assertEqual(candidate["num_workers"], 4)
         self.assertEqual(candidate["train_visualization"]["interval"], 500)
-        self.assertNotIn("freeze_vision_tower", candidate)
+        self.assertIs(candidate["freeze_vision_tower"], True)
+        self.assertEqual(candidate["freeze_gemma_prefix_layers"], 18)
+        self.assertIs(candidate["freeze_multimodal_projector"], True)
         self.assertNotIn("pin_memory", candidate)
 
 
