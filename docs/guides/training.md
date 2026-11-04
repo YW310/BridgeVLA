@@ -149,6 +149,8 @@ use [object-conditioned evaluation](object-conditioning.md#closed-loop评估) fo
 默认使用 TensorBoard，不需要账号或网络连接；无论选择哪种后端，主进程都会在
 tqdm 进度条中实时显示 total、translation、rotation、gripper 和 collision loss。
 
+终端输出与 OHT 共用 `finetune/RLBench/training_utils.py` 的进度摘要及明细格式，统一显示 `[train] epoch=... iter=... step=... lr=...`，训练器原有 epoch/step 编号不变。小 loss 使用有效数字，避免非零 diversity 显示为零。OHT chunk 额外显示毫米误差摘要，完整明细仍使用米单位；详见 [OHT 日志与可视化](../oht/training.md#日志与可视化)。两者均接受 `--loss-print-interval` 和 `--loss_print_interval`。
+
 默认 TensorBoard 模式等价于：
 
     GPUS_PER_NODE=2 bash train_8x40.sh [其他参数] --log_backend tensorboard

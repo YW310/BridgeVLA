@@ -539,6 +539,7 @@ class MVT(nn.Module):
         inherited_object_roles=None,
         refine_role_mask_head=None,
         refine_mask_detach=False,
+        chunk_tokens_only=False,
         **kwargs,
     ):
         """
@@ -551,6 +552,8 @@ class MVT(nn.Module):
         assert num_img == self.num_img
         assert h == w == self.img_size
         uses_object_roles = object_slot_predictor is not None or inherited_object_roles is not None
+        if chunk_tokens_only and (uses_object_roles or oracle_feature_adapter is not None):
+            raise ValueError('Chunk-only local encoding does not accept object adapters')
         if coarse_query_context is not None and object_slot_predictor is None:
             raise ValueError('soft coarse query context requires an independent local predictor')
         if object_slot_predictor is not None and inherited_object_roles is not None:
@@ -620,6 +623,11 @@ class MVT(nn.Module):
         # concat all the output
         image_tokens = torch.stack(image_tokens)
         x = rearrange(image_tokens, 'b (c h1 h2) w -> b w c h1 h2', c=self.num_img, h1=self.num_pat_img, h2=self.num_pat_img) 
+        if chunk_tokens_only:
+            # The independent TCP branch needs VLM patches, not an additional
+            # key heatmap/upscaler graph or rotation/gripper action heads.
+            return dict(oht_chunk_tokens=x.permute(0, 2, 3, 4, 1).reshape(bs, -1, self.vlm_dim),
+                        oht_chunk_grid_shape=(self.num_img, self.num_pat_img, self.num_pat_img))
         feat = []
         _feat = torch.max(torch.max(x, dim=-1)[0], dim=-1)[0]
         _feat = _feat.view(bs, -1)

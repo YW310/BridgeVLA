@@ -15,7 +15,8 @@ DEFAULTS = dict(enabled=False, horizon=16, execute_horizon=4, hidden_dim=256,
                 state_conditioning=False, proprio_normalization='none',
                 proprio_center=None, proprio_scale=None, proprio_min_scale=.1,
                 key_condition_gate=False, key_condition_gate_init=.1, spatial_key_token=False,
-                prediction_representation='relative_pose')
+                prediction_representation='relative_pose',
+                local_context='key_refine', tcp_crop_size_m=.4)
 
 
 def chunk_scale(settings, name):
@@ -72,6 +73,13 @@ def chunk_settings(config, contract=None):
         raise ValueError('chunk_policy.goal_conditioning must be absolute or relative_tcp')
     if type(result['spatial_conditioning']) is not bool:
         raise ValueError('chunk_policy.spatial_conditioning must be boolean')
+    if result['local_context'] not in ('key_refine', 'tcp', 'coarse_only'):
+        raise ValueError('chunk_policy.local_context must be key_refine, tcp or coarse_only')
+    if result['local_context'] != 'key_refine' and not result['spatial_conditioning']:
+        raise ValueError('TCP/coarse-only context requires spatial_conditioning=true')
+    size = result['tcp_crop_size_m']
+    if type(size) not in (int, float) or not math.isfinite(size) or size <= 0:
+        raise ValueError('chunk_policy.tcp_crop_size_m must be positive and finite')
     if result['decoder_type'] not in ('regression', 'flow_matching'):
         raise ValueError('chunk_policy.decoder_type must be regression or flow_matching')
     for name in ('state_conditioning', 'key_condition_gate', 'spatial_key_token'):

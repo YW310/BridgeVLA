@@ -262,25 +262,35 @@ class RVTBoxRenderer():
             pts = pts[ind_max_pts]
         return pts
 
-    def __call__(self, pc, feat, fix_cam=False, dyn_cam_info=None):
+    def __call__(self, pc, feat, fix_cam=False, dyn_cam_info=None, positive_depth_only=False):
 
         self._check_device(pc, "pc")
         self._check_device(pc, "feat")
 
+        cameras = self.cameras
+        if positive_depth_only and cameras.is_orthographic():
+            # The legacy right camera is inside [-1,1]^3. Move only TCP render
+            # cameras backwards along their optical axes. Orthographic XY is
+            # unchanged; the per-view depth mean removes the constant offset.
+            poses = cameras.poses.clone()
+            poses[:, :3, 3] -= 2 * poses[:, :3, 2]
+            cameras = OrthographicCameras(poses, cameras.intrinsics, cameras.img_size)
+
         pc_images, pc_depths = self.renderer.render_batch(pc, feat,
-                                    cameras=self.cameras,
+                                    cameras=cameras,
                                     img_size=self.img_size,
                                     splat_radius=self.splat_radius,
                                     default_color=self.default_color,
                                     default_depth=self.default_depth,
-                                    aa_factor=self.aa_factor
+                                    aa_factor=self.aa_factor,
+                                    **({'positive_depth_only': True} if positive_depth_only else {})
                                     )
 
         if self.normalize_output:
             _, h, w = pc_depths.shape
             depth_0 = pc_depths == -1
             depth_sum = torch.sum(pc_depths, (1, 2)) + torch.sum(depth_0, (1, 2))
-            depth_mean = depth_sum / ((h * w) - torch.sum(depth_0, (1, 2)))
+            depth_mean = depth_sum / ((h * w) - torch.sum(depth_0, (1, 2))).clamp_min(1)
             pc_depths -= depth_mean.unsqueeze(-1).unsqueeze(-1)
             pc_depths[depth_0] = -1
 

@@ -15,6 +15,7 @@ from .training_log import TensorBoardLogger, summary_writer_class
 from .training_plan import resolve_training_plan, epoch_metrics
 from .training_visualization import visualization_settings, capture_due, record_visualization
 from .run_directory import prepare_run_directory
+from ..RLBench.training_utils import report_training_progress
 
 
 def main(argv=None):
@@ -34,10 +35,14 @@ def main(argv=None):
     parser.add_argument("--validate-only", action="store_true")
     parser.add_argument("--log-backend", choices=("tensorboard", "none"), default="tensorboard")
     parser.add_argument("--tensorboard-flush-secs", type=int, default=10)
+    parser.add_argument("--loss-print-interval", "--loss_print_interval", type=int, default=10,
+                        help="Print detailed losses every N optimizer steps; 0 disables text lines")
     parser.add_argument("--epochs", type=int, help="Override total epochs in an epoch-budget config")
     args = parser.parse_args(argv)
     if args.tensorboard_flush_secs < 1:
         parser.error("--tensorboard-flush-secs must be a positive integer")
+    if args.loss_print_interval < 0:
+        parser.error("--loss-print-interval must be nonnegative")
     config = load(args.config)
     visualization = visualization_settings(config, None if args.validate_only else args.log_backend)
     if args.epochs is not None:
@@ -68,6 +73,7 @@ def main(argv=None):
             resolve_training_normalization(config, dataset)
         print(json.dumps(dict(valid=True, mode=config["mode"], samples=dataset.validate_all(), training_plan=plan)))
         return 0
+    import tqdm
     import torch
     import torch.distributed as dist
     from torch.utils.data import DataLoader
@@ -113,6 +119,7 @@ def main(argv=None):
                 proprio_normalization=settings['proprio_normalization'],
                 key_condition_gate=settings['key_condition_gate'],
                 spatial_key_token=settings['spatial_key_token'],
+                local_context=settings['local_context'], tcp_crop_size_m=settings['tcp_crop_size_m'],
                 prediction_representation=settings['prediction_representation'])), flush=True)
             if config.get('chunk_normalization'):
                 write_json(output / 'chunk_normalization.json', config['chunk_normalization'])
@@ -161,11 +168,13 @@ def main(argv=None):
     try:
         with TensorBoardLogger(output / "tensorboard", rank=rank, backend=args.log_backend,
                                flush_secs=args.tensorboard_flush_secs,
-                               resume_step=step if args.resume else None) as logger:
+                               resume_step=step if args.resume else None) as logger, tqdm.tqdm(
+                range(step, target_steps), initial=step, total=target_steps,
+                disable=(rank != 0), desc='train', dynamic_ncols=True) as progress_bar:
             if rank == 0 and args.log_backend == "tensorboard":
                 print(f"TensorBoard logs: {output / 'tensorboard'}", flush=True)
             iterator = iter(loader)
-            while step < target_steps:
+            for _ in progress_bar:
                 losses = {}
                 capture = capture_due(visualization, step + 1, rank)
                 image_payload = None
@@ -194,8 +203,12 @@ def main(argv=None):
                         record_visualization(image_payload, step=step, output=output,
                                              settings=visualization, batch=batch, logger=logger)
                     epoch_finished = bool(plan["steps_per_epoch"] and step % plan["steps_per_epoch"] == 0)
-                    if step == 1 or step % 10 == 0 or epoch_finished or step == target_steps:
-                        print(json.dumps(row), flush=True)
+                    report_training_progress(progress_bar, losses, step=step,
+                        epoch=progress.get('epoch'), iteration=progress.get('epoch_step'),
+                        learning_rate=agent._optimizer.param_groups[0]['lr'],
+                        print_line=(args.loss_print_interval > 0 and (
+                            step == 1 or step % args.loss_print_interval == 0
+                            or epoch_finished or step == target_steps)))
                     if step % plan["checkpoint_interval"] == 0 or step == target_steps:
                         checkpoint = dict(model_state=model_state(agent), optimizer_state=agent._optimizer.state_dict(),
                                           optimizer_step=step, config=config, oht_contract=dataset.contract,

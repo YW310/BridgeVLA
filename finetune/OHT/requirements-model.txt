@@ -2,6 +2,7 @@
 # Install the CUDA build of torch==2.5.1 and torchvision==0.20.1 separately.
 transformers==4.51.3
 accelerate>=0.26.0
+tqdm>=4.64
 safetensors
 einops
 yacs

@@ -76,7 +76,7 @@ class PointRenderer:
 
 
     @torch.no_grad()
-    def render_batch(self, points, features, cameras, img_size, default_depth=0.0, default_color=0.0, splat_radius=None, splat_max_k=51, aa_factor=1):
+    def render_batch(self, points, features, cameras, img_size, default_depth=0.0, default_color=0.0, splat_radius=None, splat_max_k=51, aa_factor=1, positive_depth_only=False):
         # Figure out dimensions of the problem
         img_h, img_w = img_size
         aa_factor = int(aa_factor)
@@ -93,6 +93,13 @@ class PointRenderer:
         features = features.to(self.device)
         points = points.to(self.device)
 
+        # A local observation crop can be empty. Do not launch a zero-block
+        # CUDA grid, splat an empty depth vector or mutate camera AA state.
+        if points.shape[0] == 0:
+            shape = (batch_size, img_h // aa_factor, img_w // aa_factor)
+            return (features.new_full((*shape, num_channels), default_color),
+                    points.new_full(shape, default_depth))
+
         # Scale the camera if we want to internally render a bigger image for fake antialiasing
         if aa_factor > 1:
             cameras.scale(aa_factor)
@@ -101,6 +108,12 @@ class PointRenderer:
         # (these would be more elegant as class methods, but TorchScript doesn't support it)
         point_pixel_index, point_depths, features = _prep_render_batch_inputs(
             points, features, cameras.inv_poses, cameras.intrinsics, img_h, img_w, type(cameras) == OrthographicCameras)
+        if positive_depth_only:
+            # Opt-in for TCP crops: orthographic XY projection alone can accept
+            # points behind a camera; CUDA packs depths into unsigned integers.
+            valid_depth = torch.isfinite(point_depths) & (point_depths > 0)
+            point_pixel_index = point_pixel_index.masked_fill(~valid_depth, -1)
+            point_depths = torch.where(valid_depth, point_depths, 0.)
 
         # Allocate depth and image render buffers
         # Batch size is rolled in with the height dimension

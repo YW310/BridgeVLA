@@ -243,6 +243,33 @@ GPUS_PER_NODE=2 bash finetune/OHT/train_8x40.sh \
 这会重新开始 optimizer/采样；不能用旧实验的 `--resume` 来切换 guidance。
 训练日志打印 `spatial_key_token=true`，server 从新 checkpoint 自动恢复此设置，client 动作协议不变。
 
+### Chunk 使用当前 TCP 局部视图
+
+`oht_chunk_v4_delta_state_tcp_guided_8x40.yaml` 将两种局部视图分开：关键目标分支仍使用 coarse 预测目标中心的 MVT2 裁剪；chunk 使用 coarse 全局 tokens、实测 TCP 中心的局部 tokens、归一化实测状态与带 gate 的预测 key 条件。TCP 局部视图复用现有视觉/Gemma 编码器权重，增加一次局部渲染与编码，只返回视觉 tokens，跳过额外的 heatmap/action heads；冻结层数沿用配置，额外计算与显存开销需在 GPU 上实测。
+
+```bash
+GPUS_PER_NODE=2 bash finetune/OHT/train_8x40.sh \
+  --config finetune/OHT/configs/oht_chunk_v4_delta_state_tcp_guided_8x40.yaml \
+  --replay "$OUT/replay-source-v4" --pretrain-path "$PRETRAIN" \
+  --log-dir "$OUT/runs" --exp-id oht-seg-v4-delta-state-tcp-guided-s0
+```
+
+`chunk_policy.local_context` 有三个选项：
+
+| 值 | Chunk 视觉输入 | 对应 guided 配置 |
+| --- | --- | --- |
+| `key_refine`（默认） | coarse + 目标中心 refine | `oht_chunk_v4_delta_state_guided_8x40.yaml` |
+| `tcp` | coarse + 实测 TCP 中心局部视图 | `oht_chunk_v4_delta_state_tcp_guided_8x40.yaml` |
+| `coarse_only` | 仅 coarse；保留状态和预测 key 引导 | `oht_chunk_v4_delta_state_coarse_guided_8x40.yaml` |
+
+`tcp_crop_size_m: 0.4` 是以实测 TCP 为中心、与世界 XYZ 轴平行的立方体完整边长，即每轴 ±0.2 m；不是半径，也不随 workspace 大小变化。对当前观测点云在三个轴上裁剪，再投影并编码；几何随同一 z-buffer 对齐，逆变换到世界坐标后供 chunk 使用。空局部视图的 tokens 被有效性 mask 排除，仍可读取 coarse 和状态；这不提供碰撞保证。
+
+新 TCP 路径的正交渲染相机沿光轴后移，保持 XY 投影不变，同时将立方体内的表面放到相机前方，再过滤非正或非有限深度；旧 key/refine 路径保留原相机与深度规则。空点云直接返回空白图和无效覆盖，避免零线程块 CUDA 启动。训练诊断 `chunk_local_valid_rate` 是局部有效 patch 比例，`chunk_local_empty_rate` 是整份局部输入为空的样本比例；TCP 模式下若后者长期较高，应先检查点云 ROI、TCP 坐标和裁剪尺寸。coarse-only 不记录这两项，因其主动移除了局部输入。
+
+三组继续使用相同 V4 replay，不需要重建数据。可用相同数据与归一化的 delta/guided checkpoint 加 `--init-checkpoint` 开启新实验，兼容 encoder/decoder 权重保留；切换 `local_context` 或裁剪尺寸不能使用旧 run 的严格 `--resume`。server 按新 checkpoint 中保存的设置自动恢复，client 继续提供当前实测 TCP、关节和夹爪，动作协议不变。日志与 `/model_info.chunk_policy` 可核对 `local_context/tcp_crop_size_m`。
+
+TensorBoard 的 `mvt2` 仍显示关键目标分支的目标中心裁剪，并非新 chunk 的 TCP 局部输入；`train_visualization/chunk` 比较实际 chunk 预测和未来轨迹。闭环收益需固定初始化、预算、seed 与执行器，对照成功率、碰撞和抖动，不能由裁剪图或训练 loss 单独判定。
+
 ### 预算与卡数
 
 | 当前三组共用设置 | 值 |
@@ -320,6 +347,8 @@ tensorboard --logdir "$OUT/runs/train" --port 6006
 ```
 
 rank 0 写日志，通常是本地 microbatch/累积平均，不是跨卡均值；key 指标另按有效 key 归一化。`train_visualization` 控制 enabled/interval/save_png/tensorboard/output_dir，记录第 1 步和间隔步；可视化增加传输/写盘成本，可增大 interval。
+
+OHT 与 RLBench 共用 `finetune/RLBench/training_utils.py` 的终端进度和指标格式：tqdm 显示进度、耗时、预计剩余时间、主要 loss 和学习率；定期输出 `[train] epoch=... iter=... step=... lr=...` 明细。OHT 支持 `--loss-print-interval 10`（也接受 `--loss_print_interval`），设为 `0` 仅关闭明细行。chunk 的进度摘要将位置误差显示为 `pos_mm/prefix1_mm`，明细仍保留原指标名和米单位，小数值 loss 使用有效数字避免误显示为零。OHT 的 `metrics.jsonl` 仍逐 optimizer step 保存完整指标，TensorBoard 标量与 checkpoint 步数不变；epoch/step 编号沿用各自训练器的约定。
 
 Chunk 训练的 `train_visualization/mvt1`、`mvt2` 中，`Prediction heatmap` 与 `Policy / heatmap TCP` 使用相同热图底图；后一列额外绘制红叉（第一步 chunk 预测 TCP）和青圈（heatmap 解码的关键目标 TCP），均非实测 TCP 或 GT。两个点使用各 stage 的 `world_to_pixel` 投影，MVT2 已包含 refine 裁剪变换；图外点不绘制。启用 `save_png` 时同时保存对应 stage 的 NPZ，包含原始热图、投影矩阵、世界坐标及像素坐标，便于数值核对。实际未来轨迹对比仍看 `train_visualization/chunk`。
 

@@ -160,6 +160,10 @@ class ChunkNetwork(nn.Module):
             prediction, extra = self.decoder.training_prediction(*context, target=chunk_target, valid=chunk_valid)
         else:
             prediction = self.decoder(*context)
+        if len(context) == 8 and context[7].numel():
+            local_valid = context[7]
+            extra.update(chunk_local_valid_rate=local_valid.float().mean().item(),
+                         chunk_local_empty_rate=(~local_valid.any(-1)).float().mean().item())
         return prediction, key_loss, metrics, extra
 
 
@@ -217,9 +221,13 @@ class ChunkAgent:
         handle = self.base._net_mod.register_forward_hook(lambda module, args, output: captured.append(output))
         try:
             self.base._net_mod.eval()
+            crop = (dict(chunk_tcp_world=state[None, :3],
+                         chunk_tcp_crop_size_m=self.settings['tcp_crop_size_m'])
+                    if self.settings['local_context'] == 'tcp' else {})
             with torch.set_grad_enabled(with_grad):
                 goal = self.base.act(0, observation, deterministic=True, return_gembench_action=True,
                                      **({'context_with_grad': True} if with_grad else {}),
+                                     **crop,
                                      visualization_callback=visualization_callback)
         finally:
             handle.remove()
@@ -227,18 +235,29 @@ class ChunkAgent:
             raise RuntimeError('Chunk encoder must make exactly one prediction-only backbone forward')
         output = captured[0]
         coarse = output['oht_chunk_tokens']
-        fine = output.get('mvt2', output)['oht_chunk_tokens']
+        if self.settings['local_context'] == 'tcp':
+            if 'oht_chunk_tcp' not in output:
+                raise ValueError('TCP context encoder did not provide the measured-TCP crop')
+            local = output['oht_chunk_tcp']
+        else:
+            local = output.get('mvt2', output)
+        fine = local['oht_chunk_tokens']
+        if self.settings['local_context'] == 'coarse_only':
+            fine = fine[:, :0]
         if not with_grad:
             coarse, fine = coarse.detach(), fine.detach()
         goal = torch.as_tensor(validate_action(goal, self.oht_action_config), device=self._device)[None]
         context = (coarse, fine, torch.as_tensor(state, device=self._device)[None], goal)
         if self.settings['spatial_conditioning']:
-            stages = output, output.get('mvt2', output)
+            stages = output, local
             for stage in stages:
                 if not {'oht_chunk_xyz_world', 'oht_chunk_valid'} <= stage.keys():
                     raise ValueError('Spatial chunk encoder did not provide aligned observed world XYZ/validity')
-            context += tuple(stage['oht_chunk_xyz_world'].detach() for stage in stages)
-            context += tuple(stage['oht_chunk_valid'].detach() for stage in stages)
+            fine_xyz, fine_valid = local['oht_chunk_xyz_world'], local['oht_chunk_valid']
+            if self.settings['local_context'] == 'coarse_only':
+                fine_xyz, fine_valid = fine_xyz[:, :0], fine_valid[:, :0]
+            context += (output['oht_chunk_xyz_world'].detach(), fine_xyz.detach(),
+                        output['oht_chunk_valid'].detach(), fine_valid.detach())
         return context
 
     def _key_loss(self, batch):
@@ -323,6 +342,8 @@ class ChunkAgent:
             chunk_target=batch['action_chunk'][:, 0], chunk_valid=batch['action_valid'][:, 0])
         loss, metrics = chunk_loss(prediction, batch['action_chunk'][:, 0], batch['action_valid'][:, 0], self.settings,
                                    current_position=batch['tcp_pose'][:, 0, :3])
+        metrics.update({name: extra[name] for name in ('chunk_local_valid_rate', 'chunk_local_empty_rate')
+                        if name in extra})
         if 'flow_loss' in extra:
             weighted = self.settings['flow_weight'] * extra['flow_loss']
             loss = loss + weighted
@@ -431,7 +452,7 @@ def load_chunk_weights(agent, checkpoint, initialize=False):
                            'flow_weight', 'flow_steps', 'flow_inference_seed', 'flow_time_sampling',
                            'position_loss_scale', 'second_difference_weight', 'second_difference_scale',
                            'normalization_quantile', 'normalization_min_scale', 'normalization_max_samples',
-                           'spatial_key_token'}:
+                           'spatial_key_token', 'local_context', 'tcp_crop_size_m'}:
                 state = checkpoint['model_state']
                 if 'goal_conditioning' in changed:
                     # Same dimensions, different meaning: relearn only the goal
