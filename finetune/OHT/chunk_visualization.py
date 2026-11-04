@@ -168,9 +168,19 @@ def record(payload, step, output, settings, logger):
             if stage is None:
                 continue
             stage = {key: np.asarray(value) for key, value in stage.items()}
-            panel = _montage(stage, name, False)
+            # Use the same first chunk action as the online server. These are
+            # world coordinates; each stage's affine map already includes its
+            # cube normalization and (for MVT2) prediction-centered crop.
+            first_tcp = np.asarray(payload['predicted'])[0, :3]
+            waypoint = np.asarray(policy['heatmap_waypoint_world'])
+            projection = stage['world_to_pixel']
+            stage['policy_pixels'] = projection @ np.r_[first_tcp, 1.]
+            stage['heatmap_waypoint_pixels'] = projection @ np.r_[waypoint, 1.]
+            panel = _montage(stage, name, True, policy_label='chunk[0] TCP')
             if settings['save_png']:
                 panel.save(directory / f'{name}_step_{step:08d}.png')
+                np.savez_compressed(directory / f'{name}_step_{step:08d}.npz', **stage,
+                                    policy_tcp_world=first_tcp, heatmap_waypoint_world=waypoint)
             if settings['tensorboard']:
                 logger.writer.add_image('train_visualization/' + name, np.asarray(panel), step, dataformats='HWC')
     logger.flush()

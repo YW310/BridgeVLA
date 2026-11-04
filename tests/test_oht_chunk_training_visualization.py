@@ -101,3 +101,52 @@ def test_meter_error_exposes_stationary_prediction_baseline(chunk_fixture):
     expected = torch.linalg.vector_norm(batch['tcp_pose'][:, 0, None, :3] - target, dim=-1)[valid].mean().item()
     assert result['chunk_position_error_m'] == pytest.approx(expected)
     assert result['chunk_stationary_error_m'] == pytest.approx(expected)
+
+
+@pytest.mark.parametrize('same_tcp', [False, True])
+def test_training_heatmaps_project_first_action_and_key_with_each_stage_camera(tmp_path, same_tcp):
+    from copy import deepcopy
+
+    first = np.array([.1, .2, .3])
+    waypoint = first.copy() if same_tcp else np.array([.7, .2, .3])
+    projection = np.array([[[40., 0., 0., 10.], [0., 40., 0., 10.]]])
+    refine = np.array([[[0., 0., -50., 40.], [50., 0., 0., 10.]]])
+    stages = {name: dict(rgb=np.full((1, 64, 64, 3), .5),
+                         heatmap=np.full((1, 64, 64), 1 / 4096), world_to_pixel=camera)
+              for name, camera in (('mvt1', projection), ('mvt2', refine))}
+    original = deepcopy(stages)
+    payload = dict(predicted=np.array([first, first + .01]), target=np.array([first, first]),
+                   valid=np.ones(2, bool), current=np.zeros(3),
+                   policy=dict(stages=stages, heatmap_waypoint_world=waypoint))
+    settings = dict(output_dir='images', save_png=True, tensorboard=True)
+    with TensorBoardLogger(tmp_path / 'tensorboard') as logger:
+        visualization.record(payload, 50, tmp_path, settings, logger)
+    for name in stages:
+        with np.load(tmp_path / f'images/{name}_step_00000050.npz') as arrays:
+            camera = original[name]['world_to_pixel']
+            np.testing.assert_allclose(arrays['policy_pixels'], camera @ np.r_[first, 1.])
+            np.testing.assert_allclose(arrays['heatmap_waypoint_pixels'], camera @ np.r_[waypoint, 1.])
+            np.testing.assert_array_equal(arrays['heatmap'], original[name]['heatmap'])
+            np.testing.assert_array_equal(arrays['policy_tcp_world'], first)
+            np.testing.assert_array_equal(arrays['heatmap_waypoint_world'], waypoint)
+        with Image.open(tmp_path / f'images/{name}_step_00000050.png') as image:
+            pixels = np.asarray(image)
+        heatmap = pixels[78:142, 129:193]
+        marked = pixels[78:142, 193:257]
+        assert np.any(np.all(marked == [255, 0, 0], axis=-1))
+        assert np.any(np.all(marked == [0, 255, 255], axis=-1))
+        assert not np.array_equal(heatmap, marked)
+        assert 'policy_pixels' not in stages[name]  # Never mutate the model's snapshot.
+    events = EventAccumulator(str(tmp_path / 'tensorboard')).Reload()
+    for name in stages:
+        assert [event.step for event in events.Images('train_visualization/' + name)] == [50]
+
+
+def test_offscreen_tcp_marks_are_not_clamped_to_image_edges():
+    from finetune.OHT.runtime.online_visualization import _montage
+
+    stage = dict(rgb=np.full((1, 32, 32, 3), .5), heatmap=np.ones((1, 32, 32)),
+                 policy_pixels=np.array([[-10., 16.]]),
+                 heatmap_waypoint_pixels=np.array([[50., 16.]]))
+    pixels = np.asarray(_montage(stage, 'mvt2', True))
+    np.testing.assert_array_equal(pixels[78:110, 97:129], pixels[78:110, 129:161])

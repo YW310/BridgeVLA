@@ -37,7 +37,7 @@ def _blend(rgb, heatmap):
     return .3 * np.clip(rgb, 0, 1) + .7 * colors
 
 
-def _montage(stage, name, auxiliary):
+def _montage(stage, name, auxiliary, *, policy_label='policy TCP'):
     rgb, maps = stage['rgb'], stage['heatmap']
     views, height, width, _ = rgb.shape
     extra = [key for key in ('target_prior', 'reference_prior', 'relation_anchor') if key in stage]
@@ -46,7 +46,7 @@ def _montage(stage, name, auxiliary):
     image = Image.new('RGB', (left + width * len(columns), top + views * (height + footer)), '#232323')
     draw = ImageDraw.Draw(image)
     draw.text((8, 6), f'{name}: online policy prediction', fill='white')
-    draw.text((8, 24), 'Red: policy TCP   Cyan: heatmap TCP' + (' (auxiliary head)' if auxiliary else ''), fill='white')
+    draw.text((8, 24), f'Red cross: {policy_label}   Cyan ring: heatmap TCP' + (' (auxiliary head)' if auxiliary else ''), fill='white')
     draw.text((8, 42), 'Per-view color normalization. Original probabilities are retained in NPZ.', fill='white')
     for column, title in enumerate(columns):
         draw.text((left + width * column + 2, top - 18), title, fill='white')
@@ -63,8 +63,11 @@ def _montage(stage, name, auxiliary):
                     if key not in stage or not _inside(stage[key][view], width, height):
                         continue
                     x, py = map(float, stage[key][view])
-                    marks.line((x - 4, py - 4, x + 4, py + 4), fill=color, width=2)
-                    marks.line((x - 4, py + 4, x + 4, py - 4), fill=color, width=2)
+                    if key == 'heatmap_waypoint_pixels':
+                        marks.ellipse((x - 6, py - 6, x + 6, py + 6), outline=color, width=2)
+                    else:
+                        marks.line((x - 4, py - 4, x + 4, py + 4), fill=color, width=2)
+                        marks.line((x - 4, py + 4, x + 4, py - 4), fill=color, width=2)
             image.paste(panel, (left + column * width, y))
     return image
 
