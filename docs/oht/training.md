@@ -321,6 +321,8 @@ tensorboard --logdir "$OUT/runs/train" --port 6006
 
 rank 0 写日志，通常是本地 microbatch/累积平均，不是跨卡均值；key 指标另按有效 key 归一化。`train_visualization` 控制 enabled/interval/save_png/tensorboard/output_dir，记录第 1 步和间隔步；可视化增加传输/写盘成本，可增大 interval。
 
+Chunk 训练的 `train_visualization/mvt1`、`mvt2` 中，`Prediction heatmap` 与 `Policy / heatmap TCP` 使用相同热图底图；后一列额外绘制红叉（第一步 chunk 预测 TCP）和青圈（heatmap 解码的关键目标 TCP），均非实测 TCP 或 GT。两个点使用各 stage 的 `world_to_pixel` 投影，MVT2 已包含 refine 裁剪变换；图外点不绘制。启用 `save_png` 时同时保存对应 stage 的 NPZ，包含原始热图、投影矩阵、世界坐标及像素坐标，便于数值核对。实际未来轨迹对比仍看 `train_visualization/chunk`。
+
 `mvt1/mvt2` 对应实际 coarse/refine；chunk 图红色预测、绿色有效未来、白色当前 TCP，采用世界坐标、相同时间和等比例轴。PNG/NPZ 含预测、标签、mask、状态和 sample ID；GT 只监督/绘图，不进入部署。flow 复用观测 memory 做 eval/no-grad 独立部署采样，不重跑 VLM。
 
 Chunk 轨迹图默认将同一帧多相机 RGB/世界点云投影为 XY/XZ/YZ 彩色场景背景，使用浅色网格，背景与轨迹共用坐标与比例。背景最多确定性采样 24,000 点，视窗围绕有效轨迹与当前 TCP 保留局部上下文；远处场景不改变轨迹比例。没有有效点云时显示浅色网格。训练、离线评估及在线 chunk 图均使用该显示，NPZ 同时保存 `scene_points` / `scene_colors`；现有 replay 和 checkpoint 可继续使用，重启训练/评估/服务后新生成的图片生效，旧 PNG 不自动更新。
@@ -349,6 +351,22 @@ python -u -m finetune.OHT.eval open-loop \
 ```
 
 先检查少量样本可加 `--limit 8 --visualize-every 1`，正式去掉 limit；默认每 50 样本保存图，0 关闭。报告/图片用新路径，默认图目录为 `<报告名>_visualizations/`。V4 `index.html/sample_*/chunk.png/npz` 展示轨迹及可用 coarse/refine 图，JSON 按未来 offset 统计误差、有效数与 key 指标。
+
+完整 episode 误差统计使用同一入口，不加 `--limit`；可选 `--task assemble_left --episode-index 7` 筛选，编号必须存在于指定 val/test split，两项均可重复传入。单关键点使用其原 replay；V4 chunk 使用 `replay-source-v4`，入口按 checkpoint 自动区分：
+
+```bash
+python -u -m finetune.OHT.eval open-loop \
+  --checkpoint "$RUN/model_last.pth" \
+  --replay "$OUT/replay-source-v4" --split val \
+  --task assemble_left --episode-index 7 \
+  --visualize-every 0 --output "$OUT/eval/assemble-left-ep7.json"
+```
+
+报告保留原均值，新增 `statistics`：min/max、mean、总体 std、RMSE、median、p05/p25/p75/p90/p95/p99；位置单位 m、旋转为 SO(3) 测地角度 °（不是欧拉角分量误差），joint 模式为 rad，另有 XYZ/各关节 signed bias、MAE 和分布、夹爪准确率及错误数。`within_tolerance` 分别报告位置 ≤5/10/20/50 mm、旋转 ≤1/5/10° 的比例，不代表任务成功率，分位数也不是均值的置信区间。
+
+`per_episode["task/000007"]` 含覆盖率、帧范围及完整性；`episode_coverage` 以选中 split 的 replay 索引为分母，limit 截断和未运行 episode 不会算完整。**完整指该 episode 所有可用 replay 观测，非原始视频全部帧**；被构建时跳过的窗口或 stride 未采样帧不会补出。`episode_macro` 对完整 episode 等权，旧全局均值仍按样本/预测项加权。
+
+V4 每个 episode 分开保存 `all_actions`、`per_offset`、`key_goals` 和 `executed_prefix_forecasts`（offset ≤模型 execute_horizon 的预测，非实际执行）。重叠 chunk 另外提供 `timeline_actions` / `timeline_predictions`：同一目标帧固定选最近一次真实观测发出的预测，不选误差最小者、不平均、不补缺失帧；无效 padding 排除。它是 teacher-forced 时间轴，**不是把预测动作执行一整集后的累计漂移**。详细逐 episode / 逐帧结果保存在 JSON，终端不展开 `per_episode`。
 
 PNG 热图逐视图拉伸，不能用颜色比较置信度。采样计时含诊断载荷采集、图片写盘在外；`--progress-interval 5` 调心跳，`--quiet` 关闭。首次推理可能构建反投影缓存，结合后续速度和 GPU 指标判断，不以心跳证明 GPU 正在计算。
 
