@@ -30,6 +30,15 @@ def _positive_scale(value, name):
     return value
 
 
+def _fraction(value, name):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f'{name} must be a finite number in [0, 1]')
+    value = float(value)
+    if not math.isfinite(value) or not 0 <= value <= 1:
+        raise ValueError(f'{name} must be a finite number in [0, 1]')
+    return value
+
+
 def _validate_pose(pose, name):
     _validate_tensor(pose, name)
     if pose.ndim != 3 or pose.shape[1:] != (4, 4) or pose.shape[0] == 0:
@@ -67,11 +76,16 @@ class LocalGeometryRefiner(nn.Module):
     ``R = R_candidate @ Exp(rotation_vector)``. Translation is an ordinary
     local displacement, not the translational coordinate of an SE(3) twist.
     A zero initialized output head exactly preserves the candidate pose. A
-    sample without any positive ``known`` voxel always returns zero residuals.
+    sample is corrected only when its field has enough evidence: the fraction
+    of voxels with a known indicator must reach ``min_known_coverage`` and the
+    fraction with near-surface support must reach ``min_surface_support``
+    (and at least one known voxel is always required). Otherwise the residuals
+    are exactly zero. Free-space-only views therefore never move the pose.
     """
 
     def __init__(self, context_dim: int, hidden_dim=32,
-                 max_translation_m=.02, max_rotation_rad=.15):
+                 max_translation_m=.02, max_rotation_rad=.15,
+                 min_known_coverage=.02, min_surface_support=.002):
         super().__init__()
         if isinstance(context_dim, bool) or not isinstance(context_dim, int) or context_dim < 0:
             raise ValueError('context_dim must be a nonnegative integer')
@@ -80,6 +94,8 @@ class LocalGeometryRefiner(nn.Module):
         self.context_dim = context_dim
         self.max_translation_m = _positive_scale(max_translation_m, 'max_translation_m')
         self.max_rotation_rad = _positive_scale(max_rotation_rad, 'max_rotation_rad')
+        self.min_known_coverage = _fraction(min_known_coverage, 'min_known_coverage')
+        self.min_surface_support = _fraction(min_surface_support, 'min_surface_support')
         self.geometry_encoder = nn.Sequential(
             nn.Conv3d(5, hidden_dim, kernel_size=3, stride=2, padding=1),
             nn.SiLU(),
@@ -114,19 +130,26 @@ class LocalGeometryRefiner(nn.Module):
             raise ValueError('field, candidate_pose, and context must match the model device and dtype')
 
         observed = field.detach()
-        has_known = (observed[:, 3] > 0).flatten(1).any(dim=1, keepdim=True)
+        known_voxels = observed[:, 3] > 0
+        known_coverage = known_voxels.flatten(1).to(observed.dtype).mean(dim=1, keepdim=True)
+        surface_support = (observed[:, 1] > 0).flatten(1).to(observed.dtype).mean(dim=1, keepdim=True)
+        allowed = (known_voxels.flatten(1).any(dim=1, keepdim=True)
+                   & (known_coverage >= self.min_known_coverage)
+                   & (surface_support >= self.min_surface_support))
         geometry = self.geometry_encoder(observed)
         raw = self.output(self.fusion(torch.cat((geometry, context), dim=-1)))
         translation = _bounded_vector(raw[:, :3], self.max_translation_m)
         rotation_vector = _bounded_vector(raw[:, 3:], self.max_rotation_rad)
-        translation = torch.where(has_known, translation, torch.zeros_like(translation))
-        rotation_vector = torch.where(has_known, rotation_vector, torch.zeros_like(rotation_vector))
+        translation = torch.where(allowed, translation, torch.zeros_like(translation))
+        rotation_vector = torch.where(allowed, rotation_vector, torch.zeros_like(rotation_vector))
 
         candidate_rotation = candidate_pose[:, :3, :3]
         rotation = candidate_rotation @ _so3_exp(rotation_vector)
         position = local_to_world_points(translation, candidate_pose[:, :3, 3], candidate_rotation)
         pose = torch.cat((torch.cat((rotation, position[..., None]), dim=-1), candidate_pose[:, 3:4]), dim=1)
-        return {'pose': pose, 'translation_local': translation, 'rotation_vector': rotation_vector}
+        return {'pose': pose, 'translation_local': translation, 'rotation_vector': rotation_vector,
+                'refine_allowed': allowed[:, 0], 'known_coverage': known_coverage[:, 0],
+                'surface_support': surface_support[:, 0]}
 
 
 def pose_refinement_loss(predicted_pose, target_pose,

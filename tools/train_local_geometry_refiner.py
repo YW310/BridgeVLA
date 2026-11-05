@@ -105,10 +105,18 @@ def _field(cache, indices, geometry):
 def evaluate_cache(model, cache, geometry, batch_size):
     model.eval()
     baseline, refined = {"translation_m": [], "rotation_rad": []}, {"translation_m": [], "rotation_rad": []}
+    gate = {"refine_allowed": [], "known_coverage": [], "surface_support": [], "translation_local_m": [], "rotation_vector_rad": []}
     for start in range(0, len(cache["depth"]), batch_size):
         indices = slice(start, start + batch_size)
         candidate, target = cache["candidate_pose"][indices], cache["target_pose"][indices]
-        output = model(_field(cache, indices, geometry), candidate, cache["context"][indices])["pose"]
+        result = model(_field(cache, indices, geometry), candidate, cache["context"][indices])
+        output = result["pose"]
+        for name, value in (("refine_allowed", result["refine_allowed"].float()),
+                            ("known_coverage", result["known_coverage"]),
+                            ("surface_support", result["surface_support"]),
+                            ("translation_local_m", result["translation_local"].norm(dim=-1)),
+                            ("rotation_vector_rad", result["rotation_vector"].norm(dim=-1))):
+            gate[name].append(value.cpu())
         for destination, pose in ((baseline, candidate), (refined, output)):
             for key, values in pose_error_metrics(pose, target).items():
                 destination[key].append(values.cpu())
@@ -120,7 +128,8 @@ def evaluate_cache(model, cache, geometry, batch_size):
                                p90=float(torch.quantile(errors, .9)))
         return result
     return dict(source=cache["source"], samples=len(cache["depth"]),
-                scope="offline_next_keyframe_pose_error", baseline=summarize(baseline), refined=summarize(refined))
+                scope="offline_next_keyframe_pose_error", baseline=summarize(baseline), refined=summarize(refined),
+                gate=summarize(gate))
 
 
 def train(args):
@@ -131,7 +140,8 @@ def train(args):
         raise ValueError(f"Refusing to overwrite checkpoint: {output}")
     torch.manual_seed(args.seed)
     model_options = dict(context_dim=training["context"].shape[1], hidden_dim=args.hidden_dim,
-                         max_translation_m=args.max_translation_m, max_rotation_rad=args.max_rotation_rad)
+                         max_translation_m=args.max_translation_m, max_rotation_rad=args.max_rotation_rad,
+                         min_known_coverage=args.min_known_coverage, min_surface_support=args.min_surface_support)
     geometry = dict(size_m=args.size_m, resolution=args.resolution, truncation_m=args.truncation_m)
     model = LocalGeometryRefiner(**model_options)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
@@ -185,7 +195,9 @@ def evaluate(args):
     seen_samples = set(checkpoint["train_sample_ids"]) | set(checkpoint["validation_sample_ids"])
     if seen_samples & set(cache["sample_id"].tolist()):
         raise ValueError("Evaluation must use sample IDs absent from training and validation")
-    model = LocalGeometryRefiner(**checkpoint["model_options"])
+    # Checkpoints saved before the evidence gate existed used the any-known-voxel rule.
+    model = LocalGeometryRefiner(**{"min_known_coverage": 0., "min_surface_support": 0.,
+                                    **checkpoint["model_options"]})
     model.load_state_dict(checkpoint["model_state"])
     report = evaluate_cache(model, cache, checkpoint["geometry"], args.batch_size)
     print(json.dumps(report, indent=2))
@@ -262,6 +274,8 @@ def main(argv=None):
     fitting.add_argument("--truncation-m", type=_positive_float, default=.005)
     fitting.add_argument("--max-translation-m", type=_positive_float, default=.02)
     fitting.add_argument("--max-rotation-rad", type=_positive_float, default=.15)
+    fitting.add_argument("--min-known-coverage", type=float, default=.02)
+    fitting.add_argument("--min-surface-support", type=float, default=.002)
     fitting.add_argument("--seed", type=int, default=0)
     fitting.add_argument("--threads", type=_positive_int, default=2)
     fitting.set_defaults(run=train)

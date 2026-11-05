@@ -32,6 +32,7 @@ def z_rotation(angle, dtype=torch.float32):
 def observed_field(batch=1):
     field = torch.zeros(batch, 5, 8, 8, 8)
     field[:, 3] = 1
+    field[:, 1, 3:5, 3:5, 3:5] = 1  # Small target surface in the centre.
     return field
 
 
@@ -42,7 +43,8 @@ def test_zero_initialization_exactly_preserves_nontrivial_candidate():
     candidate[0, :3, :3] = z_rotation(.8)
     candidate[:, :3, 3] = torch.randn(2, 3)
     result = model(observed_field(2), candidate, torch.randn(2, 3))
-    assert set(result) == {'pose', 'translation_local', 'rotation_vector'}
+    assert set(result) == {'pose', 'translation_local', 'rotation_vector',
+                           'refine_allowed', 'known_coverage', 'surface_support'}
     torch.testing.assert_close(result['pose'], candidate, rtol=0, atol=0)
     assert result['translation_local'].count_nonzero() == 0
     assert result['rotation_vector'].count_nonzero() == 0
@@ -125,6 +127,66 @@ def test_missing_known_field_returns_base_even_with_nonzero_prediction():
     assert result['translation_local'][0].count_nonzero() == 0
     assert result['rotation_vector'][0].count_nonzero() == 0
     assert result['translation_local'][1].count_nonzero() == 3
+
+
+def _active_model():
+    model = LocalGeometryRefiner(2, hidden_dim=4)
+    with torch.no_grad():
+        model.output.bias.fill_(1)
+    return model
+
+
+def _gate_result(field):
+    candidate = pose(field.shape[0])
+    candidate[:, :3, 3] = .3
+    return _active_model()(field, candidate, torch.randn(field.shape[0], 2)), candidate
+
+
+def test_evidence_gate_scenarios_and_diagnostics():
+    empty = torch.zeros(1, 5, 8, 8, 8)
+    free_only = torch.zeros(1, 5, 8, 8, 8)
+    free_only[:, 2] = 1
+    free_only[:, 3] = 1
+    occluded = observed_field()
+    occluded[:, 3] = 0
+    occluded[:, 3, :, :, :1] = 1  # 1/8 known, no surface evidence in the known part.
+    occluded[:, 1] = 0
+    valid = observed_field()
+    fields = torch.cat([empty, free_only, occluded, valid])
+    result, candidate = _gate_result(fields)
+    assert result['refine_allowed'].tolist() == [False, False, False, True]
+    for index in range(3):
+        torch.testing.assert_close(result['pose'][index], candidate[index], rtol=0, atol=0)
+        assert result['translation_local'][index].count_nonzero() == 0
+        assert result['rotation_vector'][index].count_nonzero() == 0
+    assert result['translation_local'][3].count_nonzero() == 3
+    torch.testing.assert_close(result['known_coverage'], torch.tensor([0., 1., .125, 1.]))
+    assert result['surface_support'][:3].count_nonzero() == 0
+    assert result['surface_support'][3] == pytest.approx(8 / 512)
+
+
+def test_sparse_known_coverage_is_rejected_even_with_surface():
+    field = torch.zeros(1, 5, 8, 8, 8)
+    field[0, 3, 0, 0, :4] = 1  # 4/512 known, below the default 2% coverage.
+    field[0, 1, 0, 0, :4] = 1
+    result, candidate = _gate_result(field)
+    assert not result['refine_allowed'].item()
+    torch.testing.assert_close(result['pose'], candidate, rtol=0, atol=0)
+
+
+def test_thresholds_are_configurable_and_zero_restores_legacy_any_known_rule():
+    legacy = LocalGeometryRefiner(2, hidden_dim=4, min_known_coverage=0., min_surface_support=0.)
+    with torch.no_grad():
+        legacy.output.bias.fill_(1)
+    field = torch.zeros(1, 5, 8, 8, 8)
+    field[0, 3, 0, 0, 0] = 1
+    assert legacy(field, pose(), torch.randn(1, 2))['refine_allowed'].item()
+    strict = LocalGeometryRefiner(2, hidden_dim=4, min_known_coverage=.5, min_surface_support=.1)
+    assert not strict(observed_field(), pose(), torch.randn(1, 2))['refine_allowed'].item()
+    with pytest.raises(ValueError):
+        LocalGeometryRefiner(2, min_surface_support=1.5)
+    with pytest.raises(ValueError):
+        LocalGeometryRefiner(2, min_known_coverage=True)
 
 
 def test_observation_is_detached_but_context_and_model_receive_gradients():
