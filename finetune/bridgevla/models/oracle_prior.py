@@ -683,6 +683,7 @@ class OracleRelationAnchorFeatureAdapter(OracleRelationGatedFeatureAdapter):
         relation_state=None,
         *, current_state=None, context=None, role_tokens=None,
         reference_null_probability=None, geometry=None, role_token_valid=None,
+        reference_is_null=None,
     ):
         if current_state is not None:
             if relation_state is not None:
@@ -764,6 +765,13 @@ class OracleRelationAnchorFeatureAdapter(OracleRelationGatedFeatureAdapter):
             if reference_null_probability is not None:
                 probability = reference_null_probability[:, None, None].to(features.dtype)
                 reference_token = (1 - probability) * reference_token + probability * null_reference
+            # External semantic NULL is independent of posterior/local visibility.
+            if reference_is_null is not None:
+                if reference_is_null.shape != (batch_size,) or reference_is_null.dtype != torch.bool:
+                    raise ValueError('reference_is_null must be bool [B]')
+                reference_token = torch.where(
+                    reference_is_null.to(features.device)[:, None, None],
+                    null_reference, reference_token)
         role_tokens = torch.stack((target_token, reference_token), dim=2)
 
         if geometry is None:

@@ -493,8 +493,10 @@ class RVTAgent:
         object_refine_diversity_loss_weight: float = 0.0,
         log_dir="",
         collision_loss_weight: float = 1.0,
+        enable_slot_guided_sam3: bool = False,
     ):
         self._network = network
+        self.enable_slot_guided_sam3 = bool(enable_slot_guided_sam3)
         self._num_rotation_classes = num_rotation_classes
         self._rotation_resolution = 360 / self._num_rotation_classes
         self._lr = lr
@@ -612,6 +614,13 @@ class RVTAgent:
     def build(self, training: bool, device: torch.device = None):
         self._training = training
         self._device = device
+        if self.enable_slot_guided_sam3:
+            if training:
+                raise ValueError('slot-guided SAM3 draft is inference-only')
+            from bridgevla.models.slot_guided_geometry import freeze_for_geometry_inference
+            freeze_for_geometry_inference(self._network)
+            self._optimizer = None
+            return
         trainable_parameters = [
             (name, parameter)
             for name, parameter in self._network.named_parameters()
@@ -671,6 +680,27 @@ class RVTAgent:
 
     def optimizer_step(self):
         self._optimizer.step()
+
+    def _slot_guided_geometry_inputs(self, payload, observation, scene_world, with_grad):
+        # Disabled means no payload parsing, gates, freezing, or extra network kwargs.
+        if not self.enable_slot_guided_sam3:
+            return {}
+        if with_grad or self._training:
+            raise ValueError('slot-guided SAM3 draft requires frozen offline inference')
+        if payload is None:
+            raise ValueError('enabled slot-guided SAM3 requires an explicit geometry payload')
+        from bridgevla.models.slot_guided_geometry import (
+            authorize_geometry, freeze_for_geometry_inference, geometry_to_cube,
+        )
+        authorized = authorize_geometry(
+            payload['geometry'], observation['slot_guided_current_frames'],
+            payload['acceptance_report'], payload['bridge_checkpoint_path'],
+            payload['bridge_git_sha'])
+        freeze_for_geometry_inference(self._network)
+        authorized = geometry_to_cube(
+            authorized, scene_world, mvt_utils.place_pc_in_cube,
+            self._place_with_mean, self.scene_bounds)
+        return {'slot_guided_geometry': authorized}
 
     def _network_extra_inputs(self, sample):
         return {}
@@ -1299,6 +1329,8 @@ class RVTAgent:
         return_visualization: bool = False,
         return_loss: bool = False,
     ) -> dict:
+        if self.enable_slot_guided_sam3:
+            raise ValueError('slot-guided SAM3 draft cannot train or read expert action labels')
         if return_loss and not backprop:
             raise ValueError('return_loss requires backprop=True to construct the supervised loss')
         assert replay_sample["rot_grip_action_indicies"].shape[1:] == (1, 4)
@@ -2553,7 +2585,10 @@ class RVTAgent:
         context_with_grad=False,
         chunk_tcp_world=None,
         chunk_tcp_crop_size_m=.4,
+        slot_guided_sam3=None,
     ) -> ActResult:
+        if self.enable_slot_guided_sam3 and (self.bridgevla_aligned_objects or self.heatmap_action_anchor):
+            raise ValueError('slot-guided SAM3 draft does not combine with privileged alignment/anchor diagnostics')
         oracle_points, oracle_valid, oracle_slots = (
             self._select_oracle_prior_points(observation, allow_missing=True)
         )
@@ -2603,6 +2638,8 @@ class RVTAgent:
                     observation['oracle_target_candidate_reference_points'], 4,
                 ).float()
                 aligned_reference_points_local = []
+        slot_geometry_inputs = self._slot_guided_geometry_inputs(
+            slot_guided_sam3, observation, pc, context_with_grad)
         # TODO: Vectorize
         pc_new = []
         rev_trans = []
@@ -2705,6 +2742,7 @@ class RVTAgent:
                 ),
                 language_goal=language_goal,
                 **chunk_inputs,
+                **slot_geometry_inputs,
                 **self._network_extra_inputs(observation),
             )
         if getattr(self._net_mod.mvt1, 'oht_return_chunk_geometry', False):
@@ -3070,4 +3108,6 @@ class RVTAgent:
         self._network.eval()
 
     def train(self):
+        if self.enable_slot_guided_sam3:
+            raise ValueError('slot-guided SAM3 draft must remain frozen in eval mode')
         self._network.train()

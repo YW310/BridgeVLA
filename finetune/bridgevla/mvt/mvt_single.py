@@ -539,6 +539,7 @@ class MVT(nn.Module):
         refine_role_mask_head=None,
         refine_mask_detach=False,
         chunk_tokens_only=False,
+        slot_guided_geometry=None,
         **kwargs,
     ):
         """
@@ -668,6 +669,11 @@ class MVT(nn.Module):
                 trans_base = self.up0(x).view(
                     bs, self.num_img, h, w,
                 )
+        if slot_guided_geometry is not None:
+            if self.training or torch.is_grad_enabled() or not hasattr(oracle_feature_adapter, 'forward_with_anchor'):
+                raise ValueError('slot-guided geometry requires an eval-mode existing Anchor adapter')
+            if not getattr(oracle_feature_adapter, 'role_conditioning', False):
+                raise ValueError('slot-guided geometry requires role_conditioning=True')
         if oracle_feature_adapter is not None:
             if oracle_prior_heatmap is None or oracle_prior_valid is None:
                 raise ValueError('Oracle feature adapter requires prior and valid')
@@ -675,6 +681,16 @@ class MVT(nn.Module):
                 oracle_feature_adapter, 'forward_with_anchor', None,
             )
             if anchor_forward is not None:
+                adapter_geometry = dict(
+                    instance_valid=oracle_prior_valid, relation_points=oracle_relation_points,
+                    reference_null_probability=(object_slot_output['reference_null_probability']
+                                                if object_slot_output is not None else None),
+                    geometry=(object_slot_output['geometry']
+                              if object_slot_output is not None else None))
+                if slot_guided_geometry is not None:
+                    from bridgevla.models.slot_guided_geometry import adapter_geometry_kwargs
+                    adapter_geometry.update(adapter_geometry_kwargs(
+                        slot_guided_geometry, device=x.device, dtype=x.dtype))
                 (
                     translation_features,
                     shared_features,
@@ -682,16 +698,11 @@ class MVT(nn.Module):
                 ) = anchor_forward(
                     x,
                     oracle_prior_heatmap,
-                    oracle_prior_valid,
-                    oracle_relation_points,
+                    **adapter_geometry,
                     current_state=oracle_relation_state,
                     context=instruction_context,
                     role_tokens=(object_slot_output['role_tokens']
                                  if object_slot_output is not None else None),
-                    reference_null_probability=(object_slot_output['reference_null_probability']
-                                                if object_slot_output is not None else None),
-                    geometry=(object_slot_output['geometry']
-                              if object_slot_output is not None else None),
                     role_token_valid=(object_slot_output.get('role_token_valid')
                                       if object_slot_output is not None else None),
                 )
