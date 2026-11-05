@@ -971,6 +971,7 @@ _RLBENCH_RUNTIME_FILES = (
 _FINETUNE_RUNTIME_FILES = (
     "bridgevla/models/bridgevla_agent.py",
     "bridgevla/models/oracle_prior.py",
+    "bridgevla/models/slot_guided_geometry.py",
     "bridgevla/models/object_conditioning.py",
     "bridgevla/models/cross_scale_roles.py",
     "bridgevla/models/role_separation.py",

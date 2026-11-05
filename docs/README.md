@@ -12,6 +12,10 @@
 
 可编辑源文件为 `assets/algorithm-overview.fragment.html`；修改后在仓库根目录运行 `python tools/render_algorithm_overview.py`，用 `--check` 检查生成页面是否同步。
 
+## Slot-guided SAM3 draft
+
+[Action-input contract, configuration and CPU checks](slot_guided_sam3_action_draft.md) describe the detached world-geometry interface and the real-evidence activation gate. The [default-disabled architecture example](../finetune/RLBench/configs/rlbench_slot_guided_sam3_draft.yaml) matches the existing role-query Anchor architecture; it does not provide an enabled evaluation launcher.
+
 ## OHT
 
 OHT 的数据指南、模型设计、部署说明和交接记录统一合并为以下三份，按流程阅读即可。

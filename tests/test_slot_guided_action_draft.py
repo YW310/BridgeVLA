@@ -404,6 +404,49 @@ def test_frozen_path_and_train_guards():
     fn = source_method('finetune/bridgevla/models/bridgevla_agent.py', 'RVTAgent', 'update')
     with pytest.raises(ValueError, match='expert action'):
         fn(SimpleNamespace(enable_slot_guided_sam3=True), {})
+    fn = source_method('finetune/bridgevla/models/bridgevla_agent.py', 'RVTAgent', 'update_gembench')
+    with pytest.raises(ValueError, match='expert action'):
+        fn(SimpleNamespace(enable_slot_guided_sam3=True), {})
+
+
+def acceptance_fixture():
+    sources = dict(bridge_git_sha='b' * 40, bridge_checkpoint_sha256='c' * 64,
+                   guidance_git_sha='d' * 40, guidance_checkpoint_sha256='e' * 64,
+                   sam3_checkpoint_sha256='f' * 64)
+    report = dict(evidence_kind='REAL', verified=True, backend_kind='sam3', mock=False,
+                  accepted=True, reviewed_by='shape-validator-unit-test', reviewed_at='2026-11-05T00:00:00Z',
+                  sources=sources, calibration_sha256=['a' * 64],
+                  metrics={key: 1. for key in REQUIRED_METRICS})
+    return report, sources
+
+
+@pytest.mark.parametrize('field,value', [('reviewed_by', True), ('reviewed_by', []),
+                                       ('reviewed_by', '  '), ('reviewed_at', True),
+                                       ('reviewed_at', 'not-a-timestamp'),
+                                       ('reviewed_at', '2026-11-05T00:00:00')])
+def test_acceptance_requires_named_reviewer_and_typed_timestamp(field, value):
+    report, sources = acceptance_fixture()
+    report[field] = value
+    with pytest.raises(ValueError, match='review'):
+        validate_real_acceptance(report, sources, ['a' * 64])
+
+
+@pytest.mark.parametrize('approved', ['a' * 64, [], None, [True], ['invalid']])
+def test_acceptance_calibration_must_be_nonempty_digest_list(approved):
+    report, sources = acceptance_fixture()
+    report['calibration_sha256'] = approved
+    with pytest.raises(ValueError, match='calibration'):
+        validate_real_acceptance(report, sources, ['a' * 64])
+
+
+@pytest.mark.parametrize('receipt', [False, 0., '0'])
+def test_frame_zero_receipt_cannot_use_boolean_float_or_string(tmp_path, receipt):
+    geom = packet()
+    meta = {**geom.provenance[0], 'source_frame_index': 0}
+    geom = replace(geom, provenance=(meta,))
+    current = {**meta, 'max_source_frame_index_read': receipt}
+    with pytest.raises(ValueError, match='read receipt'):
+        authorize_geometry(geom, [current], {}, tmp_path / 'not-read.pth', 'f' * 40)
 
 
 def test_low_geometry_confidence_disables_geometry(software_authorization):

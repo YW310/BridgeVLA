@@ -70,6 +70,52 @@ frame-local NPZ basename, SHA256 match, finite `[N,3]` arrays and matching point
 counts. It does not load a whole episode or read any pickle. It imports no TASK
 modules. Unavailable roles must have empty arrays.
 
+## Configuration and verified CPU commands
+
+The standalone [draft profile](../finetune/RLBench/configs/rlbench_slot_guided_sam3_draft.yaml)
+mirrors [rlbench_o2_role_queries.yaml](../finetune/RLBench/configs/rlbench_o2_role_queries.yaml),
+except for its experiment name and an explicit false feature flag. With
+`finetune/bridgevla/mvt/configs/rvt2.yaml`, it selects fixed role queries, the
+existing role-conditioned Relation Anchor, shared action features and inherited
+coarse roles. It preserves the original profile's parameter layout and disabled
+inference behavior; it does not convert an unrelated checkpoint into this
+architecture. The checkpoint's saved `exp_cfg.yaml` / `mvt_cfg.yaml` remain the
+authority when evaluating existing weights.
+
+Run these PowerShell commands from `C:\Users\yiwei.chen\BridgeVLA`. They use the
+existing local CPU environment explicitly; no global `python` or `PYTHONPATH`
+setting is needed. The configuration check creates no model and reads no episode:
+
+```powershell
+@'
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path.cwd() / "finetune"))
+from bridgevla.config import get_cfg_defaults
+from bridgevla.mvt.config import get_cfg_defaults as get_mvt_defaults
+cfg = get_cfg_defaults()
+cfg.merge_from_file("finetune/RLBench/configs/rlbench_slot_guided_sam3_draft.yaml")
+mvt = get_mvt_defaults()
+mvt.merge_from_file("finetune/bridgevla/mvt/configs/rvt2.yaml")
+assert cfg.rvt.enable_slot_guided_sam3 is False
+assert cfg.object_slots.enabled and cfg.object_slots.predictor_type == "role_queries"
+assert cfg.object_conditioning.shared_action_features and cfg.oracle_relation_anchor_rank > 0
+assert mvt.stage_two
+print("draft config valid; external SAM3 conditioning disabled")
+'@ | & .\.venv-oht\Scripts\python.exe -
+
+& .\.venv-oht\Scripts\python.exe -m pytest tests/test_slot_guided_action_draft.py tests/test_slot_guided_draft_config.py tests/test_eval_runtime_fingerprint.py -q
+```
+
+`finetune/RLBench/eval.py` and `eval.sh` load the false flag through the existing
+`exp_cfg.rvt` agent arguments. They do not load PR3 payloads or acceptance reports;
+there is no enabled Slot-guided SAM3 CLI launcher in this draft. Their existing
+RLBench commands require the simulator/GPU environment and evaluate the saved
+baseline/role-query path while the flag is false. See the
+[RLBench evaluation guide](guides/evaluation.md#rlbench) for that separate runtime.
+Do not flip this flag in a training command or infer activation from a successful
+config merge. Enabled `build(training=True)` and both update methods are rejected.
+
 ## Optional act input and trusted current-frame context
 
 The optional API is `RVTAgent.act(..., slot_guided_sam3=payload)`. The disabled
@@ -78,8 +124,13 @@ I/O or random-number operations. A malformed optional payload therefore cannot
 affect a disabled baseline.
 
 For a future approved experiment, the trusted snapshot importer supplies:
+This is an API integration example, not a standalone CLI command; the importer,
+observation, loaded agent and reviewed report are still required.
 
 ```python
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path.cwd() / "finetune"))  # Run from the repository root.
 from bridgevla.models.slot_guided_geometry import load_pr3_geometry
 
 geometry = load_pr3_geometry("current_frame/objects.json", count=128)
@@ -121,12 +172,12 @@ loader binding is an explicit remaining integration responsibility.
 The gate requires all of:
 
 - `evidence_kind: REAL`, `verified: true`, `backend_kind: sam3`, `mock: false`,
-  `accepted: true`, and explicit `reviewed_by` / `reviewed_at`.
+  `accepted: true`, a nonempty reviewer name and a timezone-aware review timestamp.
 - Exact report `sources` matching `bridge_git_sha`, the SHA256 of the supplied
   Bridge checkpoint, `guidance_git_sha`, `guidance_checkpoint_sha256`, and
   `sam3_checkpoint_sha256`; source/checkpoint hashes must be present and valid.
 - Current calibration SHA256 included in the report's `calibration_sha256`
-  list. Artifact provenance must be `guidance_source=predicted_coarse_slot`,
+  nonempty list. Artifact provenance must be `guidance_source=predicted_coarse_slot`,
   `backend_kind=sam3`; mock and Oracle geometry cannot activate this action path.
 - Non-null finite nonnegative measurements for `role_accuracy`,
   `prompt_instance_hit_rate`, `mask_iou`, `multiview_consistency`, `center_error_m`,
@@ -142,7 +193,8 @@ production `allow_mock` switch or accepted software-test report type.
 
 ## Freeze, coordinate and compatibility behavior
 
-Enabled agents reject training/build/update and `train()` requests, remain in
+Enabled agents reject `build(training=True)`, `update()`, `update_gembench()` and
+`train()` requests, remain in
 eval mode, and freeze all network parameters. The optional path disallows
 `context_with_grad`, image augmentation and privileged object alignment/anchor
 diagnostic combinations. Network-level external calls require no-grad/eval.
@@ -166,19 +218,31 @@ rejection, real-gate failures and parameter freezing.
 The PR3-writer interoperability test is opt-in with
 `SLOT_GUIDED_PR3_ARTIFACT` pointing to the synthetic two-instance, source-frame-7
 `B_point+box/object_geometry.json` output. It loads both point clouds and verifies
-that action authorization rejects the mock producer. The reviewed expanded CPU
-run passed 136 tests and 3 subtests, including configuration/training helpers and
-that actual writer output; a separate existing OHT action-call regression passed.
+that action authorization rejects the mock producer. The initial PR4 expanded
+CPU run passed 136 tests and 3 subtests. The post-implementation review passed
+130 core draft/config/Anchor/fingerprint tests plus 39 additional docs/training/
+config tests and 3 subtests, including actual writer output. This review also
+verified configuration merge with the external path disabled, 81 local document
+links and regenerated handbook consistency. The related TASK path passed
+166 tests and 198 subtests with config-driven demo/cache/A/B commands exercised;
+see its [review record](https://github.com/YW310/TASK_Relevant_object/blob/codex/slot-guidance-pr3/docs/slot_guided_review.md).
 The unchanged reduced-mode suite has two failures also reproduced in the
 original checkout: its expected Gemma prefix 9 differs from YAML value 6, and
 its Oracle replay guard string assertion is stale. Those unrelated baseline
 settings were not changed.
 
-Run from this checkout:
+Run the wider software regression suite from this checkout:
 
 ```powershell
-& C:\Users\yiwei.chen\BridgeVLA\.venv-oht\Scripts\python.exe -m pytest tests/test_slot_guided_action_draft.py tests/test_cross_scale_roles.py tests/test_cross_scale_render.py tests/test_refine_role_masks.py tests/test_object_conditioning.py tests/test_oracle_prior.py -q
+& .\.venv-oht\Scripts\python.exe -m pytest tests/test_slot_guided_action_draft.py tests/test_slot_guided_draft_config.py tests/test_cross_scale_roles.py tests/test_cross_scale_render.py tests/test_refine_role_masks.py tests/test_object_conditioning.py tests/test_oracle_prior.py tests/test_eval_runtime_fingerprint.py -q
 ```
+
+To repeat actual PR3-writer interoperability after the TASK synthetic experiment
+has produced artifacts, set `SLOT_GUIDED_PR3_ARTIFACT` to its
+`results/synthetic_two_instances/7/B_point+box/object_geometry.json`, then run
+`test_actual_pr3_writer_artifact_interoperability` from the draft test file. With
+no variable, that external-artifact test is explicitly skipped. Synthetic output
+loads as geometry and remains rejected for real action authorization.
 
 No actual Bridge checkpoint, PaliGemma inference, GPU renderer, SAM3 prediction,
 robot action or RLBench rollout was executed. Those checks, trusted current-frame

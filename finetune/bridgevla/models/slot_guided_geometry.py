@@ -204,8 +204,15 @@ def validate_real_acceptance(report, sources, calibrations):
             or report.get('backend_kind') != 'sam3' or report.get('mock') is not False
             or report.get('accepted') is not True):
         raise ValueError('activation requires an accepted verified REAL SAM3 report')
-    if not report.get('reviewed_by') or not report.get('reviewed_at'):
+    reviewer = report.get('reviewed_by')
+    reviewed_at = report.get('reviewed_at')
+    if not isinstance(reviewer, str) or not reviewer.strip() or not isinstance(reviewed_at, str):
         raise ValueError('acceptance report needs explicit reviewer and review timestamp')
+    try:
+        if datetime.fromisoformat(reviewed_at.replace('Z', '+00:00')).tzinfo is None:
+            raise ValueError('review timestamp needs a timezone')
+    except ValueError as exc:
+        raise ValueError('review timestamp must be explicit and timezone-aware') from exc
     if report.get('sources') != sources:
         raise ValueError('acceptance source/checkpoint mismatch')
     if set(sources) != {'bridge_git_sha', 'bridge_checkpoint_sha256', 'guidance_git_sha',
@@ -218,6 +225,10 @@ def validate_real_acceptance(report, sources, calibrations):
                                          or any(c not in '0123456789abcdef' for c in value)):
             raise ValueError(f'{key} must be a git SHA')
     approved = report.get('calibration_sha256', [])
+    if not isinstance(approved, list) or not approved:
+        raise ValueError('calibration_sha256 must be a nonempty list of digests')
+    for digest in approved:
+        _digest(digest, 'calibration_sha256')
     if not calibrations or any(_digest(c, 'calibration_sha256') not in approved for c in calibrations):
         raise ValueError('current calibration not covered by acceptance report')
     metrics = report.get('metrics', {})
@@ -254,7 +265,8 @@ def authorize_geometry(geometry, current_frames, report, bridge_checkpoint_path,
         index = source['source_frame_index']
         if isinstance(index, bool) or not isinstance(index, int) or index < 0:
             raise ValueError('source_frame_index must be a nonnegative episode index')
-        if current.get('max_source_frame_index_read') != index:
+        read_index = current.get('max_source_frame_index_read')
+        if type(read_index) is not int or read_index != index:
             raise ValueError('current-frame read receipt is missing or contains future data')
         try:
             timestamp = datetime.fromisoformat(source['observed_at'].replace('Z', '+00:00'))
