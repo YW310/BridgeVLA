@@ -456,11 +456,10 @@ class MVT(nn.Module):
         return model_inputs
 
     def _forward_efficient_paligemma(self, model_inputs):
-        # PaliGemma 4.51.3 performs multimodal token merging in the conditional
-        # generation wrapper, so keep that path but capture only the final
-        # normalized hidden state. Limiting logits to one token avoids the
-        # otherwise unused [batch, sequence, vocabulary] allocation, while not
-        # requesting every hidden layer preserves activation checkpointing.
+        from .paligemma_inputs import merge_paligemma_images
+        # Keep the conditional-generation/language-model path, but replace its
+        # expanded [B,L,D] boolean gather with checked whole-token merging.
+        merged_inputs = merge_paligemma_images(self.model, model_inputs)
         captured_hidden_states = []
 
         def capture_final_hidden_state(module, inputs, output):
@@ -471,7 +470,7 @@ class MVT(nn.Module):
         )
         try:
             self.model(
-                **model_inputs,
+                **merged_inputs,
                 use_cache=False,
                 output_hidden_states=False,
                 logits_to_keep=1,

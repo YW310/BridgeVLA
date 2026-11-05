@@ -311,6 +311,9 @@ class ChunkAgent:
                 module.eval()
         try:
             return self.base.update(sample, return_loss=True)
+        except (ValueError, RuntimeError) as exc:
+            identities = [batch.get('sample_ids', ['unknown'] * len(valid))[i] for i in indices]
+            raise type(exc)(f'OHT key supervision failed for samples={identities}: {exc}') from exc
         finally:
             encoder.eval()
 

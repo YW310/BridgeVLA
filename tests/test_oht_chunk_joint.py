@@ -191,6 +191,24 @@ def test_joint_layer_count_freezes_prefix_but_trains_later_layers_and_both_heads
     assert all(call == dict(training=False, grad=True, gt=False, vlm_training=False) for call in calls[1:])
 
 
+@pytest.mark.parametrize('error_type', [ValueError, RuntimeError])
+def test_joint_key_failure_reports_selected_samples_and_restores_eval(chunk_fixture, monkeypatch, error_type):
+    agent, data, _ = joint_agent(chunk_fixture.root)
+    batch = mixed_batch(data)
+    failure = error_type('invalid multimodal input')
+
+    def fail(*args, **kwargs):
+        raise failure
+
+    monkeypatch.setattr(agent.base, 'update', fail)
+    with pytest.raises(error_type) as caught:
+        agent._key_loss(batch)
+    assert batch['sample_ids'][0] in str(caught.value)
+    assert batch['sample_ids'][1] not in str(caught.value)
+    assert caught.value.__cause__ is failure
+    assert not agent._net_mod.encoder.training
+
+
 def test_joint_context_keeps_feature_gradients_and_ignores_all_future_labels(chunk_fixture):
     agent, data, _ = joint_agent(chunk_fixture.root)
     sample = data[0]

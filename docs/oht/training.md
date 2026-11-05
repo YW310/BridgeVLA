@@ -407,6 +407,20 @@ open-loop 每次从记录的真实当前观测预测，上一预测不会改变�
 保持当前 TCP 的对照。离线准确而在线来回摆动时，优先核对同状态下的 RGB-D/本体输入、实际跟踪
 及相邻 chunk 的同时间预测变化。[可选时间对齐融合](runtime.md#v4-chunk) 用于减轻重规划抖动，不能替代这些核对。
 
+### PaliGemma 图像 token 索引报错
+
+若日志出现 `IndexKernel.cu:93 index out of bounds`，随后堆栈停在 PaliGemma 的
+`inputs_embeds[special_image_mask]`，不能由异步 CUDA 堆栈直接判定是 loss、TCP 裁剪或该行导致。
+当前高效 forward 改为先校验词表 ID、每个样本的图像 token 数量、padding 和图像有限性，
+再按一维 token 位置合并整行图像特征，绕过上游展开为 `[B,L,D]` 的布尔索引计数。
+图像编码、projector、缩放、语言模型和最终 hidden state 路径保持一致；不裁剪非法 ID、不跳过样本。
+联合训练的 key 分支异常附带本批实际参与监督的 sample ID。
+
+修改不改变参数或数据 schema，原 V4 replay、配置和兼容 checkpoint 可继续使用。
+小型真实 PaliGemma 的多视图、padding、梯度及 gradient checkpointing 等价测试在 CPU 通过；
+原多卡 CUDA 崩溃是否消除仍需重跑验证。若仍报错，用 `CUDA_LAUNCH_BLOCKING=1` 重跑定位最先失败的操作，
+并保留新日志中的 sample ID；不要在已触发 device assert 的进程中继续训练。
+
 ### 本地验证
 
 按变化范围选测试；本次文档合并没有重跑 GPU 或历史整组测试。动作、归一化和状态回归入口：
