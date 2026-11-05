@@ -34,7 +34,7 @@ OHT 的数据指南、模型设计、部署说明和交接记录统一合并为�
 | --- | --- |
 | 安装与基础复现 | [安装](guides/installation.md) → [训练](guides/training.md) → [评估](guides/evaluation.md) |
 | RLBench 数据 | [Raw → Replay](guides/replay.md) → [Oracle 实例增强](guides/oracle-replay.md) → [Semantic-GT](guides/semantic-gt.md) |
-| 对象条件策略配置、训练、闭环与诊断 | [对象条件策略操作指南](guides/object-conditioning.md) |
+| 对象条件策略配置、训练、闭环与诊断 | [对象条件策略操作指南](guides/object-conditioning.md)；配置总表与 GPU/batch 规则见 [RLBench 配置说明](../finetune/RLBench/configs/README.md) |
 
 <a id="核心文档设计依据执行"></a>
 

@@ -307,7 +307,11 @@ GPUS_PER_NODE=2 bash finetune/OHT/train_8x40.sh \
 
 严格 resume 校验解析后配置、replay/role cache 契约、卡数、学习率、batch、冻结、动作和 seed。允许调预算、保存周期、num_workers 与独立可视化；epoch 的 `epochs/max_optimizer_steps/checkpoint_every_epochs` 与 step 的 `optimizer_steps/checkpoint_interval` 两套预算不同时设置。
 
-采样器按完成 step 跳过抽样位置；Python/NumPy/torch 的完整 RNG 状态未恢复，随机增强/采样不承诺逐位复现。续训写回原 run，不创建新时间目录。
+采样器按完成 step 跳过抽样位置。checkpoint 同时保存每个 rank 的 Python/NumPy/torch CPU 与 CUDA RNG 状态（`rng_states`），续训时各 rank 在创建 DataLoader 迭代器之后恢复自己的状态，启动日志打印 `Resume RNG state restored`。DataLoader worker 进程内部的随机流不在其中，增强若发生在 worker 内则不承诺逐位复现；更早版本的 checkpoint 没有 `rng_states`，仍可续训但不恢复 RNG（日志为 `False`）。续训写回原 run，不创建新时间目录。
+
+### 数据校验开销
+
+V4 样本的 observation/targets NPZ 默认在每次读取时重算 SHA-256（严格，等价旧行为）。数据已由 `--validate-only` 校验后，可用 `--data-checksum once`（每个进程对每个文件只校验一次）或 `--data-checksum trusted`（跳过逐样本哈希）降低读取开销。`--validate-only` / `validate_all()` 始终严格校验，不受该选项影响；`trusted` 只应在缓存没有被改动时使用。
 
 ### 预检与短测
 

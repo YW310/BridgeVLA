@@ -330,10 +330,14 @@ checkpoint 或重训。按观测的仿真 timestamp 对齐重叠未来点：例�
 | --chunk-execute-horizon | 默认用服务的 H；覆盖值须在 1..K 内 |
 | --chunk-max-tracking-translation | 0.10 m，跟踪误差上限 |
 | --chunk-max-tracking-rotation | 0.5 rad，姿态误差上限 |
+| --chunk-max-step-translation | 0.10 m，相邻执行目标（含从实测 TCP 到第一项）的位置跳变上限；超过则在任何运动前拒绝整个前缀，`execution.status=step_limit` |
+| --chunk-max-step-rotation | 0.5 rad，相邻执行目标的姿态跳变上限，处理同上；违例详情在 `execution.step_violation` |
 | --chunk-temporal-ensemble | 默认关闭，启用同一未来时刻的跨 chunk 融合 |
 | --chunk-ensemble-decay | 0.1，每个控制 tick 的旧预测权重衰减系数 |
 | --chunk-ensemble-max-translation | 0.02 m，旧/最新预测允许融合的位置差异 |
 | --chunk-ensemble-max-rotation | 0.15 rad，旧/最新预测允许融合的姿态差异 |
+
+融合日志 `temporal_ensemble` 除 `contributors`、`rejected_inconsistent` 外还包含 `rejected_fraction`（被拒的重叠旧预测占比）和 `latest_outlier`：存在重叠旧预测且全部与最新 chunk 不一致时为 `true`，表示最新预测突然偏离此前一致的轨迹（或最新预测本身异常），此时输出保持最新原始预测，并建议客户端记录或触发受限重查询。
 | --execution-mode | auto 自动选 chunk；chunk checkpoint 拒绝显式 waypoint/streaming |
 
 ### 单目标与 waypoint

@@ -53,7 +53,7 @@ p_final = p_candidate + R_candidate @ translation_local
 R_final = R_candidate @ Exp_SO3(rotation_vector)
 ```
 
-局部平移和旋转向量分别限制模长；这不是把平移向量直接作为完整 SE(3) 指数的切空间平移。最后输出层零初始化，初始动作等于基准动作；完全没有已知几何的样本保持基准位姿。夹爪开合与原 collision flag 不由此原型重定义。
+局部平移和旋转向量分别限制模长；这不是把平移向量直接作为完整 SE(3) 指数的切空间平移。最后输出层零初始化，初始动作等于基准动作。证据不足的样本保持基准位姿：至少要有一个 known 体素，且 known 体素比例不低于 `min_known_coverage`（默认 0.02）、近表面支持体素比例不低于 `min_surface_support`（默认 0.002）；只有自由空间、空视野或严重遮挡时不再被修正。前向输出附带 `refine_allowed`、`known_coverage`、`surface_support`，`evaluate` 报告的 `gate` 汇总这三项及修正量。两个阈值写入 checkpoint `model_options`；缺少这些键的旧 checkpoint 以 0 加载，保持原“任意已知体素”规则。夹爪开合与原 collision flag 不由此原型重定义。
 
 训练损失对最终位姿使用平移 SmoothL1 与旋转矩阵差异，避免训练时直接对零误差执行不稳定的 `acos`。离线报告分别计算平移米制误差与旋转弧度误差。
 

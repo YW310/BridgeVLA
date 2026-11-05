@@ -115,7 +115,6 @@ predictor 内的 attention `memory` 不是历史 bank。`RVTAgent.reset()` 会�
 | 优先级 | 问题与影响 | 代码证据 | 当前处理 |
 | --- | --- | --- | --- |
 | P1 | 旧 launcher 硬编码路径、未引用 `$@`，会拆开 overrides/含空格路径 | [RLBench train.sh](../../finetune/RLBench/train.sh)；Colosseum/GemBench 同类脚本 | RLBench 示例改用 `train_8x40.sh`；其他分支先适配脚本 |
-| P1 | eval resume 没有覆盖全部策略依赖，模型模块改变后可能复用旧结果 | [eval.py](../../finetune/RLBench/eval.py) 的 `runtime_files` 未含 `mvt_single.py` / `object_conditioning.py` / `oracle_prior.py` | 代码/数据改变后使用新评估目录，不复用旧 journals |
 | P1 | 配对 CI 只要求双方已有 episode 集合相同，双方同样中断仍可能通过 | [compare_paired_success.py](../../tools/compare_paired_success.py) 的 `load_episodes()` / `compare()` 未校验 requested summary | 先核对每 task 完成数与预定 episode 范围，再运行 CI |
 | P1 | OHT 执行错误会停止后续 episodes；`success_rate` 的分母为 attempted，可能小于 planned | [isaaclab_client.py](../../finetune/OHT/isaaclab_client.py) 的 `_run()` | 检查 planned/attempted/unattempted 和停止原因；[固定 case 验收](../oht/runtime.md#时间预算与停止结果) |
 | P2 | OHT 记录初态的 contract loader 只支持 V3；data-config 路线不自动比对完整相机/状态标定 | [trajectory_replay.py](../../finetune/OHT/runtime/trajectory_replay.py)、[trajectory_initialization.py](../../finetune/OHT/runtime/trajectory_initialization.py) 的 `InitialState._check_calibration()` | V4 使用匹配的 data-config；自动检查字段及手动核对项见[同初态说明](../oht/runtime.md#相同记录初态运行策略) |
@@ -123,7 +122,7 @@ predictor 内的 attention `memory` 不是历史 bank。`RVTAgent.reset()` 会�
 | P2 | 预算测试仍要求 OHT 与 RLBench full 配方相同，当前 epochs 为 60 / 100 | [test_oht_training_plan.py](../../tests/test_oht_training_plan.py) 的 `test_full_preset_matches_rlbench_recipe_and_mvt()` | 同步测试预期与各自配方；当前 OHT 数值见[预算说明](../oht/training.md#预算与卡数)，不能改配置凑旧断言 |
 
 P1 指会破坏实验可运行性或结果可信度，P2 指复现/配置风险；以上没有宣称已修复。
-resume 签名对 checkpoint 使用 path/size/mtime，对 raw data 使用目录路径，不是全内容 provenance。
+resume 签名对 checkpoint 使用 path/size/mtime，对 raw data 使用目录路径，不是全内容 provenance。RLBench eval 的 run signature 哈希 [eval.py](../../finetune/RLBench/eval.py) 中 `_inference_runtime_files()` 列出的推理依赖源码（agent、MVT/MVTSingle、oracle_prior、object_conditioning、cross_scale_roles、role_separation 等），新增推理模块时需同步该列表，`tests/test_eval_runtime_fingerprint.py` 检查文件存在与关键模块覆盖。
 
 <a id="模型与数据审查结论"></a>
 

@@ -1,4 +1,6 @@
-# Minimal delta from internal_slots: independent local slots + soft coarse query hints.
+# Independent local slots + soft coarse query hints, trained with the joint-series recipe
+# (adamw, no scheduler, gemma_lr 1e-5). For a controlled A/B against internal_slots use
+# rlbench_o2_internal_slots_soft_coarse_matched.yaml instead.
 # Use --init_checkpoint (prefer a trained unordered-slots checkpoint), not old optimizer resume.
 exp_id: rlbench_o2_internal_slots_soft_coarse
 seed: 0

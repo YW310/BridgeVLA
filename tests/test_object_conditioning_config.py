@@ -21,7 +21,7 @@ class ObjectConditioningConfigTest(unittest.TestCase):
         semantic_gt = (
             ROOT / 'finetune/RLBench/configs/rlbench_o2_semantic_gt_joint.yaml'
         ).read_text(encoding='utf-8')
-        self.assertIn('freeze_gemma_prefix_layers: 6', semantic_gt)
+        self.assertIn('freeze_gemma_prefix_layers: 18', semantic_gt)
         self.assertIn('freeze_multimodal_projector: True', semantic_gt)
         internal_slots = (
             ROOT / 'finetune/RLBench/configs/rlbench_o2_internal_slots_joint.yaml'

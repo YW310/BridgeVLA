@@ -15,7 +15,7 @@ baseline 的安装/预训练/其他 benchmark 命令仍见[训练](training.md)�
 ## 配置选择
 
 三种 object 来源共用 prior → 原 relation/anchor → action decoder；差别是来源、特征路由与训练范围。
-以下配置均在 `finetune/RLBench/configs/`；`role_queries` 和当前 `internal_slots_refine` 使用固定双 query，其余 slots 配置不变。
+以下配置均在 `finetune/RLBench/configs/`（逐项数值、冻结范围与 GPU/batch 规则见该目录的 [README](../../finetune/RLBench/configs/README.md)）；`role_queries` 和当前 `internal_slots_refine` 使用固定双 query，其余 slots 配置不变。
 
 | 配置（省略 `rlbench_o2_` 前缀与 `.yaml`） | Object 来源 | 动作特征 | 评估 provider |
 | --- | --- | --- | --- |
@@ -55,7 +55,9 @@ TensorBoard 保留旧平均指标，并新增 `object_slot_{coarse,refine}_{targ
 
 #### 严格单因素 A/B 配置
 
-使用 [rlbench_o2_internal_slots_soft_coarse_matched.yaml](../../finetune/RLBench/configs/rlbench_o2_internal_slots_soft_coarse_matched.yaml) 作为本次 B：显式设置 `freeze_vision_tower=True, bs=24, pin_memory=False`，继续冻结 Gemma 前 18 层和 projector，保留有效 batch 192。A 使用当前 `rlbench_o2_internal_slots.yaml` 并应用同样的冻结、microbatch 和 pinning 设置；匹配这些运行设置后，两者只改变实验名与 `object_conditioning.soft_coarse_queries=True`。保持 2 个无序 slots、旧动作路由、loss/阈值、workers 和可视化间隔不变。原 `soft_coarse.yaml` 仍保留，它另有 microbatch、workers 和可视化间隔设置，不是这组严格单因素配置。
+使用 [rlbench_o2_internal_slots_soft_coarse_matched.yaml](../../finetune/RLBench/configs/rlbench_o2_internal_slots_soft_coarse_matched.yaml) 作为本次 B：显式设置 `freeze_vision_tower=True, bs=24, pin_memory=False`，继续冻结 Gemma 前 18 层和 projector，保留有效 batch 192。A 使用当前 `rlbench_o2_internal_slots.yaml` 并应用同样的冻结、microbatch 和 pinning 设置；匹配这些运行设置后，两者只改变实验名与 `object_conditioning.soft_coarse_queries=True`。保持 2 个无序 slots、旧动作路由、loss/阈值、workers 和可视化间隔不变。原 `soft_coarse.yaml` 仍保留，现采用 joint 系列的训练配方（`adamw`、关闭 scheduler、`gemma_lr 1e-5`）并冻结 vision，不是与 `internal_slots` 严格单因素的配置；做对照请用 `_matched`。
+
+可选的 `object_conditioning.soft_coarse_null_renorm: True`（默认 False，需同时开启 `soft_coarse_queries`）：Reference 为 NULL 时，原实现只把 Reference 的 value 乘 `1-p_null`，Target 却仍只分得 softmax 的一部分注意力，总提示被稀释；开启后把 Reference logit 加 `log(1-p_null)` 后再 softmax，注意力转给 Target。`p_null=0` 时两种实现数值一致，参数结构不变，因此可直接用 `--exp_cfg_opts "object_conditioning.soft_coarse_null_renorm True"` 做对照；该开关属于路由，已写入 checkpoint 元数据，续训与评估时必须与训练一致。
 
 在 A 的原训练命令中，将配置参数替换为：
 
@@ -225,7 +227,7 @@ GPUS_PER_NODE=2 bash train_8x40.sh \
 
 | Joint 配置 | 冻结 | 训练 |
 | --- | --- | --- |
-| GT | vision tower、projector、Gemma 前 6 层 | 其余 Gemma、action decoder、对象条件模块 |
+| GT | vision tower、projector、Gemma 前 18 层 | 其余 Gemma、action decoder、对象条件模块 |
 | Internal slots | vision tower、Gemma 前 18 层 | projector、其余 Gemma、action decoder、slots/adapter |
 
 沿用已有 embedding/lm_head 冻结；非 Gemma LR `4e-5`、Gemma `1e-5`。
