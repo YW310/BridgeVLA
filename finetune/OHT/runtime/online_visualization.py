@@ -37,17 +37,49 @@ def _blend(rgb, heatmap):
     return .3 * np.clip(rgb, 0, 1) + .7 * colors
 
 
+def _draw_chunk_paths(panel, stage, view):
+    """Paint same-tick training paths without joining invalid/offscreen gaps.
+
+    These optional arrays are added only to the training writer's local copy;
+    OnlineVisualizer does not accept or export future labels.
+    """
+    draw = ImageDraw.Draw(panel)
+    width, height = panel.size
+    valid = np.asarray(stage['chunk_valid'], bool)
+    for key, color in (('chunk_target_pixels', '#40db70'), ('chunk_predicted_pixels', '#ff6060')):
+        pixels = stage[key][view]
+        inside = (valid & np.isfinite(pixels).all(axis=-1)
+                  & (pixels[:, 0] >= 0) & (pixels[:, 0] < width)
+                  & (pixels[:, 1] >= 0) & (pixels[:, 1] < height))
+        for index in range(1, len(pixels)):
+            if inside[index - 1] and inside[index]:
+                segment = [tuple(pixels[index - 1]), tuple(pixels[index])]
+                draw.line(segment, fill='#202b36', width=4)
+                draw.line(segment, fill=color, width=2)
+        for x, y in pixels[inside]:
+            draw.ellipse((x - 2, y - 2, x + 2, y + 2), fill=color)
+    measured = stage.get('measured_tcp_pixels')
+    if measured is not None and _inside(measured[view], width, height):
+        x, y = measured[view]
+        for color, line_width in (('#202b36', 4), ('white', 2)):
+            draw.line((x - 4, y, x + 4, y), fill=color, width=line_width)
+            draw.line((x, y - 4, x, y + 4), fill=color, width=line_width)
+
+
 def _montage(stage, name, auxiliary, *, policy_label='policy TCP'):
     rgb, maps = stage['rgb'], stage['heatmap']
     views, height, width, _ = rgb.shape
     extra = [key for key in ('target_prior', 'reference_prior', 'relation_anchor') if key in stage]
     columns = ['Rendered RGB', 'Prediction heatmap', 'Policy / heatmap TCP'] + extra
-    left, top, footer = 65, 78, 18
+    chunk_paths = 'chunk_valid' in stage
+    left, top, footer = 65, 96 if chunk_paths else 78, 18
     image = Image.new('RGB', (left + width * len(columns), top + views * (height + footer)), '#232323')
     draw = ImageDraw.Draw(image)
     draw.text((8, 6), f'{name}: online policy prediction', fill='white')
     draw.text((8, 24), f'Red cross: {policy_label}   Cyan ring: heatmap TCP' + (' (auxiliary head)' if auxiliary else ''), fill='white')
-    draw.text((8, 42), 'Per-view color normalization. Original probabilities are retained in NPZ.', fill='white')
+    if chunk_paths:
+        draw.text((8, 42), 'Paths: red prediction / green observed future (valid ticks only); white cross: measured TCP.', fill='white')
+    draw.text((8, 60 if chunk_paths else 42), 'Per-view color normalization. Original probabilities are retained in NPZ.', fill='white')
     for column, title in enumerate(columns):
         draw.text((left + width * column + 2, top - 18), title, fill='white')
     for view in range(views):
@@ -57,6 +89,8 @@ def _montage(stage, name, auxiliary, *, policy_label='policy TCP'):
         tiles = [rgb[view], blend, blend] + [_blend(rgb[view], stage[key][view]) for key in extra]
         for column, tile in enumerate(tiles):
             panel = Image.fromarray((np.clip(tile, 0, 1) * 255).astype(np.uint8))
+            if chunk_paths and column in (0, 2):
+                _draw_chunk_paths(panel, stage, view)
             if column == 2:
                 marks = ImageDraw.Draw(panel)
                 for key, color in (('heatmap_waypoint_pixels', 'cyan'), ('policy_pixels', 'red')):

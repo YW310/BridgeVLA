@@ -350,7 +350,7 @@ rank 0 写日志，通常是本地 microbatch/累积平均，不是跨卡均值�
 
 OHT 与 RLBench 共用 `finetune/RLBench/training_utils.py` 的终端进度和指标格式：tqdm 显示进度、耗时、预计剩余时间、主要 loss 和学习率；定期输出 `[train] epoch=... iter=... step=... lr=...` 明细。OHT 支持 `--loss-print-interval 10`（也接受 `--loss_print_interval`），设为 `0` 仅关闭明细行。chunk 的进度摘要将位置误差显示为 `pos_mm/prefix1_mm`，明细仍保留原指标名和米单位，小数值 loss 使用有效数字避免误显示为零。OHT 的 `metrics.jsonl` 仍逐 optimizer step 保存完整指标，TensorBoard 标量与 checkpoint 步数不变；epoch/step 编号沿用各自训练器的约定。
 
-Chunk 训练的 `train_visualization/mvt1`、`mvt2` 中，`Prediction heatmap` 与 `Policy / heatmap TCP` 使用相同热图底图；后一列额外绘制红叉（第一步 chunk 预测 TCP）和青圈（heatmap 解码的关键目标 TCP），均非实测 TCP 或 GT。两个点使用各 stage 的 `world_to_pixel` 投影，MVT2 已包含 refine 裁剪变换；图外点不绘制。启用 `save_png` 时同时保存对应 stage 的 NPZ，包含原始热图、投影矩阵、世界坐标及像素坐标，便于数值核对。实际未来轨迹对比仍看 `train_visualization/chunk`。
+Chunk 训练的 `train_visualization/mvt1`、`mvt2` 中，`Rendered RGB` 和 `Policy / heatmap TCP` 两列叠加完整 chunk 轨迹：红线为预测，绿线为同一组有效 tick 的未来观测，白叉为当前实测 TCP。TCP 标记列还保留红叉（第一步 chunk 预测 TCP）和青圈（heatmap 解码的关键目标 TCP）；`Prediction heatmap` 列显示原始热图底图。轨迹和标记均使用各 stage 的 `world_to_pixel` 投影，MVT2 已包含 refine 裁剪变换；图外点不绘制，不跨无效或图外点连线，二维投影不判断遮挡。启用 `save_png` 时同时保存对应 stage 的 NPZ，含原始热图、投影矩阵、完整轨迹世界/像素坐标、共享 `chunk_valid`、sample ID、step 和 dt，便于核对。未来标签只在预测后的绘图阶段使用。无需重建数据或更换配置；重启训练后新生成的 TensorBoard 图与 PNG 生效。独立的 `train_visualization/chunk` 继续提供等比例坐标和毫米误差。
 
 `mvt1/mvt2` 对应实际 coarse/refine；chunk 图红色预测、绿色有效未来、白色当前 TCP，采用世界坐标、相同时间和等比例轴。PNG/NPZ 含预测、标签、mask、状态和 sample ID；GT 只监督/绘图，不进入部署。flow 复用观测 memory 做 eval/no-grad 独立部署采样，不重跑 VLM。
 

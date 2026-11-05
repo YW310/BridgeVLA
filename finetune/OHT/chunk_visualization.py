@@ -176,11 +176,23 @@ def record(payload, step, output, settings, logger):
             projection = stage['world_to_pixel']
             stage['policy_pixels'] = projection @ np.r_[first_tcp, 1.]
             stage['heatmap_waypoint_pixels'] = projection @ np.r_[waypoint, 1.]
+            # Keep full tick indices and one shared validity mask so no line
+            # connects across padded labels or an offscreen part of a path.
+            stage['chunk_valid'] = np.asarray(payload['valid'], bool)
+            for key, source in (('chunk_predicted', 'predicted'), ('chunk_target', 'target')):
+                world = np.asarray(payload[source])[:, :3]
+                stage[key + '_world'] = world
+                stage[key + '_pixels'] = np.einsum('vij,kj->vki', projection, np.c_[world, np.ones(len(world))])
+            if payload.get('current') is not None:
+                stage['measured_tcp_world'] = np.asarray(payload['current'])[:3]
+                stage['measured_tcp_pixels'] = projection @ np.r_[stage['measured_tcp_world'], 1.]
             panel = _montage(stage, name, True, policy_label='chunk[0] TCP')
             if settings['save_png']:
                 panel.save(directory / f'{name}_step_{step:08d}.png')
                 np.savez_compressed(directory / f'{name}_step_{step:08d}.npz', **stage,
-                                    policy_tcp_world=first_tcp, heatmap_waypoint_world=waypoint)
+                                    policy_tcp_world=first_tcp, heatmap_waypoint_world=waypoint,
+                                    sample_id=payload.get('sample_id', ''), step=step,
+                                    action_dt=payload.get('action_dt', np.nan))
             if settings['tensorboard']:
                 logger.writer.add_image('train_visualization/' + name, np.asarray(panel), step, dataformats='HWC')
     logger.flush()
