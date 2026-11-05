@@ -182,9 +182,22 @@ class ObjectConditioningConfigTest(unittest.TestCase):
         self.assertIn('oracle_target_candidate_points', provider_source)
         self.assertIn("'trans_base' not in base_stage", agent_source)
         self.assertIn("'trans_base', output['trans']", agent_source)
-        self.assertIn(
-            'oracle_compute_base=(\n                self.heatmap_action_anchor',
-            agent_source)
+        agent = next(node for node in ast.parse(agent_source).body
+                     if isinstance(node, ast.ClassDef) and node.name == 'RVTAgent')
+        act = next(node for node in agent.body
+                   if isinstance(node, ast.FunctionDef) and node.name == 'act')
+        base_guards = [keyword.value for node in ast.walk(act)
+                       if isinstance(node, ast.Call)
+                       and ast.unparse(node.func) == 'self._network'
+                       for keyword in node.keywords
+                       if keyword.arg == 'oracle_compute_base'
+                       and not isinstance(keyword.value, ast.Constant)]
+        self.assertEqual(len(base_guards), 1)
+        expected_guard = ast.parse(
+            'self.heatmap_action_anchor or self.bridgevla_aligned_objects',
+            mode='eval',
+        ).body
+        self.assertEqual(ast.dump(base_guards[0]), ast.dump(expected_guard))
         self.assertIn('phase=-1 objects are diagnostic-only', eval_source)
         self.assertIn("use_base=True", agent_source)
         self.assertIn("final_waypoint=pred_wpt", agent_source)

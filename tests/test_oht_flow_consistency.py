@@ -88,9 +88,58 @@ def test_report_exposes_high_noise_weighting_and_untrained_gap():
     weights = report['training_tau_weights']
     assert weights['0.1'] + weights['0.3'] > weights['0.7'] + weights['0.9']
     assert 0 <= report['gripper']['training_tau_mass_above_0_9'] < .1
-    assert report['deployed_position_error_m'] == report['sampling_by_steps'][str(decoder.settings['flow_steps'])]['position_error_m']
+    memory = decoder.memory(*context)
+    position, _, _ = decoder.sample(memory, context[2])
+    expected = torch.linalg.vector_norm(position - target[..., :3], dim=-1)[valid].mean().item()
+    assert report['deployed_position_error_m'] == pytest.approx(expected)
     assert report['reconstruction_minus_deployed_m'] == pytest.approx(
         report['training_weighted_reconstruction_position_error_m'] - report['deployed_position_error_m'])
+
+
+@pytest.mark.parametrize('seed', [0, 500])
+@pytest.mark.parametrize('steps', [2, 6])
+def test_report_deployment_matches_configured_sampler_outside_requested_sweep(seed, steps):
+    decoder, context, target, valid = inputs()
+    decoder.settings.update(flow_steps=steps, flow_inference_seed=seed)
+    decoder.eval()
+    with torch.no_grad():
+        position, _, grip = decoder.sample(decoder.memory(*context), context[2])
+    expected_position = torch.linalg.vector_norm(position - target[..., :3], dim=-1)[valid].mean().item()
+    expected_grip = ((grip >= 0) == (target[..., 7] > .5))[valid].float().mean().item()
+
+    report = flow_consistency_report(decoder, context, target, valid, steps=(1, 2), seeds=2, noise_seed=17)
+
+    assert set(report['sampling_by_steps']) == {'1', '2'}
+    assert report['deployed_position_error_m'] == pytest.approx(expected_position)
+    assert report['gripper']['deployed_accuracy'] == pytest.approx(expected_grip)
+    assert report['reconstruction_minus_deployed_m'] == pytest.approx(
+        report['training_weighted_reconstruction_position_error_m'] - expected_position)
+
+
+def test_report_deployment_keeps_unseeded_sampling_and_zero_logit_gripper(monkeypatch):
+    decoder, context, target, valid = inputs()
+    decoder.settings.update(flow_steps=6, flow_inference_seed=None)
+    with torch.no_grad():
+        decoder.head.weight[-1].zero_()
+        decoder.head.bias[-1].zero_()
+    sample = decoder.sample
+    deployed = []
+
+    def capture_sample(memory, state, **options):
+        prediction = sample(memory, state, **options)
+        if not options:
+            deployed.append(prediction)
+        return prediction
+
+    monkeypatch.setattr(decoder, 'sample', capture_sample)
+    report = flow_consistency_report(decoder, context, target, valid, steps=(1,), seeds=2)
+
+    assert len(deployed) == 1
+    expected = torch.linalg.vector_norm(deployed[0][0] - target[..., :3], dim=-1)[valid].mean().item()
+    assert report['deployed_position_error_m'] == pytest.approx(expected)
+    # Deployment opens the gripper at a zero logit, including the clean-target read.
+    assert report['gripper']['deployed_accuracy'] == 1.
+    assert report['gripper']['oracle_tau1_accuracy'] == 1.
 
 
 def test_report_rejects_regression_decoder():
@@ -105,12 +154,29 @@ def test_replay_flow_consistency_uses_deployed_context_and_cli_report(chunk_fixt
     from finetune.OHT.runtime.policy import Policy
     from tests.test_oht_spatial_chunk import spatial_agent
     agent, data, _ = spatial_agent(chunk_fixture.root, 'flow_matching')
+    agent.settings.update(flow_steps=6, flow_inference_seed=500)
     policy = Policy(agent, data.contract, 'cpu', 'baseline')
     report = flow_consistency_chunk(policy, chunk_fixture.root, 'val', limit=2, steps=(1, 2), seeds=2)
     assert report['kind'] == 'flow_consistency' and report['samples'] == 2
     assert set(report['report']['sampling_by_steps']) == {'1', '2'}
+    assert report['flow_steps'] == 6 and report['flow_inference_seed'] == 500
+    assert report['report']['deployed_position_error_m'] is not None
+    assert report['report']['reconstruction_minus_deployed_m'] is not None
     json.dumps(report)
-    sample = data.__class__(chunk_fixture.root, 'val')[0]
+    evaluation = data.__class__(chunk_fixture.root, 'val')
+    errors, accuracies = [], []
+    for index in range(2):
+        sample = evaluation[index]
+        policy.reset()
+        prediction = policy.act(sample, sample['goal'], evaluation.samples[index]['frame'])
+        target = torch.from_numpy(sample['action_chunk'])
+        valid = torch.from_numpy(sample['action_valid'])
+        actions = torch.from_numpy(prediction['actions'])
+        errors.append(torch.linalg.vector_norm(actions[..., :3] - target[..., :3], dim=-1)[valid].mean().item())
+        accuracies.append((actions[..., 7] == target[..., 7])[valid].float().mean().item())
+    assert report['report']['deployed_position_error_m'] == pytest.approx(sum(errors) / len(errors))
+    assert report['report']['gripper']['deployed_accuracy'] == pytest.approx(sum(accuracies) / len(accuracies))
+    sample = evaluation[0]
     context = policy.chunk_decoder_context(sample, sample['goal'])
     assert len(context) == 8 and context[2].shape == (1, 14)
     regression, _, _ = spatial_agent(chunk_fixture.root, 'regression')

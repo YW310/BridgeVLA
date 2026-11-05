@@ -14,7 +14,6 @@ from .action_modes import resolve_action
 from .training_log import TensorBoardLogger, summary_writer_class
 from .training_plan import resolve_training_plan, epoch_metrics
 from .training_visualization import visualization_settings, capture_due, record_visualization
-from .rng_state import gather_rng_states, restore_rank_rng_state
 from .run_directory import prepare_run_directory
 from ..RLBench.training_utils import report_training_progress
 
@@ -81,6 +80,7 @@ def main(argv=None):
     import torch
     import torch.distributed as dist
     from torch.utils.data import DataLoader
+    from .rng_state import gather_rng_states, restore_rank_rng_state
     if args.log_backend == "tensorboard":
         # Check on every rank before expensive model construction or collectives.
         summary_writer_class()

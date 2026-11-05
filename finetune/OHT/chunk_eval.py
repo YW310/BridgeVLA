@@ -125,6 +125,7 @@ def flow_consistency_chunk(policy, replay, split='val', limit=None, *, progress=
         raise ValueError('No selected sample has valid future supervision')
     return dict(kind='flow_consistency', split=split, samples=len(reports), steps=list(steps), seeds=seeds,
                 flow_steps=decoder.settings['flow_steps'], flow_time_sampling=decoder.settings['flow_time_sampling'],
+                flow_inference_seed=decoder.settings['flow_inference_seed'],
                 contract_sha256=data.contract['sha256'], report=_mean_tree(reports),
                 note='Open-loop errors on observed futures; they do not measure closed-loop task success.')
 

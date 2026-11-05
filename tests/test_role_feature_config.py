@@ -181,7 +181,15 @@ class RoleFeatureConfigTest(unittest.TestCase):
                        if isinstance(node, ast.FunctionDef) and node.name == 'forward')
         stage_calls = [node for node in ast.walk(forward)
                        if isinstance(node, ast.Call)
-                       and ast.unparse(node.func) == 'self.mvt1']
+                       and ast.unparse(node.func) == 'self.mvt1'
+                       # TCP context shares mvt1 weights but only extracts tokens;
+                       # role inheritance applies to the two policy action stages.
+                       and not any(
+                           keyword.arg == 'chunk_tokens_only'
+                           and isinstance(keyword.value, ast.Constant)
+                           and keyword.value.value is True
+                           for keyword in node.keywords
+                       )]
         self.assertEqual(len(stage_calls), 2)
         stage_calls.sort(key=lambda node: node.lineno)
         coarse = {keyword.arg: keyword.value for keyword in stage_calls[0].keywords}

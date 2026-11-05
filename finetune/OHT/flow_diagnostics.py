@@ -18,7 +18,7 @@ def _errors(position, rotation, grip, target, valid):
     relative = rotation.transpose(-1, -2) @ quaternion_matrix(target[..., 3:7])
     trace = (relative.diagonal(dim1=-2, dim2=-1).sum(-1) - 1) / 2
     degrees = torch.rad2deg(torch.acos(trace.clamp(-1., 1.)))[valid]
-    correct = ((grip > 0) == (target[..., 7] > .5))[valid].float()
+    correct = ((grip >= 0) == (target[..., 7] > .5))[valid].float()
     return translation, degrees, correct
 
 
@@ -35,6 +35,8 @@ def flow_consistency_report(decoder, context, target, valid, *, steps=(1, 2, 4, 
 
     ``context`` is the decoder input tuple ``(coarse, fine, state, goal, coarse_xyz, fine_xyz,
     coarse_valid, fine_valid)`` as produced by ``ChunkAgent._context`` (one sample per row).
+    Deployment metrics use the configured step count and inference seed independently
+    of the requested multi-seed sampling sweep.
     """
     if not decoder.is_flow:
         raise ValueError('Flow consistency requires decoder_type=flow_matching')
@@ -74,23 +76,25 @@ def flow_consistency_report(decoder, context, target, valid, *, steps=(1, 2, 4, 
             mean['position_error_seed_std_m'] = spread.std(unbiased=False).item() if len(runs) > 1 else 0.
             sampling[str(count)] = mean
 
+        deployed = _summary(*decoder.sample(memory, state), target, valid)
+
         # Gripper at deployment reads tau=1; the clean-target read is its upper bound, and the
         # tau mass above 0.9 shows how rarely training supervises that regime.
         clean = decoder.encode_target(
             torch.where(valid[..., None], target, torch.cat((state[:, None, :7], state.new_zeros(len(state), 1, 1)), -1)),
             state)
         _, oracle_grip = decoder.field(clean, state.new_ones(len(state)), memory)
-        oracle = ((oracle_grip > 0) == (target[..., 7] > .5))[valid].float().mean().item()
+        oracle = ((oracle_grip >= 0) == (target[..., 7] > .5))[valid].float().mean().item()
         gripper = dict(oracle_tau1_accuracy=oracle,
-                       deployed_accuracy=sampling.get(str(decoder.settings['flow_steps']), {}).get('gripper_accuracy'),
+                       deployed_accuracy=deployed['gripper_accuracy'],
                        oracle_tau1_bce=F.binary_cross_entropy_with_logits(
                            oracle_grip[valid], target[..., 7][valid]).item(),
                        training_tau_mass_above_0_9=(draws > .9).float().mean().item())
     finally:
         decoder.train(training)
-    deployed_error = sampling.get(str(decoder.settings['flow_steps']), {}).get('position_error_m')
+    deployed_error = deployed['position_error_m']
     return dict(reconstruction_by_tau=reconstruction, training_tau_weights=position_weights, sampling_by_steps=sampling,
                 training_weighted_reconstruction_position_error_m=training_weighted,
                 deployed_position_error_m=deployed_error,
-                reconstruction_minus_deployed_m=None if deployed_error is None else training_weighted - deployed_error,
+                reconstruction_minus_deployed_m=training_weighted - deployed_error,
                 gripper=gripper)

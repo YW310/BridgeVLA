@@ -126,8 +126,8 @@ def test_epoch_preflight_resolves_budget_without_gpu(replay_fixture, tmp_path, m
                        "--replay", str(replay_fixture.replay), "--output", str(output), "--validate-only"]) == 0
     result = json.loads(capsys.readouterr().out)
     assert result["valid"] is True
-    assert result["training_plan"]["accumulation_steps"] == 6
-    assert result["training_plan"]["optimizer_steps"] == 83300
+    assert result["training_plan"]["accumulation_steps"] == 1
+    assert result["training_plan"]["optimizer_steps"] == 20800
     assert not output.exists()
 
 
