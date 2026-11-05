@@ -97,9 +97,12 @@ class MVT(nn.Module):
         object_conditioning_refine_local_query=False,
         object_conditioning_refine_heatmap_residual=False,
         object_conditioning_soft_coarse_queries=False,
+        object_conditioning_soft_coarse_null_renorm=False,
         object_conditioning_refine_mask_detach=False,
     ):
         super().__init__()
+        if object_conditioning_soft_coarse_null_renorm and not object_conditioning_soft_coarse_queries:
+            raise ValueError('soft_coarse_null_renorm requires soft_coarse_queries=True')
         if object_conditioning_soft_coarse_queries:
             if not object_slots_enabled or object_slot_predictor_type != 'slots' or not stage_two:
                 raise ValueError('soft_coarse_queries requires independent unordered slots and stage_two=True')
@@ -209,6 +212,7 @@ class MVT(nn.Module):
         del args['object_conditioning_refine_local_query']
         del args['object_conditioning_refine_heatmap_residual']
         del args['object_conditioning_soft_coarse_queries']
+        del args['object_conditioning_soft_coarse_null_renorm']
         del args['object_conditioning_refine_mask_detach']
 
         self.rot_ver = rot_ver
@@ -237,6 +241,7 @@ class MVT(nn.Module):
         self.object_conditioning_refine_local_query = bool(object_conditioning_refine_local_query)
         self.object_conditioning_refine_heatmap_residual = bool(object_conditioning_refine_heatmap_residual)
         self.object_conditioning_soft_coarse_queries = bool(object_conditioning_soft_coarse_queries)
+        self.object_conditioning_soft_coarse_null_renorm = bool(object_conditioning_soft_coarse_null_renorm)
         self.object_conditioning_refine_mask_detach = bool(object_conditioning_refine_mask_detach)
         oracle_prior_channels = 2 if oracle_prior_relation else 1
         # for verifying the input
@@ -306,7 +311,9 @@ class MVT(nn.Module):
         )
         self.object_slot_predictor2 = (
             predictor_class(**slot_kwargs, **(
-                {'soft_coarse_queries': True} if self.object_conditioning_soft_coarse_queries else {}))
+                {'soft_coarse_queries': True,
+                 'soft_coarse_null_renorm': self.object_conditioning_soft_coarse_null_renorm}
+                if self.object_conditioning_soft_coarse_queries else {}))
             if self.object_slots_enabled and stage_two
             and not (object_slot_predictor_type == 'role_queries'
                      and self.object_conditioning_inherit_coarse_roles) else None
@@ -542,6 +549,15 @@ class MVT(nn.Module):
 
         return img
 
+    @staticmethod
+    def augment_img_feat(img_feat, magnitude):
+        """Return per-point RGB features with uniform noise in [-s, s], s ~ U(0, magnitude)."""
+        augmented = []
+        for x in img_feat:
+            stdv = magnitude * torch.rand(1, device=x.device)
+            noise = stdv * (2 * torch.rand_like(x) - 1)
+            augmented.append(torch.clamp(x + noise, -1, 1))
+        return augmented
 
     def verify_inp(
         self,
@@ -636,12 +652,8 @@ class MVT(nn.Module):
         chunk_pc = pc  # Preserve global cube coordinates before key-centered refinement.
         with torch.no_grad():
             if self.training and (self.img_aug_2 != 0):
-                for x in img_feat:
-                    stdv = self.img_aug_2 * torch.rand(1, device=x.device)
-                    # values in [-stdv, stdv]
-                    noise = stdv * ((2 * torch.rand(*x.shape, device=x.device)) - 1)
-                    x = x + noise
-           
+                img_feat = self.augment_img_feat(img_feat, self.img_aug_2)
+
             img = self.render(
                 pc=pc,
                 img_feat=img_feat,
