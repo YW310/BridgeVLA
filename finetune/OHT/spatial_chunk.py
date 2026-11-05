@@ -18,6 +18,9 @@ from ..bridgevla.geometry.torch_ops import local_to_world_points, world_to_local
 LOG = logging.getLogger(__name__)
 
 
+CONFIGURED_SEED = object()
+
+
 def time_features(value, width=32):
     frequencies = torch.exp(torch.arange(width // 2, device=value.device, dtype=value.dtype)
                             * (-math.log(10000.) / (width // 2 - 1)))
@@ -251,19 +254,20 @@ class SpatialChunkDecoder(nn.Module):
         return torch.cat((local_position / chunk_scale(self.settings, 'action_position_scale'),
                           local_rotation[..., :, 0], local_rotation[..., :, 1]), -1)
 
-    def sample(self, memory, state):
+    def sample(self, memory, state, steps=None, seed=CONFIGURED_SEED):
         batch, horizon = state.shape[0], self.settings['horizon']
+        seed = self.settings['flow_inference_seed'] if seed is CONFIGURED_SEED else seed
         if not self.is_flow:
             pose = state.new_zeros(batch, horizon, 9)
             pose[..., 3], pose[..., 7] = 1., 1.
             raw, grip = self.field(pose, state.new_ones(batch), memory)
             return self.decode(raw, grip, state)
         generator = None
-        if self.settings['flow_inference_seed'] is not None:
-            generator = torch.Generator(device=state.device).manual_seed(self.settings['flow_inference_seed'])
+        if seed is not None:
+            generator = torch.Generator(device=state.device).manual_seed(seed)
         count = 1 if generator is not None else batch
         pose = torch.randn(count, horizon, 9, device=state.device, dtype=state.dtype, generator=generator).expand(batch, -1, -1)
-        steps = self.settings['flow_steps']
+        steps = self.settings['flow_steps'] if steps is None else steps
         for index in range(steps):
             velocity, _ = self.field(pose, state.new_full((batch,), index / steps), memory)
             pose = pose + velocity / steps
@@ -281,6 +285,16 @@ class SpatialChunkDecoder(nn.Module):
             return .999 * (1 - uniform.pow(1 / 1.5))
         return uniform
 
+    def flow_reconstruction(self, memory, state, target, valid, noise, tau):
+        """One training-time flow step: noisy mix at ``tau``, predicted velocity and one-step clean estimate."""
+        safe_target = torch.where(valid[..., None], target, torch.cat((state[:, None, :7], state.new_zeros(len(state), 1, 1)), -1))
+        clean = self.encode_target(safe_target, state)
+        mixed = (1 - tau[:, None, None]) * noise + tau[:, None, None] * clean
+        mixed = torch.where(valid[..., None], mixed, noise)
+        velocity, grip = self.field(mixed, tau, memory)
+        return dict(tau=tau, clean=clean, mixed=mixed, velocity=velocity, grip=grip, expected=clean - noise,
+                    reconstruction=mixed + (1 - tau[:, None, None]) * velocity)
+
     def training_prediction(self, coarse, fine, state, goal, coarse_xyz, fine_xyz, coarse_valid, fine_valid, *, target, valid):
         memory = self.memory(coarse, fine, state, goal, coarse_xyz, fine_xyz, coarse_valid, fine_valid)
         if not self.is_flow:
@@ -290,17 +304,13 @@ class SpatialChunkDecoder(nn.Module):
             raise ValueError('Flow targets require [B,K,8] and boolean [B,K]')
         if not valid.any() or not torch.isfinite(target[valid]).all():
             raise ValueError('Flow requires valid finite future supervision')
-        safe_target = torch.where(valid[..., None], target, torch.cat((state[:, None, :7], state.new_zeros(len(state), 1, 1)), -1))
-        clean = self.encode_target(safe_target, state)
-        noise, tau = torch.randn_like(clean), self.sample_flow_time(state)
-        mixed = (1 - tau[:, None, None]) * noise + tau[:, None, None] * clean
-        mixed = torch.where(valid[..., None], mixed, noise)
-        velocity, grip = self.field(mixed, tau, memory)
-        expected = clean - noise
+        noise = torch.randn(len(state), self.settings['horizon'], 9, device=state.device, dtype=state.dtype)
+        parts = self.flow_reconstruction(memory, state, target, valid, noise, self.sample_flow_time(state))
+        tau, velocity, grip, expected = parts['tau'], parts['velocity'], parts['grip'], parts['expected']
         position_loss = F.mse_loss(velocity[..., :3][valid], expected[..., :3][valid])
         rotation_loss = F.mse_loss(velocity[..., 3:9][valid], expected[..., 3:9][valid])
         flow_loss = self.settings['position_weight'] * position_loss + self.settings['rotation_weight'] * rotation_loss
-        reconstruction = mixed + (1 - tau[:, None, None]) * velocity
+        reconstruction = parts['reconstruction']
         bins = {}
         for name, lower, upper in (('high_noise', 0., 1 / 3), ('mid_noise', 1 / 3, 2 / 3), ('low_noise', 2 / 3, 1.)):
             selected = valid & (tau[:, None] >= lower) & (tau[:, None] < upper)

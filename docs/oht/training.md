@@ -149,6 +149,14 @@ flow 用高斯噪声 epsilon 和 tau 构造 `A_tau=(1-tau)*epsilon+tau*A_gt`，�
 
 当前 tau 为 `0.999*(1-U**(1/1.5))`，偏向高噪声端；推理 8 次 Euler 更新后另调用一次 field 计算干净端点夹爪，共 9 次 field。默认 seed 0 在每次请求生成同一初始噪声并扩展到 batch，使同条件结果不随 batch 大小改变，不修改全局 RNG；null 才逐样本随机采样。回归不计算 flow loss/积分。
 
+#### 训练目标与部署采样的一致性诊断
+
+训练与部署的差异有三处：(1) 重建项评估的是单步干净端点估计 `A_hat`，高噪声 tau 下近似条件均值，与 8 步 Euler 采样的误差不同；(2) 夹爪 logit 在训练时读取随机 tau 的带噪输入，部署时读取 tau=1 的采样终点，`beta_high_noise` 下 tau>0.9 的训练占比很低；(3) 无效（padding）tick 训练时输入纯噪声。`SpatialChunkDecoder.flow_reconstruction` 是训练与诊断共用的单步路径，`sample(memory, state, steps=, seed=)` 默认仍使用配置的步数和 seed。
+
+[flow_diagnostics.py](../../finetune/OHT/flow_diagnostics.py) 的 `flow_consistency_report(decoder, context, target, valid)` 对 `ChunkAgent._context` 产生的上下文输出：各 tau 的单步重建误差、按训练 tau 分布加权的重建误差、1/2/4/8/16 步采样的位置/旋转/夹爪误差及多 seed 标准差、`reconstruction_minus_deployed_m`，以及夹爪在干净 GT 终点（上界）与部署采样下的准确率。它只度量差距，不替代闭环成功率。
+
+测试 [test_oht_flow_consistency.py](../../tests/test_oht_flow_consistency.py) 用精确的点质量边缘速度场验证：任意步数 Euler 采样都能还原 `encode_target` 的目标（绝对位姿与 `delta_pose` 两种表示），即 tau 方向、编码/解码与旋转复合约定一致。结论依赖真实 checkpoint 与 held-out 样本，尚未在实际模型上测量。
+
 ### joint 与 frozen_key
 
 | 阶段 | 关键目标网络 | chunk 条件与监督 |
