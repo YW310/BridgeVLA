@@ -25,16 +25,28 @@ class Policy:
         if self.wrapper:
             self.wrapper.reset()
 
+    def _chunk_observation(self, observation):
+        # Copy only present-time observation fields; labels never enter the encoder/decoder.
+        current = policy_observation(observation, self.contract['data_config']['cameras'], self.action_config)
+        for name in ('tcp_pose', 'joint_positions', 'gripper_open01'):
+            current[name] = np.asarray(observation[name]).copy()
+        current = filter_observation_points(current, self.contract['data_config'])
+        validate_observation(current, self.contract['data_config'])
+        return current
+
+    def chunk_decoder_context(self, observation, goal):
+        """Deployment-identical decoder inputs for one observation, without running the decoder."""
+        import torch
+        if self.chunk_settings is None:
+            raise ValueError('Decoder context exists only for chunk policies')
+        with torch.no_grad():
+            return self.agent._context(dict(self._chunk_observation(observation), goal=goal))
+
     def act(self, observation, goal, step, *, visualization_callback=None):
         """Optionally capture label-free CPU diagnostics from this same forward."""
         import torch
         if self.chunk_settings is not None:
-            # Copy only present-time observation fields; labels never enter the encoder/decoder.
-            current = policy_observation(observation, self.contract['data_config']['cameras'], self.action_config)
-            for name in ('tcp_pose', 'joint_positions', 'gripper_open01'):
-                current[name] = np.asarray(observation[name]).copy()
-            current = filter_observation_points(current, self.contract['data_config'])
-            validate_observation(current, self.contract['data_config'])
+            current = self._chunk_observation(observation)
             from .chunk_protocol import chunk_spec, validate_prediction
             captured = []
             def capture(payload):

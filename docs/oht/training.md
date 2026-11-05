@@ -155,6 +155,15 @@ flow 用高斯噪声 epsilon 和 tau 构造 `A_tau=(1-tau)*epsilon+tau*A_gt`，�
 
 [flow_diagnostics.py](../../finetune/OHT/flow_diagnostics.py) 的 `flow_consistency_report(decoder, context, target, valid)` 对 `ChunkAgent._context` 产生的上下文输出：各 tau 的单步重建误差、按训练 tau 分布加权的重建误差、1/2/4/8/16 步采样的位置/旋转/夹爪误差及多 seed 标准差、`reconstruction_minus_deployed_m`，以及夹爪在干净 GT 终点（上界）与部署采样下的准确率。它只度量差距，不替代闭环成功率。
 
+在 held-out replay 上对 checkpoint 运行（需 CUDA，沿用 `open-loop` 的加载与 contract 校验，报告为各样本平均）：
+
+```bash
+python -m finetune.OHT.eval flow-consistency --checkpoint model_last.pth --replay REPLAY \
+  --split val --limit 200 --flow-steps 1 2 4 8 16 --noise-seeds 8 --output NEW_flow_consistency.json
+```
+
+上下文来自 `Policy.chunk_decoder_context`，与部署使用同一套观测过滤、key 预测和 TCP crop。
+
 测试 [test_oht_flow_consistency.py](../../tests/test_oht_flow_consistency.py) 用精确的点质量边缘速度场验证：任意步数 Euler 采样都能还原 `encode_target` 的目标（绝对位姿与 `delta_pose` 两种表示），即 tau 方向、编码/解码与旋转复合约定一致。结论依赖真实 checkpoint 与 held-out 样本，尚未在实际模型上测量。
 
 ### joint 与 frozen_key

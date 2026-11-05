@@ -164,6 +164,20 @@ def main(argv=None):
                    help="Capture sample indices 0,N,2N,... as PNG/NPZ (default: 50); 0 disables visualization")
     p.add_argument("--visualize-output-dir", help="New image directory; default: <output-stem>_visualizations")
     p.add_argument("--output", required=True)
+    p = sub.add_parser("flow-consistency", help="Compare flow training reconstruction with deployed sampling on held-out samples")
+    for name in ("--checkpoint", "--replay", "--output"):
+        p.add_argument(name, required=True)
+    p.add_argument("--split", choices=["val", "test"], default="val")
+    p.add_argument("--limit", type=int)
+    p.add_argument("--task", action="append", dest="tasks")
+    p.add_argument("--episode-index", action="append", type=int, dest="episode_indices")
+    p.add_argument("--flow-steps", type=int, nargs="+", default=[1, 2, 4, 8, 16],
+                   help="Euler step counts to evaluate")
+    p.add_argument("--noise-seeds", type=int, default=8)
+    p.add_argument("--pretrain-path")
+    p.add_argument("--device", default="cuda:0")
+    p.add_argument("--progress-interval", type=float, default=10)
+    p.add_argument("--quiet", action="store_true")
     p = sub.add_parser("closed-loop")
     p.add_argument("--server", required=True)
     p.add_argument("--replay", required=True)
@@ -200,6 +214,21 @@ def main(argv=None):
             progress.update("hash_checkpoint", checkpoint=args.checkpoint)
             result["checkpoint_sha256"] = file_digest(args.checkpoint)
             progress.update("write_report", output=args.output)
+            write_json(args.output, result)
+            progress.update("complete", output=args.output)
+    elif args.kind == "flow-consistency":
+        if args.limit is not None and args.limit < 1:
+            raise ValueError("--limit must be positive")
+        if args.noise_seeds < 1 or any(count < 1 for count in args.flow_steps):
+            raise ValueError("--noise-seeds and --flow-steps must be positive")
+        from .chunk_eval import flow_consistency_chunk
+        from .runtime.loading import load_policy
+        with ProgressReporter(args.progress_interval, enabled=not args.quiet) as progress:
+            policy = load_policy(args.checkpoint, args.device, args.pretrain_path, progress=progress)
+            result = flow_consistency_chunk(policy, args.replay, args.split, args.limit, progress=progress,
+                                            tasks=args.tasks, episode_indices=args.episode_indices,
+                                            steps=tuple(args.flow_steps), seeds=args.noise_seeds)
+            result["checkpoint_sha256"] = file_digest(args.checkpoint)
             write_json(args.output, result)
             progress.update("complete", output=args.output)
     else:

@@ -3,6 +3,7 @@ import pytest
 import torch
 
 from finetune.OHT.flow_diagnostics import flow_consistency_report
+from tests.test_oht_chunk_replay import chunk_fixture, replay_fixture  # noqa: F401
 from tests.test_oht_spatial_chunk import inputs
 
 
@@ -96,3 +97,28 @@ def test_report_rejects_regression_decoder():
     decoder, context, target, valid = inputs('regression')
     with pytest.raises(ValueError):
         flow_consistency_report(decoder, context, target, valid)
+
+
+def test_replay_flow_consistency_uses_deployed_context_and_cli_report(chunk_fixture, tmp_path):
+    import json
+    from finetune.OHT.chunk_eval import flow_consistency_chunk
+    from finetune.OHT.runtime.policy import Policy
+    from tests.test_oht_spatial_chunk import spatial_agent
+    agent, data, _ = spatial_agent(chunk_fixture.root, 'flow_matching')
+    policy = Policy(agent, data.contract, 'cpu', 'baseline')
+    report = flow_consistency_chunk(policy, chunk_fixture.root, 'val', limit=2, steps=(1, 2), seeds=2)
+    assert report['kind'] == 'flow_consistency' and report['samples'] == 2
+    assert set(report['report']['sampling_by_steps']) == {'1', '2'}
+    json.dumps(report)
+    sample = data.__class__(chunk_fixture.root, 'val')[0]
+    context = policy.chunk_decoder_context(sample, sample['goal'])
+    assert len(context) == 8 and context[2].shape == (1, 14)
+    regression, _, _ = spatial_agent(chunk_fixture.root, 'regression')
+    with pytest.raises(ValueError, match='flow_matching'):
+        flow_consistency_chunk(Policy(regression, data.contract, 'cpu', 'baseline'), chunk_fixture.root, 'val', limit=1)
+
+
+def test_cli_registers_flow_consistency_options():
+    from finetune.OHT import eval as evaluation
+    with pytest.raises(SystemExit):
+        evaluation.main(['flow-consistency'])

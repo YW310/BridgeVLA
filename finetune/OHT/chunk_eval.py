@@ -92,3 +92,46 @@ def open_loop_chunk(policy, replay, split='val', limit=None, *, progress=None, v
             ''.join(f'<p>{html.escape(row["id"])}</p><img width="900" src="{row["chunk"]}">' for row in pictures), encoding='utf-8')
         result['visualization'] = dict(output_dir=str(visualizer.root), samples=len(pictures), index=str(visualizer.root / 'index.html'))
     return result
+
+
+def flow_consistency_chunk(policy, replay, split='val', limit=None, *, progress=None, tasks=None,
+                           episode_indices=None, steps=(1, 2, 4, 8, 16), seeds=8):
+    """Average ``flow_consistency_report`` over held-out samples using the deployed encoder/crop path."""
+    import torch
+    from .flow_diagnostics import flow_consistency_report
+    decoder = policy.agent._net_mod.decoder
+    if not getattr(decoder, 'is_flow', False):
+        raise ValueError('Flow consistency requires a flow_matching chunk checkpoint')
+    data = OHTChunkDataset(replay, split)
+    if policy.contract['sha256'] != data.contract['sha256']:
+        raise ValueError('Chunk checkpoint/evaluation replay mismatch')
+    if limit is not None and limit < 1:
+        raise ValueError('limit must be positive')
+    indices, _ = select_indices(data.samples, tasks, episode_indices, limit)
+    reports, device = [], policy.agent._device
+    for count, data_index in enumerate(indices):
+        sample, meta = data[data_index], data.samples[data_index]
+        policy.reset()
+        context = policy.chunk_decoder_context(sample, sample['goal'])
+        target = torch.as_tensor(sample['action_chunk'], device=device, dtype=torch.float32)[None]
+        valid = torch.as_tensor(sample['action_valid'], device=device, dtype=torch.bool)[None]
+        if not valid[:, :decoder.settings['horizon']].any():
+            continue
+        reports.append(flow_consistency_report(decoder, context, target, valid, steps=steps, seeds=seeds,
+                                               noise_seed=data_index))
+        if progress is not None:
+            progress.update('flow_consistency_sample_done', completed=count + 1, total=len(indices), sample=meta['id'])
+    if not reports:
+        raise ValueError('No selected sample has valid future supervision')
+    return dict(kind='flow_consistency', split=split, samples=len(reports), steps=list(steps), seeds=seeds,
+                flow_steps=decoder.settings['flow_steps'], flow_time_sampling=decoder.settings['flow_time_sampling'],
+                contract_sha256=data.contract['sha256'], report=_mean_tree(reports),
+                note='Open-loop errors on observed futures; they do not measure closed-loop task success.')
+
+
+def _mean_tree(items):
+    first = items[0]
+    if isinstance(first, dict):
+        return {key: _mean_tree([item[key] for item in items]) for key in first}
+    values = [item for item in items if item is not None]
+    return float(np.mean(values)) if values else None
