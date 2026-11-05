@@ -3,7 +3,7 @@
 exp_id: rlbench_o2_internal_slots_soft_coarse
 seed: 0
 tasks: all
-bs: 48
+bs: 24
 num_workers: 2
 pin_memory: False
 epochs: 50
@@ -17,6 +17,7 @@ freeze_vision_tower: True
 freeze_gemma_prefix_layers: 18
 freeze_multimodal_projector: True
 sample_distribution_mode: task_uniform
+use_scheduler: False
 train_visualization:
   enabled: True
   interval: 100
@@ -56,6 +57,9 @@ object_slots:
   point_samples: 128
 peract:
   lr: 4e-5
+  gemma_lr: 1e-5
+  gemma_layer_lr_decay: 1.0
+  optimizer_type: adamw
   add_rgc_loss: True
   transform_augmentation_xyz: [0.125, 0.125, 0.125]
   transform_augmentation_rpy: [0.0, 0.0, 45.0]

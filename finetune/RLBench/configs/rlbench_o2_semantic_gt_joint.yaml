@@ -1,7 +1,7 @@
 # Stage 1: GT upper-bound diagnostic. Run matched controls before slots.
 exp_id: rlbench_o2_semantic_gt_joint
 tasks: all
-bs: 48
+bs: 24
 num_workers: 4
 epochs: 50
 train_iter: 38400
@@ -11,9 +11,10 @@ efficient_paligemma_forward: True
 gpu_paligemma_preprocessing: False
 flash_attention_2: False
 freeze_vision_tower: True
-freeze_gemma_prefix_layers: 6
+freeze_gemma_prefix_layers: 18
 freeze_multimodal_projector: True
 sample_distribution_mode: task_uniform
+use_scheduler: False
 use_oracle_objects: True
 # Non-strict startup by default; enable both audit/enforce for strict provenance.
 oracle_semantic_audit: False
@@ -32,6 +33,7 @@ object_conditioning:
   use_context: True
 peract:
   lr: 4e-5
+  optimizer_type: adamw
   gemma_lr: 1e-5
   gemma_layer_lr_decay: 1.0
   add_rgc_loss: True

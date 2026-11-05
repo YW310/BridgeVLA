@@ -1,7 +1,7 @@
 # Stage 2 opt-in: experimental; start only after the matched GT closed-loop gate.
 exp_id: rlbench_o2_internal_slots_joint
 tasks: all
-bs: 48
+bs: 24
 num_workers: 4
 epochs: 50
 train_iter: 38400
@@ -14,6 +14,7 @@ freeze_vision_tower: True
 freeze_gemma_prefix_layers: 18
 freeze_multimodal_projector: False
 sample_distribution_mode: task_uniform
+use_scheduler: False
 use_oracle_objects: True
 # Non-strict startup by default; enable both audit/enforce for strict provenance.
 oracle_semantic_audit: False
@@ -40,6 +41,7 @@ object_slots:
   point_samples: 128
 peract:
   lr: 4e-5
+  optimizer_type: adamw
   gemma_lr: 1e-5
   gemma_layer_lr_decay: 1.0
   add_rgc_loss: True
