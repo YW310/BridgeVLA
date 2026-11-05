@@ -104,6 +104,32 @@ def test_v4_validation_checks_both_payload_hashes(chunk_fixture, tmp_path, field
         data.validate_all(workers=3)
 
 
+def test_checksum_modes_trade_rereads_but_validate_all_stays_strict(chunk_fixture, tmp_path, monkeypatch):
+    from finetune.OHT.data import chunk_dataset
+    root = tmp_path / 'copy'
+    shutil.copytree(chunk_fixture.root, root)
+    calls = []
+    real = chunk_dataset.file_digest
+    monkeypatch.setattr(chunk_dataset, 'file_digest', lambda path: calls.append(path) or real(path))
+    with pytest.raises(ValueError, match='checksum must be one of'):
+        OHTChunkDataset(root, checksum='sometimes')
+    strict, once, trusted = (OHTChunkDataset(root, checksum=mode) for mode in ('every_read', 'once', 'trusted'))
+    for dataset, expected in ((strict, 4), (once, 2), (trusted, 0)):
+        calls.clear()
+        dataset[0], dataset[0]
+        assert len(calls) == expected, dataset.checksum
+    row = trusted.samples[0]
+    with (root / row['targets']).open('ab') as stream:
+        stream.write(b'changed')
+    trusted[0]  # Skips hashing by design; the trailing bytes are ignored by np.load.
+    once[0]  # Already verified in this process.
+    with pytest.raises(ValueError, match='targets checksum mismatch'):
+        strict[0]
+    with pytest.raises(ValueError, match='targets checksum mismatch'):
+        trusted.validate_all()
+    assert trusted.checksum == 'trusted'
+
+
 def test_v4_validation_rejects_bad_masks_even_with_updated_hashes(chunk_fixture, tmp_path):
     root = tmp_path / 'copy'
     shutil.copytree(chunk_fixture.root, root)

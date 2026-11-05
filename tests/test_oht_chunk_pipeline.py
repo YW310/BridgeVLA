@@ -417,6 +417,37 @@ def test_chunk_tracking_guard_still_checks_response_after_each_control_tick():
     assert executor.last_result['consumed_actions'] == 1
 
 
+def test_chunk_executor_refuses_implausible_target_jumps_before_any_motion():
+    settings = chunk_settings(settings_config())
+    spec = chunk_spec(settings, {'chunk': {'action_dt': .01}})
+    far = np.tile([.02, 0, .5, 0, 0, 0, 1, 0], (4, 1)).astype(np.float32)
+    far[1, 0] = .50  # A 0.48 m jump between the first two executed targets.
+    bridge, sent = fake_bridge()
+    executor = ChunkExecutor(bridge, spec, 2)
+    executor.execute(far, {})
+    assert not sent
+    result = executor.last_result
+    assert result['status'] == 'step_limit' and not result['completed']
+    assert result['consumed_actions'] == 0 and result['discarded_suffix'] == 4
+    assert result['step_violation']['tick'] == 1 and result['step_violation']['translation_m'] == pytest.approx(.48)
+    # A jump beyond the executed prefix does not matter; the prefix is the contract.
+    bridge, sent = fake_bridge()
+    ChunkExecutor(bridge, spec, 1).execute(far, {})
+    assert sent
+    bridge, sent = fake_bridge()
+    rotated = np.tile([.02, 0, .5, 0, 0, 0, 1, 0], (4, 1)).astype(np.float32)
+    rotated[0, 3:7] = [0, 0, 1, 0]  # 180 degrees from the measured identity pose.
+    executor = ChunkExecutor(bridge, spec)
+    executor.execute(rotated, {})
+    assert not sent and executor.last_result['status'] == 'step_limit'
+    assert executor.last_result['step_violation']['rotation_rad'] > .5
+    with pytest.raises(ValueError, match='step limits'):
+        ChunkExecutor(fake_bridge()[0], spec, max_step_translation=0.)
+    bridge, sent = fake_bridge()
+    ChunkExecutor(bridge, spec, max_step_translation=1., max_step_rotation=4.).execute(rotated, {})
+    assert sent
+
+
 def test_chunk_online_export_keeps_predictions_without_future_labels(chunk_fixture, tmp_path):
     from finetune.OHT.runtime.online_visualization import OnlineVisualizer
     policy_payload = dict(stages={'mvt1': dict(rgb=np.zeros((3, 8, 8, 3), np.float32),

@@ -14,6 +14,7 @@ from .action_modes import resolve_action
 from .training_log import TensorBoardLogger, summary_writer_class
 from .training_plan import resolve_training_plan, epoch_metrics
 from .training_visualization import visualization_settings, capture_due, record_visualization
+from .rng_state import gather_rng_states, restore_rank_rng_state
 from .run_directory import prepare_run_directory
 from ..RLBench.training_utils import report_training_progress
 
@@ -33,6 +34,9 @@ def main(argv=None):
     group.add_argument("--init-checkpoint")
     group.add_argument("--resume")
     parser.add_argument("--validate-only", action="store_true")
+    parser.add_argument("--data-checksum", choices=("every_read", "once", "trusted"), default="every_read",
+                        help="V4 NPZ digest checks: every_read (strict, default), once per process, "
+                             "or trusted (skip; use only after a --validate-only pass)")
     parser.add_argument("--log-backend", choices=("tensorboard", "none"), default="tensorboard")
     parser.add_argument("--tensorboard-flush-secs", type=int, default=10)
     parser.add_argument("--loss-print-interval", "--loss_print_interval", type=int, default=10,
@@ -55,7 +59,7 @@ def main(argv=None):
         from .chunk_config import chunk_settings
         if args.role_cache:
             parser.error('Chunk baseline does not use role caches')
-        dataset = OHTChunkDataset(args.replay, 'train')
+        dataset = OHTChunkDataset(args.replay, 'train', checksum=args.data_checksum)
         settings = chunk_settings(config, dataset.contract)
         if (settings['stage'] == 'frozen_key' and not args.validate_only
                 and not (args.init_checkpoint or args.resume)):
@@ -134,12 +138,14 @@ def main(argv=None):
     cache_hash = dataset.role_cache.manifest["sha256"] if dataset.role_cache else None
     fingerprint = resume_fingerprint(config, dataset.contract, cache_hash, world)
     step = 0
+    saved_rng_states = None
     if args.init_checkpoint:
         load_weights(agent, args.init_checkpoint, initialize=True)
     if args.resume:
         checkpoint = torch.load(args.resume, map_location="cpu", weights_only=False)
         if checkpoint.get("oht_resume_fingerprint") != fingerprint:
             raise ValueError("Resume configuration/replay/role cache/world-size mismatch")
+        saved_rng_states = checkpoint.get("rng_states")
         load_weights(agent, checkpoint)
         agent._optimizer.load_state_dict(checkpoint["optimizer_state"])
         for state in agent._optimizer.state.values():
@@ -174,6 +180,11 @@ def main(argv=None):
             if rank == 0 and args.log_backend == "tensorboard":
                 print(f"TensorBoard logs: {output / 'tensorboard'}", flush=True)
             iterator = iter(loader)
+            # Restore after the DataLoader draws its base seed so the main-process
+            # streams continue exactly where the checkpoint was written.
+            rng_restored = restore_rank_rng_state(saved_rng_states, rank, world)
+            if rank == 0 and args.resume:
+                print(f"Resume RNG state restored: {rng_restored}", flush=True)
             for _ in progress_bar:
                 losses = {}
                 capture = capture_due(visualization, step + 1, rank)
@@ -193,6 +204,9 @@ def main(argv=None):
                         if isinstance(value, (int, float)):
                             losses[key] = losses.get(key, 0) + value / accumulation
                 step += 1
+                checkpoint_due = step % plan["checkpoint_interval"] == 0 or step == target_steps
+                # Collective: every rank contributes its stream even though only rank 0 saves.
+                rng_states = gather_rng_states(world, dist if world > 1 else None) if checkpoint_due else None
                 if rank == 0:
                     progress = epoch_metrics(step, plan)
                     row = dict(step=step, **progress, **losses)
@@ -209,12 +223,12 @@ def main(argv=None):
                         print_line=(args.loss_print_interval > 0 and (
                             step == 1 or step % args.loss_print_interval == 0
                             or epoch_finished or step == target_steps)))
-                    if step % plan["checkpoint_interval"] == 0 or step == target_steps:
+                    if checkpoint_due:
                         checkpoint = dict(model_state=model_state(agent), optimizer_state=agent._optimizer.state_dict(),
                                           optimizer_step=step, config=config, oht_contract=dataset.contract,
                                           oht_resume_fingerprint=fingerprint, role_cache_sha256=cache_hash,
                                           role_cache_provenance=dataset.role_cache.manifest["provenance"] if dataset.role_cache else None,
-                                          resume_rng_restored=False)
+                                          rng_states=rng_states, resume_rng_restored=rng_states is not None)
                         checkpoint["oht_training_plan"] = plan
                         if plan["steps_per_epoch"] is not None:
                             checkpoint.update(epochs_completed=step // plan["steps_per_epoch"],

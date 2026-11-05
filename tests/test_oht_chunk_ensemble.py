@@ -86,6 +86,27 @@ def test_inconsistent_predictions_remain_raw_instead_of_masking_a_new_mode_or_ou
     np.testing.assert_allclose(worker.update(latest, .02), latest, atol=1e-7)
     assert worker.last_result['contributors'] == [1] * 8
     assert worker.last_result['rejected_inconsistent'] == 6
+    assert worker.last_result['latest_outlier'] is True
+    assert worker.last_result['rejected_fraction'] == 1.
+
+
+def test_outlier_flag_is_clear_for_agreeing_or_first_predictions():
+    worker = ensemble()
+    worker.update(actions(), 0.)
+    assert worker.last_result['latest_outlier'] is False and worker.last_result['rejected_fraction'] == 0.
+    worker.update(actions(2, .001), .02)
+    assert worker.last_result['latest_outlier'] is False and worker.last_result['rejected_fraction'] == 0.
+
+
+def test_partial_disagreement_is_counted_but_not_flagged_as_total_outlier():
+    worker = ensemble()
+    worker.update(actions(), 0.)
+    latest = actions(2)
+    latest[:3, 0] += .15  # Only the first three overlapping targets conflict.
+    worker.update(latest, .02)
+    assert worker.last_result['rejected_inconsistent'] == 3
+    assert worker.last_result['latest_outlier'] is False
+    assert 0 < worker.last_result['rejected_fraction'] < 1
 
 
 def test_reset_discards_previous_episode_and_failed_updates_do_not_commit_state():

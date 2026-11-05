@@ -161,6 +161,10 @@ def main(argv=None):
     parser.add_argument('--chunk-execute-horizon', type=int, help='Override advertised H; requests still return K actions')
     parser.add_argument('--chunk-max-tracking-translation', type=float, default=.10)
     parser.add_argument('--chunk-max-tracking-rotation', type=float, default=.5)
+    parser.add_argument('--chunk-max-step-translation', type=float, default=.10,
+                        help='Reject a chunk prefix whose consecutive target positions jump farther than this (m)')
+    parser.add_argument('--chunk-max-step-rotation', type=float, default=.5,
+                        help='Reject a chunk prefix whose consecutive target rotations jump farther than this (rad)')
     parser.add_argument('--chunk-temporal-ensemble', action='store_true',
                         help='Fuse agreeing chunk predictions at the same simulation time; opt-in')
     parser.add_argument('--chunk-ensemble-decay', type=float, default=.1, help='Older prediction weight exp(-decay * age_ticks)')
@@ -389,7 +393,9 @@ def _run(args, reference_args):
         if args.execution_mode == 'chunk':
             from .runtime.chunk_executor import ChunkExecutor
             chunk_executor = ChunkExecutor(bridge, client.chunk_spec, args.chunk_execute_horizon,
-                                            args.chunk_max_tracking_translation, args.chunk_max_tracking_rotation)
+                                            args.chunk_max_tracking_translation, args.chunk_max_tracking_rotation,
+                                            max_step_translation=args.chunk_max_step_translation,
+                                            max_step_rotation=args.chunk_max_step_rotation)
         if waypoint is not None and joint is not None and not callable(getattr(joint, 'step', None)):
             raise ValueError('Waypoint joint execution requires a single-step executor exposing step(target); '
                              'use the built-in JointPositionExecutor or select streaming explicitly')

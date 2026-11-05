@@ -73,7 +73,12 @@ class ChunkTemporalEnsemble:
         self._history.append((float(timestamp), latest))
         self._timestamp = float(timestamp)
         angles = rotation_error(result[:, 3:7], latest[:, 3:7])
+        accepted = sum(count - 1 for count in contributors)
         self.last_result = dict(contributors=contributors, rejected_inconsistent=rejected,
+            # Every overlapping historical prediction disagrees with the latest chunk: a
+            # sudden jump away from a previously consistent trajectory, or a bad latest chunk.
+            latest_outlier=bool(rejected and accepted == 0),
+            rejected_fraction=float(rejected / (rejected + accepted)) if rejected + accepted else 0.,
             max_position_adjustment_m=float(np.linalg.norm(result[:, :3] - latest[:, :3], axis=-1).max()),
             max_rotation_adjustment_rad=float(angles.max()))
         return result

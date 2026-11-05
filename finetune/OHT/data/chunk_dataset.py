@@ -80,19 +80,45 @@ def load_chunk_contract(root):
     return contract
 
 
-class OHTChunkDataset:
-    """Load float/bool chunk arrays without sending targets into policy observations."""
-    validate_all = OHTDataset.validate_all
+CHECKSUM_MODES = ('every_read', 'once', 'trusted')
 
-    def __init__(self, root, split='train'):
+
+class OHTChunkDataset:
+    """Load float/bool chunk arrays without sending targets into policy observations.
+
+    ``checksum`` controls NPZ digest checks: ``every_read`` (default, strict) hashes
+    on every access; ``once`` hashes each file the first time this process reads it;
+    ``trusted`` skips hashing and is only for caches already passed by
+    ``validate_all``, which always runs strictly regardless of this setting.
+    """
+
+    def __init__(self, root, split='train', checksum='every_read'):
         if split not in ('train', 'val', 'test'):
             raise ValueError('Unknown dataset split')
+        if checksum not in CHECKSUM_MODES:
+            raise ValueError(f'checksum must be one of {CHECKSUM_MODES}')
+        self.checksum = checksum
+        self._verified = set()
         self.root = Path(root)
         self.role_cache = None
         self.contract = load_chunk_contract(root)
         self.samples = [row for row in read_jsonl(self.root / 'samples.jsonl') if row['split'] == split]
         if not self.samples:
             raise ValueError(f'No {split} samples in V4 replay')
+
+    def validate_all(self, workers=1, progress=None):
+        previous, self.checksum = self.checksum, 'every_read'
+        try:
+            return OHTDataset.validate_all(self, workers, progress)
+        finally:
+            self.checksum = previous
+
+    def _check_digest(self, path, expected, name, sample_id):
+        if self.checksum == 'trusted' or (self.checksum == 'once' and path in self._verified):
+            return
+        if file_digest(path) != expected:
+            raise ValueError(f'V4 {name} checksum mismatch: {sample_id}')
+        self._verified.add(path)
 
     def __len__(self):
         return len(self.samples)
@@ -102,8 +128,7 @@ class OHTChunkDataset:
         values = []
         for name in ('observation', 'targets'):
             path = inside(self.root, row[name])
-            if file_digest(path) != row[name + '_sha256']:
-                raise ValueError(f'V4 {name} checksum mismatch: {row["id"]}')
+            self._check_digest(path, row[name + '_sha256'], name, row['id'])
             with np.load(path, allow_pickle=False) as source:
                 values.append({key: source[key] for key in source.files})
         observation, targets = values

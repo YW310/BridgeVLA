@@ -3,10 +3,12 @@ import numpy as np
 from scipy.spatial.transform import Rotation, Slerp
 from .chunk_protocol import validate_spec, validate_prediction
 from .control_diagnostics import joint_report
+from ..data.geometry import rotation_error
 
 
 class ChunkExecutor:
-    def __init__(self, bridge, spec, execute_horizon=None, max_translation_error=.10, max_rotation_error=.5):
+    def __init__(self, bridge, spec, execute_horizon=None, max_translation_error=.10, max_rotation_error=.5,
+                 *, max_step_translation=.10, max_step_rotation=.5):
         self.bridge, self.spec = bridge, validate_spec(spec)
         self.horizon = spec['execute_horizon'] if execute_horizon is None else execute_horizon
         if type(self.horizon) is not int or not 1 <= self.horizon <= spec['horizon']:
@@ -24,11 +26,27 @@ class ChunkExecutor:
         if not np.isfinite([max_translation_error, max_rotation_error]).all() or min(max_translation_error, max_rotation_error) <= 0:
             raise ValueError('Chunk tracking error limits must be finite and positive')
         self.max_translation_error, self.max_rotation_error = max_translation_error, max_rotation_error
+        if not np.isfinite([max_step_translation, max_step_rotation]).all() or min(max_step_translation, max_step_rotation) <= 0:
+            raise ValueError('Chunk per-target step limits must be finite and positive')
+        self.max_step_translation, self.max_step_rotation = max_step_translation, max_step_rotation
         self.last_result = None
 
     def _tracking_failed(self, errors):
         return (errors['translation_m'] > self.max_translation_error or
                 errors['rotation_rad'] > self.max_rotation_error)
+
+    def _step_violation(self, start, actions):
+        """Largest jump between consecutive executed targets, beginning at the measured TCP."""
+        previous, worst = np.asarray(start[:7], dtype=float), dict(translation_m=0., rotation_rad=0.)
+        for tick, action in enumerate(actions):
+            translation = float(np.linalg.norm(action[:3] - previous[:3]))
+            rotation = float(rotation_error(previous[3:7], action[3:7]))
+            worst = dict(translation_m=max(worst['translation_m'], translation),
+                         rotation_rad=max(worst['rotation_rad'], rotation))
+            if translation > self.max_step_translation or rotation > self.max_step_rotation:
+                return dict(worst, tick=tick)
+            previous = action[:7]
+        return None
 
     def execute(self, actions, measured, after_step=None):
         bridge = self.bridge
@@ -40,7 +58,11 @@ class ChunkExecutor:
         status = 'completed'
         errors, check_phase = None, None
         bridge.last_done = bridge.last_stopped = False
-        for tick, action in enumerate(actions[:self.horizon]):
+        step_violation = self._step_violation(start, actions[:self.horizon])
+        if step_violation is not None:
+            # Refuse the whole prefix before any motion: the target jump is implausible.
+            status = 'step_limit'
+        for tick, action in enumerate(actions[:self.horizon] if step_violation is None else ()):
             rotations = Slerp([0., 1.], Rotation.from_quat(np.stack((start[3:7], action[3:7]))))
             for sub in range(1, self.substeps + 1):
                 fraction = sub / self.substeps
@@ -79,5 +101,6 @@ class ChunkExecutor:
                                 action_dt=self.spec['action_dt'], control_substeps=self.substeps,
                                 errors=errors, tracking_check_phase=check_phase,
                                 last_commanded_gripper=last_gripper,
+                                step_violation=step_violation,
                                 discarded_suffix=self.spec['horizon'] - consumed)
         return commands
