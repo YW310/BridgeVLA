@@ -94,6 +94,7 @@ def _model_guard_namespace(**overrides):
         'object_conditioning_refine_local_query': False,
         'object_conditioning_refine_heatmap_residual': False,
         'object_conditioning_soft_coarse_queries': False,
+        'object_conditioning_soft_coarse_null_renorm': False,
         'object_conditioning_refine_mask_detach': False,
         'stage_two': True,
         'add_corr': True,
@@ -264,7 +265,7 @@ class RoleFeatureConfigTest(unittest.TestCase):
         self.assertEqual(set(settings), set(FLAGS) | {
             'shared_action_features', 'use_context', 'refine_role_masks',
             'refine_local_query', 'refine_heatmap_residual', 'refine_mask_detach',
-            'soft_coarse_queries'})
+            'soft_coarse_queries', 'soft_coarse_null_renorm'})
         for flag in FLAGS:
             self.assertIs(settings[flag], True)
 

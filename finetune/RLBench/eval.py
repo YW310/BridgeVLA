@@ -107,7 +107,8 @@ def _validate_role_feature_checkpoint(checkpoint, conditioning_cfg, source,
     # not change inference and is deliberately excluded from this comparison.
     for flag in ('shared_action_features', 'use_context',
                  'inherit_coarse_roles', 'preserve_role_tokens', 'refine_role_masks',
-                 'refine_local_query', 'refine_heatmap_residual', 'soft_coarse_queries'):
+                 'refine_local_query', 'refine_heatmap_residual', 'soft_coarse_queries',
+                 'soft_coarse_null_renorm'):
         if bool(stored.get(flag, False)) != bool(getattr(conditioning_cfg, flag, False)):
             raise RuntimeError(
                 f'Object conditioning {flag} differs from checkpoint {source}; '
@@ -184,6 +185,7 @@ def load_agent(
         object_conditioning_refine_local_query=exp_cfg.object_conditioning.refine_local_query,
         object_conditioning_refine_heatmap_residual=exp_cfg.object_conditioning.refine_heatmap_residual,
         object_conditioning_soft_coarse_queries=exp_cfg.object_conditioning.soft_coarse_queries,
+        object_conditioning_soft_coarse_null_renorm=exp_cfg.object_conditioning.soft_coarse_null_renorm,
         object_conditioning_refine_mask_detach=exp_cfg.object_conditioning.refine_mask_detach,
         object_slots_enabled=exp_cfg.object_slots.enabled,
         object_slot_num_slots=exp_cfg.object_slots.num_slots,
@@ -960,6 +962,42 @@ def eval(
     return scores
 
 
+# Source files whose contents change evaluation results; they are hashed into
+# the resumable-run signature so edited code never reuses stale episodes.
+_RLBENCH_RUNTIME_FILES = (
+    "utils/custom_rlbench_env.py",
+    "utils/o2_oracle_provider.py",
+)
+_FINETUNE_RUNTIME_FILES = (
+    "bridgevla/models/bridgevla_agent.py",
+    "bridgevla/models/oracle_prior.py",
+    "bridgevla/models/object_conditioning.py",
+    "bridgevla/models/cross_scale_roles.py",
+    "bridgevla/models/role_separation.py",
+    "bridgevla/models/refine_role_masks.py",
+    "bridgevla/models/heatmap_transport.py",
+    "bridgevla/models/soft_coarse_queries.py",
+    "bridgevla/mvt/mvt.py",
+    "bridgevla/mvt/mvt_single.py",
+    "bridgevla/mvt/attn.py",
+    "bridgevla/mvt/raft_utils.py",
+    "bridgevla/mvt/renderer.py",
+    "bridgevla/mvt/utils.py",
+    "bridgevla/utils/rvt_utils.py",
+    "bridgevla/libs/YARR/yarr/utils/rollout_generator.py",
+)
+
+
+def _inference_runtime_files():
+    rlbench_root = Path(__file__).resolve().parent
+    finetune_root = rlbench_root.parent
+    return (
+        Path(__file__),
+        *(rlbench_root / name for name in _RLBENCH_RUNTIME_FILES),
+        *(finetune_root / name for name in _FINETUNE_RUNTIME_FILES),
+    )
+
+
 def get_model_index(filename):
     """
     :param filenam: path of file of format /.../model_idx.pth
@@ -1021,22 +1059,7 @@ def _eval(args):
                 heatmap_action_anchor=args.heatmap_action_anchor,
                 bridgevla_aligned_objects=args.bridgevla_aligned_objects,
                 bridgevla_aligned_reference=args.bridgevla_aligned_reference,
-                runtime_files=(
-                    Path(__file__),
-                    Path(__file__).parent / "utils" / "custom_rlbench_env.py",
-                    Path(__file__).parent / "utils" / "o2_oracle_provider.py",
-                    Path(bridgevla_agent.__file__),
-                    Path(__file__).parents[1]
-                    / "bridgevla" / "mvt" / "mvt.py",
-                    Path(__file__).parents[1]
-                    / "bridgevla" / "models" / "refine_role_masks.py",
-                    Path(__file__).parents[1]
-                    / "bridgevla" / "models" / "heatmap_transport.py",
-                    Path(__file__).parents[1]
-                    / "bridgevla" / "models" / "soft_coarse_queries.py",
-                    Path(__file__).parents[1] / "bridgevla" / "libs"
-                    / "YARR" / "yarr" / "utils" / "rollout_generator.py",
-                ),
+                runtime_files=_inference_runtime_files(),
             )
             if args.eval_resume:
                 print(

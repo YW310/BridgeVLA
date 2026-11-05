@@ -96,6 +96,30 @@ class SoftCoarseQueryTest(unittest.TestCase):
         self.assertTrue(torch.isfinite(tokens.grad).all())
         self.assertGreater(tokens.grad[:, 0].abs().sum().item(), 0)
 
+    def test_null_renormalization_keeps_target_hint_and_matches_legacy_when_not_null(self):
+        torch.manual_seed(3)
+        legacy, renorm = SoftCoarseQueryConditioner(8), SoftCoarseQueryConditioner(8, renormalize_null=True)
+        renorm.load_state_dict(legacy.state_dict())
+        for module in (legacy, renorm):
+            nn.init.eye_(module.output.weight)
+        queries, tokens = torch.randn(1, 2, 8), torch.randn(1, 2, 8)
+        keep = torch.zeros(1)
+        torch.testing.assert_close(legacy(queries, tokens, keep), renorm(queries, tokens, keep), rtol=1e-6, atol=1e-6)
+        null = torch.ones(1)
+        hint_legacy = legacy(queries, tokens, null) - queries
+        hint_renorm = renorm(queries, tokens, null) - queries
+        # With Reference absent the renormalized hint is exactly the Target value.
+        target_value = renorm.value(renorm.context_norm(tokens) + renorm.role_embedding)[:, 0]
+        torch.testing.assert_close(hint_renorm, target_value[:, None].expand_as(hint_renorm), rtol=1e-5, atol=1e-5)
+        self.assertGreater(hint_renorm.norm().item(), hint_legacy.norm().item())
+
+    def test_null_renormalization_is_opt_in_and_requires_soft_queries(self):
+        cfg = get_cfg_defaults()
+        self.assertFalse(cfg.object_conditioning.soft_coarse_null_renorm)
+        self.assertFalse(SoftCoarseQueryConditioner(8).renormalize_null)
+        with self.assertRaisesRegex(ValueError, 'soft_coarse_null_renorm requires soft_coarse_queries'):
+            _model_guard_namespace(object_conditioning_soft_coarse_null_renorm=True)
+
     def test_missing_context_fails_instead_of_silently_disabling_conditioning(self):
         with self.assertRaisesRegex(ValueError, 'require predicted coarse tokens'):
             predictor(True)(self.features, self.xyz)
@@ -154,6 +178,7 @@ class SoftCoarseConfigTest(unittest.TestCase):
                 object_slots_enabled=True, object_conditioning_use_context=False,
                 object_conditioning_shared_action_features=False,
                 object_conditioning_soft_coarse_queries=enabled,
+                object_conditioning_soft_coarse_null_renorm=False,
                 object_conditioning_inherit_coarse_roles=False)
             scope = dict(self=model, stage_two=True, object_slot_predictor_type='slots',
                 object_slot_num_slots=2, object_slot_dim=8, object_slot_decoder_layers=1,

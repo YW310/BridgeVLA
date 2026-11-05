@@ -15,8 +15,9 @@ class SoftCoarseQueryConditioner(nn.Module):
     at initialization, while the local decoder always reads its own features.
     """
 
-    def __init__(self, dim):
+    def __init__(self, dim, renormalize_null=False):
         super().__init__()
+        self.renormalize_null = bool(renormalize_null)
         self.query_norm = nn.LayerNorm(dim)
         self.context_norm = nn.LayerNorm(dim)
         self.role_embedding = nn.Parameter(torch.randn(2, dim) * .02)
@@ -38,6 +39,13 @@ class SoftCoarseQueryConditioner(nn.Module):
                               self.key(context)) / math.sqrt(dim)
         non_null = 1 - reference_null_probability.to(queries).clamp(0, 1)
         weights = torch.stack((torch.ones_like(non_null), non_null), dim=1)
-        values = self.value(context) * weights[..., None]
-        hint = torch.einsum('bkr,brd->bkd', scores.softmax(-1), values)
+        if self.renormalize_null:
+            # Shift the Reference logit by log(non-null) so attention mass moves to
+            # Target instead of vanishing; at non_null=1 this equals the legacy path.
+            attention = (scores + weights.clamp_min(torch.finfo(scores.dtype).tiny).log()[:, None, :]).softmax(-1)
+            values = self.value(context)
+        else:
+            attention = scores.softmax(-1)
+            values = self.value(context) * weights[..., None]
+        hint = torch.einsum('bkr,brd->bkd', attention, values)
         return queries + self.output(hint)

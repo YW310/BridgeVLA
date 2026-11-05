@@ -1004,7 +1004,7 @@ class _ObjectQueryDecoder(nn.Module):
 class InternalObjectSlotPredictor(_ObjectQueryDecoder):
     '''Unordered instance slots mixed into Target/Reference (legacy mode).'''
 
-    def __init__(self, *args, soft_coarse_queries=False, **kwargs):
+    def __init__(self, *args, soft_coarse_queries=False, soft_coarse_null_renorm=False, **kwargs):
         super().__init__(*args, **kwargs)
         self.objectness_head = nn.Linear(self.slot_dim, 1)
         self.role_head = nn.Linear(self.slot_dim, 2)
@@ -1013,7 +1013,8 @@ class InternalObjectSlotPredictor(_ObjectQueryDecoder):
         nn.init.constant_(self.objectness_head.bias, -2.0)
         if soft_coarse_queries:
             from .soft_coarse_queries import SoftCoarseQueryConditioner
-            self.soft_coarse_conditioner = SoftCoarseQueryConditioner(self.slot_dim)
+            self.soft_coarse_conditioner = SoftCoarseQueryConditioner(
+                self.slot_dim, renormalize_null=soft_coarse_null_renorm)
 
     def forward(self, features, rendered_xyz, relation_state=None, *, current_state=None,
                 context=None, coarse_role_tokens=None, coarse_reference_null_probability=None):
