@@ -6,6 +6,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 from .chunk_protocol import validate_prediction, validate_spec
+from ..data.geometry import rotation_error
 
 
 class ChunkTemporalEnsemble:
@@ -43,7 +44,6 @@ class ChunkTemporalEnsemble:
         result, contributors, rejected = latest.copy(), [], 0
         for index, current in enumerate(latest):
             poses, weights = [current], [1.]
-            rotation = Rotation.from_quat(current[3:7])
             for shift, previous, weight in aligned:
                 if index + shift >= horizon or weight == 0:
                     continue
@@ -52,7 +52,7 @@ class ChunkTemporalEnsemble:
                 # different motions, including a grossly wrong latest chunk.
                 if (candidate[7] != current[7] or
                         np.linalg.norm(candidate[:3] - current[:3]) > self.max_translation or
-                        (Rotation.from_quat(candidate[3:7]) * rotation.inv()).magnitude() > self.max_rotation):
+                        rotation_error(candidate[3:7], current[3:7]) > self.max_rotation):
                     rejected += 1
                     continue
                 poses.append(candidate)
@@ -72,7 +72,7 @@ class ChunkTemporalEnsemble:
                                if stamp + horizon * dt > timestamp + 1e-8 * dt), maxlen=horizon)
         self._history.append((float(timestamp), latest))
         self._timestamp = float(timestamp)
-        angles = (Rotation.from_quat(result[:, 3:7]) * Rotation.from_quat(latest[:, 3:7]).inv()).magnitude()
+        angles = rotation_error(result[:, 3:7], latest[:, 3:7])
         self.last_result = dict(contributors=contributors, rejected_inconsistent=rejected,
             max_position_adjustment_m=float(np.linalg.norm(result[:, :3] - latest[:, :3], axis=-1).max()),
             max_rotation_adjustment_rad=float(angles.max()))

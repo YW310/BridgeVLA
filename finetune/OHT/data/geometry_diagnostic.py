@@ -9,7 +9,7 @@ from zipfile import BadZipFile
 import numpy as np
 
 from .common import SCHEMA, digest, inside
-from .geometry import array, transform_matrix
+from .geometry import array, transform_matrix, validate_intrinsics
 from .observation import validate_data_config
 from .replay import load_contract
 from .source_config import sample_data_config
@@ -45,9 +45,8 @@ def _validate_frame(observation, config, row):
             raise ValueError(f"{camera}: expected uint8 RGB[3,H,W], float XYZ[3,H,W] and metric depth[1,H,W]")
         if list(rgb.shape[1:]) != list(config.get("image_size", [128, 128])):
             raise ValueError(f"{camera}: observation resolution disagrees with data profile")
-        K = array(K, (3, 3), f"{camera} cached intrinsics")
-        if K[0, 0] <= 0 or K[1, 1] <= 0 or not np.allclose(K[2], [0, 0, 1]):
-            raise ValueError(f"{camera}: invalid cached intrinsics")
+        validate_intrinsics(array(K, (3, 3), f"{camera} cached intrinsics"),
+                            f"{camera} cached intrinsics")
         transform_matrix(transform, f"{camera} cached optical extrinsics")
     for name, pose in (("current_tcp", row.get("current_tcp")),
                        ("goal", row.get("labels", {}).get("gripper_pose"))):

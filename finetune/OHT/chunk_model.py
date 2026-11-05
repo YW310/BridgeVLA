@@ -7,21 +7,7 @@ from torch.nn import functional as F
 
 from .action_modes import action_options, validate_action
 from .chunk_config import chunk_settings, chunk_scale
-
-
-def rotation_6d(value):
-    first = F.normalize(value[..., :3], dim=-1, eps=1e-8)
-    second = F.normalize(value[..., 3:] - (first * value[..., 3:]).sum(-1, keepdim=True) * first,
-                         dim=-1, eps=1e-8)
-    return torch.stack((first, second, torch.linalg.cross(first, second)), dim=-1)
-
-
-def quaternion_matrix(quaternion):
-    q = F.normalize(quaternion, dim=-1)
-    x, y, z, w = q.unbind(-1)
-    return torch.stack((1-2*(y*y+z*z), 2*(x*y-z*w), 2*(x*z+y*w),
-                        2*(x*y+z*w), 1-2*(x*x+z*z), 2*(y*z-x*w),
-                        2*(x*z-y*w), 2*(y*z+x*w), 1-2*(x*x+y*y)), -1).reshape(*q.shape[:-1], 3, 3)
+from ..bridgevla.geometry.torch_ops import quaternion_matrix, rotation_6d, world_to_local_points
 
 
 class ChunkDecoder(nn.Module):
@@ -62,8 +48,7 @@ class ChunkDecoder(nn.Module):
         # remain in world coordinates; goal is the detached predicted key pose.
         current = F.normalize(state[:, 3:7], dim=-1)
         target = F.normalize(goal[:, 3:7], dim=-1)
-        local_position = torch.einsum('bij,bj->bi', quaternion_matrix(current).transpose(-1, -2),
-                                      goal[:, :3] - state[:, :3]) / chunk_scale(self.settings, 'geometry_scale')
+        local_position = world_to_local_points(goal[:, :3], state[:, :3], quaternion_matrix(current)) / chunk_scale(self.settings, 'geometry_scale')
         xyz, w = current[:, :3], current[:, 3:4]
         target_xyz, target_w = target[:, :3], target[:, 3:4]
         relative = torch.cat((w * target_xyz - target_w * xyz - torch.linalg.cross(xyz, target_xyz),

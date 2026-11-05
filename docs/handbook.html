@@ -738,7 +738,7 @@ svg {
     <p>架构、数据、对象与关系、Action chunk、训练、部署、评估与研究依据，收进同一本手册。</p>
     <p class="text-small">对象条件策略统一称为 Object-conditioned BridgeVLA；旧代号 O2 只保留在已有配置、接口与兼容链接中。Target/Reference 的角色含义与 NULL 契约不变。</p>
     <p class="text-small">将 docs、项目首页和 OHT 入口说明整理为连贯章节，而非按文件拼接。保留正文、命令与证据边界；新增图帮助理解数据和动作，不改变实现或验收结论。</p>
-    <p class="text-small" id="book-coverage">收录 17 份 Markdown，8 个主题分部，8 张新增图解，以及完整交互算法。固定浅色；图文离线可读；论文外链需联网，代码/配置链接需保留仓库目录。</p>
+    <p class="text-small" id="book-coverage">收录 18 份 Markdown，9 个主题分部，8 张新增图解，以及完整交互算法。固定浅色；图文离线可读；论文外链需联网，代码/配置链接需保留仓库目录。</p>
   </header>
 
   <div class="book-layout">
@@ -780,6 +780,9 @@ svg {
 <li><a href="#doc-readme">项目概览与快速开始</a></li>
 <li><a href="#doc-finetune-oht-readme">OHT 快速运行入口</a></li>
 <li><a href="#doc-docs-readme">文档维护与导航约定</a></li>
+</ul></details>
+<details open><summary><a href="#book-part-9">其他文档</a></summary><ul>
+<li><a href="#doc-docs-design-local-geometry-refinement">观测约束的局部几何动作精修</a></li>
 </ul></details>
         <a href="#handbook-home">回到开头 ↑</a>
       </nav>
@@ -4156,6 +4159,7 @@ use <a href="#doc-docs-guides-object-conditioning--closed-loop评估">object-con
 <p>训练日志可通过 <code>--log_backend</code> 在 TensorBoard、W&amp;B 和关闭指标记录之间切换。
 默认使用 TensorBoard，不需要账号或网络连接；无论选择哪种后端，主进程都会在
 tqdm 进度条中实时显示 total、translation、rotation、gripper 和 collision loss。</p>
+<p>终端输出与 OHT 共用 <code>finetune/RLBench/training_utils.py</code> 的进度摘要及明细格式，统一显示 <code>[train] epoch=... iter=... step=... lr=...</code>，训练器原有 epoch/step 编号不变。小 loss 使用有效数字，避免非零 diversity 显示为零。OHT chunk 额外显示毫米误差摘要，完整明细仍使用米单位；详见 <a href="#doc-docs-oht-training--日志与可视化">OHT 日志与可视化</a>。两者均接受 <code>--loss-print-interval</code> 和 <code>--loss_print_interval</code>。</p>
 <p>默认 TensorBoard 模式等价于：</p>
 <pre><code>GPUS_PER_NODE=2 bash train_8x40.sh [其他参数] --log_backend tensorboard
 </code></pre>
@@ -4208,7 +4212,7 @@ bash train.sh --exp_cfg_path  configs/gembench_config.yaml \
               --load_pretrain \
               --pretrain_path  PATH_TO_PRETRAINED_MODEL
 </code></pre>
-</div><details class="doc-source"><summary>来源与维护</summary><p class="doc-provenance text-small">docs/guides/training.md · SHA-256：c9eb30c6b87f</p></details></article>
+</div><details class="doc-source"><summary>来源与维护</summary><p class="doc-provenance text-small">docs/guides/training.md · SHA-256：ff7924c495de</p></details></article>
 <article class="book-document" id="doc-docs-guides-object-conditioning"><header><h3 id="doc-docs-guides-object-conditioning--对象条件策略配置训练与闭环评估">对象条件策略：配置、训练、评估与排错</h3><p class="doc-introduction">按 object 来源和动作特征路由选配置，训练后再核对闭环统计、对象归因与可视化。</p></header><nav class="doc-toc" aria-label="对象条件策略：配置、训练、评估与排错的章节"><ul><li><a href="#doc-docs-guides-object-conditioning--配置选择">配置选择</a></li><li><a href="#doc-docs-guides-object-conditioning--数据与角色契约">数据与角色契约</a></li><li><a href="#doc-docs-guides-object-conditioning--训练">训练</a></li><li><a href="#doc-docs-guides-object-conditioning--loss与checkpoint">Loss与Checkpoint</a></li><li><a href="#doc-docs-guides-object-conditioning--closed-loop评估">Closed-loop评估</a></li><li><a href="#doc-docs-guides-object-conditioning--测试诊断与可视化">测试诊断与可视化</a></li><li><a href="#doc-docs-guides-object-conditioning--最小验证">最小验证</a></li></ul></nav><div class="doc-body"><p><a id="doc-docs-guides-object-conditioning--o2-操作指南配置训练与闭环评估"></a></p>
 
 <p>统一名称为 <strong>Object-conditioned BridgeVLA（对象条件策略）</strong>，旧代号为 O2。下文配置文件、模式值、checkpoint 路径和命令仍保留 <code>o2</code> 标识，不需要迁移或重新训练。</p>
@@ -5397,6 +5401,44 @@ EXP=oht-seg-v4-regression-state-s0
 启用新空间 token 时将共享 key gate 重置为配置初值 0.1，避免继承旧实验已接近关闭的 gate。
 这会重新开始 optimizer/采样；不能用旧实验的 <code>--resume</code> 来切换 guidance。
 训练日志打印 <code>spatial_key_token=true</code>，server 从新 checkpoint 自动恢复此设置，client 动作协议不变。</p>
+<h5 id="doc-docs-oht-training--chunk-使用当前-tcp-局部视图">Chunk 使用当前 TCP 局部视图</h5>
+<p><code>oht_chunk_v4_delta_state_tcp_guided_8x40.yaml</code> 将两种局部视图分开：关键目标分支仍使用 coarse 预测目标中心的 MVT2 裁剪；chunk 使用 coarse 全局 tokens、实测 TCP 中心的局部 tokens、归一化实测状态与带 gate 的预测 key 条件。TCP 局部视图复用现有视觉/Gemma 编码器权重，增加一次局部渲染与编码，只返回视觉 tokens，跳过额外的 heatmap/action heads；冻结层数沿用配置，额外计算与显存开销需在 GPU 上实测。</p>
+<pre><code class="language-bash">GPUS_PER_NODE=2 bash finetune/OHT/train_8x40.sh \
+  --config finetune/OHT/configs/oht_chunk_v4_delta_state_tcp_guided_8x40.yaml \
+  --replay &quot;$OUT/replay-source-v4&quot; --pretrain-path &quot;$PRETRAIN&quot; \
+  --log-dir &quot;$OUT/runs&quot; --exp-id oht-seg-v4-delta-state-tcp-guided-s0
+</code></pre>
+<p><code>chunk_policy.local_context</code> 有三个选项：</p>
+<table>
+<thead>
+<tr>
+<th>值</th>
+<th>Chunk 视觉输入</th>
+<th>对应 guided 配置</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>key_refine</code>（默认）</td>
+<td>coarse + 目标中心 refine</td>
+<td><code>oht_chunk_v4_delta_state_guided_8x40.yaml</code></td>
+</tr>
+<tr>
+<td><code>tcp</code></td>
+<td>coarse + 实测 TCP 中心局部视图</td>
+<td><code>oht_chunk_v4_delta_state_tcp_guided_8x40.yaml</code></td>
+</tr>
+<tr>
+<td><code>coarse_only</code></td>
+<td>仅 coarse；保留状态和预测 key 引导</td>
+<td><code>oht_chunk_v4_delta_state_coarse_guided_8x40.yaml</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>tcp_crop_size_m: 0.4</code> 是以实测 TCP 为中心、与世界 XYZ 轴平行的立方体完整边长，即每轴 ±0.2 m；不是半径，也不随 workspace 大小变化。对当前观测点云在三个轴上裁剪，再投影并编码；几何随同一 z-buffer 对齐，逆变换到世界坐标后供 chunk 使用。空局部视图的 tokens 被有效性 mask 排除，仍可读取 coarse 和状态；这不提供碰撞保证。</p>
+<p>新 TCP 路径的正交渲染相机沿光轴后移，保持 XY 投影不变，同时将立方体内的表面放到相机前方，再过滤非正或非有限深度；旧 key/refine 路径保留原相机与深度规则。空点云直接返回空白图和无效覆盖，避免零线程块 CUDA 启动。训练诊断 <code>chunk_local_valid_rate</code> 是局部有效 patch 比例，<code>chunk_local_empty_rate</code> 是整份局部输入为空的样本比例；TCP 模式下若后者长期较高，应先检查点云 ROI、TCP 坐标和裁剪尺寸。coarse-only 不记录这两项，因其主动移除了局部输入。</p>
+<p>三组继续使用相同 V4 replay，不需要重建数据。可用相同数据与归一化的 delta/guided checkpoint 加 <code>--init-checkpoint</code> 开启新实验，兼容 encoder/decoder 权重保留；切换 <code>local_context</code> 或裁剪尺寸不能使用旧 run 的严格 <code>--resume</code>。server 按新 checkpoint 中保存的设置自动恢复，client 继续提供当前实测 TCP、关节和夹爪，动作协议不变。日志与 <code>/model_info.chunk_policy</code> 可核对 <code>local_context/tcp_crop_size_m</code>。</p>
+<p>TensorBoard 的 <code>mvt2</code> 仍显示关键目标分支的目标中心裁剪，并非新 chunk 的 TCP 局部输入；<code>train_visualization/chunk</code> 比较实际 chunk 预测和未来轨迹。闭环收益需固定初始化、预算、seed 与执行器，对照成功率、碰撞和抖动，不能由裁剪图或训练 loss 单独判定。</p>
 <h5 id="doc-docs-oht-training--预算与卡数">预算与卡数</h5>
 <table>
 <thead>
@@ -5496,6 +5538,7 @@ max_optimizer_steps: 2
 tensorboard --logdir &quot;$OUT/runs/train&quot; --port 6006
 </code></pre>
 <p>rank 0 写日志，通常是本地 microbatch/累积平均，不是跨卡均值；key 指标另按有效 key 归一化。<code>train_visualization</code> 控制 enabled/interval/save_png/tensorboard/output_dir，记录第 1 步和间隔步；可视化增加传输/写盘成本，可增大 interval。</p>
+<p>OHT 与 RLBench 共用 <code>finetune/RLBench/training_utils.py</code> 的终端进度和指标格式：tqdm 显示进度、耗时、预计剩余时间、主要 loss 和学习率；定期输出 <code>[train] epoch=... iter=... step=... lr=...</code> 明细。OHT 支持 <code>--loss-print-interval 10</code>（也接受 <code>--loss_print_interval</code>），设为 <code>0</code> 仅关闭明细行。chunk 的进度摘要将位置误差显示为 <code>pos_mm/prefix1_mm</code>，明细仍保留原指标名和米单位，小数值 loss 使用有效数字避免误显示为零。OHT 的 <code>metrics.jsonl</code> 仍逐 optimizer step 保存完整指标，TensorBoard 标量与 checkpoint 步数不变；epoch/step 编号沿用各自训练器的约定。</p>
 <p>Chunk 训练的 <code>train_visualization/mvt1</code>、<code>mvt2</code> 中，<code>Prediction heatmap</code> 与 <code>Policy / heatmap TCP</code> 使用相同热图底图；后一列额外绘制红叉（第一步 chunk 预测 TCP）和青圈（heatmap 解码的关键目标 TCP），均非实测 TCP 或 GT。两个点使用各 stage 的 <code>world_to_pixel</code> 投影，MVT2 已包含 refine 裁剪变换；图外点不绘制。启用 <code>save_png</code> 时同时保存对应 stage 的 NPZ，包含原始热图、投影矩阵、世界坐标及像素坐标，便于数值核对。实际未来轨迹对比仍看 <code>train_visualization/chunk</code>。</p>
 <p><code>mvt1/mvt2</code> 对应实际 coarse/refine；chunk 图红色预测、绿色有效未来、白色当前 TCP，采用世界坐标、相同时间和等比例轴。PNG/NPZ 含预测、标签、mask、状态和 sample ID；GT 只监督/绘图，不进入部署。flow 复用观测 memory 做 eval/no-grad 独立部署采样，不重跑 VLM。</p>
 <p>Chunk 轨迹图默认将同一帧多相机 RGB/世界点云投影为 XY/XZ/YZ 彩色场景背景，使用浅色网格，背景与轨迹共用坐标与比例。背景最多确定性采样 24,000 点，视窗围绕有效轨迹与当前 TCP 保留局部上下文；远处场景不改变轨迹比例。没有有效点云时显示浅色网格。训练、离线评估及在线 chunk 图均使用该显示，NPZ 同时保存 <code>scene_points</code> / <code>scene_colors</code>；现有 replay 和 checkpoint 可继续使用，重启训练/评估/服务后新生成的图片生效，旧 PNG 不自动更新。</p>
@@ -5567,6 +5610,17 @@ python -u -m finetune.OHT.eval open-loop \
 0.267 秒，短片段位置误差小不能单独证明任务会持续推进；应同时查看前 H 项误差、运动方向及
 保持当前 TCP 的对照。离线准确而在线来回摆动时，优先核对同状态下的 RGB-D/本体输入、实际跟踪
 及相邻 chunk 的同时间预测变化。<a href="#doc-docs-oht-runtime--v4-chunk">可选时间对齐融合</a> 用于减轻重规划抖动，不能替代这些核对。</p>
+<h5 id="doc-docs-oht-training--paligemma-图像-token-索引报错">PaliGemma 图像 token 索引报错</h5>
+<p>若日志出现 <code>IndexKernel.cu:93 index out of bounds</code>，随后堆栈停在 PaliGemma 的
+<code>inputs_embeds[special_image_mask]</code>，不能由异步 CUDA 堆栈直接判定是 loss、TCP 裁剪或该行导致。
+当前高效 forward 改为先校验词表 ID、每个样本的图像 token 数量、padding 和图像有限性，
+再按一维 token 位置合并整行图像特征，绕过上游展开为 <code>[B,L,D]</code> 的布尔索引计数。
+图像编码、projector、缩放、语言模型和最终 hidden state 路径保持一致；不裁剪非法 ID、不跳过样本。
+联合训练的 key 分支异常附带本批实际参与监督的 sample ID。</p>
+<p>修改不改变参数或数据 schema，原 V4 replay、配置和兼容 checkpoint 可继续使用。
+小型真实 PaliGemma 的多视图、padding、梯度及 gradient checkpointing 等价测试在 CPU 通过；
+原多卡 CUDA 崩溃是否消除仍需重跑验证。若仍报错，用 <code>CUDA_LAUNCH_BLOCKING=1</code> 重跑定位最先失败的操作，
+并保留新日志中的 sample ID；不要在已触发 device assert 的进程中继续训练。</p>
 <h5 id="doc-docs-oht-training--本地验证">本地验证</h5>
 <p>按变化范围选测试；本次文档合并没有重跑 GPU 或历史整组测试。动作、归一化和状态回归入口：</p>
 <pre><code class="language-bash">python -m pytest -q \
@@ -5700,7 +5754,7 @@ agent:
 </code></pre>
 <p>相对继承路径按该 YAML 目录解析。向量模式必须关闭全局 transform_augmentation；action 的 hidden_dim 默认 256，translation/rotation/joint scale 默认 1，auxiliary_translation_weight 默认 1 且需大于 0。这些 scale 是训练归一化，输出还原物理单位，不是控制器 gain。adapter_only 时新动作头仍训练。</p>
 <p>checkpoint 保存完整动作配置，strict load/resume 拒绝不匹配；显式 init 可迁移骨干并在动作设置改变时重建回归头，必须重训。不能只改 EEF 配置就部署为 joint；预算/卡数/RNG 限制沿用<a href="#doc-docs-oht-training--初始化与续训">初始化与续训</a>。完整 CUDA/IsaacLab 四模式仍需现场验收。</p>
-</div><details class="doc-source"><summary>来源与维护</summary><p class="doc-provenance text-small">docs/oht/training.md · SHA-256：7cc48b9c5957</p></details></article>
+</div><details class="doc-source"><summary>来源与维护</summary><p class="doc-provenance text-small">docs/oht/training.md · SHA-256：ded994362013</p></details></article>
 </section>
 <section class="book-part" id="book-part-4"><h2>4 / 评估、部署与执行</h2><a class="text-small" href="#handbook-home">↑ 全书目录</a>
 <article class="book-document" id="doc-docs-guides-evaluation"><header><h3>Benchmark 闭环评估</h3><p class="doc-introduction">RLBench、COLOSSEUM 和 GemBench 的评估入口；对象条件策略的诊断与统计细节见对象条件策略专节。</p></header><nav class="doc-toc" aria-label="Benchmark 闭环评估的章节"><ul><li><a href="#doc-docs-guides-evaluation--rlbench">RLBench</a></li><li><a href="#doc-docs-guides-evaluation--colosseum">COLOSSEUM</a></li><li><a href="#doc-docs-guides-evaluation--gembench">GemBench</a></li></ul></nav><div class="doc-body"><blockquote>
@@ -7602,7 +7656,7 @@ test_oht_waypoint_executor 和 test_oht_policy_initialization；本页不将历�
 </div><details class="doc-source"><summary>来源与维护</summary><p class="doc-provenance text-small">docs/experiments/results.md · SHA-256：b8c24c690e67</p></details></article>
 </section>
 <section class="book-part" id="book-part-7"><h2>7 / 代码与验证索引</h2><a class="text-small" href="#handbook-home">↑ 全书目录</a>
-<article class="book-document" id="doc-docs-reference-code-map"><header><h3 id="doc-docs-reference-code-map--项目审查与代码索引">函数、配置与验证入口</h3><p class="doc-introduction">把概念映射回代码，并集中查看当前运行限制和已知证据边界。</p></header><nav class="doc-toc" aria-label="函数、配置与验证入口的章节"><ul><li><a href="#doc-docs-reference-code-map--semantic-gt-数据流">Semantic-GT 数据流</a></li><li><a href="#doc-docs-reference-code-map--policy-数据流">Policy 数据流</a></li><li><a href="#doc-docs-reference-code-map--配置入口">配置入口</a></li><li><a href="#doc-docs-reference-code-map--oht-数据连续轨迹与部署">OHT 数据、连续轨迹与部署</a></li><li><a href="#doc-docs-reference-code-map--尚未实现的代码落点">尚未实现的代码落点</a></li><li><a href="#doc-docs-reference-code-map--当前运行限制">当前运行限制</a></li><li><a href="#doc-docs-reference-code-map--验证入口">验证入口</a></li><li><a href="#doc-docs-reference-code-map--历史项目审查2026-09-29">历史项目审查（2026-09-29）</a></li></ul></nav><div class="doc-body">
+<article class="book-document" id="doc-docs-reference-code-map"><header><h3 id="doc-docs-reference-code-map--项目审查与代码索引">函数、配置与验证入口</h3><p class="doc-introduction">把概念映射回代码，并集中查看当前运行限制和已知证据边界。</p></header><nav class="doc-toc" aria-label="函数、配置与验证入口的章节"><ul><li><a href="#doc-docs-reference-code-map--semantic-gt-数据流">Semantic-GT 数据流</a></li><li><a href="#doc-docs-reference-code-map--policy-数据流">Policy 数据流</a></li><li><a href="#doc-docs-reference-code-map--共用几何基础层">共用几何基础层</a></li><li><a href="#doc-docs-reference-code-map--配置入口">配置入口</a></li><li><a href="#doc-docs-reference-code-map--oht-数据连续轨迹与部署">OHT 数据、连续轨迹与部署</a></li><li><a href="#doc-docs-reference-code-map--尚未实现的代码落点">尚未实现的代码落点</a></li><li><a href="#doc-docs-reference-code-map--当前运行限制">当前运行限制</a></li><li><a href="#doc-docs-reference-code-map--验证入口">验证入口</a></li><li><a href="#doc-docs-reference-code-map--历史项目审查2026-09-29">历史项目审查（2026-09-29）</a></li></ul></nav><div class="doc-body">
 <blockquote>
 <p>2026-10-29 按代码入口核对。本页维护函数索引、配置入口与当前运行限制；操作命令见各指南。对象条件策略、OHT 单关键点与 V4 chunk 分别选择数据和配置，验证结果不能互用。</p>
 </blockquote>
@@ -7735,6 +7789,12 @@ test_oht_waypoint_executor 和 test_oht_policy_initialization；本页不将历�
 </tr>
 </tbody>
 </table>
+<h4 id="doc-docs-reference-code-map--共用几何基础层">共用几何基础层</h4>
+<p>几何基础操作统一位于 <a href="../finetune/bridgevla/geometry/__init__.py">bridgevla/geometry</a>：
+<a href="../finetune/bridgevla/geometry/numpy_ops.py">numpy_ops.py</a> 供 OHT 数据/运行时与精修缓存校验使用；
+<a href="../finetune/bridgevla/geometry/torch_ops.py">torch_ops.py</a> 供 OHT chunk 与局部精修训练使用。
+OHT 原 <code>data.geometry</code> 和 chunk 旋转函数导入入口保留；公共层不包含策略参数或序列语义。
+共用范围及坐标/损失边界见<a href="#doc-docs-design-local-geometry-refinement--与-oht-action-chunk-共用的模块">局部精修设计</a>。</p>
 <h4 id="doc-docs-reference-code-map--配置入口">配置入口</h4>
 <p>均位于 <a href="../finetune/RLBench/configs">finetune/RLBench/configs</a>。</p>
 <table>
@@ -7948,7 +8008,7 @@ resume 签名对 checkpoint 使用 path/size/mtime，对 raw data 使用目录�
 </table>
 <h4 id="doc-docs-reference-code-map--历史项目审查2026-09-29">历史项目审查（2026-09-29）</h4>
 <p>早期审查覆盖 first-party launcher、角色一致性与评估口径；后续新增的 OHT、soft coarse、refine masks 已反映在上面的当前索引。旧测试数量不作为当前验收结果重复维护；OHT 已确认配置与历史验证记录见 <a href="#doc-docs-oht-training--已确认基线与交接">已确认基线与交接</a>。</p>
-</div><details class="doc-source"><summary>来源与维护</summary><p class="doc-provenance text-small">docs/reference/code-map.md · SHA-256：f3b760f41472</p></details></article>
+</div><details class="doc-source"><summary>来源与维护</summary><p class="doc-provenance text-small">docs/reference/code-map.md · SHA-256：21d132aecd47</p></details></article>
 </section>
 <section class="book-part" id="book-part-8"><h2>8 / 附录：入口说明与快速开始</h2><a class="text-small" href="#handbook-home">↑ 全书目录</a>
 <article class="book-document" id="doc-readme"><header><h3 id="doc-readme--bridgevla-input-output-alignment-for-efficient-3d-manipulation-learning-with-vision-language-models">项目概览与快速开始</h3><p class="doc-introduction">原项目概述、网络图、快速运行入口和引用信息，作为全书附录保留。</p></header><nav class="doc-toc" aria-label="项目概览与快速开始的章节"><ul><li><a href="#doc-readme---model-overview">📋 Model Overview</a></li><li><a href="#doc-readme--current-status">Current Status</a></li><li><a href="#doc-readme--快速开始">快速开始</a></li><li><a href="#doc-readme--文档导航">文档导航</a></li><li><a href="#doc-readme--实验结果">实验结果</a></li><li><a href="#doc-readme---acknowledgement">🙏 Acknowledgement</a></li><li><a href="#doc-readme--️-contact">✉️ Contact</a></li><li><a href="#doc-readme---citation">📝 Citation</a></li></ul></nav><div class="doc-body"><div align="center">
@@ -8270,6 +8330,10 @@ prediction 和 internal slots 才是无 Oracle 的部署路线。研究设计文
 <td>方法依据、监督前提与适用边界</td>
 </tr>
 <tr>
+<td><a href="#doc-docs-design-local-geometry-refinement">局部几何动作精修原型</a></td>
+<td>观测证据、离线缓存契约、合成验证与真实实验准入</td>
+</tr>
+<tr>
 <td><a href="#doc-docs-experiments-results">结果与发布记录</a></td>
 <td>原始实验表与历史记录</td>
 </tr>
@@ -8280,7 +8344,215 @@ prediction 和 internal slots 才是无 Oracle 的部署路线。研究设计文
 <h4 id="doc-docs-readme--命令约定">命令约定</h4>
 <p>运行示例默认使用 Linux / Bash，从仓库根目录或指定目录执行。新终端需重新设置示例变量，并替换机器路径；带 <code>cd</code> 的独立示例从仓库根目录开始。各文档按主题维护一份命令，避免复制后产生分歧。</p>
 <p>仓库根目录运行 <code>python tools/check_docs.py</code> 可离线检查本地链接与章节锚点；它不执行示例或访问外部网站。</p>
-</div><details class="doc-source"><summary>来源与维护</summary><p class="doc-provenance text-small">docs/README.md · SHA-256：ee3621da40bb</p></details></article>
+</div><details class="doc-source"><summary>来源与维护</summary><p class="doc-provenance text-small">docs/README.md · SHA-256：04508337e9ae</p></details></article>
+</section>
+<section class="book-part" id="book-part-9"><h2>9 / 其他文档</h2><a class="text-small" href="#handbook-home">↑ 全书目录</a>
+<article class="book-document" id="doc-docs-design-local-geometry-refinement"><header><h3 id="doc-docs-design-local-geometry-refinement--观测约束的局部几何动作精修">观测约束的局部几何动作精修</h3><p class="doc-introduction"></p></header><nav class="doc-toc" aria-label="观测约束的局部几何动作精修的章节"><ul><li><a href="#doc-docs-design-local-geometry-refinement--研究问题与当前交付">研究问题与当前交付</a></li><li><a href="#doc-docs-design-local-geometry-refinement--与-oht-action-chunk-共用的模块">与 OHT action chunk 共用的模块</a></li><li><a href="#doc-docs-design-local-geometry-refinement--几何与动作定义">几何与动作定义</a></li><li><a href="#doc-docs-design-local-geometry-refinement--缓存契约与防泄漏">缓存契约与防泄漏</a></li><li><a href="#doc-docs-design-local-geometry-refinement--可运行的合成验证">可运行的合成验证</a></li><li><a href="#doc-docs-design-local-geometry-refinement--本机软件验证记录">本机软件验证记录</a></li><li><a href="#doc-docs-design-local-geometry-refinement--真实实验顺序与退出条件">真实实验顺序与退出条件</a></li></ul></nav><div class="doc-body">
+<h4 id="doc-docs-design-local-geometry-refinement--研究问题与当前交付">研究问题与当前交付</h4>
+<p>目标是检验：原始 RGB-D 已观测到、但投影表示未充分保留的局部几何，是否能改善下一关键帧动作目标。基准模型完整保留原有 coarse-to-fine 预测。新分支以候选夹爪位姿定义交互区域，用几何证据预测小幅位姿修正。</p>
+<p>目前提供独立的 CPU 离线原型：几何场构建、零初始化精修头、缓存训练和未使用 episode 上的位姿误差评估。它未接入现有在线动作路径，未训练机器人数据，也未完成 CUDA/模拟器验收。合成缓存只用于验证软件链路，不能作为任务成功率证据。现有对象条件策略与 OHT chunk 的配置及动作路径不因本原型改变。</p>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>职责</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="../finetune/bridgevla/models/local_geometry.py">local_geometry.py</a></td>
+<td>多视角米制深度投影、局部几何证据与已知区域比例</td>
+</tr>
+<tr>
+<td><a href="../finetune/bridgevla/models/local_geometry_refiner.py">local_geometry_refiner.py</a></td>
+<td>有界局部平移/旋转修正，位姿损失和误差指标</td>
+</tr>
+<tr>
+<td><a href="../tools/train_local_geometry_refiner.py">train_local_geometry_refiner.py</a></td>
+<td>显式 NPZ 缓存验证、合成样例、训练和独立测试集评估</td>
+</tr>
+</tbody>
+</table>
+<h4 id="doc-docs-design-local-geometry-refinement--与-oht-action-chunk-共用的模块">与 OHT action chunk 共用的模块</h4>
+<p>公共几何层位于 <a href="../finetune/bridgevla/geometry/__init__.py">bridgevla/geometry</a>，不依赖任何数据集 schema 或策略配置。</p>
+<table>
+<thead>
+<tr>
+<th>共用文件</th>
+<th>使用方与职责</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="../finetune/bridgevla/geometry/numpy_ops.py">numpy_ops.py</a></td>
+<td>OHT 数据与运行时、精修缓存入口共用刚体/内参校验、xyzw 四元数和深度几何基础操作；纯 NumPy 路径不加载 Torch</td>
+</tr>
+<tr>
+<td><a href="../finetune/bridgevla/geometry/torch_ops.py">torch_ops.py</a></td>
+<td>OHT chunk decoder、局部证据场与精修头共用坐标变换、四元数/6D 旋转、SO(3) 指数及旋转矩阵误差</td>
+</tr>
+</tbody>
+</table>
+<p>OHT 的 <code>data.geometry</code> 与 <code>chunk_model.quaternion_matrix/rotation_6d</code> 保留原导入入口，底层实现来自公共层。模型参数仍由原 decoder/refiner 持有；共用层只提供无参数运算。</p>
+<p>Torch 数学运算的热路径只检查形状、dtype 类型与 device 等元数据，有限性与刚体检查在显式 validator 或原模型边界执行。点变换遵循 Torch 原生类型提升和 autocast，支持 FP32 实测 TCP 与 BF16 网络输出共同参与运算；CPU BF16 回归覆盖该接口，GPU 性能仍需目标环境实测。</p>
+<p>调用层继续管理各自的坐标基准、有效掩码与损失尺度：OHT chunk 的测量 TCP 和本原型的预测候选夹爪是不同的局部坐标系。Spatial chunk 的 <code>delta_pose</code> 平移在初始 TCP 坐标系累计，旋转逐步右乘；精修器则修正单个动作目标。OHT 旋转 MSE 对九个矩阵元素取均值，精修旋转项按自己的尺度归一化，均由原损失入口定义。</p>
+<p>OHT 的同 z-buffer XYZ/coverage token 池化、世界轴 TCP crop 与本原型的深度证据网格分别构建。coverage 表示可见表面覆盖，证据网格的 known/free 表示射线观测支持，二者各有有效性契约。序列时间、padding、flow velocity loss 和 checkpoint 配置属于 action chunk 业务层。</p>
+<h4 id="doc-docs-design-local-geometry-refinement--几何与动作定义">几何与动作定义</h4>
+<p>所有位置单位为米。相机使用 OpenCV 光学轴：X 向右、Y 向下、Z 向前；像素中心坐标为整数，深度是相机 Z，而非径向距离。<code>camera_to_world</code> 为光学坐标到世界坐标的刚体变换，<code>candidate_pose</code> 为候选夹爪坐标到世界坐标的变换。</p>
+<p>网格中心位于候选夹爪附近，张量顺序为 <code>[B,C,D,H,W]</code>，后三轴分别对应局部 Z/Y/X。对每个体素，将世界点投回各原始相机，以最近邻采样深度，避免在深度边缘插值制造假表面。</p>
+<p>设深度差为 <code>delta = sampled_depth - camera_z</code>，阈值为 <code>tau</code>：</p>
+<ul>
+<li><code>delta &gt; tau</code>：该视角支持自由空间；</li>
+<li><code>abs(delta) &lt;= tau</code>：该视角支持近表面，不能据此推断完整实体内部；</li>
+<li><code>delta &lt; -tau</code>：在该表面后方，该视角没有提供该位置的几何证据；</li>
+<li>图外、相机后方、无效深度：未知。</li>
+</ul>
+<p>五通道固定为：归一化的已观测投影距离、近表面支持比例、自由空间支持比例、已知标记、自由/近表面混合标记。支持比例以相机总数为分母；投影距离只融合提供自由/近表面证据的视角；未知位置距离为零并且已知标记为零。混合标记只记录不同视角支持不一致，不直接判定为传感器错误。</p>
+<p>局部动作使用明确的解耦组合：</p>
+<pre><code class="language-text">p_final = p_candidate + R_candidate @ translation_local
+R_final = R_candidate @ Exp_SO3(rotation_vector)
+</code></pre>
+<p>局部平移和旋转向量分别限制模长；这不是把平移向量直接作为完整 SE(3) 指数的切空间平移。最后输出层零初始化，初始动作等于基准动作；完全没有已知几何的样本保持基准位姿。夹爪开合与原 collision flag 不由此原型重定义。</p>
+<p>训练损失对最终位姿使用平移 SmoothL1 与旋转矩阵差异，避免训练时直接对零误差执行不稳定的 <code>acos</code>。离线报告分别计算平移米制误差与旋转弧度误差。</p>
+<h4 id="doc-docs-design-local-geometry-refinement--缓存契约与防泄漏">缓存契约与防泄漏</h4>
+<p>输入为 <code>allow_pickle=False</code> 可读取的 NPZ，每个文件只包含一个明确的数据来源和冻结基准版本。相机标定/深度必须先与原始有序点云进行反投影核验，不能仅修改元数据就宣称已完成坐标转换。</p>
+<table>
+<thead>
+<tr>
+<th>字段</th>
+<th>形状或值</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>schema</code></td>
+<td>标量 Unicode：<code>local_geometry_refinement_v1</code></td>
+</tr>
+<tr>
+<td><code>source</code></td>
+<td>标量 Unicode：<code>synthetic</code>、<code>rlbench</code> 或 <code>oht</code></td>
+</tr>
+<tr>
+<td><code>baseline_id</code></td>
+<td>标量 Unicode，冻结基准权重及配置的可追溯标识</td>
+</tr>
+<tr>
+<td><code>camera_model</code></td>
+<td>标量 Unicode：<code>opencv_z_meters</code></td>
+</tr>
+<tr>
+<td><code>candidate_source</code></td>
+<td>真实缓存为 <code>policy_prediction</code>；合成缓存为 <code>synthetic_perturbation</code></td>
+</tr>
+<tr>
+<td><code>depth</code></td>
+<td>浮点 <code>[N,V,H,W]</code>，米制相机 Z；无效深度允许为 NaN/0</td>
+</tr>
+<tr>
+<td><code>intrinsics</code></td>
+<td>浮点 <code>[N,V,3,3]</code>，与 depth 尺寸、像素坐标一致</td>
+</tr>
+<tr>
+<td><code>camera_to_world</code></td>
+<td>浮点 <code>[N,V,4,4]</code></td>
+</tr>
+<tr>
+<td><code>candidate_pose</code></td>
+<td>浮点 <code>[N,4,4]</code>，冻结基准完整两阶段的世界系预测</td>
+</tr>
+<tr>
+<td><code>target_pose</code></td>
+<td>浮点 <code>[N,4,4]</code>，专家下一关键帧，仅用于损失/指标</td>
+</tr>
+<tr>
+<td><code>context</code></td>
+<td>浮点 <code>[N,C]</code>，同次观测与指令的冻结语义/状态特征</td>
+</tr>
+<tr>
+<td><code>episode_id</code></td>
+<td>Unicode <code>[N]</code>，包含数据集/任务/variation/demo，允许同 episode 多帧</td>
+</tr>
+<tr>
+<td><code>sample_id</code></td>
+<td>唯一 Unicode <code>[N]</code>，包含 episode 和当前帧身份</td>
+</tr>
+</tbody>
+</table>
+<p>训练、验证、测试按 episode 隔离，不能随机打散同一示范的帧。训练入口检查两份缓存的数据来源、基准标识和 context 维度一致，并拒绝 episode/sample 交叉；测试入口拒绝训练或验证用过的 episode 与 sample ID。元数据不能自动证明缓存内容无泄漏，真实导出仍需审查前向输入。</p>
+<p>本地 RLBench 对接有四个具体边界：</p>
+<ol>
+<li><a href="../finetune/RLBench/utils/dataset.py">dataset.py</a> 中 <code>gripper_pose</code> 保存的是<strong>专家下一关键帧</strong>。它只能转成 <code>target_pose</code>，不能用作裁剪中心或当前 TCP；局部中心必须来自冻结模型 <code>act()</code> 的预测。</li>
+<li>原 replay 的 <code>low_dim_state</code> 包含夹爪、双指关节与时间，不提供当前 TCP。需要当前末端位姿时，应导出独立的观测字段。</li>
+<li>离线 replay 保存 depth/K/外参，但在线 <a href="../finetune/bridgevla/libs/peract/helpers/utils.py">create_obs_config</a> 当前关闭深度。闭环接入前需启用并确认米制深度，或验证由有序点云回算相机 Z 的独立适配器。</li>
+<li><a href="../finetune/bridgevla/models/bridgevla_agent.py">bridgevla_agent.py</a> 的 SE(3) 增广只变换点云/标签。构建真实缓存时应使用一致的原始世界坐标，或同步变换全部相机/候选/标签，不能混用两套坐标。</li>
+</ol>
+<p>真实 replay 到该 NPZ 契约的自动导出器、在线 hook 和同预算 RGB-D 对照头尚未实现；需要可用权重与数据后再接入。实验缓存只读取用户明确生成的 NPZ，不自动扫描或反序列化旧 replay pickle。</p>
+<h4 id="doc-docs-design-local-geometry-refinement--可运行的合成验证">可运行的合成验证</h4>
+<p>以下从仓库根目录运行。Windows 当前环境可将 <code>python</code> 替换成 <code>.\.venv-oht\Scripts\python.exe</code>。示例仅验证 CPU 软件链路；三份缓存分别生成不同 episode，形状是单相机看到的凹陷圆盘。</p>
+<pre><code class="language-bash">python tools/train_local_geometry_refiner.py synthetic --output-dir tmp/local-geometry-pilot
+python tools/train_local_geometry_refiner.py train --train-cache tmp/local-geometry-pilot/train.npz --validation-cache tmp/local-geometry-pilot/validation.npz --output tmp/local-geometry-pilot/refiner.pt --epochs 10 --resolution 24
+python tools/train_local_geometry_refiner.py evaluate --cache tmp/local-geometry-pilot/test.npz --checkpoint tmp/local-geometry-pilot/refiner.pt
+</code></pre>
+<p>训练使用固定轮数，保存最后一轮；验证误差仅用于诊断。调整超参数后需要保持独立测试集。checkpoint 绑定几何参数、context 维度、来源、冻结基准标识和训练/验证 episode。默认拒绝覆盖已有缓存或 checkpoint，重跑请使用新的输出目录。</p>
+<pre><code class="language-bash">python -m pytest -q tests/test_local_geometry.py tests/test_local_geometry_refiner.py tests/test_local_geometry_pilot.py
+python tools/check_docs.py docs/design/local-geometry-refinement.md
+</code></pre>
+<h4 id="doc-docs-design-local-geometry-refinement--本机软件验证记录">本机软件验证记录</h4>
+<p>2026-11-05，Windows、Python 3.12.13、PyTorch 2.5.1 CPU。针对性测试为 <strong>55 passed、35 subtests passed</strong>，覆盖几何坐标、遮挡/未知、残差梯度与边界、缓存划分以及训练/保存/重载/测试链路。</p>
+<p>使用默认合成生成器的 train/validation/test 各 32/12/12 个样本，resolution=24、seed=0，训练 10 轮。未使用测试 episode 的离线位置误差如下；合成样例没有旋转误差，不能据此验证旋转修正效果。</p>
+<table>
+<thead>
+<tr>
+<th>合成测试指标</th>
+<th>候选位姿</th>
+<th>精修后</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>平均位置误差</td>
+<td>6.00 mm</td>
+<td>5.16 mm</td>
+</tr>
+<tr>
+<td>P90 位置误差</td>
+<td>8.71 mm</td>
+<td>9.05 mm</td>
+</tr>
+</tbody>
+</table>
+<p>平均值降低而尾部略有变差，所以本结果只证明软件链路可运行和局部头可学习，不支持鲁棒性或机器人成功率提升的结论。本地运行产物位于 <code>tmp/local-geometry-pilot-20261105/</code>，<code>run-summary.json</code> 保存完整离线指标；该临时目录不进入版本控制。</p>
+<h4 id="doc-docs-design-local-geometry-refinement--真实实验顺序与退出条件">真实实验顺序与退出条件</h4>
+<p>先抽查插孔、形状块入槽和杯架任务的失败帧，确认原始深度里存在可辨认的关键间隙，并把全局对象选错与局部位姿误差分开统计。随后使用同一冻结基准生成候选缓存。</p>
+<table>
+<thead>
+<tr>
+<th>对照</th>
+<th>要排除的解释</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>原始完整 BridgeVLA</td>
+<td>原有局部放大被人为删除</td>
+</tr>
+<tr>
+<td>同 ROI、相近参数量/算力的 RGB-D crop 精修头</td>
+<td>收益只是来自额外局部网络</td>
+</tr>
+<tr>
+<td>去掉已知/自由空间通道的局部几何精修头</td>
+<td>观测状态是否真的必要</td>
+</tr>
+<tr>
+<td>相同预算下更高分辨率的原有局部预测</td>
+<td>收益只是来自更高空间采样密度</td>
+</tr>
+</tbody>
+</table>
+<p>最终报告任务成功率、最终定位误差、非预期碰撞/卡滞和端到端延迟；同一任务初态、示范数与训练预算配对，使用多个训练 seed。离线位姿误差下降仅作为闭环准入证据。</p>
+<p>若同预算 RGB-D crop 等效，则该路线只支持工程改进；若只有理想深度有效，则优先处理传感器/标定；若精修只改善离线误差却不改善闭环，需检查分布偏移与执行器，而不是继续叠加重构网络。TSDF、局部坐标和残差头均不是单独的新贡献，论文需要建立观测状态保留与具体错误减少之间的证据。</p>
+</div><details class="doc-source"><summary>来源与维护</summary><p class="doc-provenance text-small">docs/design/local-geometry-refinement.md · SHA-256：ff1dc8d33861</p></details></article>
 </section>
 
       <footer class="book-footer"><p>本手册由仓库源文档自动生成。更新 Markdown 或图解源后运行 <code>python tools/build_docs_handbook.py</code>，用 <code>--check</code> 检查同步。命令、外链论文和历史测试记录被保留，不表示构建本页时执行或重新验证了它们。</p><a href="#handbook-home">回到开头 ↑</a></footer>
@@ -8403,5 +8675,5 @@ prediction 和 internal slots 才是无 Oracle 的部署路线。研究设计文
 })();
 </script>
 
-<script type="application/json" id="book-source-manifest">[{"source": "docs/design/role-relation-prior.md", "id": "doc-docs-design-role-relation-prior", "sha256": "39fe889916d8b44feb7c43a1283b6d8ea230262432e415795d5d3469f77e7a5a"}, {"source": "docs/guides/replay.md", "id": "doc-docs-guides-replay", "sha256": "d48a1fc97615472cd72bec9ab8d885ace93eed715da3ff3990a3a91fdfc60f47"}, {"source": "docs/guides/oracle-replay.md", "id": "doc-docs-guides-oracle-replay", "sha256": "842cafb030c3eb9a0ac8c206e6731935dea08c212d25392edb22215b9247731c"}, {"source": "docs/guides/semantic-gt.md", "id": "doc-docs-guides-semantic-gt", "sha256": "dd0d68b21a56fc7199cae4fd85fb83adc7142533e4a95900a254957871a0f5e7"}, {"source": "docs/oht/data.md", "id": "doc-docs-oht-data", "sha256": "598dc2a8f4fa62a3842ca9dee30a8a4de86e0d7ebb25fb9264497cb23b349f09"}, {"source": "docs/guides/installation.md", "id": "doc-docs-guides-installation", "sha256": "d92f5023ee6d51a7401e7cd1bce861840f76077842d4e47ac770632771c52ee7"}, {"source": "docs/guides/training.md", "id": "doc-docs-guides-training", "sha256": "c9eb30c6b87f19d33533b65446258db97b58ab1e9b2d578431e33db8c0404114"}, {"source": "docs/guides/object-conditioning.md", "id": "doc-docs-guides-object-conditioning", "sha256": "e99079ffad47e1aef37357ca6fc9d48acf1a7c255aef5dd94d8e4c21780d16c3"}, {"source": "docs/oht/training.md", "id": "doc-docs-oht-training", "sha256": "7cc48b9c5957c7f2c628f07ce8e6e401648393bd026869910fe818510c514644"}, {"source": "docs/guides/evaluation.md", "id": "doc-docs-guides-evaluation", "sha256": "38bf662bb3e1914cb834965820bf31715e2429cf3f9327f6a86b6aa586833aee"}, {"source": "docs/oht/runtime.md", "id": "doc-docs-oht-runtime", "sha256": "e32a7b5de8ea95288bd8fe31219d55b409e9e3997baaf5c56e518ba61fbfc1a1"}, {"source": "docs/research/object-centric-policy-memory.md", "id": "doc-docs-research-object-centric-policy-memory", "sha256": "a9c2ebc5db0ddc90c05d9a81796573ac6e124bf50e957dc96232cc34f8197808"}, {"source": "docs/experiments/results.md", "id": "doc-docs-experiments-results", "sha256": "b8c24c690e67e406fed54fe51c2a217d23b32ca6cce3c357d92c68bf9a71ae3d"}, {"source": "docs/reference/code-map.md", "id": "doc-docs-reference-code-map", "sha256": "f3b760f41472f286758c116e572e882b6ee8b6405c51a28e112bd8d11c8cb005"}, {"source": "README.md", "id": "doc-readme", "sha256": "0d899c2ae6a9d8f73647ccc33a61b4e0d89bede90b5899ce3995ca839cdd3391"}, {"source": "finetune/OHT/README.md", "id": "doc-finetune-oht-readme", "sha256": "a6472eadf30576a5f37797f94e69a016c35b45c0f317c63334c2eaf73321d5ad"}, {"source": "docs/README.md", "id": "doc-docs-readme", "sha256": "ee3621da40bbad52abb9764a91eba04842257ce7b983900f92b0a9601d80e72e"}, {"source": "docs/assets/algorithm-overview.fragment.html", "sha256": "d229a285623a00a9701b1a125127772cef70658c6827b49b4224fd86ae48ecb4"}]</script><noscript>所有 Markdown 正文均可直接阅读；节点交互和动态生成的算法逐步说明需要启用 JavaScript。</noscript>
+<script type="application/json" id="book-source-manifest">[{"source": "docs/design/role-relation-prior.md", "id": "doc-docs-design-role-relation-prior", "sha256": "39fe889916d8b44feb7c43a1283b6d8ea230262432e415795d5d3469f77e7a5a"}, {"source": "docs/guides/replay.md", "id": "doc-docs-guides-replay", "sha256": "d48a1fc97615472cd72bec9ab8d885ace93eed715da3ff3990a3a91fdfc60f47"}, {"source": "docs/guides/oracle-replay.md", "id": "doc-docs-guides-oracle-replay", "sha256": "842cafb030c3eb9a0ac8c206e6731935dea08c212d25392edb22215b9247731c"}, {"source": "docs/guides/semantic-gt.md", "id": "doc-docs-guides-semantic-gt", "sha256": "dd0d68b21a56fc7199cae4fd85fb83adc7142533e4a95900a254957871a0f5e7"}, {"source": "docs/oht/data.md", "id": "doc-docs-oht-data", "sha256": "598dc2a8f4fa62a3842ca9dee30a8a4de86e0d7ebb25fb9264497cb23b349f09"}, {"source": "docs/guides/installation.md", "id": "doc-docs-guides-installation", "sha256": "d92f5023ee6d51a7401e7cd1bce861840f76077842d4e47ac770632771c52ee7"}, {"source": "docs/guides/training.md", "id": "doc-docs-guides-training", "sha256": "ff7924c495de69335376572772afa3362fd0610168b3fbab1890495a47c324e0"}, {"source": "docs/guides/object-conditioning.md", "id": "doc-docs-guides-object-conditioning", "sha256": "e99079ffad47e1aef37357ca6fc9d48acf1a7c255aef5dd94d8e4c21780d16c3"}, {"source": "docs/oht/training.md", "id": "doc-docs-oht-training", "sha256": "ded99436201311210c2c5505db6acf179a8b5cc2c7dbdc112c3d34e49e7d283e"}, {"source": "docs/guides/evaluation.md", "id": "doc-docs-guides-evaluation", "sha256": "38bf662bb3e1914cb834965820bf31715e2429cf3f9327f6a86b6aa586833aee"}, {"source": "docs/oht/runtime.md", "id": "doc-docs-oht-runtime", "sha256": "e32a7b5de8ea95288bd8fe31219d55b409e9e3997baaf5c56e518ba61fbfc1a1"}, {"source": "docs/research/object-centric-policy-memory.md", "id": "doc-docs-research-object-centric-policy-memory", "sha256": "a9c2ebc5db0ddc90c05d9a81796573ac6e124bf50e957dc96232cc34f8197808"}, {"source": "docs/experiments/results.md", "id": "doc-docs-experiments-results", "sha256": "b8c24c690e67e406fed54fe51c2a217d23b32ca6cce3c357d92c68bf9a71ae3d"}, {"source": "docs/reference/code-map.md", "id": "doc-docs-reference-code-map", "sha256": "21d132aecd477256aaa5ec0be006ee708c1c78c2f84840ae60b69e4f18315331"}, {"source": "README.md", "id": "doc-readme", "sha256": "0d899c2ae6a9d8f73647ccc33a61b4e0d89bede90b5899ce3995ca839cdd3391"}, {"source": "finetune/OHT/README.md", "id": "doc-finetune-oht-readme", "sha256": "a6472eadf30576a5f37797f94e69a016c35b45c0f317c63334c2eaf73321d5ad"}, {"source": "docs/README.md", "id": "doc-docs-readme", "sha256": "04508337e9ae680e29fff1ac820487a5f589aabe550e48020c61c5cbac7d045e"}, {"source": "docs/design/local-geometry-refinement.md", "id": "doc-docs-design-local-geometry-refinement", "sha256": "ff1dc8d33861925933f31c7a66ca644eca928c25fa9f1dc23dbee1daf8ef62fb"}, {"source": "docs/assets/algorithm-overview.fragment.html", "sha256": "d229a285623a00a9701b1a125127772cef70658c6827b49b4224fd86ae48ecb4"}]</script><noscript>所有 Markdown 正文均可直接阅读；节点交互和动态生成的算法逐步说明需要启用 JavaScript。</noscript>
 </body></html>

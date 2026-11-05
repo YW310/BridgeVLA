@@ -50,6 +50,14 @@ RVTAgent.update/act
 | [eval_reporting.py](../../finetune/RLBench/utils/eval_reporting.py) | `evaluation_result()`、`build_eval_run_signature()`；完成数校验、任务汇总与续跑签名 |
 | [compare_paired_success.py](../../tools/compare_paired_success.py) | `load_episodes()`、`compare()`；三训练 seed 起的配对 bootstrap，预定 episode 完整性仍需先验收 |
 
+## 共用几何基础层
+
+几何基础操作统一位于 [bridgevla/geometry](../../finetune/bridgevla/geometry/__init__.py)：
+[numpy_ops.py](../../finetune/bridgevla/geometry/numpy_ops.py) 供 OHT 数据/运行时与精修缓存校验使用；
+[torch_ops.py](../../finetune/bridgevla/geometry/torch_ops.py) 供 OHT chunk 与局部精修训练使用。
+OHT 原 `data.geometry` 和 chunk 旋转函数导入入口保留；公共层不包含策略参数或序列语义。
+共用范围及坐标/损失边界见[局部精修设计](../design/local-geometry-refinement.md#与-oht-action-chunk-共用的模块)。
+
 ## 配置入口
 
 均位于 [finetune/RLBench/configs](../../finetune/RLBench/configs)。

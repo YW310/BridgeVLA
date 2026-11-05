@@ -45,6 +45,7 @@ OHT 的数据指南、模型设计、部署说明和交接记录统一合并为�
 | [统一设计与研究方向](design/role-relation-prior.md) | 对象条件策略当前架构、OHT 研究动机与候选方向、后续 memory / 真机规划 |
 | [代码索引](reference/code-map.md) | 对应函数、配置入口、当前运行限制与验证入口 |
 | [论文调研](research/object-centric-policy-memory.md) | 方法依据、监督前提与适用边界 |
+| [局部几何动作精修原型](design/local-geometry-refinement.md) | 观测证据、离线缓存契约、合成验证与真实实验准入 |
 | [结果与发布记录](experiments/results.md) | 原始实验表与历史记录 |
 
 <a id="先分清实现与计划"></a>

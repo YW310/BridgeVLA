@@ -13,6 +13,7 @@ from torch.nn import functional as F
 
 from .chunk_model import ChunkDecoder, quaternion_matrix, rotation_6d
 from .chunk_config import chunk_scale
+from ..bridgevla.geometry.torch_ops import local_to_world_points, world_to_local_points
 
 LOG = logging.getLogger(__name__)
 
@@ -26,7 +27,7 @@ def time_features(value, width=32):
 
 def to_local(points, state):
     rotation = quaternion_matrix(state[:, 3:7])
-    return torch.einsum('bij,bnj->bni', rotation.transpose(-1, -2), points - state[:, None, :3])
+    return world_to_local_points(points, state[:, :3], rotation)
 
 
 class RelativeAttention(nn.Module):
@@ -223,7 +224,8 @@ class SpatialChunkDecoder(nn.Module):
     def decode(self, pose, grip, state):
         rotation = quaternion_matrix(state[:, 3:7])
         local_position = pose[..., :3].cumsum(1) if self.delta_pose else pose[..., :3]
-        position = torch.einsum('bij,bkj->bki', rotation, local_position * chunk_scale(self.settings, 'action_position_scale'))
+        position = local_to_world_points(
+            local_position * chunk_scale(self.settings, 'action_position_scale'), state[:, :3], rotation)
         relative_rotation = rotation_6d(pose[..., 3:9])
         if self.delta_pose:
             # Compose SO(3) increments; adding Euler angles/rotation vectors
@@ -235,7 +237,7 @@ class SpatialChunkDecoder(nn.Module):
             world_rotation = torch.stack(rotations, 1)
         else:
             world_rotation = rotation[:, None] @ relative_rotation
-        return position + state[:, None, :3], world_rotation, grip
+        return position, world_rotation, grip
 
     def encode_target(self, target, state):
         rotations = quaternion_matrix(target[..., 3:7])
