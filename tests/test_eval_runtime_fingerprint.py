@@ -25,6 +25,7 @@ class EvalRuntimeFingerprintTest(unittest.TestCase):
     def test_object_conditioning_and_policy_modules_are_covered(self):
         listed = set(_constant('_FINETUNE_RUNTIME_FILES'))
         required = {'bridgevla/models/oracle_prior.py', 'bridgevla/models/slot_guided_geometry.py',
+                    'bridgevla/models/coarse_slot_export.py',
                     'bridgevla/models/object_conditioning.py',
                     'bridgevla/models/cross_scale_roles.py', 'bridgevla/models/role_separation.py',
                     'bridgevla/mvt/mvt.py', 'bridgevla/mvt/mvt_single.py'}

@@ -146,6 +146,12 @@ def load_agent(
     else:
         exp_cfg.merge_from_file(os.path.join(model_folder, "exp_cfg.yaml"))
 
+    if (exp_cfg.rvt.enable_slot_guided_sam3
+            and exp_cfg.rvt.slot_guided_sam3_execution_mode == 'offline_experiment'):
+        raise ValueError(
+            'Use slot_guided_sam3_offline.py for offline_experiment snapshots; '
+            'this profile cannot launch an RLBench control rollout.')
+
     # NOTE: to not use place_with_mean in evaluation
     # needed for rvt-1 but not rvt-2
     old_place_with_mean = exp_cfg.rvt.place_with_mean
@@ -972,6 +978,7 @@ _FINETUNE_RUNTIME_FILES = (
     "bridgevla/models/bridgevla_agent.py",
     "bridgevla/models/oracle_prior.py",
     "bridgevla/models/slot_guided_geometry.py",
+    "bridgevla/models/coarse_slot_export.py",
     "bridgevla/models/object_conditioning.py",
     "bridgevla/models/cross_scale_roles.py",
     "bridgevla/models/role_separation.py",

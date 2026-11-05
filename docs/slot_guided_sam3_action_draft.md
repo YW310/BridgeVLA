@@ -1,6 +1,12 @@
-# Slot-guided SAM3 action conditioning: PR4 software draft
+# Slot-guided SAM3 action geometry contract
 
-This branch implements an inference-only software contract. Real offline A/B/C
+The former PR4 draft now has a runnable [offline snapshot command and enabled
+configuration](slot_guided_sam3_offline.md). The old `*_draft.yaml` is retained
+as a disabled compatibility profile. This document describes the reviewed
+activation contract; offline experiments use a separate `OfflineGeometry`
+scope to collect predictions without claiming acceptance or running a controller.
+
+The reviewed route implements an inference-only software contract. Real offline A/B/C
 experiments have not passed, so deployment/activation is not authorized by these
 tests. No robot success, mask quality, action-error, GPU-memory or latency
 improvement is claimed.
@@ -107,9 +113,9 @@ print("draft config valid; external SAM3 conditioning disabled")
 & .\.venv-oht\Scripts\python.exe -m pytest tests/test_slot_guided_action_draft.py tests/test_slot_guided_draft_config.py tests/test_eval_runtime_fingerprint.py -q
 ```
 
-`finetune/RLBench/eval.py` and `eval.sh` load the false flag through the existing
+For the legacy disabled profile, `finetune/RLBench/eval.py` and `eval.sh` load the false flag through the existing
 `exp_cfg.rvt` agent arguments. They do not load PR3 payloads or acceptance reports;
-there is no enabled Slot-guided SAM3 CLI launcher in this draft. Their existing
+the enabled snapshot CLI is documented separately. Their existing
 RLBench commands require the simulator/GPU environment and evaluate the saved
 baseline/role-query path while the flag is false. See the
 [RLBench evaluation guide](guides/evaluation.md#rlbench) for that separate runtime.
@@ -244,7 +250,9 @@ has produced artifacts, set `SLOT_GUIDED_PR3_ARTIFACT` to its
 no variable, that external-artifact test is explicitly skipped. Synthetic output
 loads as geometry and remains rejected for real action authorization.
 
-No actual Bridge checkpoint, PaliGemma inference, GPU renderer, SAM3 prediction,
-robot action or RLBench rollout was executed. Those checks, trusted current-frame
-importer/checkpoint binding, calibrated real snapshots, real reviewed acceptance
-and paired task evaluation remain required before runtime activation.
+The subsequent [offline implementation](slot_guided_sam3_offline.md) provides
+the single-frame importer, actual coarse export, checkpoint binding and A/B/C
+action-prediction command. No actual Bridge checkpoint, PaliGemma inference,
+GPU renderer, SAM3 prediction, robot action or RLBench rollout has been measured
+on this workstation. Calibrated real snapshots, real model runs, reviewed
+acceptance and paired task evaluation remain required before reviewed activation.

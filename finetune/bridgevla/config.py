@@ -118,8 +118,9 @@ _C.peract.transform_augmentation_rpy = [0.0, 0.0, 20.0]
 
 # arguments present in only rvt and not peract
 _C.rvt = CN()
-# PR4 draft: activation also requires a reviewed REAL offline acceptance report.
+# Default off. Unreviewed experiments use the separate offline snapshot runner.
 _C.rvt.enable_slot_guided_sam3 = False
+_C.rvt.slot_guided_sam3_execution_mode = 'reviewed'
 _C.rvt.gt_hm_sigma = 1.5
 _C.rvt.img_aug = 0.1
 _C.rvt.place_with_mean = True

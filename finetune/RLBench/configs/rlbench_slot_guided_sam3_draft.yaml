@@ -1,4 +1,6 @@
-# PR4 software draft: same architecture/recipe as rlbench_o2_role_queries.yaml.
+# Legacy disabled compatibility profile. New experiments use
+# rlbench_slot_guided_sam3_offline.yaml + slot_guided_sam3_offline.py.
+# Same architecture/recipe as rlbench_o2_role_queries.yaml.
 # External SAM3 conditioning is OFF. This is not an activation/training launcher.
 # Use the matching saved checkpoint configuration; do not change predictor type.
 exp_id: rlbench_slot_guided_sam3_draft

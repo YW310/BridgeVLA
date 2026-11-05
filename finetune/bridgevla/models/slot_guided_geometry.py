@@ -1,4 +1,4 @@
-"""Detached PR3 geometry for the default-disabled, inference-only PR4 draft.
+"""Detached PR3 geometry for reviewed activation and offline action experiments.
 
 No TASK imports, model weights, learnable parameters, or episode readers.
 The acceptance report is an explicit trusted reviewer attestation, not a claim
@@ -215,15 +215,7 @@ def validate_real_acceptance(report, sources, calibrations):
         raise ValueError('review timestamp must be explicit and timezone-aware') from exc
     if report.get('sources') != sources:
         raise ValueError('acceptance source/checkpoint mismatch')
-    if set(sources) != {'bridge_git_sha', 'bridge_checkpoint_sha256', 'guidance_git_sha',
-                        'guidance_checkpoint_sha256', 'sam3_checkpoint_sha256'}:
-        raise ValueError('acceptance source/checkpoint fields are incomplete')
-    for key, value in sources.items():
-        if key.endswith('sha256'):
-            _digest(value, key)
-        elif key.endswith('git_sha') and (not isinstance(value, str) or len(value) not in (40, 64)
-                                         or any(c not in '0123456789abcdef' for c in value)):
-            raise ValueError(f'{key} must be a git SHA')
+    _validate_sources(sources)
     approved = report.get('calibration_sha256', [])
     if not isinstance(approved, list) or not approved:
         raise ValueError('calibration_sha256 must be a nonempty list of digests')
@@ -254,8 +246,22 @@ class AuthorizedGeometry:
         return replace(self, geometry=self.geometry.transformed(function))
 
 
-def authorize_geometry(geometry, current_frames, report, bridge_checkpoint_path, bridge_git_sha):
-    geometry = geometry.detached()
+def _validate_sources(sources, *, allow_uncheckpointed_guidance=False):
+    if set(sources) != {'bridge_git_sha', 'bridge_checkpoint_sha256', 'guidance_git_sha',
+                        'guidance_checkpoint_sha256', 'sam3_checkpoint_sha256'}:
+        raise ValueError('acceptance source/checkpoint fields are incomplete')
+    for key, value in sources.items():
+        if key == 'guidance_checkpoint_sha256' and value is None and allow_uncheckpointed_guidance:
+            continue
+        if key.endswith('sha256'):
+            _digest(value, key)
+        elif key.endswith('git_sha') and (not isinstance(value, str) or len(value) not in (40, 64)
+                                         or any(c not in '0123456789abcdef' for c in value)):
+            raise ValueError(f'{key} must be a git SHA')
+
+
+def _validate_current_frames(geometry, current_frames, *, offline=False):
+    geometry.validate()
     if len(current_frames) != len(geometry.provenance):
         raise ValueError('current frame context batch mismatch')
     for source, current in zip(geometry.provenance, current_frames):
@@ -274,10 +280,19 @@ def authorize_geometry(geometry, current_frames, report, bridge_checkpoint_path,
                 raise ValueError('timestamp needs a timezone')
         except (AttributeError, TypeError, ValueError) as exc:
             raise ValueError('observed_at must be an explicit timestamp with timezone') from exc
-        if source.get('guidance_source') != 'predicted_coarse_slot' or source.get('backend_kind') != 'sam3':
+        allowed = ('oracle_gt', 'predicted_coarse_slot') if offline else ('predicted_coarse_slot',)
+        if source.get('guidance_source') not in allowed or source.get('backend_kind') != 'sam3':
+            if offline:
+                raise ValueError('offline action experiments require real oracle/coarse-slot SAM3 geometry')
             raise ValueError('action path requires real predicted coarse-slot SAM3 geometry')
+        if source.get('mock', False) is not False:
+            raise ValueError('mock geometry cannot enter an action experiment')
         if source.get('coordinate_frame') != 'rlbench_world' or source.get('coordinate_units') != 'm':
             raise ValueError('action geometry must originate in RLBench world meters')
+        _digest(source['calibration_sha256'], 'calibration_sha256')
+
+
+def _geometry_sources(geometry, bridge_checkpoint_path, bridge_git_sha):
     first = geometry.provenance[0]
     sources = dict(bridge_git_sha=bridge_git_sha,
                    bridge_checkpoint_sha256=sha256_file(bridge_checkpoint_path),
@@ -286,9 +301,62 @@ def authorize_geometry(geometry, current_frames, report, bridge_checkpoint_path,
                    sam3_checkpoint_sha256=first.get('sam3_checkpoint_sha256'))
     for meta in geometry.provenance:
         if any(meta.get(key) != first.get(key) for key in
-               ('source_git_sha', 'source_checkpoint_sha256', 'sam3_checkpoint_sha256')):
+               ('guidance_source', 'source_git_sha', 'source_checkpoint_sha256', 'sam3_checkpoint_sha256')):
             raise ValueError('mixed model sources in a geometry batch')
+    return sources
+
+
+def authorize_geometry(geometry, current_frames, report, bridge_checkpoint_path, bridge_git_sha):
+    """Authorize reviewed activation; offline experiments never satisfy this gate."""
+    geometry = geometry.detached()
+    _validate_current_frames(geometry, current_frames)
+    sources = _geometry_sources(geometry, bridge_checkpoint_path, bridge_git_sha)
     return AuthorizedGeometry(geometry, report, sources).verify()
+
+
+@dataclass(frozen=True)
+class OfflineGeometry:
+    """Current-frame SAM3 geometry scoped to action prediction without a controller.
+
+    This object carries no acceptance report and never authorizes reviewed/live
+    activation. Checkpoint hashes describe the actual model files used by the
+    offline runner; they are not evidence of manipulation performance.
+    """
+    geometry: ObjectGeometry
+    current_frames: tuple[Mapping, ...]
+    sources: Mapping
+    scope: str = 'offline_experiment'
+
+    def verify(self):
+        if self.scope != 'offline_experiment':
+            raise ValueError('offline geometry scope must be offline_experiment')
+        _validate_current_frames(self.geometry, self.current_frames, offline=True)
+        first = self.geometry.provenance[0]
+        oracle = first['guidance_source'] == 'oracle_gt'
+        _validate_sources(self.sources, allow_uncheckpointed_guidance=oracle)
+        for meta in self.geometry.provenance:
+            if meta['guidance_source'] != first['guidance_source']:
+                raise ValueError('mixed model sources in an offline geometry batch')
+            for field, key in (('source_git_sha', 'guidance_git_sha'),
+                               ('source_checkpoint_sha256', 'guidance_checkpoint_sha256'),
+                               ('sam3_checkpoint_sha256', 'sam3_checkpoint_sha256')):
+                if meta.get(field) != self.sources[key]:
+                    raise ValueError('offline geometry source/checkpoint mismatch')
+        if not oracle and self.sources['guidance_checkpoint_sha256'] != self.sources['bridge_checkpoint_sha256']:
+            raise ValueError('predicted coarse-slot guidance must use the actual BridgeVLA checkpoint')
+        return self
+
+    def transformed(self, function):
+        return replace(self, geometry=self.geometry.transformed(function))
+
+
+def authorize_offline_geometry(geometry, current_frames, bridge_checkpoint_path, bridge_git_sha):
+    """Validate real SAM3 A/B inputs without claiming a reviewed success report."""
+    geometry = geometry.detached()
+    current_frames = tuple(dict(current) for current in current_frames)
+    _validate_current_frames(geometry, current_frames, offline=True)
+    sources = _geometry_sources(geometry, bridge_checkpoint_path, bridge_git_sha)
+    return OfflineGeometry(geometry, current_frames, sources).verify()
 
 
 def freeze_for_geometry_inference(network):
