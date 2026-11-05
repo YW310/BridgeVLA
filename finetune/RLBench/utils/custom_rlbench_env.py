@@ -8,6 +8,7 @@ import numpy as np
 class CustomMultiTaskRLBenchEnv2(CustomMultiTaskRLBenchEnv):
     def __init__(self, *args, **kwargs):
         self._oracle_provider = kwargs.pop('oracle_provider', None)
+        self._slot_sam3_observation_provider = kwargs.pop('slot_sam3_observation_provider', None)
         self._oracle_provider_ready = False
         self._oracle_episode_token = -1
         self._oracle_demo = None
@@ -18,6 +19,10 @@ class CustomMultiTaskRLBenchEnv2(CustomMultiTaskRLBenchEnv):
     @property
     def oracle_provider(self):
         return self._oracle_provider
+
+    @property
+    def slot_sam3_observation_provider(self):
+        return self._slot_sam3_observation_provider
 
     @property
     def observation_elements(self):
@@ -63,22 +68,36 @@ class CustomMultiTaskRLBenchEnv2(CustomMultiTaskRLBenchEnv):
 
     def extract_obs(self, obs, *args, **kwargs):
         if self._oracle_provider is None:
-            return super().extract_obs(obs, *args, **kwargs)
-        if not self._oracle_provider_ready:
-            self._reset_oracle_provider()
-        mask_values = {}
-        for camera in self._oracle_provider.cameras:
-            key = f'{camera}_mask'
-            mask_values[key] = getattr(obs, key, None)
-            setattr(obs, key, None)
-        try:
             extracted = super().extract_obs(obs, *args, **kwargs)
-        finally:
-            for key, value in mask_values.items():
-                setattr(obs, key, value)
-        return self._oracle_provider.enrich(obs, extracted)
+        else:
+            if not self._oracle_provider_ready:
+                self._reset_oracle_provider()
+            mask_values = {}
+            for camera in self._oracle_provider.cameras:
+                key = f'{camera}_mask'
+                mask_values[key] = getattr(obs, key, None)
+                setattr(obs, key, None)
+            try:
+                extracted = super().extract_obs(obs, *args, **kwargs)
+            finally:
+                for key, value in mask_values.items():
+                    setattr(obs, key, value)
+            extracted = self._oracle_provider.enrich(obs, extracted)
+        provider = getattr(self, '_slot_sam3_observation_provider', None)
+        if provider is not None:
+            try:
+                provider.capture_raw(obs, extracted, task_name=self._oracle_task_name(),
+                                     instruction=self._lang_goal)
+            except Exception as error:
+                # Preserve the baseline observation; the online wrapper consumes
+                # this explicit capture failure and applies its configured fallback.
+                provider.invalidate(error)
+        return extracted
 
     def reset(self) -> dict:
+        provider = getattr(self, '_slot_sam3_observation_provider', None)
+        if provider is not None:
+            provider.begin_episode()
         self._oracle_episode_token = self._episode_index
         self._oracle_provider_ready = False
         self._oracle_demo = None
@@ -96,6 +115,11 @@ class CustomMultiTaskRLBenchEnv2(CustomMultiTaskRLBenchEnv):
         retry_attempt = int(retry_attempt)
         if retry_attempt < 0:
             raise ValueError("retry_attempt must be non-negative")
+        provider = getattr(self, '_slot_sam3_observation_provider', None)
+        if provider is not None:
+            # A demo is only the existing reset mechanism. The provider reads
+            # the returned live Observation, never demo arrays or frame indices.
+            provider.begin_episode()
         is_retry = retry_attempt > 0
         if not is_retry:
             if self._episodes_this_task == self._swap_task_every:

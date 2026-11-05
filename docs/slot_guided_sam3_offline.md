@@ -1,5 +1,8 @@
 # Slot-guided SAM3: runnable offline action experiments
 
+For the current-observation RLBench control loop, use the [online entrypoint](slot_guided_sam3_online.md).
+This snapshot command remains the reproducible A/B/C experiment path.
+
 `finetune/RLBench/slot_guided_sam3_offline.py` connects the current observation to
 the frozen policy. The enabled profile is
 [rlbench_slot_guided_sam3_offline.yaml](../finetune/RLBench/configs/rlbench_slot_guided_sam3_offline.yaml).

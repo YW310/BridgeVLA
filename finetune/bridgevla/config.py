@@ -118,7 +118,7 @@ _C.peract.transform_augmentation_rpy = [0.0, 0.0, 20.0]
 
 # arguments present in only rvt and not peract
 _C.rvt = CN()
-# Default off. Unreviewed experiments use the separate offline snapshot runner.
+# Default off. Explicit experiment profiles select offline or online inference.
 _C.rvt.enable_slot_guided_sam3 = False
 _C.rvt.slot_guided_sam3_execution_mode = 'reviewed'
 _C.rvt.gt_hm_sigma = 1.5
@@ -145,6 +145,16 @@ _C.rvt.oracle_prior_relation = False
 _C.rvt.oracle_log_base_loss = False
 # Normalize translation loss over complete Oracle relation samples only.
 _C.rvt.oracle_valid_only_loss = False
+
+# Runtime-only settings: never enter MVT kwargs or change checkpoint keys.
+_C.slot_guided_sam3 = CN()
+_C.slot_guided_sam3.task_repo = '../TASK_Relevant_object-main'
+_C.slot_guided_sam3.sam3_checkpoint = 'checkpoints/sam3.pt'
+_C.slot_guided_sam3.perception_config = 'configs/slot_guided_offline.json'
+_C.slot_guided_sam3.sam3_device = ''
+_C.slot_guided_sam3.prompt_mode = 'point+box'
+_C.slot_guided_sam3.fallback = 'baseline'
+_C.slot_guided_sam3.diagnostics_dir = ''
 
 # arguments present in peract official
 _C.peract_official = CN()

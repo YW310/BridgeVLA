@@ -26,6 +26,11 @@ class EvalRuntimeFingerprintTest(unittest.TestCase):
         listed = set(_constant('_FINETUNE_RUNTIME_FILES'))
         required = {'bridgevla/models/oracle_prior.py', 'bridgevla/models/slot_guided_geometry.py',
                     'bridgevla/models/coarse_slot_export.py',
+                    'bridgevla/online/slot_sam3_runtime.py',
+                    'bridgevla/online/slot_sam3_policy.py',
+                    'bridgevla/online/slot_sam3_perception.py',
+                    'bridgevla/offline/slot_sam3_perception.py',
+                    'bridgevla/data/observations.py',
                     'bridgevla/models/object_conditioning.py',
                     'bridgevla/models/cross_scale_roles.py', 'bridgevla/models/role_separation.py',
                     'bridgevla/mvt/mvt.py', 'bridgevla/mvt/mvt_single.py'}

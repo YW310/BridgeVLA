@@ -1,10 +1,13 @@
 # Slot-guided SAM3 action geometry contract
 
-The former PR4 draft now has a runnable [offline snapshot command and enabled
-configuration](slot_guided_sam3_offline.md). The old `*_draft.yaml` is retained
+The former PR4 draft now has a runnable [online control loop](slot_guided_sam3_online.md)
+and [offline snapshot command](slot_guided_sam3_offline.md). The old `*_draft.yaml` is retained
 as a disabled compatibility profile. This document describes the reviewed
 activation contract; offline experiments use a separate `OfflineGeometry`
 scope to collect predictions without claiming acceptance or running a controller.
+The explicitly selected `online_experiment` scope uses current predicted SAM3
+geometry in the RLBench loop; it binds RGB-D content and the loaded checkpoint,
+and does not fabricate a reviewed performance acceptance report.
 
 The reviewed route implements an inference-only software contract. Real offline A/B/C
 experiments have not passed, so deployment/activation is not authorized by these

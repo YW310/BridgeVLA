@@ -359,6 +359,55 @@ def authorize_offline_geometry(geometry, current_frames, bridge_checkpoint_path,
     return OfflineGeometry(geometry, current_frames, sources).verify()
 
 
+@dataclass(frozen=True)
+class OnlineGeometry:
+    """Fresh predicted SAM3 geometry for the explicitly selected online loop.
+
+    Online execution is separate from a reviewed performance acceptance claim.
+    The current RGB-D content is bound in addition to calibration and frame ID.
+    No Oracle role label or Mock backend may condition this policy route.
+    """
+    geometry: ObjectGeometry
+    current_frames: tuple[Mapping, ...]
+    sources: Mapping
+    scope: str = 'online_experiment'
+
+    def verify(self):
+        if self.scope != 'online_experiment':
+            raise ValueError('online geometry scope must be online_experiment')
+        _validate_current_frames(self.geometry, self.current_frames)
+        _validate_sources(self.sources)
+        if (self.sources['guidance_checkpoint_sha256'] != self.sources['bridge_checkpoint_sha256']
+                or self.sources['guidance_git_sha'] != self.sources['bridge_git_sha']):
+            raise ValueError('online coarse guidance must come from the actual loaded BridgeVLA policy')
+        for meta, current in zip(self.geometry.provenance, self.current_frames):
+            if meta.get('execution_mode') != 'online_experiment':
+                raise ValueError('online action requires current in-memory online geometry')
+            digest = _digest(meta.get('snapshot_input_sha256'), 'snapshot_input_sha256')
+            if digest != current.get('snapshot_input_sha256'):
+                raise ValueError('online current RGB-D content mismatch')
+            if (type(meta.get('max_source_frame_index_read')) is not int
+                    or meta['max_source_frame_index_read'] != current['source_frame_index']):
+                raise ValueError('online geometry read receipt is stale or contains future data')
+            for field, key in (('source_git_sha', 'guidance_git_sha'),
+                               ('source_checkpoint_sha256', 'guidance_checkpoint_sha256'),
+                               ('sam3_checkpoint_sha256', 'sam3_checkpoint_sha256')):
+                if meta.get(field) != self.sources[key]:
+                    raise ValueError('online geometry source/checkpoint mismatch')
+        return self
+
+    def transformed(self, function):
+        return replace(self, geometry=self.geometry.transformed(function))
+
+
+def authorize_online_geometry(geometry, current_frames, bridge_checkpoint_path, bridge_git_sha):
+    geometry = geometry.detached()
+    frames = tuple(dict(current) for current in current_frames)
+    _validate_current_frames(geometry, frames)
+    return OnlineGeometry(geometry, frames,
+                          _geometry_sources(geometry, bridge_checkpoint_path, bridge_git_sha)).verify()
+
+
 def freeze_for_geometry_inference(network):
     network.eval()
     for parameter in network.parameters():

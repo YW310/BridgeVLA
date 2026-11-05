@@ -641,11 +641,11 @@ class MVT(nn.Module):
         """
         if slot_guided_geometry is not None:
             from bridgevla.models.slot_guided_geometry import (
-                AuthorizedGeometry, OfflineGeometry, freeze_for_geometry_inference, geometry_for_render,
+                AuthorizedGeometry, OfflineGeometry, OnlineGeometry, freeze_for_geometry_inference, geometry_for_render,
             )
             if self.training or img_aug != 0 or torch.is_grad_enabled():
                 raise ValueError('slot-guided SAM3 requires eval with no augmentation')
-            if not isinstance(slot_guided_geometry, (AuthorizedGeometry, OfflineGeometry)):
+            if not isinstance(slot_guided_geometry, (AuthorizedGeometry, OfflineGeometry, OnlineGeometry)):
                 raise ValueError('slot-guided SAM3 requires authorized geometry')
             slot_guided_geometry.verify()
             if not self.object_slots_enabled or not hasattr(self.oracle_prior_feature_adapter1, 'forward_with_anchor'):

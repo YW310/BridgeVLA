@@ -498,8 +498,8 @@ class RVTAgent:
     ):
         self._network = network
         self.enable_slot_guided_sam3 = bool(enable_slot_guided_sam3)
-        if slot_guided_sam3_execution_mode not in ('reviewed', 'offline_experiment'):
-            raise ValueError('slot_guided_sam3_execution_mode must be reviewed or offline_experiment')
+        if slot_guided_sam3_execution_mode not in ('reviewed', 'offline_experiment', 'online_experiment'):
+            raise ValueError('slot_guided_sam3_execution_mode must be reviewed, offline_experiment or online_experiment')
         self.slot_guided_sam3_execution_mode = slot_guided_sam3_execution_mode
         self._num_rotation_classes = num_rotation_classes
         self._rotation_resolution = 360 / self._num_rotation_classes
@@ -694,7 +694,7 @@ class RVTAgent:
         if payload is None:
             raise ValueError('enabled slot-guided SAM3 requires an explicit geometry payload')
         from bridgevla.models.slot_guided_geometry import (
-            authorize_geometry, authorize_offline_geometry,
+            authorize_geometry, authorize_offline_geometry, authorize_online_geometry,
             freeze_for_geometry_inference, geometry_to_cube,
         )
         mode = getattr(self, 'slot_guided_sam3_execution_mode', 'reviewed')
@@ -704,6 +704,12 @@ class RVTAgent:
             if 'acceptance_report' in payload:
                 raise ValueError('offline experiments do not consume or create acceptance reports')
             authorized = authorize_offline_geometry(
+                payload['geometry'], observation['slot_guided_current_frames'],
+                payload['bridge_checkpoint_path'], payload['bridge_git_sha'])
+        elif mode == 'online_experiment':
+            if 'acceptance_report' in payload:
+                raise ValueError('online experiments do not consume or create acceptance reports')
+            authorized = authorize_online_geometry(
                 payload['geometry'], observation['slot_guided_current_frames'],
                 payload['bridge_checkpoint_path'], payload['bridge_git_sha'])
         else:

@@ -12,9 +12,9 @@
 
 可编辑源文件为 `assets/algorithm-overview.fragment.html`；修改后在仓库根目录运行 `python tools/render_algorithm_overview.py`，用 `--check` 检查生成页面是否同步。
 
-## Slot-guided SAM3 offline experiments
+## Slot-guided SAM3 online and offline experiments
 
-[Offline commands and snapshot formats](slot_guided_sam3_offline.md) cover the runnable Coarse Slot → SAM3 → RGB-D geometry → frozen action path, A/B/C comparisons and failure reports. The [enabled offline profile](../finetune/RLBench/configs/rlbench_slot_guided_sam3_offline.yaml) uses the existing role-query Anchor architecture. The [geometry contract](slot_guided_sam3_action_draft.md) also describes the separate reviewed-activation gate and legacy disabled profile.
+[Online commands and runtime contract](slot_guided_sam3_online.md) cover the enabled current-observation RLBench loop, persistent SAM3, dynamic camera calibration and current-frame fallback. [Offline commands and snapshot formats](slot_guided_sam3_offline.md) remain available for reproducible A/B/C comparisons. Both use the existing role-query Anchor architecture. The [geometry contract](slot_guided_sam3_action_draft.md) describes the separate reviewed-activation gate and legacy disabled profile.
 
 ## OHT
 
