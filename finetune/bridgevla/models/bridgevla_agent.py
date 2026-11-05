@@ -1867,6 +1867,8 @@ class RVTAgent:
         reset_log: bool = False,
         cameras=["front", "left_shoulder", "right_shoulder", "wrist"],
     ) -> dict:
+        if self.enable_slot_guided_sam3:
+            raise ValueError('slot-guided SAM3 draft cannot train or read expert action labels')
         action_ignore_collisions = replay_sample["ignore_collisions"].unsqueeze(1).int()  # (b, 1) of int
         action_gripper_pose = replay_sample["gripper_pose"]  # (b, 8)  
         

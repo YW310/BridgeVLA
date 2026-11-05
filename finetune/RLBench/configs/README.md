@@ -70,6 +70,10 @@ EOF
 | `internal_slots`（`bs: 48`） | 1、2、4 |
 | `rlbench_full_8x40`、`rlbench_trend_8x40`（`bs: 4`） | 1、2、3、4、6、8、12、16、24、48 |
 
+## Slot-guided SAM3 draft (disabled)
+
+[rlbench_slot_guided_sam3_draft.yaml](rlbench_slot_guided_sam3_draft.yaml) mirrors the existing `rlbench_o2_role_queries.yaml` architecture and recipe, with a separate experiment name and explicit `rvt.enable_slot_guided_sam3: False`. It requires the existing role-conditioned Anchor; an arbitrary baseline/Slot/refine checkpoint cannot be substituted. This profile does not supply a current-frame payload importer, a REAL acceptance report, or an enabled runtime command. See the [API contract and verified CPU commands](../../../docs/slot_guided_sam3_action_draft.md#configuration-and-verified-cpu-commands).
+
 ## 常用开关
 
 | 键 | 作用 |
