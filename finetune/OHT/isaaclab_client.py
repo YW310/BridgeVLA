@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import traceback
 from time import perf_counter
 import numpy as np
 from copy import deepcopy
@@ -21,6 +22,13 @@ from .runtime.control_diagnostics import control_report, joint_report
 from .runtime.policy_worker import PolicyWorker, refresh_while_waiting, keep_open_after_error
 from .runtime.live_markers import LiveMarkers
 from .runtime.waypoint_executor import WaypointExecutor, WaypointOptions
+
+
+def _append_episode_event(path, event, **payload):
+    # Close after each append so completed records survive process termination.
+    # A native crash can still leave the final line incomplete; prior lines stay usable.
+    with path.open('a', encoding='utf-8') as stream:
+        stream.write(json.dumps(dict(event=event, **payload), ensure_ascii=False, allow_nan=False) + '\n')
 
 
 def load_reference(path, argv):
@@ -129,7 +137,7 @@ def main(argv=None):
                         help='Native raw EE measurement: controller applies body_offset (OHT recorded TCP); body reads the bare link')
     parser.add_argument('--dry-run', action='store_true', help='Save control diagnostics and exit without policy predictions or env.step')
     parser.add_argument('--keep-open-on-error', action='store_true',
-                        help='Keep the GUI open after a recorded rollout error, without more physics or policy requests')
+                        help='Keep an initialized GUI open after a recorded startup/rollout error, without more physics or policy requests')
     parser.add_argument('--log-interval', type=int, default=10,
                         help='Print first/every N action; 0 disables periodic logs. Failed waypoints always print diagnostics')
     display = parser.add_mutually_exclusive_group()
@@ -153,6 +161,11 @@ def main(argv=None):
     parser.add_argument('--chunk-execute-horizon', type=int, help='Override advertised H; requests still return K actions')
     parser.add_argument('--chunk-max-tracking-translation', type=float, default=.10)
     parser.add_argument('--chunk-max-tracking-rotation', type=float, default=.5)
+    parser.add_argument('--chunk-temporal-ensemble', action='store_true',
+                        help='Fuse agreeing chunk predictions at the same simulation time; opt-in')
+    parser.add_argument('--chunk-ensemble-decay', type=float, default=.1, help='Older prediction weight exp(-decay * age_ticks)')
+    parser.add_argument('--chunk-ensemble-max-translation', type=float, default=.02, help='Maximum position disagreement to fuse (m)')
+    parser.add_argument('--chunk-ensemble-max-rotation', type=float, default=.15, help='Maximum orientation disagreement to fuse (rad)')
     parser.add_argument('--waypoint-max-steps', type=int, default=600)
     parser.add_argument('--waypoint-position-tolerance', type=float, default=.005)
     parser.add_argument('--waypoint-rotation-tolerance', type=float, default=.05)
@@ -276,6 +289,13 @@ def _run(args, reference_args):
             args.execution_mode = 'chunk'
         elif args.execution_mode == 'chunk' or args.chunk_execute_horizon is not None:
             raise ValueError('Chunk execution options require a chunk checkpoint')
+    ensemble = None
+    if args.chunk_temporal_ensemble:
+        if replay is not None or getattr(client, 'chunk_spec', None) is None:
+            raise ValueError('Chunk temporal ensemble requires a policy chunk checkpoint; replay is unchanged')
+        from .runtime.chunk_ensemble import ChunkTemporalEnsemble
+        ensemble = ChunkTemporalEnsemble(client.chunk_spec, decay=args.chunk_ensemble_decay,
+            max_translation=args.chunk_ensemble_max_translation, max_rotation=args.chunk_ensemble_max_rotation)
     profile = client.profile(args.task, args.data_profile)
     if args.initial_state_root:
         from .runtime.trajectory_initialization import InitialState
@@ -289,11 +309,27 @@ def _run(args, reference_args):
         raise ValueError('camera-map must map every checkpoint camera to a distinct USD camera')
     runtime_factory = args.runtime_factory or (None if args.reference_client else
                                               'finetune.OHT.runtime.isaaclab_factory:create_runtime')
-    reference = (_factory(runtime_factory)(args=args, model_info=deepcopy(client.info)) if runtime_factory else
-                 load_reference(args.reference_client,
-                                [*reference_args, '--task', args.env_id, '--num_envs', '1', '--seed', str(args.seed)]))
-    env, records, worker, markers = None, [], None, None
+    reference, env, records, worker, markers = None, None, [], None, None
+    output.mkdir(parents=True)
+    # Persist the actual server identity before launching the simulator. A data
+    # contract alone cannot distinguish delta, relative-pose and flow checkpoints.
+    write_json(output / 'model_info.json', client.info)
+    print(f'[BridgeVLA] model: checkpoint={client.info.get("checkpoint")} '
+          f'model_id={client.info["model_id"]} '
+          f'chunk_policy={json.dumps(client.info.get("chunk_policy"), ensure_ascii=False)}', flush=True)
+    startup_state = dict(status='starting', phase='runtime', data_profile=profile,
+                         model_id=client.info['model_id'], checkpoint=client.info.get('checkpoint'),
+                         execution_mode=args.execution_mode, chunk_spec=getattr(client, 'chunk_spec', None))
+    def report_startup(phase):
+        startup_state['phase'] = phase
+        write_json(output / 'startup.json', startup_state)
+        print(f'[BridgeVLA] startup: {phase}', flush=True)
     try:
+        report_startup('runtime')
+        reference = (_factory(runtime_factory)(args=args, model_info=deepcopy(client.info)) if runtime_factory else
+                     load_reference(args.reference_client,
+                                    [*reference_args, '--task', args.env_id, '--num_envs', '1', '--seed', str(args.seed)]))
+        report_startup('environment_reset')
         env = getattr(reference, 'env', None)
         if env is None:
             cfg = reference.parse_env_cfg(args.env_id, device=reference.args_cli.device, num_envs=1)
@@ -301,12 +337,18 @@ def _run(args, reference_args):
             if hasattr(cfg, 'terminations') and hasattr(cfg.terminations, 'time_out'):
                 cfg.terminations.time_out = None
             env = reference.gym.make(args.env_id, cfg=cfg).unwrapped
+        startup_state['env_step_dt'] = float(env.step_dt)
+        if args.execution_mode == 'chunk':
+            print(f'[BridgeVLA] chunk timing: action_dt={client.chunk_spec["action_dt"]} '
+                  f'env_step_dt={startup_state["env_step_dt"]} '
+                  f'K={client.chunk_spec["horizon"]} H={client.chunk_spec["execute_horizon"]}', flush=True)
         robot = env.scene['robot']
         env.reset()
         if args.initialization == 'collection' and not callable(getattr(reference, 'randomize_robot_initial_pose_like_collection', None)):
             raise ValueError('Collection initialization needs legacy helpers; native runtimes use --initialization task')
         if args.reference_client:
             reference.args_cli.oht_collection_task = args.task
+        report_startup('task_runtime')
         task_runtime = TaskRuntime(env, reference, args.task, settings, score=args.score == 'task')
         startup, tracker = None, None
         if args.score == 'disassemble-left':
@@ -314,6 +356,7 @@ def _run(args, reference_args):
             tracker = reference.DisassembleLeftSemanticSuccessTracker(env, robot, startup)
         elif args.score == 'task':
             tracker = task_runtime
+        report_startup('camera_binding')
         # Extend the reference's three-camera discovery to the exact checkpoint camera set.
         bound_cameras = getattr(reference, 'cameras', None)
         if bound_cameras is None:
@@ -332,12 +375,15 @@ def _run(args, reference_args):
             joint = JointPositionExecutor(env, reference.torch, client.action_config,
                                           hold_steps=args.joint_hold_steps, tolerance=args.joint_target_tolerance,
                                           max_step=args.joint_max_step)
+        report_startup('live_markers')
         markers = LiveMarkers(reference, env, enabled=args.visualize and not args.dry_run,
                               history=args.visualize_history)
+        report_startup('control_bridge')
         bridge = IsaacLabBridge(reference, env, client, args.task, profile,
                                 bound_cameras,
                                 max_substeps=args.max_substeps, max_translation=args.max_translation,
                                 max_rotation=args.max_rotation, joint_executor=joint, visualizer=markers)
+        report_startup('executor')
         waypoint = WaypointExecutor(bridge, **waypoint_options) if args.execution_mode == 'waypoint' else None
         chunk_executor = None
         if args.execution_mode == 'chunk':
@@ -349,7 +395,7 @@ def _run(args, reference_args):
                              'use the built-in JointPositionExecutor or select streaming explicitly')
         if replay is not None:
             replay.validate_runtime(env, args)
-        output.mkdir(parents=True)
+        report_startup('control_diagnostics')
         diagnostics = control_report(bridge)
         write_json(output / 'control_diagnostics.json', diagnostics)
         write_json(output / 'run.json', dict(task=args.task, instruction=GOALS[args.task], seed=args.seed,
@@ -358,12 +404,14 @@ def _run(args, reference_args):
                    execution_mode=args.execution_mode, waypoint_options=asdict(waypoint.options) if waypoint else None,
                    motion_path='direct_target_tracking_no_collision_planner',
                    model_id=client.info['model_id'], contract_sha256=client.info['contract_sha256'],
+                   checkpoint=client.info.get('checkpoint'), chunk_policy=client.info.get('chunk_policy'),
                    action_spec=client.info['action_spec'], data_profile=profile, task_settings=settings,
                    chunk_spec=getattr(client, 'chunk_spec', None),
                    chunk_execute_horizon=chunk_executor.horizon if chunk_executor else None,
+                   chunk_temporal_ensemble=ensemble.info if ensemble else None,
                    initialization=args.initialization, score=args.score, runtime_factory=runtime_factory,
                    policy_wait='background_http_render_only' if replay is None else None,
-                   keep_open_on_error=args.keep_open_on_error,
+                   keep_open_on_error=args.keep_open_on_error, dry_run=args.dry_run,
                    visualization=markers.info,
                    isaaclab_root=args.isaaclab_root,
                    env_id=args.env_id, env_config=args.env_config, ee_link=getattr(reference, 'ee_link', args.ee_link),
@@ -384,6 +432,8 @@ def _run(args, reference_args):
             raise ValueError('Gripper action transform does not map +1 to configured open and -1 to close; inspect control_diagnostics.json')
         if diagnostics['gripper']['calibration_direction_matches'] is False:
             raise ValueError('Simulator gripper open/close physical direction disagrees with the training profile; check scene/asset and checkpoint calibration in control_diagnostics.json')
+        startup_state['status'] = 'ready'
+        report_startup('ready')
         if args.dry_run:
             print('[BridgeVLA] dry run complete; no predictions or control steps executed', flush=True)
             return 0
@@ -403,9 +453,14 @@ def _run(args, reference_args):
             row = dict(episode=episode, task=args.task, success=None if tracker is None else False,
                        stop_reason='max_steps', steps=0, actions=[])
             records.append(row)
+            journal = output / f'episode_{episode:04d}.jsonl'
             try:
+                _append_episode_event(journal, 'episode_start', episode=episode, task=args.task,
+                                      model_id=client.info['model_id'], contract_sha256=client.info['contract_sha256'])
                 markers.reset()
                 bridge.reset_execution_state()
+                if ensemble is not None:
+                    ensemble.reset()
                 env.reset()
                 if startup is not None:
                     reference.restore_rigid_object_to_startup_state(env, startup)
@@ -459,8 +514,16 @@ def _run(args, reference_args):
                     if not reference.simulation_app.is_running():
                         raise RuntimeError('Simulation application stopped before executing policy action')
                     executor = chunk_executor if chunk_executor is not None else waypoint
-                    commands = (executor.execute(action, measured, after_step) if executor is not None else
-                                bridge.execute(action, measured, after_step))
+                    control_action = action
+                    if ensemble is not None:
+                        control_action = ensemble.update(action, timestamp)
+                        source_details.update(ensemble_action=control_action.tolist(),
+                                              temporal_ensemble=deepcopy(ensemble.last_result))
+                    _append_episode_event(journal, 'prediction', step=step, timestamp=timestamp,
+                                          action=action.tolist(), control_action=control_action.tolist(),
+                                          measured_before=bridge.measured_state(measured), **source_details)
+                    commands = (executor.execute(control_action, measured, after_step) if executor is not None else
+                                bridge.execute(control_action, measured, after_step))
                     execution = executor.last_result if executor is not None else None
                     executed = perf_counter()
                     before = bridge.measured_state(measured)
@@ -492,6 +555,7 @@ def _run(args, reference_args):
                               f'gripper_physical={before["gripper_position"]:.6g}->{after["gripper_position"]:.6g} '
                               f'client_ms={client_timing} server_ms={response["timing_ms"]}', flush=True)
                     row['steps'] = step + 1
+                    _append_episode_event(journal, 'action', **row['actions'][-1])
                     if tracker is not None and tracker.success:
                         row['success'] = True
                         row['stop_reason'] = 'success'
@@ -507,6 +571,10 @@ def _run(args, reference_args):
                         break
                 if replay is not None and row['stop_reason'] == 'max_steps' and row['steps'] == replay.length:
                     row['stop_reason'] = 'trajectory_end'
+            except KeyboardInterrupt:
+                row['error'], row['stop_reason'] = 'KeyboardInterrupt', 'interrupted'
+                print('[BridgeVLA] interrupted; saving completed actions before shutdown', flush=True)
+                break
             except Exception as exc:
                 row['error'] = f'{type(exc).__name__}: {exc}'
                 row['stop_reason'] = 'error'
@@ -514,6 +582,7 @@ def _run(args, reference_args):
                 print(f'[BridgeVLA] stopped: {row["error"]}', flush=True)
                 break
             finally:
+                _append_episode_event(journal, 'episode_end', **{key: value for key, value in row.items() if key != 'actions'})
                 write_json(output / f'episode_{episode:04d}.json', row)
                 successes = sum(item['success'] is True for item in records)
                 write_json(output / 'summary.json', dict(
@@ -527,11 +596,27 @@ def _run(args, reference_args):
             if 'error' in row:
                 break
         failed = any('error' in row for row in records)
-        if failed and args.keep_open_on_error:
+        if failed and args.keep_open_on_error and not any(item['stop_reason'] == 'interrupted' for item in records):
             if worker is not None:
                 worker.close()
             keep_open_after_error(reference, env)
         return 1 if failed else 0
+    except Exception as exc:
+        if startup_state['status'] != 'ready':
+            startup_state.update(status='failed', error=f'{type(exc).__name__}: {exc}',
+                                 traceback=traceback.format_exc())
+            # Flush the original failure before closing the simulator: SDK shutdown
+            # may terminate the process before Python can report an uncaught error.
+            print(f'[BridgeVLA] startup failed: phase={startup_state["phase"]} '
+                  f'{startup_state["error"]}', file=sys.stderr, flush=True)
+            print(startup_state['traceback'], file=sys.stderr, flush=True)
+            try:
+                write_json(output / 'startup.json', startup_state)
+            except Exception as log_error:
+                print(f'[BridgeVLA] could not save startup.json: {log_error}', file=sys.stderr, flush=True)
+            if args.keep_open_on_error and reference is not None and env is not None:
+                keep_open_after_error(reference, env)
+        raise
     finally:
         if worker is not None:
             worker.close()
@@ -540,7 +625,7 @@ def _run(args, reference_args):
         close = getattr(reference, 'close', None)
         if callable(close):
             close()
-        else:
+        elif reference is not None:
             try:
                 if env is not None:
                     env.close()

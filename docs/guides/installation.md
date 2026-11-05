@@ -6,6 +6,28 @@
 
 # Installation
 
+## OHT 数据与模型环境
+
+以下命令从仓库根目录执行。仅做 audit、replay 构建、几何诊断或角色标注时，安装数据依赖即可，不需要启动 RLBench / CoppeliaSim：
+
+```bash
+python -m pip install -r finetune/OHT/requirements-data.txt
+```
+
+OHT 模型训练和离线推理需要 CUDA、PaliGemma 资源和编译后的 point-renderer。仓库 `requirements-model.txt` 要求先单独安装与本机 CUDA 匹配的 `torch==2.5.1` / `torchvision==0.20.1`，然后执行：
+
+```bash
+python -m pip install -r finetune/OHT/requirements-model.txt
+python -m pip install --no-build-isolation -e finetune/bridgevla/libs/point-renderer
+python -m pip install tensorboard
+```
+
+编译 point-renderer 需要可用的 CUDA toolkit 和 C++ 编译器，只有驱动或 CPU PyTorch 不够。TensorBoard 是训练默认日志后端，当前 requirements 文件未列入它；使用 `--log-backend none` 时可省略。IsaacLab 客户端另用其仿真环境，见 [OHT 运行指南](../oht/runtime.md#启动与连接)。
+
+准备 PaliGemma 的访问授权与本地缓存；BridgeVLA 热图预训练目录不能替代基础模型/processor 资源。OHT 数据、训练和预检入口见 [OHT README](../../finetune/OHT/README.md)。下列旧安装模板主要面向预训练与模拟 benchmark。
+
+## 预训练与 RLBench / COLOSSEUM / GemBench
+
 1. **Clone this repository and navigate to the BridgeVLA folder:**
 ```bash
 git clone https://github.com/BridgeVLA/BridgeVLA.git

@@ -1,15 +1,55 @@
-"""Small, dependency-free helpers for RLBench distributed training."""
+"""Dependency-free training helpers shared by RLBench and OHT."""
 
 from dataclasses import dataclass
+from numbers import Real
 
 
 def format_training_metrics(metrics) -> str:
-    """Include separation support counts alongside losses in text logs."""
+    """Keep small losses, support counts and physical errors visible in text."""
     return ' '.join(
         f'{key}={value:.6g}'
         for key, value in metrics.items()
-        if 'loss' in key or '_diversity_' in key
+        if isinstance(value, Real) and (
+            'loss' in key or '_diversity_' in key or key.endswith('_error_m')
+            or key.endswith(('_valid_rate', '_empty_rate', '_confidence', '_coverage', '_gate'))
+        )
     )
+
+
+def training_metric_postfix(metrics, learning_rate=None):
+    """Short live summary; detailed lines retain original metric names/units."""
+    keys = ('total_loss', 'total_loss_base', 'total_loss_gain', 'total_loss_gain_pct',
+            'trans_loss', 'trans_loss_base', 'trans_loss_valid', 'trans_loss_base_valid',
+            'oracle_prior_coverage', 'rot_loss_x', 'rot_loss_y', 'rot_loss_z',
+            'grip_loss', 'collision_loss', 'chunk_total_loss', 'chunk_position_loss',
+            'object_slot_diversity_loss', 'object_refine_diversity_loss')
+    visible = {key: f'{metrics[key]:.4g}' for key in keys if key in metrics}
+    for source, label in (
+        ('chunk_position_error_m', 'pos_mm'),
+        ('chunk_prefix_1_position_error_m', 'prefix1_mm'),
+    ):
+        if source in metrics:
+            visible[label] = f'{metrics[source] * 1000:.3g}'
+    if learning_rate is not None:
+        visible['lr'] = f'{learning_rate:.3g}'
+    return visible
+
+
+def report_training_progress(progress, metrics, *, step, epoch=None, iteration=None,
+                             learning_rate=None, print_line=False):
+    """One terminal format for ordinary, accumulated and chunk training."""
+    progress.set_postfix(training_metric_postfix(metrics, learning_rate), refresh=False)
+    if print_line:
+        fields = ['[train]']
+        if epoch is not None:
+            fields.append(f'epoch={epoch}')
+        if iteration is not None:
+            fields.append(f'iter={iteration}')
+        fields.append(f'step={step}')
+        if learning_rate is not None:
+            fields.append(f'lr={learning_rate:.6g}')
+        fields.append(format_training_metrics(metrics))
+        progress.write(' '.join(fields).rstrip())
 
 
 @dataclass(frozen=True)

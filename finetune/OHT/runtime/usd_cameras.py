@@ -27,8 +27,10 @@ def projection_intrinsics(params, width, height):
     if size.shape != (2,) or not np.array_equal(size, [width, height]):
         raise ValueError('Camera projection resolution differs from captured RGB-D')
     projection = np.asarray(params['cameraProjection'], np.float64).reshape(4, 4)
-    matrix = np.array([[abs(projection[0, 0]) * width / 2, 0, (1 - projection[0, 2]) * width / 2],
-                       [0, abs(projection[1, 1]) * height / 2, (1 + projection[1, 2]) * height / 2],
+    # Replicator projection matrices multiply OpenGL row vectors. Off-axis
+    # principal-point offsets are in row three, not column three.
+    matrix = np.array([[abs(projection[0, 0]) * width / 2, 0, (1 - projection[2, 0]) * width / 2],
+                       [0, abs(projection[1, 1]) * height / 2, (1 + projection[2, 1]) * height / 2],
                        [0, 0, 1]], np.float32)
     if not np.isfinite(matrix).all() or matrix[0, 0] <= 0 or matrix[1, 1] <= 0:
         raise ValueError('Invalid pinhole projection from camera_params')

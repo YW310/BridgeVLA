@@ -456,11 +456,10 @@ class MVT(nn.Module):
         return model_inputs
 
     def _forward_efficient_paligemma(self, model_inputs):
-        # PaliGemma 4.51.3 performs multimodal token merging in the conditional
-        # generation wrapper, so keep that path but capture only the final
-        # normalized hidden state. Limiting logits to one token avoids the
-        # otherwise unused [batch, sequence, vocabulary] allocation, while not
-        # requesting every hidden layer preserves activation checkpointing.
+        from .paligemma_inputs import merge_paligemma_images
+        # Keep the conditional-generation/language-model path, but replace its
+        # expanded [B,L,D] boolean gather with checked whole-token merging.
+        merged_inputs = merge_paligemma_images(self.model, model_inputs)
         captured_hidden_states = []
 
         def capture_final_hidden_state(module, inputs, output):
@@ -471,7 +470,7 @@ class MVT(nn.Module):
         )
         try:
             self.model(
-                **model_inputs,
+                **merged_inputs,
                 use_cache=False,
                 output_hidden_states=False,
                 logits_to_keep=1,
@@ -539,6 +538,7 @@ class MVT(nn.Module):
         inherited_object_roles=None,
         refine_role_mask_head=None,
         refine_mask_detach=False,
+        chunk_tokens_only=False,
         **kwargs,
     ):
         """
@@ -551,6 +551,8 @@ class MVT(nn.Module):
         assert num_img == self.num_img
         assert h == w == self.img_size
         uses_object_roles = object_slot_predictor is not None or inherited_object_roles is not None
+        if chunk_tokens_only and (uses_object_roles or oracle_feature_adapter is not None):
+            raise ValueError('Chunk-only local encoding does not accept object adapters')
         if coarse_query_context is not None and object_slot_predictor is None:
             raise ValueError('soft coarse query context requires an independent local predictor')
         if object_slot_predictor is not None and inherited_object_roles is not None:
@@ -620,6 +622,11 @@ class MVT(nn.Module):
         # concat all the output
         image_tokens = torch.stack(image_tokens)
         x = rearrange(image_tokens, 'b (c h1 h2) w -> b w c h1 h2', c=self.num_img, h1=self.num_pat_img, h2=self.num_pat_img) 
+        if chunk_tokens_only:
+            # The independent TCP branch needs VLM patches, not an additional
+            # key heatmap/upscaler graph or rotation/gripper action heads.
+            return dict(oht_chunk_tokens=x.permute(0, 2, 3, 4, 1).reshape(bs, -1, self.vlm_dim),
+                        oht_chunk_grid_shape=(self.num_img, self.num_pat_img, self.num_pat_img))
         feat = []
         _feat = torch.max(torch.max(x, dim=-1)[0], dim=-1)[0]
         _feat = _feat.view(bs, -1)

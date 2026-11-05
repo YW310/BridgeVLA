@@ -5,21 +5,24 @@ import numpy as np
 from .data.chunk_dataset import OHTChunkDataset
 from .data.common import write_json
 from .data.geometry import rotation_error
-from .chunk_visualization import path_panel
+from .chunk_visualization import path_panel, scene_background
 from .runtime.chunk_protocol import chunk_spec, validate_prediction
+from .evaluation_statistics import episode_reports, select_indices, summarize_errors
 
 
-def open_loop_chunk(policy, replay, split='val', limit=None, *, progress=None, visualizer=None):
+def open_loop_chunk(policy, replay, split='val', limit=None, *, progress=None, visualizer=None,
+                    tasks=None, episode_indices=None):
     data = OHTChunkDataset(replay, split)
     if policy.contract['sha256'] != data.contract['sha256']:
         raise ValueError('Chunk checkpoint/evaluation replay mismatch')
     if limit is not None and limit < 1:
         raise ValueError('limit must be positive')
-    total = len(data) if limit is None else min(limit, len(data))
+    indices, selected = select_indices(data.samples, tasks, episode_indices, limit)
+    total = len(indices)
     spec = chunk_spec(policy.chunk_settings, policy.contract)
     rows, pictures, last_episode = [], [], None
-    for index in range(total):
-        sample, meta = data[index], data.samples[index]
+    for index, data_index in enumerate(indices):
+        sample, meta = data[data_index], data.samples[data_index]
         episode = meta['task'], meta['episode_index']
         if episode != last_episode:
             policy.reset()
@@ -34,7 +37,10 @@ def open_loop_chunk(policy, replay, split='val', limit=None, *, progress=None, v
         target, valid = sample['action_chunk'][:len(actions)], sample['action_valid'][:len(actions)]
         offsets = []
         for j in np.flatnonzero(valid):
-            offsets.append(dict(offset=int(j + 1), translation_m=float(np.linalg.norm(actions[j, :3] - target[j, :3])),
+            offsets.append(dict(offset=int(j + 1), target_frame=int(sample['action_frames'][j]),
+                                timestamp=float(sample['action_timestamps'][j]),
+                                translation_error_xyz_m=(actions[j, :3] - target[j, :3]).tolist(),
+                                translation_m=float(np.linalg.norm(actions[j, :3] - target[j, :3])),
                                 rotation_degrees=float(np.rad2deg(rotation_error(actions[j, 3:7], target[j, 3:7]))),
                                 gripper_correct=bool(actions[j, 7] == target[j, 7])))
         key_metrics = None
@@ -42,17 +48,20 @@ def open_loop_chunk(policy, replay, split='val', limit=None, *, progress=None, v
             key, reference = prediction['key_action'], sample['key_action']
             key_metrics = dict(translation_m=float(np.linalg.norm(key[:3] - reference[:3])),
                 rotation_degrees=float(np.rad2deg(rotation_error(key[3:7], reference[3:7]))),
-                gripper_correct=bool(key[7] == reference[7]))
-        rows.append(dict(id=meta['id'], task=meta['task'], latency_seconds=latency,
+                gripper_correct=bool(key[7] == reference[7]), target_frame=int(sample['key_frame']),
+                translation_error_xyz_m=(key[:3] - reference[:3]).tolist())
+        rows.append(dict(id=meta['id'], task=meta['task'], episode_index=meta['episode_index'],
+                         frame=meta['frame'], timestamp=meta['timestamp'], latency_seconds=latency,
                          offsets=offsets, key=key_metrics))
         if due:
             folder = visualizer.root / f'sample_{index:06d}'
             folder.mkdir(parents=True, exist_ok=False)
+            scene = scene_background(sample)
             path_panel(actions, target, valid, current=sample['tcp_pose'][:3], sample_id=meta['id'],
-                       action_dt=spec['action_dt']).save(folder / 'chunk.png')
+                       action_dt=spec['action_dt'], **scene).save(folder / 'chunk.png')
             np.savez_compressed(folder / 'chunk.npz', actions=actions, target=target, valid=valid,
                                 key_action=prediction['key_action'], key_valid=sample['key_valid'],
-                                current=sample['tcp_pose'][:3], sample_id=meta['id'], action_dt=spec['action_dt'])
+                                current=sample['tcp_pose'][:3], sample_id=meta['id'], action_dt=spec['action_dt'], **scene)
             if captured:
                 from .runtime.online_visualization import _montage
                 for name, stage in captured[0]['stages'].items():
@@ -62,8 +71,10 @@ def open_loop_chunk(policy, replay, split='val', limit=None, *, progress=None, v
             progress.update('chunk_sample_done', completed=index + 1, total=total, sample=meta['id'])
 
     def summarize(values):
-        return dict(samples=len(values), **{name + '_mean': float(np.mean([row[name] for row in values]))
-                    if values else None for name in ('translation_m', 'rotation_degrees', 'gripper_correct')})
+        result = summarize_errors(values)
+        for name in ('translation_m', 'rotation_degrees'):
+            result.setdefault(name + '_mean', None)
+        return result
     result = dict(kind='open_loop_chunk_errors', split=split, samples=total, chunk_spec=spec,
         chunk_policy=dict(policy.chunk_settings),
         contract_sha256=data.contract['sha256'], per_offset={str(j): summarize([
@@ -74,6 +85,7 @@ def open_loop_chunk(policy, replay, split='val', limit=None, *, progress=None, v
                   for task in sorted({row['task'] for row in rows})},
         latency_seconds_mean=float(np.mean([row['latency_seconds'] for row in rows])), predictions=rows,
         note='Observed future errors do not measure closed-loop task success.')
+    result.update(episode_reports(rows, selected, chunk=True, execute_horizon=spec['execute_horizon']))
     if pictures:
         write_json(visualizer.root / 'index.json', pictures)
         (visualizer.root / 'index.html').write_text('<!doctype html><meta charset="utf-8"><title>Chunk predictions</title>' +

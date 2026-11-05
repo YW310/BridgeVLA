@@ -37,17 +37,49 @@ def _blend(rgb, heatmap):
     return .3 * np.clip(rgb, 0, 1) + .7 * colors
 
 
-def _montage(stage, name, auxiliary):
+def _draw_chunk_paths(panel, stage, view):
+    """Paint same-tick training paths without joining invalid/offscreen gaps.
+
+    These optional arrays are added only to the training writer's local copy;
+    OnlineVisualizer does not accept or export future labels.
+    """
+    draw = ImageDraw.Draw(panel)
+    width, height = panel.size
+    valid = np.asarray(stage['chunk_valid'], bool)
+    for key, color in (('chunk_target_pixels', '#40db70'), ('chunk_predicted_pixels', '#ff6060')):
+        pixels = stage[key][view]
+        inside = (valid & np.isfinite(pixels).all(axis=-1)
+                  & (pixels[:, 0] >= 0) & (pixels[:, 0] < width)
+                  & (pixels[:, 1] >= 0) & (pixels[:, 1] < height))
+        for index in range(1, len(pixels)):
+            if inside[index - 1] and inside[index]:
+                segment = [tuple(pixels[index - 1]), tuple(pixels[index])]
+                draw.line(segment, fill='#202b36', width=4)
+                draw.line(segment, fill=color, width=2)
+        for x, y in pixels[inside]:
+            draw.ellipse((x - 2, y - 2, x + 2, y + 2), fill=color)
+    measured = stage.get('measured_tcp_pixels')
+    if measured is not None and _inside(measured[view], width, height):
+        x, y = measured[view]
+        for color, line_width in (('#202b36', 4), ('white', 2)):
+            draw.line((x - 4, y, x + 4, y), fill=color, width=line_width)
+            draw.line((x, y - 4, x, y + 4), fill=color, width=line_width)
+
+
+def _montage(stage, name, auxiliary, *, policy_label='policy TCP'):
     rgb, maps = stage['rgb'], stage['heatmap']
     views, height, width, _ = rgb.shape
     extra = [key for key in ('target_prior', 'reference_prior', 'relation_anchor') if key in stage]
     columns = ['Rendered RGB', 'Prediction heatmap', 'Policy / heatmap TCP'] + extra
-    left, top, footer = 65, 78, 18
+    chunk_paths = 'chunk_valid' in stage
+    left, top, footer = 65, 96 if chunk_paths else 78, 18
     image = Image.new('RGB', (left + width * len(columns), top + views * (height + footer)), '#232323')
     draw = ImageDraw.Draw(image)
     draw.text((8, 6), f'{name}: online policy prediction', fill='white')
-    draw.text((8, 24), 'Red: policy TCP   Cyan: heatmap TCP' + (' (auxiliary head)' if auxiliary else ''), fill='white')
-    draw.text((8, 42), 'Per-view color normalization. Original probabilities are retained in NPZ.', fill='white')
+    draw.text((8, 24), f'Red cross: {policy_label}   Cyan ring: heatmap TCP' + (' (auxiliary head)' if auxiliary else ''), fill='white')
+    if chunk_paths:
+        draw.text((8, 42), 'Paths: red prediction / green observed future (valid ticks only); white cross: measured TCP.', fill='white')
+    draw.text((8, 60 if chunk_paths else 42), 'Per-view color normalization. Original probabilities are retained in NPZ.', fill='white')
     for column, title in enumerate(columns):
         draw.text((left + width * column + 2, top - 18), title, fill='white')
     for view in range(views):
@@ -57,14 +89,19 @@ def _montage(stage, name, auxiliary):
         tiles = [rgb[view], blend, blend] + [_blend(rgb[view], stage[key][view]) for key in extra]
         for column, tile in enumerate(tiles):
             panel = Image.fromarray((np.clip(tile, 0, 1) * 255).astype(np.uint8))
+            if chunk_paths and column in (0, 2):
+                _draw_chunk_paths(panel, stage, view)
             if column == 2:
                 marks = ImageDraw.Draw(panel)
                 for key, color in (('heatmap_waypoint_pixels', 'cyan'), ('policy_pixels', 'red')):
                     if key not in stage or not _inside(stage[key][view], width, height):
                         continue
                     x, py = map(float, stage[key][view])
-                    marks.line((x - 4, py - 4, x + 4, py + 4), fill=color, width=2)
-                    marks.line((x - 4, py + 4, x + 4, py - 4), fill=color, width=2)
+                    if key == 'heatmap_waypoint_pixels':
+                        marks.ellipse((x - 6, py - 6, x + 6, py + 6), outline=color, width=2)
+                    else:
+                        marks.line((x - 4, py - 4, x + 4, py + 4), fill=color, width=2)
+                        marks.line((x - 4, py + 4, x + 4, py - 4), fill=color, width=2)
             image.paste(panel, (left + column * width, y))
     return image
 
@@ -110,10 +147,12 @@ class OnlineVisualizer:
                             heatmap_waypoint_world=np.asarray(payload['heatmap_waypoint_world']).copy())
             if 'chunk' in payload:
                 from .chunk_protocol import validate_prediction
+                from ..chunk_visualization import scene_background
                 chunk = payload['chunk']
                 validated = validate_prediction(chunk, chunk['spec'])
                 snapshot['chunk'] = dict(spec=dict(chunk['spec']), actions=validated['actions'].copy(),
                                          key_action=validated['key_action'].copy())
+                snapshot.update(scene_background(observation))
             identity = {key: request.get(key) for key in
                         ('request_id', 'episode_id', 'step', 'timestamp', 'instruction', 'model_id')}
             raw_observation = request.get('observation', {})
@@ -182,8 +221,11 @@ class OnlineVisualizer:
             if 'chunk' in payload:
                 from ..chunk_visualization import path_panel
                 chunk = payload['chunk']
-                path_panel(chunk['actions']).save(temporary / 'chunk.png')
-                np.savez_compressed(temporary / 'chunk.npz', actions=chunk['actions'], key_action=chunk['key_action'])
+                scene = {key: payload[key] for key in ('scene_points', 'scene_colors') if key in payload}
+                path_panel(chunk['actions'], current=current_tcp, action_dt=chunk['spec']['action_dt'],
+                           **scene).save(temporary / 'chunk.png')
+                np.savez_compressed(temporary / 'chunk.npz', actions=chunk['actions'], key_action=chunk['key_action'],
+                                    current=np.asarray(current_tcp if current_tcp is not None else []), **scene)
                 record['chunk'] = dict(spec=chunk['spec'], actions=chunk['actions'].tolist(),
                     key_action=chunk['key_action'].tolist(), png=f'/visualization/files/{entry_id}/chunk.png',
                     arrays=f'/visualization/files/{entry_id}/chunk.npz')

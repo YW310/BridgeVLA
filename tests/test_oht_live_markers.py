@@ -104,6 +104,41 @@ def test_histories_are_bounded_and_consecutive_duplicate_positions_are_not_added
     overlay.close()
 
 
+@pytest.mark.parametrize('headless', [False, True])
+def test_chunk_overlay_records_each_control_tick_instead_of_only_prefix_endpoints(headless):
+    from finetune.OHT.action_modes import action_options
+    from finetune.OHT.runtime.chunk_executor import ChunkExecutor
+    from finetune.OHT.runtime.chunk_protocol import chunk_spec
+    from finetune.OHT.runtime.isaaclab_bridge import IsaacLabBridge
+    from finetune.OHT.runtime.isaaclab_runtime import IsaacLabRuntime
+    from tests.test_oht_native_runtime import environment
+
+    env = environment('eef')
+    env.sim.has_gui = lambda: not headless
+    reference = IsaacLabRuntime(env, {}, ee_link='tool', quaternion_order='wxyz', simulation_app=None)
+    drawer = Drawer()
+    overlay = markers.LiveMarkers(reference, env, drawer=drawer, axes=False)
+    client = SimpleNamespace(action_config=action_options(), info={'raw_observation': {'data_profiles': {
+        'p': {'link_to_tcp': np.eye(4).tolist(), 'gripper': {'open': -.04, 'close': -.005}}}}})
+    bridge = IsaacLabBridge(reference, env, client, 'assemble_left', 'p', {}, visualizer=overlay)
+    actions = np.array([[.11, .01, .5, 0, 0, 0, 1, 1], [.12, .02, .51, 0, 0, 0, 1, 1],
+                        [.13, .01, .52, 0, 0, 0, 1, 1], [.14, 0, .53, 0, 0, 0, 1, 1]], np.float32)
+    spec = chunk_spec({'horizon': 4, 'execute_horizon': 4}, {'chunk': {'action_dt': env.step_dt}})
+    executor = ChunkExecutor(bridge, spec)
+    overlay.update(bridge.measured_state())
+    callback_counts = []
+    executor.execute(actions, None, lambda grip: callback_counts.append(overlay.info['measured_points']))
+    assert executor.last_result['completed'] and env.common_step_counter == 4
+    if headless:
+        assert callback_counts == [0, 0, 0, 0] and not drawer.calls
+    else:
+        assert callback_counts == [2, 3, 4, 5]
+        assert overlay.info['target_points'] == 4
+        np.testing.assert_allclose(list(overlay._measured_history)[1:], actions[:, :3], atol=1e-7)
+        np.testing.assert_allclose(list(overlay._target_history), actions[:, :3], atol=1e-7)
+    overlay.close()
+
+
 def test_capture_boundary_clears_geometry_and_restores_it_without_physics_or_history_growth():
     reference, env = runtime(origin=(1, 2, 3))
     drawer = Drawer()

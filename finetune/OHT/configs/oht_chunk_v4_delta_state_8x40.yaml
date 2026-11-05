@@ -1,0 +1,6 @@
+extends: oht_chunk_v4_regression_state_8x40.yaml
+exp_id: oht-key-chunk-v4-delta-state
+chunk_policy:
+  # Initial-TCP axes for translation increments; SO(3) composition for rotations.
+  # Loss and public actions remain the cumulative absolute world EEF trajectory.
+  prediction_representation: delta_pose

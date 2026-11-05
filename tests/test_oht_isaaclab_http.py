@@ -14,7 +14,7 @@ from tests.test_oht_vla_server import fixture, prediction, envelope  # noqa: F40
 from finetune.OHT.action_modes import action_options, action_descriptor
 from finetune.OHT.data.dataset import OHTDataset
 from finetune.OHT.data.geometry import pose_matrix
-from finetune.OHT.runtime.raw_observation import RAW_FORMAT, decode_raw, OPENGL_TO_OPTICAL
+from finetune.OHT.runtime.raw_observation import RAW_FORMAT, decode_raw, OPENGL_TO_OPTICAL, profile_task
 from finetune.OHT.runtime.transport import pack_observation
 from finetune.OHT.runtime.http_client import BridgeVLAClient
 from finetune.OHT.runtime.isaaclab_bridge import osc_command, IsaacLabBridge, pose_wxyz_matrix
@@ -118,6 +118,97 @@ class Opener:
         if response.status_code != 200:
             raise urllib.error.HTTPError(request.full_url, response.status_code, response.text, {}, None)
         return io.BytesIO(response.content)
+
+
+@pytest.mark.parametrize('task', ['assemble_left', 'assemble_right', 'disassemble_left', 'disassemble_right'])
+@pytest.mark.parametrize('suffix', ['', '-seg'])
+def test_profile_task_recognizes_raw_dataset_directory(task, suffix):
+    assert profile_task(f'{task}{suffix}/lerobot_dataset') == task
+
+
+@pytest.mark.parametrize('name', ['default', '.', 'lerobot_dataset',
+                                  'not_disassemble_left-seg/lerobot_dataset',
+                                  'disassemble_left-seg-extra/lerobot_dataset',
+                                  'assemble_left/disassemble_right-seg/lerobot_dataset'])
+def test_profile_task_does_not_guess_unknown_or_ambiguous_names(name):
+    assert profile_task(name) is None
+
+
+@pytest.mark.parametrize('profiles,expected', [
+    ({'disassemble_left/lerobot_dataset': {'task': 'disassemble_left'}},
+     'disassemble_left/lerobot_dataset'),
+    ({'disassemble_left-seg/lerobot_dataset': {'task': 'disassemble_left'}},
+     'disassemble_left-seg/lerobot_dataset'),
+    ({'export-01': {'task': 'disassemble_left'}}, 'export-01'),
+    ({'default': {'task': None}}, 'default'),
+    ({'.': {'task': None}}, '.'),
+    ({'lerobot_dataset': {'task': None}}, 'lerobot_dataset'),
+    ({'disassemble_left-seg/lerobot_dataset': {'task': None},
+      'disassemble_right-seg/lerobot_dataset': {'task': None}},
+     'disassemble_left-seg/lerobot_dataset'),
+    ({'left': {'task': 'disassemble_left'}, 'right': {'task': 'disassemble_right'},
+      'generic': {'task': None}}, 'left'),
+])
+def test_client_selects_unique_advertised_task_or_single_generic_profile(profiles, expected):
+    client = BridgeVLAClient.__new__(BridgeVLAClient)
+    client.info = {'raw_observation': {'data_profiles': profiles}}
+    assert client.profile('disassemble_left') == expected
+
+
+@pytest.mark.parametrize('profiles', [
+    {},
+    {'right': {'task': 'disassemble_right'}},
+    {'left-a': {'task': 'disassemble_left'}, 'left-b': {'task': 'disassemble_left'}},
+    {'disassemble_left/lerobot_dataset': {'task': 'disassemble_left'},
+     'disassemble_left-seg/lerobot_dataset': {'task': 'disassemble_left'}},
+    {'generic-a': {'task': None}, 'generic-b': {'task': None}},
+    {'right': {'task': 'disassemble_right'}, 'generic': {'task': None}},
+])
+def test_client_profile_selection_failure_lists_candidates(profiles):
+    client = BridgeVLAClient.__new__(BridgeVLAClient)
+    client.info = {'raw_observation': {'data_profiles': profiles}}
+    with pytest.raises(ValueError, match='Select --data-profile') as error:
+        client.profile('disassemble_left')
+    assert 'disassemble_left' in str(error.value)
+    for name, profile in profiles.items():
+        assert name in str(error.value)
+        assert str(profile['task']) in str(error.value)
+
+
+def test_client_explicit_profile_resolves_ambiguity_but_rejects_wrong_task():
+    client = BridgeVLAClient.__new__(BridgeVLAClient)
+    client.info = {'raw_observation': {'data_profiles': {
+        'left-a': {'task': 'disassemble_left'}, 'left-b': {'task': 'disassemble_left'},
+        'right': {'task': 'disassemble_right'}, 'generic': {'task': None},
+        'disassemble_right-seg/lerobot_dataset': {'task': None}}}}
+    assert client.profile('disassemble_left', 'left-b') == 'left-b'
+    assert client.profile('disassemble_left', 'generic') == 'generic'
+    for name in ('right', 'missing', 'disassemble_right-seg/lerobot_dataset'):
+        with pytest.raises(ValueError, match='Unknown/mismatched'):
+            client.profile('disassemble_left', name)
+
+
+@pytest.mark.parametrize('suffix', ['', '-seg'])
+def test_profile_http_auto_selection_and_task_guard(fixture, replay_fixture, suffix):
+    tensors, row, raw = raw_sample(replay_fixture.replay, fixture.policy)
+    profiles = fixture.policy.contract['source_data_configs']
+    name = raw['task'] + suffix + '/lerobot_dataset'
+    profiles[name] = profiles.pop(raw['data_profile'])
+    raw['data_profile'] = name
+    with TestClient(fixture.app()) as server:
+        client = BridgeVLAClient('http://testserver', opener=Opener(server))
+        assert client.info['raw_observation']['data_profiles'][name]['task'] == raw['task']
+        assert client.profile(raw['task']) == name
+        info = client.info
+        request = prediction(fixture, info)
+        request.update(observation_format=RAW_FORMAT, observation=copy.deepcopy(raw))
+        request['observation']['task'] = ('disassemble_right' if raw['task'] != 'disassemble_right'
+                                          else 'disassemble_left')
+        assert server.post('/predict', json=request).status_code == 422
+        assert not fixture.policy.calls
+        client.reset()
+        action, response = client.predict(tensors, row['goal'], 0., task=raw['task'], data_profile=name)
+        assert action.shape == (8,) and response['step'] == 0
 
 
 def test_http_client_raw_session_and_no_retry_after_timeout(fixture, replay_fixture):

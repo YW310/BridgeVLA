@@ -23,7 +23,8 @@ def data_profiles(policy):
 
 
 def profile_task(name):
-    tasks = set(PurePosixPath(name).parts) & set(GOALS)
+    # Match the original and segmentation directories accepted by reader.discover.
+    tasks = {part.removesuffix('-seg') for part in PurePosixPath(name).parts} & set(GOALS)
     return next(iter(tasks)) if len(tasks) == 1 else None
 
 

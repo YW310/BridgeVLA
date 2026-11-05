@@ -25,7 +25,7 @@ def test_shipped_roi_is_enabled_but_legacy_configs_remain_unfiltered():
     path = Path(__file__).resolve().parents[1] / "finetune/OHT/configs/dataset.yaml"
     config = yaml.safe_load(path.read_text(encoding="utf-8"))
     assert config["point_cloud_filter"] == dict(
-        enabled=True, keep_bounds=[-.3, -.8, .4, 1.2, .8, 1.9], exclude_boxes=[])
+        enabled=True, keep_bounds=[-.3, -.65, .5, .9, .7, 1.65], exclude_boxes=[])
     assert point_filter_options() == dict(enabled=False, keep_bounds=None, exclude_boxes=[])
     validate_data_config(config)
     config.pop("point_cloud_filter")

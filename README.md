@@ -29,6 +29,8 @@ As illustrated in the following figure, BridgeVLA employs a dual-phase training 
 
 ## 快速开始
 
+完整阅读可打开[图解手册（单页 HTML）](docs/handbook.html)：汇总设计、全部文档、数据/训练/部署命令与算法流程，浅色、离线可读。源文档仍按主题维护。
+
 以下命令面向 Linux / Bash。安装脚本中的路径、模拟器环境变量，以及训练配置中的数据和权重路径，需要先按机器修改；不同 benchmark 建议使用独立 Conda 环境，并提前取得 PaliGemma 权重访问权限。
 
 <a id=installation></a>
@@ -50,7 +52,7 @@ conda activate bridgevla
 
 ### OHT v423
 
-OHT 数据迁移、baseline 与 predicted object assistance 的命令和接入说明见 [OHT 实施指南](finetune/OHT/README.md)；设计依据见 [迁移方案](docs/design/oht-data-migration.md)。
+OHT 统一按三份文档阅读：[数据](docs/oht/data.md) → [训练与模型](docs/oht/training.md) → [部署与回放](docs/oht/runtime.md)。已确认的 `regression_state` 基线、模型设计与交接经验均并入训练文档。
 
 ### RLBench 训练
 
@@ -70,29 +72,31 @@ GPUS_PER_NODE=2 bash train_8x40.sh --exp_cfg_path configs/rlbench_config.yaml \
 
 ### 评估
 
-在 `finetune/RLBench` 下修改 `eval.sh` 中的任务和 checkpoint 路径后执行 `bash eval.sh`。
+RLBench 通过环境变量设置任务和 checkpoint 路径后执行 `bash finetune/RLBench/eval.sh`，完整命令见[评估说明](docs/guides/evaluation.md#rlbench)。
 长时间测试可加 `EVAL_RESUME=1`，按 episode 自动恢复；参数签名、限制和结果位置见
 [闭环日志与恢复限制](docs/guides/object-conditioning.md#评估日志与最终统计)。
-其他 benchmark 见 [评估说明](docs/guides/evaluation.md)；O2 的 GT、预测与 no-prior 对照见 [O2 评估](docs/guides/object-conditioning.md#closed-loop评估)。
+其他 benchmark 见 [评估说明](docs/guides/evaluation.md)；对象条件策略的 GT、预测与 no-prior 对照见 [对象条件策略评估](docs/guides/object-conditioning.md#closed-loop评估)。
 
 ## 文档导航
 
 | 需求 | 文档 |
 | --- | --- |
+| 算法整体流程、输入输出维度与 Action chunk | [交互算法总览（HTML）](docs/design/algorithm-overview.html) |
+| OHT 数据、训练与模型、部署与回放 | [数据](docs/oht/data.md) · [训练](docs/oht/training.md) · [运行](docs/oht/runtime.md) |
 | 环境与依赖 | [安装](docs/guides/installation.md) |
 | 预训练、各 benchmark 微调、8×40GB 和日志 | [训练](docs/guides/training.md) |
 | Raw 数据转 replay | [Replay 生成](docs/guides/replay.md) |
 | Oracle 实例字段、参数和排错 | [Oracle replay](docs/guides/oracle-replay.md) |
 | 严格 simulator-GT 角色标注 | [Semantic-GT](docs/guides/semantic-gt.md) |
-| O2 配置、GT/预测训练、闭环、可视化与验收 | [统一操作指南](docs/guides/object-conditioning.md) |
+| 对象条件策略配置、GT/预测训练、闭环、可视化与验收 | [统一操作指南](docs/guides/object-conditioning.md) |
 | 各 benchmark 评估命令 | [评估](docs/guides/evaluation.md) |
 | 论文结果、发布记录 | [结果与历史](docs/experiments/results.md) |
-| O2 整体架构与精简角色方案（研究设计） | [架构图](docs/design/role-relation-prior.md#整体架构) |
+| 对象条件策略整体架构与精简角色方案（研究设计） | [架构图](docs/design/role-relation-prior.md#整体架构) |
 | 无 GT 的真实机器人部署路线 | [Real-world 设计](docs/design/role-relation-prior.md#真实机器人部署后续规划) |
 | 数据流、对应函数与项目审查 | [代码索引](docs/reference/code-map.md) |
 | Object-centric policy / memory 论文调研 | [Survey](docs/research/object-centric-policy-memory.md) |
 
-完整阅读路径见 [文档索引](docs/README.md)。O2 的 GT 配置是 Oracle 上界实验；external
+完整阅读路径见 [文档索引](docs/README.md)。对象条件策略（Object-conditioned BridgeVLA，旧代号 O2）的 GT 配置是 Oracle 上界实验；external
 prediction 和 internal slots 才是无 Oracle 的部署路线。研究设计文档中的扩展方案不等同于已实现功能。
 
 <a id=experimental-results></a>

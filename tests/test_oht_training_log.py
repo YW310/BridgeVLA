@@ -119,6 +119,27 @@ def test_train_none_keeps_jsonl_without_events(replay_fixture, tmp_path, cpu_tra
     assert not (output / "tensorboard").exists()
 
 
+@pytest.mark.parametrize('option,interval,expected_steps', [
+    ('--loss-print-interval', '2', [1, 2, 4, 5]),
+    ('--loss_print_interval', '0', []),
+])
+def test_shared_terminal_interval_does_not_drop_jsonl_steps(
+        replay_fixture, tmp_path, cpu_training, capsys, option, interval, expected_steps):
+    config = load(Path(__file__).resolve().parents[1] / 'finetune/OHT/configs/smoke.yaml')
+    config.update(optimizer_steps=5, checkpoint_interval=5)
+    path, output = tmp_path / 'train.yaml', tmp_path / 'run'
+    path.write_text(yaml.safe_dump(config), encoding='utf-8')
+    assert train.main(['--config', str(path), '--replay', str(replay_fixture.replay),
+                       '--output', str(output), '--log-backend', 'none', option, interval]) == 0
+    captured = capsys.readouterr()
+    lines = [line for line in captured.out.splitlines() if line.startswith('[train]')]
+    assert [int(line.split('step=')[1].split()[0]) for line in lines] == expected_steps
+    assert all('total_loss=' in line and 'lr=' in line for line in lines)
+    assert 'train:' in captured.err  # tqdm remains active with the metric backend disabled.
+    rows = [json.loads(line) for line in (output / 'metrics.jsonl').read_text().splitlines()]
+    assert [row['step'] for row in rows] == [1, 2, 3, 4, 5]
+
+
 def test_preflight_does_not_require_tensorboard(replay_fixture, tmp_path, monkeypatch):
     def unexpected():
         raise AssertionError("Data preflight must not require TensorBoard")

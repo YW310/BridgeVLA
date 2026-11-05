@@ -5,11 +5,13 @@ import json
 from pathlib import Path
 import random
 import sys
+import traceback
 
 import numpy as np
 
 from .isaaclab_runtime import IsaacLabRuntime
 from .isaaclab_scene import expected_asset, scene_configuration
+from ..data.common import write_json
 
 
 def launch_application(extra):
@@ -131,7 +133,20 @@ def create_runtime(*, args, model_info):
         print(f'[BridgeVLA] native env={args.env_id} config={scene_info["config"]} '
               f'ee_link={runtime.ee_link} cameras={runtime.camera_source}', flush=True)
         return runtime
-    except BaseException:
+    except BaseException as exc:
+        print('[BridgeVLA] native runtime initialization failed before cleanup:', file=sys.stderr, flush=True)
+        error_traceback = traceback.format_exc()
+        print(error_traceback, file=sys.stderr, flush=True)
+        # The caller cannot save this failure if app.close() exits the process.
+        # Only write into an output directory already created by the CLI.
+        output = getattr(args, 'output', None)
+        if output is not None and Path(output).is_dir():
+            try:
+                write_json(Path(output) / 'startup.json', dict(
+                    status='failed', phase='runtime', error=f'{type(exc).__name__}: {exc}',
+                    traceback=error_traceback))
+            except Exception as log_error:
+                print(f'[BridgeVLA] could not save startup.json: {log_error}', file=sys.stderr, flush=True)
         if runtime is not None:
             runtime.close()
         else:

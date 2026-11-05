@@ -7,21 +7,7 @@ from torch.nn import functional as F
 
 from .action_modes import action_options, validate_action
 from .chunk_config import chunk_settings, chunk_scale
-
-
-def rotation_6d(value):
-    first = F.normalize(value[..., :3], dim=-1, eps=1e-8)
-    second = F.normalize(value[..., 3:] - (first * value[..., 3:]).sum(-1, keepdim=True) * first,
-                         dim=-1, eps=1e-8)
-    return torch.stack((first, second, torch.linalg.cross(first, second)), dim=-1)
-
-
-def quaternion_matrix(quaternion):
-    q = F.normalize(quaternion, dim=-1)
-    x, y, z, w = q.unbind(-1)
-    return torch.stack((1-2*(y*y+z*z), 2*(x*y-z*w), 2*(x*z+y*w),
-                        2*(x*y+z*w), 1-2*(x*x+z*z), 2*(y*z-x*w),
-                        2*(x*z-y*w), 2*(y*z+x*w), 1-2*(x*x+y*y)), -1).reshape(*q.shape[:-1], 3, 3)
+from ..bridgevla.geometry.torch_ops import quaternion_matrix, rotation_6d, world_to_local_points
 
 
 class ChunkDecoder(nn.Module):
@@ -62,8 +48,7 @@ class ChunkDecoder(nn.Module):
         # remain in world coordinates; goal is the detached predicted key pose.
         current = F.normalize(state[:, 3:7], dim=-1)
         target = F.normalize(goal[:, 3:7], dim=-1)
-        local_position = torch.einsum('bij,bj->bi', quaternion_matrix(current).transpose(-1, -2),
-                                      goal[:, :3] - state[:, :3]) / chunk_scale(self.settings, 'geometry_scale')
+        local_position = world_to_local_points(goal[:, :3], state[:, :3], quaternion_matrix(current)) / chunk_scale(self.settings, 'geometry_scale')
         xyz, w = current[:, :3], current[:, 3:4]
         target_xyz, target_w = target[:, :3], target[:, 3:4]
         relative = torch.cat((w * target_xyz - target_w * xyz - torch.linalg.cross(xyz, target_xyz),
@@ -160,6 +145,10 @@ class ChunkNetwork(nn.Module):
             prediction, extra = self.decoder.training_prediction(*context, target=chunk_target, valid=chunk_valid)
         else:
             prediction = self.decoder(*context)
+        if len(context) == 8 and context[7].numel():
+            local_valid = context[7]
+            extra.update(chunk_local_valid_rate=local_valid.float().mean().item(),
+                         chunk_local_empty_rate=(~local_valid.any(-1)).float().mean().item())
         return prediction, key_loss, metrics, extra
 
 
@@ -217,9 +206,13 @@ class ChunkAgent:
         handle = self.base._net_mod.register_forward_hook(lambda module, args, output: captured.append(output))
         try:
             self.base._net_mod.eval()
+            crop = (dict(chunk_tcp_world=state[None, :3],
+                         chunk_tcp_crop_size_m=self.settings['tcp_crop_size_m'])
+                    if self.settings['local_context'] == 'tcp' else {})
             with torch.set_grad_enabled(with_grad):
                 goal = self.base.act(0, observation, deterministic=True, return_gembench_action=True,
                                      **({'context_with_grad': True} if with_grad else {}),
+                                     **crop,
                                      visualization_callback=visualization_callback)
         finally:
             handle.remove()
@@ -227,18 +220,29 @@ class ChunkAgent:
             raise RuntimeError('Chunk encoder must make exactly one prediction-only backbone forward')
         output = captured[0]
         coarse = output['oht_chunk_tokens']
-        fine = output.get('mvt2', output)['oht_chunk_tokens']
+        if self.settings['local_context'] == 'tcp':
+            if 'oht_chunk_tcp' not in output:
+                raise ValueError('TCP context encoder did not provide the measured-TCP crop')
+            local = output['oht_chunk_tcp']
+        else:
+            local = output.get('mvt2', output)
+        fine = local['oht_chunk_tokens']
+        if self.settings['local_context'] == 'coarse_only':
+            fine = fine[:, :0]
         if not with_grad:
             coarse, fine = coarse.detach(), fine.detach()
         goal = torch.as_tensor(validate_action(goal, self.oht_action_config), device=self._device)[None]
         context = (coarse, fine, torch.as_tensor(state, device=self._device)[None], goal)
         if self.settings['spatial_conditioning']:
-            stages = output, output.get('mvt2', output)
+            stages = output, local
             for stage in stages:
                 if not {'oht_chunk_xyz_world', 'oht_chunk_valid'} <= stage.keys():
                     raise ValueError('Spatial chunk encoder did not provide aligned observed world XYZ/validity')
-            context += tuple(stage['oht_chunk_xyz_world'].detach() for stage in stages)
-            context += tuple(stage['oht_chunk_valid'].detach() for stage in stages)
+            fine_xyz, fine_valid = local['oht_chunk_xyz_world'], local['oht_chunk_valid']
+            if self.settings['local_context'] == 'coarse_only':
+                fine_xyz, fine_valid = fine_xyz[:, :0], fine_valid[:, :0]
+            context += (output['oht_chunk_xyz_world'].detach(), fine_xyz.detach(),
+                        output['oht_chunk_valid'].detach(), fine_valid.detach())
         return context
 
     def _key_loss(self, batch):
@@ -292,11 +296,15 @@ class ChunkAgent:
                 module.eval()
         try:
             return self.base.update(sample, return_loss=True)
+        except (ValueError, RuntimeError) as exc:
+            identities = [batch.get('sample_ids', ['unknown'] * len(valid))[i] for i in indices]
+            raise type(exc)(f'OHT key supervision failed for samples={identities}: {exc}') from exc
         finally:
             encoder.eval()
 
     def update(self, batch, loss_scale=1., reset_gradients=True, step_optimizer=True, return_visualization=False):
         payload = []
+        scene = {}
         batch_size = batch['tcp_pose'].shape[0]
         joint = self.settings['stage'] == 'joint'
         def context_builder():
@@ -309,6 +317,9 @@ class ChunkAgent:
                 while isinstance(goal, (list, tuple)):
                     goal = goal[0]
                 sample['goal'] = goal
+                if return_visualization and i == 0:
+                    from .chunk_visualization import scene_background
+                    scene.update(scene_background(sample))
                 contexts.append(self._context(sample, payload.append if return_visualization and i == 0 else None,
                                               with_grad=joint))
             return tuple(torch.cat([row[j] for row in contexts], 0) for j in range(len(contexts[0])))
@@ -319,6 +330,8 @@ class ChunkAgent:
             chunk_target=batch['action_chunk'][:, 0], chunk_valid=batch['action_valid'][:, 0])
         loss, metrics = chunk_loss(prediction, batch['action_chunk'][:, 0], batch['action_valid'][:, 0], self.settings,
                                    current_position=batch['tcp_pose'][:, 0, :3])
+        metrics.update({name: extra[name] for name in ('chunk_local_valid_rate', 'chunk_local_empty_rate')
+                        if name in extra})
         if 'flow_loss' in extra:
             weighted = self.settings['flow_weight'] * extra['flow_loss']
             loss = loss + weighted
@@ -351,6 +364,9 @@ class ChunkAgent:
                 selected = valid[:, :length]
                 metrics[f'chunk_prefix_{length}_position_error_m'] = error[:, :length][selected].mean().item() if selected.any() else 0.
         metrics.update(chunk_total_loss=loss.detach().item(), **key_metrics)
+        gate = getattr(self._net_mod.decoder, 'key_gate_logit', None)
+        if gate is not None:
+            metrics['chunk_key_condition_gate'] = gate.detach().sigmoid().item()
         if key_loss is not None:
             loss = loss + self.settings['key_loss_weight'] * key_loss
         if not torch.isfinite(loss):
@@ -362,6 +378,7 @@ class ChunkAgent:
         result = dict(total_loss=reported_loss, **metrics)
         if return_visualization:
             result['train_visualization'] = dict(chunk=True, policy=payload[0] if payload else None,
+                **scene,
                 predicted=prediction[0][0].detach().float().cpu().numpy(),
                 target=batch['action_chunk'][0, 0, :self.settings['horizon'], :3].detach().float().cpu().numpy(),
                 valid=batch['action_valid'][0, 0, :self.settings['horizon']].cpu().numpy(),
@@ -422,7 +439,8 @@ def load_chunk_weights(agent, checkpoint, initialize=False):
                            'displacement_weight', 'displacement_scale', 'goal_conditioning',
                            'flow_weight', 'flow_steps', 'flow_inference_seed', 'flow_time_sampling',
                            'position_loss_scale', 'second_difference_weight', 'second_difference_scale',
-                           'normalization_quantile', 'normalization_min_scale', 'normalization_max_samples'}:
+                           'normalization_quantile', 'normalization_min_scale', 'normalization_max_samples',
+                           'spatial_key_token', 'local_context', 'tcp_crop_size_m'}:
                 state = checkpoint['model_state']
                 if 'goal_conditioning' in changed:
                     # Same dimensions, different meaning: relearn only the goal
@@ -431,6 +449,13 @@ def load_chunk_weights(agent, checkpoint, initialize=False):
                     for name, value in agent._net_mod.state_dict().items():
                         if name.startswith('decoder.goal.'):
                             state[name] = value
+                if 'spatial_key_token' in changed and agent.settings['spatial_key_token']:
+                    # A previously suppressed key gate must not silence the new
+                    # route before its first training update. Other compatible
+                    # encoder/decoder weights are retained for this new run.
+                    state = dict(state)
+                    state['decoder.key_gate_logit'] = agent._net_mod.decoder.key_gate_logit.detach().clone()
+                    print('Chunk initialization: spatial key token enabled; key gate reset to configured initial value', flush=True)
                 agent._net_mod.load_state_dict(state, strict=True)
             else:
                 encoder = {key.removeprefix('encoder.'): value for key, value in checkpoint['model_state'].items()

@@ -1,6 +1,7 @@
 """A distinct prediction schema; single-action clients cannot execute a chunk as a key."""
 import numpy as np
 from ..action_modes import validate_action
+from ...bridgevla.geometry.numpy_ops import validate_unit_quaternions
 
 SCHEMA = 'bridgevla_oht_eef_chunk_v1'
 
@@ -30,8 +31,7 @@ def validate_prediction(prediction, spec):
     actions = np.asarray(prediction['actions'], dtype=np.float32)
     if actions.shape != (spec['horizon'], 8) or not np.isfinite(actions).all():
         raise ValueError('Chunk prediction must be finite [K,8]')
-    if not np.allclose(np.linalg.norm(actions[:, 3:7], axis=1), 1., atol=1e-5, rtol=1e-5):
-        raise ValueError('Chunk quaternions must be unit xyzw')
+    validate_unit_quaternions(actions[:, 3:7], 'Chunk quaternions')
     actions = np.stack([validate_action(action, None) for action in actions])
     key = validate_action(prediction['key_action'], None)
     offsets = np.arange(1, spec['horizon'] + 1) * spec['action_dt']

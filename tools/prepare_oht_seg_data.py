@@ -1,7 +1,9 @@
 """Run the OHT segmentation data pipeline without overwriting existing outputs."""
 import argparse
+from collections import deque
 from datetime import datetime
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -16,6 +18,7 @@ def parser():
     p.add_argument('--output', help='New output directory; default: ROOT/bridgevla-seg-vN-TIMESTAMP')
     p.add_argument('--config', default=str(REPO_ROOT / 'finetune/OHT/configs/dataset.yaml'))
     p.add_argument('--mapping', default=str(REPO_ROOT / 'finetune/OHT/configs/seg_roles.yaml'))
+    p.add_argument('--audit-manifest', help='Reuse an existing unchanged-raw audit; copied into the new output')
     p.add_argument('--replay-version', type=int, choices=(3, 4), default=4,
                    help='4 (default): key goals + dense action chunks + masks; 3: single-key replay + masks + 3D teacher')
     p.add_argument('--seed', type=int, default=0)
@@ -37,8 +40,14 @@ def commands(args):
     def command(tool, *values):
         return [sys.executable, '-u', str(REPO_ROOT / 'tools' / tool), *map(str, values)]
 
-    stages = [('audit', command('audit_oht_dataset.py', '--root', args.root, '--output', audit,
-                               '--seed', args.seed))]
+    stages = ([] if args.audit_manifest else
+              [('audit', command('audit_oht_dataset.py', '--root', args.root, '--output', audit,
+                                 '--seed', args.seed))])
+    if args.replay_version == 4:
+        stages.append(('workspace', command('check_oht_workspace.py', '--root', args.root,
+            '--manifest', audit, '--config', out / 'dataset.yaml', '--output', out / 'workspace.json',
+            '--sample-stride', args.sample_stride, '--chunk-horizon', args.chunk_horizon,
+            '--action-frame-stride', args.action_frame_stride)))
     build = command('build_oht_replay.py', '--root', args.root, '--manifest', audit,
                     '--config', out / 'dataset.yaml', '--output', replay,
                     '--replay-version', args.replay_version, '--sample-stride', args.sample_stride,
@@ -69,6 +78,36 @@ def write_status(path, value):
     temporary.replace(path)
 
 
+def run_stage(command, log_path):
+    """Tee combined child output to the terminal and disk; bound the error tail."""
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    tail = deque(maxlen=40)
+    environment = dict(os.environ, PYTHONIOENCODING='utf-8')
+    with log_path.open('w', encoding='utf-8') as stream:
+        with subprocess.Popen(command, cwd=REPO_ROOT, stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, text=True, encoding='utf-8',
+                              errors='replace', bufsize=1, env=environment) as process:
+            try:
+                for line in process.stdout:
+                    stream.write(line)
+                    stream.flush()
+                    sys.stdout.write(line)
+                    sys.stdout.flush()
+                    tail.append(line[-2000:])
+                code = process.wait()
+            except BaseException:
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait()
+                raise
+    if code:
+        raise subprocess.CalledProcessError(code, command, output=''.join(tail)[-8000:])
+
+
 def main(argv=None):
     p = parser()
     args = p.parse_args(argv)
@@ -89,6 +128,11 @@ def main(argv=None):
         if not value.is_file():
             p.error(f'Missing {name}: {value}')
         setattr(args, name, str(value))
+    if args.audit_manifest:
+        manifest = Path(args.audit_manifest).resolve()
+        if not manifest.is_file():
+            p.error(f'Missing audit manifest: {manifest}')
+        args.audit_manifest = str(manifest)
     if not Path(args.root).is_dir():
         p.error(f'Missing raw root: {args.root}')
     if args.output is None:
@@ -109,7 +153,9 @@ def main(argv=None):
         print('[OHT prepare] dry-run only: no replay, masks or JSON files were generated.', flush=True)
         return 0
     output.mkdir(parents=True, exist_ok=False)
-    status = dict(status='running', options=vars(args), completed=[], stages=dict(stages))
+    reused = ['audit'] if args.audit_manifest else []
+    status = dict(status='running', options=vars(args), completed=list(reused), reused=reused,
+                  stages=dict(stages), logs={})
     status_path = output / 'pipeline.json'
     write_status(status_path, status)
     print(f'[OHT prepare] status={status_path}\n'
@@ -117,15 +163,21 @@ def main(argv=None):
     try:
         shutil.copyfile(args.config, output / 'dataset.yaml')
         shutil.copyfile(args.mapping, output / 'seg_roles.yaml')
+        if args.audit_manifest:
+            shutil.copyfile(args.audit_manifest, output / 'audit.json')
+            print(f'[OHT prepare] reused audit={args.audit_manifest}; seed/splits come from that manifest', flush=True)
     except OSError as exc:
         status.update(status='failed', failed_stage='setup', error=str(exc))
         write_status(status_path, status)
         print(f'[OHT prepare] stopped at setup: {exc}; see {status_path}', file=sys.stderr, flush=True)
         return 1
     for name, command in stages:
-        print(f'\n[OHT prepare] starting {name}', flush=True)
+        log_path = output / 'logs' / f'{name}.log'
+        status['logs'][name] = str(log_path)
+        write_status(status_path, status)
+        print(f'\n[OHT prepare] starting {name}; log={log_path}', flush=True)
         try:
-            subprocess.run(command, cwd=REPO_ROOT, check=True)
+            run_stage(command, log_path)
             if name == 'replay':
                 replay = output / f'replay-source-v{args.replay_version}'
                 missing = [str(replay / filename) for filename in ('contract.json', 'complete.json')
@@ -135,9 +187,11 @@ def main(argv=None):
                                             + ', '.join(missing)
                                             + '. Stopping before validation; inspect the build output above.')
         except (subprocess.CalledProcessError, OSError, KeyboardInterrupt) as exc:
-            status.update(status='failed', failed_stage=name, error=str(exc))
+            status.update(status='failed', failed_stage=name, error=str(exc), log_file=str(log_path))
+            if isinstance(exc, subprocess.CalledProcessError) and exc.output:
+                status['error_tail'] = exc.output
             write_status(status_path, status)
-            print(f'[OHT prepare] stopped at {name}; see {status_path}', file=sys.stderr, flush=True)
+            print(f'[OHT prepare] stopped at {name}; see {log_path} and {status_path}', file=sys.stderr, flush=True)
             return exc.returncode if isinstance(exc, subprocess.CalledProcessError) and exc.returncode > 0 else 1
         status['completed'].append(name)
         write_status(status_path, status)

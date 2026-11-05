@@ -6,6 +6,7 @@ order. An absent next key is independent of a still-valid future chunk.
 from numbers import Integral, Real
 
 import numpy as np
+from ...bridgevla.geometry.numpy_ops import quaternion, validate_unit_quaternions
 
 
 SCHEMA = "oht_bridgevla_v4"
@@ -113,10 +114,10 @@ def _actions(poses, joints, gripper, indices):
     _finite(grip, "binary gripper")
     if not np.isin(grip, (0, 1)).all():
         raise ValueError("Expected binary gripper in {0,1}")
-    norms = np.linalg.norm(pose[..., 3:], axis=-1, keepdims=True)
-    if np.any(norms < 1e-8) or not np.isfinite(norms).all():
-        raise ValueError("Expected nonzero finite xyzw quaternion")
-    pose[..., 3:] /= norms
+    try:
+        pose[..., 3:] = quaternion(pose[..., 3:])
+    except ValueError as error:
+        raise ValueError("Expected nonzero finite xyzw quaternion") from error
     pose[..., 3:] *= np.where(pose[..., 6:7] < 0, -1, 1)
     with np.errstate(over="ignore"):
         action = np.concatenate((pose, grip[..., None]), axis=-1).astype(np.float32)
@@ -266,7 +267,6 @@ def validate_chunk_targets(targets, config, row):
     if key_valid:
         actions = np.concatenate((actions, arrays["key_action"][None]), axis=0)
         joint_actions = np.concatenate((joint_actions, arrays["key_joint_action"][None]), axis=0)
-    if not np.allclose(np.linalg.norm(actions[:, 3:7], axis=1), 1, atol=1e-5, rtol=1e-5):
-        raise ValueError("Action TCP quaternions must be unit xyzw quaternions")
+    validate_unit_quaternions(actions[:, 3:7], "Action TCP quaternions")
     if not np.isin(actions[:, 7], (0, 1)).all() or not np.array_equal(actions[:, 7], joint_actions[:, 6]):
         raise ValueError("Action and joint action must agree on binary gripper")

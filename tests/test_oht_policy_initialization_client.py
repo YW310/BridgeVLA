@@ -129,6 +129,55 @@ def test_initialization_dry_run_does_not_restore_joints_or_predict(trajectory, t
     assert not (output / 'episode_0000.json').exists()
 
 
+@pytest.mark.parametrize('phase', ['live_markers', 'control_diagnostics'])
+@pytest.mark.parametrize('shutdown_exits', [False, True])
+def test_startup_failure_is_saved_before_simulator_close(
+        trajectory, tmp_path, monkeypatch, capsys, phase, shutdown_exits):
+    from finetune.OHT.runtime import isaaclab_factory as native
+    env, app_state = replay_simulator(monkeypatch, trajectory)
+    policy = LivePolicy(trajectory, env)
+    monkeypatch.setattr(runner, 'BridgeVLAClient', lambda *args: policy)
+    output = tmp_path / 'startup-failed'
+    original_launch = native.launch_application
+    inspection = []
+
+    def inspect(reference, inspected_env):
+        assert inspected_env is env and not env.closed
+        assert json.loads((output / 'startup.json').read_text())['status'] == 'failed'
+        inspection.append(True)
+
+    monkeypatch.setattr(runner, 'keep_open_after_error', inspect)
+
+    def launch(extra):
+        app, options = original_launch(extra)
+        original_close = app.close
+        def close():
+            saved = json.loads((output / 'startup.json').read_text())
+            assert saved['status'] == 'failed' and saved['phase'] == phase
+            assert saved['error'] == 'ValueError: injected startup failure'
+            assert 'Traceback' in saved['traceback']
+            stderr = capsys.readouterr().err
+            assert 'startup failed: phase=' + phase in stderr
+            assert 'ValueError: injected startup failure' in stderr
+            original_close()
+            if shutdown_exits:
+                raise SystemExit(17)
+        app.close = close
+        return app, options
+
+    monkeypatch.setattr(native, 'launch_application', launch)
+    def broken(*args, **kwargs):
+        raise ValueError('injected startup failure')
+    monkeypatch.setattr(runner, 'LiveMarkers' if phase == 'live_markers' else 'control_report', broken)
+    expected = SystemExit if shutdown_exits else ValueError
+    with pytest.raises(expected):
+        runner.main(command(trajectory, output, '--keep-open-on-error'))
+    assert inspection == [True]
+    assert env.closed and app_state.app_closed
+    assert not policy.predictions and not policy.resets and not env.commands and not env.writes
+    assert not (output / 'episode_0000.json').exists()
+
+
 @pytest.mark.parametrize('extra', [
     ['--initial-state-frame', '0'],
     ['--initial-state-frame=0'],

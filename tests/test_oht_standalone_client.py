@@ -76,6 +76,34 @@ def fake_simulator(monkeypatch, env):
     return state
 
 
+def test_native_factory_saves_failure_before_app_close_can_exit(tmp_path, monkeypatch, capsys):
+    env = environment('eef')
+    state = fake_simulator(monkeypatch, env)
+    original_launch = native.launch_application
+    output = tmp_path / 'startup'
+    output.mkdir()
+    def launch(extra):
+        app, options = original_launch(extra)
+        def close():
+            saved = json.loads((output / 'startup.json').read_text())
+            assert saved['status'] == 'failed' and saved['phase'] == 'runtime'
+            assert saved['error'] == 'ValueError: camera initialization failed'
+            assert 'Traceback' in saved['traceback']
+            assert 'camera initialization failed' in capsys.readouterr().err
+            state.app_closed = True
+            raise SystemExit(17)
+        app.close = close
+        return app, options
+    monkeypatch.setattr(native, 'launch_application', launch)
+    def broken_cameras(*args):
+        raise ValueError('camera initialization failed')
+    monkeypatch.setattr(native, 'build_cameras', broken_cameras)
+    with pytest.raises(SystemExit, match='17'):
+        native.create_runtime(args=native_arguments(output=str(output)),
+                              model_info={'action_spec': {'mode': 'eef'}, 'cameras': []})
+    assert env.closed and state.app_closed and not env.commands
+
+
 @pytest.mark.parametrize('mode', ['eef', 'relative_eef', 'joint', 'relative_joint'])
 def test_builtin_default_launches_and_runs_http(fixture, replay_fixture, tmp_path, monkeypatch, mode):
     tensors, _, raw = raw_sample(replay_fixture.replay, fixture.policy)
@@ -83,6 +111,13 @@ def test_builtin_default_launches_and_runs_http(fixture, replay_fixture, tmp_pat
     original = fixture.policy.act
     def act(*args):
         original(*args)
+        if len(fixture.policy.calls) == 2:
+            # The first completed action must be available while the episode
+            # is still running, before its aggregate JSON has been written.
+            assert not (output / 'episode_0000.json').exists()
+            events = [json.loads(line) for line in (output / 'episode_0000.jsonl').read_text(encoding='utf-8').splitlines()]
+            assert [item['event'] for item in events] == ['episode_start', 'prediction', 'action']
+            assert events[-1]['step'] == 0 and events[-1]['measured_after']
         return (np.array([.2, 0, .5, 0, 0, 0, 1, 1], np.float32) if mode == 'eef' else
                 np.array([.01, 0, 0, 0, 0, 0, 1], np.float32))
     fixture.policy.act = act
@@ -101,6 +136,11 @@ def test_builtin_default_launches_and_runs_http(fixture, replay_fixture, tmp_pat
     assert env.closed and state.app_closed and sys.argv == previous_argv
     metadata = json.loads((output / 'run.json').read_text(encoding='utf-8'))
     assert metadata['runtime_factory'] == 'finetune.OHT.runtime.isaaclab_factory:create_runtime'
+    assert metadata['dry_run'] is False
+    advertised = json.loads((output / 'model_info.json').read_text(encoding='utf-8'))
+    assert metadata['checkpoint'] == advertised['checkpoint']
+    assert metadata['model_id'] == advertised['model_id']
+    assert metadata['chunk_policy'] is None
     assert metadata['reference_client'] is None and metadata['camera_source'] == 'sensors'
     assert metadata['ee_link'] == 'tool'
     summary = json.loads((output / 'summary.json').read_text(encoding='utf-8'))
@@ -109,6 +149,88 @@ def test_builtin_default_launches_and_runs_http(fixture, replay_fixture, tmp_pat
     episode = json.loads((output / 'episode_0000.json').read_text(encoding='utf-8'))
     assert 'gripper_position' in episode['actions'][0]['measured_after']
     assert episode['actions'][0]['errors_after']
+    events = [json.loads(line) for line in (output / 'episode_0000.jsonl').read_text(encoding='utf-8').splitlines()]
+    assert [item['event'] for item in events] == ['episode_start', 'prediction', 'action', 'prediction', 'action', 'episode_end']
+    assert events[-1]['steps'] == 2 and events[-1]['stop_reason'] == 'max_steps'
+
+
+def test_keyboard_interrupt_saves_progress_and_unexecuted_prediction(fixture, replay_fixture, tmp_path, monkeypatch):
+    tensors, _, raw = raw_sample(replay_fixture.replay, fixture.policy)
+    env = environment('eef', raw['task'])
+    env.action_manager.get_term('arm_action').cfg = SimpleNamespace(body_name='tool', position_scale=1., orientation_scale=1.)
+    env.scene.sensors = sensors_for(tensors, fixture.policy.contract['data_config']['cameras'])
+    state = fake_simulator(monkeypatch, env)
+    original = env.step
+    def interrupt(value):
+        if env.common_step_counter == 1:
+            raise KeyboardInterrupt
+        return original(value)
+    env.step = interrupt
+    output = tmp_path / 'interrupted-run'
+    with TestClient(fixture.app()) as server:
+        monkeypatch.setattr(runner, 'BridgeVLAClient',
+                            lambda *args: BridgeVLAClient('http://testserver', opener=Opener(server)))
+        assert runner.main(['--env-id', 'OHT-test', '--ee-link', 'tool', '--task', raw['task'], '--episodes', '1',
+            '--execution-mode', 'streaming', '--max-steps', '5', '--output', str(output), '--headless',
+            '--keep-open-on-error']) == 1
+    record = json.loads((output / 'episode_0000.json').read_text(encoding='utf-8'))
+    assert record['steps'] == 1 and record['stop_reason'] == 'interrupted'
+    events = [json.loads(line) for line in (output / 'episode_0000.jsonl').read_text(encoding='utf-8').splitlines()]
+    assert [item['event'] for item in events] == ['episode_start', 'prediction', 'action', 'prediction', 'episode_end']
+    assert events[-2]['step'] == 1 and events[-1]['steps'] == 1
+    assert env.common_step_counter == 1 and env.closed and state.app_closed
+
+
+@pytest.mark.parametrize('enabled', [False, True])
+def test_client_chunk_ensemble_is_opt_in_and_preserves_raw_predictions(fixture, replay_fixture, tmp_path, monkeypatch, enabled):
+    from finetune.OHT.data.geometry import tcp_pose
+    from finetune.OHT.runtime.chunk_protocol import chunk_spec
+    tensors, _, raw = raw_sample(replay_fixture.replay, fixture.policy)
+    env = environment('eef', raw['task'])
+    env.action_manager.get_term('arm_action').cfg = SimpleNamespace(body_name='tool', position_scale=1., orientation_scale=1.)
+    env.scene.sensors = sensors_for(tensors, fixture.policy.contract['data_config']['cameras'])
+    fake_simulator(monkeypatch, env)
+
+    class ChunkClient(BridgeVLAClient):
+        def __init__(self, opener):
+            super().__init__('http://testserver', opener=opener)
+            self.chunk_spec = chunk_spec({'horizon': 4, 'execute_horizon': 2}, {'chunk': {'action_dt': env.step_dt}})
+            self.info['chunk_spec'] = self.chunk_spec
+            self.info['chunk_policy'] = dict(decoder_type='regression', prediction_representation='delta_pose',
+                                             proprio_center=[0.] * 6 + [.5], proprio_scale=[1.] * 6 + [.5])
+
+        def predict(self, tensors, instruction, timestamp, **kwargs):
+            link = tensors['ee_link_pose']
+            current = tcp_pose(link[:3], link[3:][[1, 2, 3, 0]],
+                               fixture.policy.contract['data_config']['link_to_tcp'])
+            predicted = np.tile(np.r_[current, 1.], (4, 1)).astype(np.float32)
+            predicted[:, 0] += np.arange(1, 5) * .001 + self.step * .002
+            self.step += 1
+            return predicted, dict(timing_ms={})
+
+    output = tmp_path / 'ensemble-run'
+    with TestClient(fixture.app()) as server:
+        monkeypatch.setattr(runner, 'BridgeVLAClient', lambda *args: ChunkClient(Opener(server)))
+        assert runner.main(['--env-id', 'OHT-test', '--ee-link', 'tool', '--task', raw['task'], '--episodes', '1',
+            '--max-steps', '2', '--output', str(output), '--headless',
+            *(['--chunk-temporal-ensemble'] if enabled else [])]) == 0
+    record = json.loads((output / 'episode_0000.json').read_text(encoding='utf-8'))
+    run = json.loads((output / 'run.json').read_text(encoding='utf-8'))
+    advertised = json.loads((output / 'model_info.json').read_text(encoding='utf-8'))
+    assert run['chunk_policy'] == advertised['chunk_policy']
+    assert run['chunk_policy']['prediction_representation'] == 'delta_pose'
+    assert run['checkpoint'] == advertised['checkpoint']
+    assert env.common_step_counter == 4 and record['stop_reason'] == 'max_steps'
+    if enabled:
+        assert run['chunk_temporal_ensemble']['alignment'] == 'simulation_timestamp'
+        first, second = record['actions']
+        np.testing.assert_array_equal(first['action'], first['ensemble_action'])
+        assert second['temporal_ensemble']['contributors'] == [2, 2, 1, 1]
+        assert second['action'][0][0] != second['ensemble_action'][0][0]
+        np.testing.assert_allclose(second['target'][:3], second['ensemble_action'][1][:3])
+    else:
+        assert run['chunk_temporal_ensemble'] is None
+        assert all('ensemble_action' not in row for row in record['actions'])
 
 
 @pytest.mark.parametrize('outcome', ['success', 'closed', 'late_closed', 'timeout'])
@@ -244,6 +366,8 @@ def test_dry_run_saves_control_contract_without_predictions_or_actions(fixture, 
         assert runner.main(['--env-id', 'OHT-test', '--task', raw['task'], '--dry-run', '--output', str(output), '--headless']) == 0
         assert server.get('/health').json()['episode_id'] is None
     assert not env.commands and not fixture.policy.calls and env.closed and state.app_closed
+    assert json.loads((output / 'run.json').read_text(encoding='utf-8'))['dry_run'] is True
+    assert not (output / 'episode_0000.jsonl').exists()
     report = json.loads((output / 'control_diagnostics.json').read_text(encoding='utf-8'))
     assert report['action_spec']['gripper'] == 'open01'
     assert report['ee_pose_source'] == 'controller' and report['gripper']['open_command'] == 1.
@@ -334,7 +458,7 @@ def test_camera_binding_is_unambiguous():
 def test_projection_and_usd_units_match_metric_geometry():
     projection = np.eye(4)
     projection[0, 0], projection[1, 1] = 2., 3.
-    projection[0, 2], projection[1, 2] = .2, -.1
+    projection[2, 0], projection[2, 1] = .2, -.1
     params = dict(cameraProjection=projection, renderProductResolution=[640, 480], cameraModel='pinhole')
     np.testing.assert_allclose(projection_intrinsics(params, 640, 480), [[640, 0, 256], [0, 720, 216], [0, 0, 1]])
     with pytest.raises(ValueError, match='resolution'):
@@ -348,6 +472,22 @@ def test_projection_and_usd_units_match_metric_geometry():
     value = usd_rigid_matrix(None, Usd, geom, .01)
     np.testing.assert_allclose(value[:3, :3], np.eye(3))
     np.testing.assert_allclose(value[:3, 3], [1., 2., 3.])
+
+
+@pytest.mark.parametrize('offset', [(0., 0.), (.2, -.1), (-.15, .3)])
+def test_camera_intrinsics_match_replicator_row_vector_projection(offset):
+    # SyntheticData/Replicator matrices multiply OpenGL row vectors.
+    projection = np.array([[2., 0, 0, 0], [0, 3., 0, 0],
+                           [*offset, 0, -1.], [0, 0, 1., 0]])
+    params = dict(cameraProjection=projection.reshape(-1), renderProductResolution=[640, 480])
+    intrinsic = projection_intrinsics(params, 640, 480)
+    points = np.array([[0., 0., -1., 1.], [.1, -.2, -2., 1.], [-.2, .1, -.5, 1.]])
+    clip = points @ projection
+    ndc = clip[:, :2] / clip[:, 3:4]
+    expected = (ndc + [1., -1.]) * [320., -240.]
+    optical = points[:, :3] * [1., -1., -1.]
+    pixels = optical @ intrinsic.T
+    np.testing.assert_allclose(pixels[:, :2] / pixels[:, 2:3], expected, atol=1e-5)
 
 
 def test_wrist_pose_uses_live_body_and_snapshot_has_no_gt():
@@ -467,7 +607,7 @@ def test_usd_capture_through_http_without_reference_script(fixture, replay_fixtu
         k = tensors[name + '_intrinsics']
         projection = np.eye(4)
         projection[0, 0], projection[1, 1] = 2 * k[0, 0] / width, 2 * k[1, 1] / height
-        projection[0, 2], projection[1, 2] = 1 - 2 * k[0, 2] / width, 2 * k[1, 2] / height - 1
+        projection[2, 0], projection[2, 1] = 1 - 2 * k[0, 2] / width, 2 * k[1, 2] / height - 1
         data_by_path[path] = dict(rgb=tensors[name + '_rgb'], distance_to_image_plane=tensors[name + '_depth'],
                                   camera_params=dict(cameraProjection=projection, renderProductResolution=[width, height]))
     products, detached = [], []

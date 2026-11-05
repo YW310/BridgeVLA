@@ -428,7 +428,7 @@ class MVT(nn.Module):
 
 
 
-    def render(self, pc, img_feat, img_aug, mvt1_or_mvt2, dyn_cam_info):
+    def render(self, pc, img_feat, img_aug, mvt1_or_mvt2, dyn_cam_info, positive_depth_only=False):
         assert isinstance(mvt1_or_mvt2, bool)
 
         mvt = self.mvt1
@@ -440,6 +440,8 @@ class MVT(nn.Module):
         rendered_geometry = []
 
         def render_one(points, features, **options):
+            if positive_depth_only:
+                options['positive_depth_only'] = True
             if not chunk_geometry:
                 return self.renderer(points, features, **options)
             count = features.shape[-1]
@@ -604,6 +606,8 @@ class MVT(nn.Module):
         oracle_relation_state=None,
         oracle_compute_base=False,
         current_state=None,
+        oht_chunk_tcp_local=None,
+        oht_chunk_tcp_scale=None,
         **kwargs,
     ):
         """
@@ -629,6 +633,7 @@ class MVT(nn.Module):
             wpt_local=wpt_local,
             rot_x_y=rot_x_y,
         )
+        chunk_pc = pc  # Preserve global cube coordinates before key-centered refinement.
         with torch.no_grad():
             if self.training and (self.img_aug_2 != 0):
                 for x in img_feat:
@@ -880,6 +885,38 @@ class MVT(nn.Module):
                 out_mvt2['oht_chunk_xyz'], out_mvt2['oht_chunk_valid'] = pool_chunk_geometry(
                     geometry[:, :, :3], geometry[:, :, 3:4], out_mvt2['oht_chunk_grid_shape'])
 
+        if oht_chunk_tcp_local is not None:
+            if not getattr(self.mvt1, 'oht_return_chunk_geometry', False):
+                raise ValueError('TCP context requires chunk geometry')
+            with torch.no_grad():
+                if oht_chunk_tcp_local.shape != (len(chunk_pc), 3):
+                    raise ValueError('TCP crop centers must have shape [B,3]')
+                if oht_chunk_tcp_scale is None or oht_chunk_tcp_scale.shape != (len(chunk_pc),):
+                    raise ValueError('TCP crop scales must have shape [B]')
+                if (not torch.isfinite(oht_chunk_tcp_local).all()
+                        or not torch.isfinite(oht_chunk_tcp_scale).all()
+                        or not (oht_chunk_tcp_scale > 0).all()):
+                    raise ValueError('TCP crop requires finite centers and positive scales')
+                centers, scales = oht_chunk_tcp_local, oht_chunk_tcp_scale[:, None]
+                local_pc = [scale * (points - center)
+                            for points, center, scale in zip(chunk_pc, centers, scales)]
+                # Explicitly crop in all three axes, including camera depth.
+                masks = [torch.isfinite(points).all(-1) & (points.abs() <= 1).all(-1)
+                         for points in local_pc]
+                local_pc = [points[mask] for points, mask in zip(local_pc, masks)]
+                local_features = [features[mask] for features, mask in zip(img_feat, masks)]
+                local_img = self.render(local_pc, local_features, 0., False, None, positive_depth_only=True)
+                geometry = self._oht_chunk_render_geometry
+            # Share weights, retain gradients only when the caller requests them.
+            local_out = self.mvt1(img=local_img, wpt_local=None, language_goal=language_goal,
+                                  forward_no_feat=True, chunk_tokens_only=True)
+            from bridgevla.mvt.chunk_geometry import pool_chunk_geometry
+            local_out['oht_chunk_xyz'], local_out['oht_chunk_valid'] = pool_chunk_geometry(
+                geometry[:, :, :3], geometry[:, :, 3:4], local_out['oht_chunk_grid_shape'])
+            out['oht_chunk_tcp'] = local_out
+            out['oht_chunk_tcp_rev_trans'] = lambda value: value / scales + centers
+            out['oht_chunk_tcp_center'] = centers.detach()
+            out['oht_chunk_tcp_ori_img'] = local_img.detach()
         return out
 
 

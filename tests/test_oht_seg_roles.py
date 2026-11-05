@@ -1,5 +1,6 @@
 import copy
 import json
+from pathlib import Path
 import shutil
 
 import numpy as np
@@ -131,6 +132,40 @@ def test_real_seg_export_and_teacher_or_v4_annotations(replay_fixture, tmp_path,
     with pytest.raises(ValueError, match='Source RGB frame/sampling differs'):
         export_roles(root, manifest, replay, mapping, bad_output)
     assert not (bad_output / 'annotations.jsonl').exists()
+
+
+def test_v4_pipeline_stops_at_workspace_before_creating_replay(replay_fixture, tmp_path):
+    import subprocess
+    import sys
+    import yaml
+    root, config = make_seg_source(replay_fixture, tmp_path)
+    config['scene_bounds'][3] = config['scene_bounds'][0] + 1e-6
+    config_path = tmp_path / 'narrow.yaml'
+    config_path.write_text(yaml.safe_dump(config), encoding='utf-8')
+    output = tmp_path / 'workspace-failure'
+    script = Path(__file__).parents[1] / 'tools/prepare_oht_seg_data.py'
+    result = subprocess.run([sys.executable, '-u', str(script), '--root', str(root),
+        '--config', str(config_path), '--output', str(output), '--sample-stride', '2',
+        '--chunk-horizon', '4', '--visualize-every', '0'],
+        capture_output=True, text=True, encoding='utf-8', timeout=90)
+    assert result.returncode == 1, result.stdout + result.stderr
+    status = json.loads((output / 'pipeline.json').read_text())
+    assert status['failed_stage'] == 'workspace' and status['completed'] == ['audit']
+    report = json.loads((output / 'workspace.json').read_text())
+    assert not report['valid'] and report['outside_target_frames'] > 0
+    assert (output / 'logs/workspace.log').is_file()
+    assert not (output / 'replay-source-v4').exists()
+    retry = tmp_path / 'reused-workspace-failure'
+    result = subprocess.run([sys.executable, '-u', str(script), '--root', str(root),
+        '--config', str(config_path), '--output', str(retry), '--audit-manifest', str(output / 'audit.json'),
+        '--sample-stride', '2', '--chunk-horizon', '4', '--visualize-every', '0'],
+        capture_output=True, text=True, encoding='utf-8', timeout=90)
+    assert result.returncode == 1, result.stdout + result.stderr
+    status = json.loads((retry / 'pipeline.json').read_text())
+    assert status['failed_stage'] == 'workspace' and status['reused'] == ['audit']
+    assert (retry / 'audit.json').read_bytes() == (output / 'audit.json').read_bytes()
+    assert not (retry / 'logs/audit.log').exists()
+    assert not (retry / 'replay-source-v4').exists()
 
 
 @pytest.mark.parametrize('version', [3, 4])

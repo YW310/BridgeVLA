@@ -411,9 +411,10 @@ def test_native_depth_to_replay_and_teacher_preview(exporter, replay_fixture, tm
     for camera in config["cameras"]:
         columns[f"observation.images.{camera}"] = [dict(Path="rgb.mp4", Timestamp=[i/60]) for i in range(n)]
         columns[f"observation.depth.{camera}"] = [dict(Path="depth.mp4", Timestamp=[i/60]) for i in range(n)]
-        # Keep the synthetic near surface inside the world ROI after reference
-        # dequantization (q=1024 -> 1.416m instead of 1.024m).
-        height = 2.2 if encoding == "reference" else 1.6
+        # Keep the synthetic near surface inside the configured world ROI.
+        # Both log-quantized profiles decode q=1024 to ~1.416m; scaled integer
+        # decodes to 1.024m. The test camera must suit each physical depth.
+        height = 1.6 if encoding == "scaled_integer" else 2.2
         columns[f"observation.{camera}_extrinsic"] = [[.4, 0, height, 1, 0, 0, 0]] * n
     pq.write_table(pa.table(columns), path)
     manifest, output = tmp_path / "native-audit.json", tmp_path / "native-replay"

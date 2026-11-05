@@ -193,12 +193,58 @@ def test_v4_training_validate_only_and_offline_metrics(chunk_fixture, tmp_path, 
     assert report['all_actions']['samples'] >= 2
 
 
-@pytest.mark.parametrize('goal_conditioning', ['absolute', 'relative_tcp'])
-def test_chunk_prepared_http_and_native_client_negotiate_explicit_actions(chunk_fixture, tmp_path, goal_conditioning):
+def test_open_loop_chunk_exports_current_scene_without_changing_predictions(chunk_fixture, tmp_path):
+    from finetune.OHT.chunk_eval import open_loop_chunk
+    from finetune.OHT.chunk_visualization import scene_background
     agent, data, _ = agent_data(chunk_fixture, training=False)
+    policy = Policy(agent, data.contract, 'cpu', 'baseline')
+    visualizer = SimpleNamespace(root=tmp_path / 'eval-viz', due=lambda index: True)
+    visualizer.root.mkdir()
+    expected = open_loop_chunk(policy, chunk_fixture.root, 'val', limit=1)
+    actual = open_loop_chunk(policy, chunk_fixture.root, 'val', limit=1, visualizer=visualizer)
+    assert actual['all_actions'] == expected['all_actions']
+    sample = OHTChunkDataset(chunk_fixture.root, 'val')[0]
+    with np.load(visualizer.root / 'sample_000000/chunk.npz', allow_pickle=False) as saved:
+        for key, value in scene_background(sample).items():
+            np.testing.assert_array_equal(saved[key], value)
+
+
+@pytest.mark.parametrize('goal_conditioning,representation,spatial_key_token', [
+    ('absolute', None, False), ('relative_tcp', None, False),
+    ('relative_tcp', 'delta_pose', False), ('relative_tcp', 'delta_pose', True)])
+def test_chunk_prepared_http_and_native_client_negotiate_explicit_actions(
+        chunk_fixture, tmp_path, goal_conditioning, representation, spatial_key_token):
+    from scipy.spatial.transform import Rotation
+    if representation == 'delta_pose':
+        from tests.test_oht_chunk_state import state_config
+        from tests.test_oht_chunk_temporal import temporal_agent
+        config = state_config(representation=representation)
+        config['chunk_policy']['spatial_key_token'] = spatial_key_token
+        agent, data, config = temporal_agent(chunk_fixture.root, config=config)
+        agent._net_mod.eval()
+    else:
+        agent, data, config = agent_data(chunk_fixture, training=False)
     agent.settings['goal_conditioning'] = goal_conditioning
     policy = Policy(agent, data.contract, 'cpu', 'baseline')
+    policy.training_config = config
     sample = data[0]
+    expected = None
+    if representation == 'delta_pose':
+        # Known per-tick increments under a nonidentity initial TCP. Expected
+        # world poses are computed independently of the model's decode method.
+        sample['tcp_pose'] = np.r_[[.4, .1, .8], Rotation.from_euler('xyz', [20, -30, 60], degrees=True).as_quat()].astype(np.float32)
+        increment = Rotation.from_euler('z', 2, degrees=True)
+        with torch.no_grad():
+            head = agent._net_mod.decoder.head
+            head.weight.zero_()
+            head.bias[:3] = torch.tensor([.1, -.05, .025])
+            matrix = increment.as_matrix()
+            head.bias[3:9] = torch.tensor(np.r_[matrix[:, 0], matrix[:, 1]])
+            head.bias[9] = 1.
+        initial = Rotation.from_quat(sample['tcp_pose'][3:7])
+        expected = np.stack([np.r_[sample['tcp_pose'][:3] + initial.apply(
+            np.array([.1, -.05, .025]) * agent.settings['action_position_scale'] * tick),
+            (initial * increment ** tick).as_quat(), 1.] for tick in range(1, 5)])
     observation = {key: value for key, value in sample.items() if key in
         {'low_dim_state', 'tcp_pose', 'joint_positions', 'gripper_open01'} or any(key.endswith('_' + suffix)
         for suffix in ('rgb', 'depth', 'point_cloud', 'camera_intrinsics', 'camera_extrinsics'))}
@@ -218,6 +264,11 @@ def test_chunk_prepared_http_and_native_client_negotiate_explicit_actions(chunk_
         result = response.json()
         assert 'action' not in result and np.shape(result['actions']) == (4, 8)
         validate_prediction(result, info['chunk_spec'])
+        if expected is not None:
+            assert info['chunk_policy']['prediction_representation'] == 'delta_pose'
+            assert info['chunk_policy']['decoder_type'] == 'regression'
+            assert info['chunk_policy']['spatial_key_token'] is spatial_key_token
+            np.testing.assert_allclose(result['actions'], expected, atol=3e-7)
         assert client.post('/predict', json=body).status_code == 409
 
         class Opener:
@@ -249,14 +300,22 @@ def test_chunk_prepared_http_and_native_client_negotiate_explicit_actions(chunk_
                         name + '_pose': np.r_[transform[:3, 3], quat[[3, 0, 1, 2]]].astype(np.float32)})
         actions, reply = native.predict(raw, sample['goal'], 0., task=data.samples[0]['task'], data_profile=profile)
         assert actions.shape == (4, 8) and native.step == 1 and not native.uncertain
+        if expected is not None:
+            np.testing.assert_allclose(actions, expected, atol=3e-7)
+            bridge, sent = fake_bridge(info['chunk_spec']['action_dt'], sample['tcp_pose'])
+            executor = ChunkExecutor(bridge, info['chunk_spec'])
+            executor.execute(actions, {})
+            assert executor.last_result['consumed_actions'] == 2
+            # Client sends absolute world TCPs without another cumsum or transform.
+            np.testing.assert_allclose([target for target, _ in sent], expected[:2], atol=3e-7)
         request = dict(**envelope(info, 'other', 'different'), step=0, timestamp=1., instruction=sample['goal'],
                        observation_format=OBSERVATION_FORMAT, observation=pack_observation(observation),
                        prediction_schema=info['chunk_spec']['schema'])
         assert client.post('/predict', json=request).status_code == 409
 
 
-def fake_bridge(control_dt=.01):
-    state = np.array([0., 0, .5, 0, 0, 0, 1])
+def fake_bridge(control_dt=.01, start_pose=None):
+    state = np.array([0., 0, .5, 0, 0, 0, 1] if start_pose is None else start_pose, dtype=float)
     sent = []
     bridge = SimpleNamespace(client=SimpleNamespace(action_config={'mode': 'eef'}),
         env=SimpleNamespace(step_dt=control_dt), last_done=False, last_stopped=False, last_target=None)
@@ -270,6 +329,43 @@ def fake_bridge(control_dt=.01):
         return [target.tolist()]
     bridge.step_target = step
     return bridge, sent
+
+
+@pytest.mark.parametrize('action_dt,substeps', [
+    (0.01666666666666572, 1),  # Measured source timing from the real startup failure.
+    (float(np.nextafter(1 / 60, 0.)), 1),
+    (float(np.nextafter(1 / 60, np.inf)), 1),
+    (3 / 60 * (1 - 1e-14), 3),
+])
+def test_chunk_timing_accepts_float_roundoff_at_positive_integer_ratios(action_dt, substeps):
+    bridge, sent = fake_bridge(1 / 60)
+    spec = chunk_spec(chunk_settings(settings_config()), {'chunk': {'action_dt': action_dt}})
+    executor = ChunkExecutor(bridge, spec)
+    assert executor.substeps == substeps
+    assert executor.spec['action_dt'] == action_dt
+    actions = np.tile([.02, 0, .5, 0, 0, 0, 1, 1], (4, 1)).astype(np.float32)
+    executor.execute(actions, {})
+    assert len(sent) == spec['execute_horizon'] * substeps
+    assert executor.last_result['consumed_actions'] == spec['execute_horizon']
+
+
+@pytest.mark.parametrize('control_dt,action_dt', [
+    (1 / 60, .5 / 60),
+    (1 / 60, 1e-12),
+    (1 / 60, .999 / 60),
+    (1 / 60, 1.001 / 60),
+    (1 / 60, 1.5 / 60),
+    (0., 1 / 60),
+    (-1., 1 / 60),
+    (float('nan'), 1 / 60),
+    (float('inf'), 1 / 60),
+])
+def test_chunk_timing_rejects_noninteger_or_invalid_control_intervals(control_dt, action_dt):
+    bridge, sent = fake_bridge(control_dt)
+    spec = chunk_spec(chunk_settings(settings_config()), {'chunk': {'action_dt': action_dt}})
+    with pytest.raises(ValueError, match='integer multiple'):
+        ChunkExecutor(bridge, spec)
+    assert not sent
 
 
 def test_chunk_timing_absolute_targets_gripper_ticks_and_prefix_discard():
@@ -297,11 +393,28 @@ def test_chunk_executor_does_not_continue_after_tracking_or_task_stop():
     bridge.tracking_errors = lambda state: dict(translation_m=.2, rotation_rad=0)
     executor = ChunkExecutor(bridge, spec)
     executor.execute(actions, {})
-    assert len(sent) == 1 and executor.last_result['status'] == 'tracking_error'
+    assert not sent and executor.last_result['status'] == 'tracking_error'
+    assert executor.last_result['consumed_actions'] == 0
+    assert executor.last_result['discarded_suffix'] == 4
+    assert executor.last_result['tracking_check_phase'] == 'before_step'
+    assert executor.last_result['errors']['translation_m'] == .2
     bridge, sent = fake_bridge()
     executor = ChunkExecutor(bridge, spec)
     executor.execute(actions, {}, lambda grip: True)
     assert len(sent) == 1 and executor.last_result['completed']
+
+
+def test_chunk_tracking_guard_still_checks_response_after_each_control_tick():
+    settings = chunk_settings(settings_config())
+    spec = chunk_spec(settings, {'chunk': {'action_dt': .01}})
+    actions = np.tile([.02, 0, .5, 0, 0, 0, 1, 0], (4, 1)).astype(np.float32)
+    bridge, sent = fake_bridge()
+    bridge.tracking_errors = lambda state: dict(translation_m=.2 if sent else 0., rotation_rad=0.)
+    executor = ChunkExecutor(bridge, spec)
+    executor.execute(actions, {})
+    assert len(sent) == 1 and executor.last_result['status'] == 'tracking_error'
+    assert executor.last_result['tracking_check_phase'] == 'after_step'
+    assert executor.last_result['consumed_actions'] == 1
 
 
 def test_chunk_online_export_keeps_predictions_without_future_labels(chunk_fixture, tmp_path):
@@ -322,5 +435,10 @@ def test_chunk_online_export_keeps_predictions_without_future_labels(chunk_fixtu
     assert len(record['chunk']['actions']) == 4
     assert 'target' not in record['chunk']
     assert (writer.root / job['entry_id'] / 'chunk.png').exists()
+    from finetune.OHT.chunk_visualization import scene_background
+    with np.load(writer.root / job['entry_id'] / 'chunk.npz', allow_pickle=False) as saved:
+        assert 'target' not in saved and 'action_chunk' not in saved
+        for key, value in scene_background(data[0]).items():
+            np.testing.assert_array_equal(saved[key], value)
     scene = json.loads((writer.root / job['entry_id'] / 'scene.json').read_text())
     assert len(scene['trajectories']) == 2

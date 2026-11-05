@@ -4,6 +4,7 @@ Only observed geometry and the predicted key pose condition the policy. Flow
 training uses noisy future poses; deployment samples a fresh trajectory, never
 receiving clean futures, future validity or a required key-goal endpoint.
 """
+import logging
 import math
 
 import torch
@@ -12,6 +13,9 @@ from torch.nn import functional as F
 
 from .chunk_model import ChunkDecoder, quaternion_matrix, rotation_6d
 from .chunk_config import chunk_scale
+from ..bridgevla.geometry.torch_ops import local_to_world_points, world_to_local_points
+
+LOG = logging.getLogger(__name__)
 
 
 def time_features(value, width=32):
@@ -23,7 +27,7 @@ def time_features(value, width=32):
 
 def to_local(points, state):
     rotation = quaternion_matrix(state[:, 3:7])
-    return torch.einsum('bij,bnj->bni', rotation.transpose(-1, -2), points - state[:, None, :3])
+    return world_to_local_points(points, state[:, :3], rotation)
 
 
 class RelativeAttention(nn.Module):
@@ -33,7 +37,7 @@ class RelativeAttention(nn.Module):
         self.query, self.key, self.value, self.output = (nn.Linear(dim, dim) for _ in range(4))
         self.bias = nn.Sequential(nn.Linear(4, dim), nn.SiLU(), nn.Linear(dim, heads))
 
-    def forward(self, query, memory, query_xyz, memory_xyz, memory_valid):
+    def forward(self, query, memory, query_xyz, memory_xyz, memory_valid, memory_log_prior=None):
         batch, count, dim = query.shape
         split = lambda value: value.reshape(batch, -1, self.heads, dim // self.heads).transpose(1, 2)
         delta = memory_xyz[:, None] - query_xyz[:, :, None]
@@ -42,6 +46,8 @@ class RelativeAttention(nn.Module):
         # context without raw large cube coordinates dominating attention.
         relative = torch.cat((delta / (1 + distance), distance.log1p()), -1)
         bias = self.bias(relative).permute(0, 3, 1, 2)
+        if memory_log_prior is not None:
+            bias = bias + memory_log_prior[:, None, None, :]
         bias = bias.masked_fill(~memory_valid[:, None, None], float('-inf'))
         value = F.scaled_dot_product_attention(split(self.query(query)), split(self.key(memory)),
                     split(self.value(memory)), attn_mask=bias,
@@ -61,23 +67,23 @@ class SpatialBlock(nn.Module):
             nn.init.zeros_(self.modulation[-1].weight)
             nn.init.zeros_(self.modulation[-1].bias)
 
-    def forward(self, query, xyz, memory, positions, valid, time=None):
+    def forward(self, query, xyz, memory, positions, valid, time=None, memory_log_prior=None):
         if self.modulation is not None:
             if time is None:
-                raise ValueError('AdaLN block requires a flow-time condition')
+                raise ValueError('AdaLN block requires a conditioning vector')
             shift1, scale1, gate1, shift2, scale2, gate2, shift3, scale3, gate3 = (
                 value[:, None] for value in self.modulation(time).chunk(9, dim=-1))
             normalized = self.norms[0](query) * (1 + scale1) + shift1
             query = query + gate1 * self.self_attention(normalized, normalized, xyz, xyz,
                                             torch.ones_like(xyz[..., 0], dtype=torch.bool))
             normalized = self.norms[1](query) * (1 + scale2) + shift2
-            query = query + gate2 * self.cross_attention(normalized, memory, xyz, positions, valid)
+            query = query + gate2 * self.cross_attention(normalized, memory, xyz, positions, valid, memory_log_prior)
             normalized = self.norms[2](query) * (1 + scale3) + shift3
             return query + gate3 * self.ffn(normalized)
         normalized = self.norms[0](query)
         query = query + self.self_attention(normalized, normalized, xyz, xyz,
                                            torch.ones_like(xyz[..., 0], dtype=torch.bool))
-        query = query + self.cross_attention(self.norms[1](query), memory, xyz, positions, valid)
+        query = query + self.cross_attention(self.norms[1](query), memory, xyz, positions, valid, memory_log_prior)
         return query + self.ffn(self.norms[2](query))
 
 
@@ -89,6 +95,17 @@ class SpatialChunkDecoder(nn.Module):
         self.settings, self.num_views, self.action_dt = settings, num_views, action_dt
         chunk_scale(settings, 'action_position_scale')
         self.is_flow = settings['decoder_type'] == 'flow_matching'
+        self.direct_state = settings.get('state_conditioning', False)
+        self.spatial_key_token = settings.get('spatial_key_token', False)
+        self.delta_pose = settings.get('prediction_representation', 'relative_pose') == 'delta_pose'
+        normalized = settings.get('proprio_normalization', 'none') != 'none'
+        if normalized and settings.get('proprio_center') is None:
+            raise ValueError('Resolve proprio normalization with training replay before constructing the chunk model')
+        for name in ('proprio_center', 'proprio_scale'):
+            self.register_buffer(name, torch.tensor(settings[name], dtype=torch.float32) if normalized else None)
+        gate = settings.get('key_condition_gate_init', .1)
+        self.register_parameter('key_gate_logit', nn.Parameter(torch.tensor(math.log(gate / (1 - gate))))
+                                if settings.get('key_condition_gate', False) else None)
         dim = settings['hidden_dim']
         self.visual, self.state, self.goal = nn.Linear(feature_dim, dim), nn.Linear(14, dim), nn.Linear(8, dim)
         self.scale_embedding = nn.Parameter(torch.zeros(2, dim))
@@ -130,26 +147,75 @@ class SpatialChunkDecoder(nn.Module):
             validity.append(valid)
         local_state = state.clone()
         local_state[:, :7] = state.new_tensor([0., 0., 0., 0., 0., 0., 1.])
+        if self.proprio_center is not None:
+            # OHT's six revolute joints can be reported on different 2*pi
+            # branches by the simulator and recorded demonstrations. Align
+            # only model features to the training center for sub-turn ranges.
+            # Quantiles set a scale, NOT a gate: crossing +/-scale must not
+            # switch back to raw angles. Keep normalized excursions beyond
+            # +/-1 and leave ambiguous multi-turn distributions unchanged.
+            joints = state[:, 7:13]
+            center, scale = self.proprio_center[:6], self.proprio_scale[:6]
+            turns = torch.round((joints - center) / (2 * math.pi))
+            aligned = joints - turns * (2 * math.pi)
+            supported = scale < math.pi
+            aligned = torch.where(supported, aligned, joints)
+            if not self.training and not getattr(self, '_joint_branch_reported', False):
+                corrected = supported & (turns != 0)
+                if corrected.any():
+                    row = corrected.any(-1).nonzero(as_tuple=True)[0][0]
+                    LOG.warning('Chunk joint input aligned to training branch (features only): '
+                                'raw_rad=%s aligned_rad=%s normalized=%s',
+                                joints[row].detach().cpu().tolist(), aligned[row].detach().cpu().tolist(),
+                                ((aligned[row] - center) / scale).detach().cpu().tolist())
+                    self._joint_branch_reported = True
+            proprio = torch.cat((aligned, state[:, 13:]), -1)
+            local_state[:, 7:] = (proprio - self.proprio_center) / self.proprio_scale
         relative_goal = self.goal_condition(state, goal)
-        features.extend((self.state(local_state.to(dtype))[:, None], self.goal(relative_goal.to(dtype))[:, None]))
-        positions.extend((torch.zeros_like(state[:, None, :3]), relative_goal[:, None, :3]))
-        validity.extend((torch.ones_like(state[:, :1], dtype=torch.bool),) * 2)
-        return torch.cat(features, 1), torch.cat(positions, 1).to(dtype), torch.cat(validity, 1)
+        state_token = self.state(local_state.to(dtype))
+        goal_token = self.goal(relative_goal.to(dtype))
+        features.append(state_token[:, None])
+        positions.append(torch.zeros_like(state[:, None, :3]))
+        validity.append(torch.ones_like(state[:, :1], dtype=torch.bool))
+        if not self.direct_state or self.spatial_key_token:
+            features.append(goal_token[:, None])
+            positions.append(relative_goal[:, None, :3])
+            validity.append(torch.ones_like(state[:, :1], dtype=torch.bool))
+        memory = torch.cat(features, 1), torch.cat(positions, 1).to(dtype), torch.cat(validity, 1)
+        if self.direct_state:
+            # The legacy condition stays intact; optional spatial guidance also
+            # exposes the key as a separate, gated cross-attention memory token.
+            gate = self.key_gate_logit.sigmoid() if self.key_gate_logit is not None else 1.
+            memory += (state_token + gate * goal_token,)
+            if self.spatial_key_token:
+                # Apply the gate to attention probability, not just token values:
+                # a zero-valued token would still leak its key/XYZ through logits.
+                # Normalize its prior against the number of other valid tokens
+                # so adding views/patches does not dilute the one goal token.
+                count = memory[2][:, :-1].sum(-1).to(dtype)
+                key_prior = F.logsigmoid(self.key_gate_logit) + count.log()
+                memory += (torch.cat((state_token.new_zeros(memory[2].shape[0], memory[2].shape[1] - 1),
+                                      key_prior[:, None].to(dtype)), -1),)
+        return memory
 
     def field(self, pose, tau, memory):
-        features, positions, valid = memory
+        features, positions, valid = memory[:3]
         dtype = features.dtype
         pose = pose.to(dtype)
         ticks = torch.arange(1, pose.shape[1] + 1, device=pose.device, dtype=dtype) * self.action_dt
         time = self.flow_time(time_features(tau.to(dtype)))
+        if self.direct_state:
+            time = time + memory[3]
         query = (self.action(pose) + self.queries[None] + self.tick_time(time_features(ticks))[None]
                  + time[:, None])
         # Flow tokens are action-normalized. Relative attention must compare
         # them to scene/key coordinates in the *geometry* normalization instead.
-        xyz = pose[..., :3] * (chunk_scale(self.settings, 'action_position_scale') /
+        xyz = pose[..., :3].cumsum(1) if self.delta_pose else pose[..., :3]
+        xyz = xyz * (chunk_scale(self.settings, 'action_position_scale') /
                                 chunk_scale(self.settings, 'geometry_scale'))
+        attention_options = {'memory_log_prior': memory[4]} if self.spatial_key_token else {}
         for block in self.blocks:
-            query = block(query, xyz, features, positions, valid, time)
+            query = block(query, xyz, features, positions, valid, time, **attention_options)
         if self.temporal is not None:
             query = query + self.temporal(query.transpose(1, 2)).transpose(1, 2)
         raw = self.head(query)
@@ -157,12 +223,32 @@ class SpatialChunkDecoder(nn.Module):
 
     def decode(self, pose, grip, state):
         rotation = quaternion_matrix(state[:, 3:7])
-        position = torch.einsum('bij,bkj->bki', rotation, pose[..., :3] * chunk_scale(self.settings, 'action_position_scale'))
-        return (position + state[:, None, :3], rotation[:, None] @ rotation_6d(pose[..., 3:9]), grip)
+        local_position = pose[..., :3].cumsum(1) if self.delta_pose else pose[..., :3]
+        position = local_to_world_points(
+            local_position * chunk_scale(self.settings, 'action_position_scale'), state[:, :3], rotation)
+        relative_rotation = rotation_6d(pose[..., 3:9])
+        if self.delta_pose:
+            # Compose SO(3) increments; adding Euler angles/rotation vectors
+            # would give a different trajectory when rotation axes change.
+            rotations = []
+            for increment in relative_rotation.unbind(1):
+                rotation = rotation @ increment
+                rotations.append(rotation)
+            world_rotation = torch.stack(rotations, 1)
+        else:
+            world_rotation = rotation[:, None] @ relative_rotation
+        return position, world_rotation, grip
 
     def encode_target(self, target, state):
-        local_rotation = quaternion_matrix(state[:, 3:7]).transpose(-1, -2)[:, None] @ quaternion_matrix(target[..., 3:7])
-        return torch.cat((to_local(target[..., :3], state) / chunk_scale(self.settings, 'action_position_scale'),
+        rotations = quaternion_matrix(target[..., 3:7])
+        local_position = to_local(target[..., :3], state)
+        if self.delta_pose:
+            previous = torch.cat((quaternion_matrix(state[:, 3:7])[:, None], rotations[:, :-1]), 1)
+            local_rotation = previous.transpose(-1, -2) @ rotations
+            local_position = torch.diff(local_position, dim=1, prepend=torch.zeros_like(local_position[:, :1]))
+        else:
+            local_rotation = quaternion_matrix(state[:, 3:7]).transpose(-1, -2)[:, None] @ rotations
+        return torch.cat((local_position / chunk_scale(self.settings, 'action_position_scale'),
                           local_rotation[..., :, 0], local_rotation[..., :, 1]), -1)
 
     def sample(self, memory, state):

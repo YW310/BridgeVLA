@@ -1,6 +1,6 @@
 """Create the same camera tensor layout for training and online inference."""
 import numpy as np
-from .geometry import array, camera_pose_matrix, transform_matrix, backproject
+from .geometry import array, camera_pose_matrix, transform_matrix, backproject, validate_intrinsics
 from .point_filter import point_filter_options, point_cloud_mask, filter_world_points
 
 
@@ -47,9 +47,8 @@ def validate_data_config(config, *, resolved=False):
         raise ValueError("Camera calibration is required")
     for name, camera in cameras.items():
         if resolved or config.get("intrinsics_source", "config") == "config":
-            matrix = array(camera.get("intrinsics"), (3, 3), f"{name} intrinsics")
-            if matrix[0, 0] <= 0 or matrix[1, 1] <= 0 or not np.allclose(matrix[2], [0, 0, 1]):
-                raise ValueError(f"{name}: invalid camera intrinsics")
+            validate_intrinsics(array(camera.get("intrinsics"), (3, 3), f"{name} intrinsics"),
+                                f"{name} intrinsics")
         if camera.get("optical_to_sensor") is None:
             raise ValueError(
                 f"{name} optical_to_sensor is missing: set an explicit 4x4 transform. "

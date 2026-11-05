@@ -15,13 +15,20 @@ class ChunkExecutor:
             raise ValueError('Timed chunks require absolute EEF execution')
         dt = float(bridge.env.step_dt)
         ratio = spec['action_dt'] / dt if np.isfinite(dt) and dt > 0 else np.nan
-        if not np.isfinite(ratio) or ratio < 1 or not np.isclose(ratio, round(ratio), atol=1e-5, rtol=1e-5):
-            raise ValueError('Chunk action_dt must be an integer multiple of the simulator control interval')
-        self.substeps = int(round(ratio))
+        # Timestamp roundoff can put a valid unit ratio just below 1.
+        substeps = int(round(ratio)) if np.isfinite(ratio) else 0
+        if substeps < 1 or not np.isclose(ratio, substeps, atol=1e-5, rtol=1e-5):
+            raise ValueError('Chunk action_dt must be an integer multiple of the simulator control interval: '
+                             f'action_dt={spec["action_dt"]}, env.step_dt={dt}, ratio={ratio}')
+        self.substeps = substeps
         if not np.isfinite([max_translation_error, max_rotation_error]).all() or min(max_translation_error, max_rotation_error) <= 0:
             raise ValueError('Chunk tracking error limits must be finite and positive')
         self.max_translation_error, self.max_rotation_error = max_translation_error, max_rotation_error
         self.last_result = None
+
+    def _tracking_failed(self, errors):
+        return (errors['translation_m'] > self.max_translation_error or
+                errors['rotation_rad'] > self.max_rotation_error)
 
     def execute(self, actions, measured, after_step=None):
         bridge = self.bridge
@@ -31,6 +38,7 @@ class ChunkExecutor:
         commands, consumed = [], 0
         last_gripper = int(opening)
         status = 'completed'
+        errors, check_phase = None, None
         bridge.last_done = bridge.last_stopped = False
         for tick, action in enumerate(actions[:self.horizon]):
             rotations = Slerp([0., 1.], Rotation.from_quat(np.stack((start[3:7], action[3:7]))))
@@ -46,16 +54,20 @@ class ChunkExecutor:
                 if hard and hard['outside']:
                     status = 'joint_limit'
                     break
+                errors, check_phase = bridge.tracking_errors(before), 'before_step'
+                if self._tracking_failed(errors):
+                    status = 'tracking_error'
+                    break
                 commands.extend(bridge.step_target(target, grip, after_step))
                 last_gripper = grip
                 if sub == self.substeps:
                     consumed = tick + 1
                 state = bridge.measured_state()
-                errors = bridge.tracking_errors(state)
+                errors, check_phase = bridge.tracking_errors(state), 'after_step'
                 if bridge.last_done or bridge.last_stopped:
                     status = 'environment_done' if bridge.last_done else 'task_stopped'
                     break
-                if (errors['translation_m'] > self.max_translation_error or errors['rotation_rad'] > self.max_rotation_error):
+                if self._tracking_failed(errors):
                     status = 'tracking_error'
                     break
             if status != 'completed':
@@ -65,6 +77,7 @@ class ChunkExecutor:
         self.last_result = dict(status=status, completed=status in ('completed', 'environment_done', 'task_stopped'),
                                 steps=len(commands), consumed_actions=consumed, requested_actions=self.horizon,
                                 action_dt=self.spec['action_dt'], control_substeps=self.substeps,
+                                errors=errors, tracking_check_phase=check_phase,
                                 last_commanded_gripper=last_gripper,
                                 discarded_suffix=self.spec['horizon'] - consumed)
         return commands

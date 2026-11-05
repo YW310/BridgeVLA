@@ -200,6 +200,8 @@ class IsaacLabBridge:
             result = self.env.step(self.ref.torch.as_tensor(ordered, device=self.env.device).reshape(1, 7))
             self.last_done = terminated(result)
             ordered = ordered.tolist()
+        if self.visualizer is not None and self.visualizer.enabled:
+            self.visualizer.update(self.measured_state(), target, self.client.action_config['mode'])
         self.last_stopped = bool(after_step is not None and after_step(float(2 * gripper_open - 1)))
         return [ordered]
 

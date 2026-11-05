@@ -18,11 +18,17 @@ We use the object detection data in the RoboPoint dataset to pre-train the model
 | `2` | Pre-train PaliGemma; vision tower is frozen by this entry |
 | `3` (default) | Test the pre-trained checkpoints |
 
-Choose the branch explicitly; no source edit is needed for branch selection:
+Choose the branch explicitly. For example, start pre-training on one GPU from the repository root:
 
 ```bash
-bash pretrain/pretrain.sh --branches BRANCH_OPTION --config_path PATH_TO_CONFIG_FILE --json_detection_path PATH_TO_DETECTION_JSON --image_folder PATH_TO_IMAGE_FOLDER
+cd pretrain
+torchrun --standalone --nnodes=1 --nproc_per_node=1 pretrain.py \
+    --branches 2 --config_path pretrain_config.yaml \
+    --json_detection_path /absolute/path/to/detection_data.json \
+    --image_folder /absolute/path/to/images
 ```
+
+Adjust `--nproc_per_node` to the intended single-node GPU count; use one process for visualization/testing. In `pretrain_config.yaml`, set `output_dir` for training and `checkpoint_dir` / `test_save_path` for checkpoint testing. Paths passed after `cd pretrain` are relative to that directory unless absolute. The legacy `pretrain.sh` contains literal GPU/node/port placeholders and its own `cd pretrain`; adapt it before running it from the repository root.
 
 ## RLBench Fine-tuning
 
@@ -43,6 +49,7 @@ GPUS_PER_NODE=2 bash train_8x40.sh --exp_cfg_path configs/rlbench_config.yaml \
               --exp_note debug \
               --freeze_vision_tower \
               --log_dir exp/RLBench \
+              --train_replay_storage_dir /absolute/path/to/BridgeVLA_RLBench_TRAIN_Buffer \
               --load_pretrain \
               --pretrain_path PATH_TO_2D_HEATMAP_PRETRAINED_MODEL
 ```
@@ -65,7 +72,7 @@ GPUS_PER_NODE=2 bash train_8x40.sh --exp_cfg_path configs/rlbench_config.yaml \
 
 ### RLBench config 与数据目录
 
-配置位于 `finetune/RLBench/configs/`，决定所需字段；实际 replay 根目录由 `--train_replay_storage_dir` 指定，不按配置名自动选择。O2 必须显式传入；baseline 也建议显式指定，避免使用旧服务器默认路径。
+配置位于 `finetune/RLBench/configs/`，决定所需字段；实际 replay 根目录由 `--train_replay_storage_dir` 指定，不按配置名自动选择。对象条件策略必须显式传入；baseline 也建议显式指定，避免使用旧服务器默认路径。
 
 语义配置默认 `oracle_semantic_audit: False`、`oracle_semantic_contract.enforce: False`，兼容缺少新审计字段或只有抽样报告的旧 buffer，不要求重新生成数据；这不等于数据已通过契约验收。[严格校验 opt-in](object-conditioning.md#数据与角色契约) 仍保留。
 
@@ -83,7 +90,7 @@ GPUS_PER_NODE=2 bash train_8x40.sh --exp_cfg_path configs/rlbench_config.yaml \
 
 `config_small` 不自动绑定 TINY 数据。按用户提供的目录快照（2026-10-16），TINY buffers 仍有 18 个任务目录，实际 episode/transition 数需统计；`BridgeVLA_RLBench_TASK_OBJECT_Buffer` 只有 `close_jar`，仅用于对应单任务实验（设置 `tasks=close_jar`）。目录存在不代表已完整生成或验收通过。
 
-`BridgeVLA_RLBench_TRAIN_DATA/train` 是 raw → replay 的输入，`BridgeVLA_RLBench_EVAL_DATA` 用于闭环评估；`BridgeVLA/checkpoints` 用于初始化，`BridgeVLA/pretrain_data` 用于预训练，`semantic_role_visualizations` 不参与训练。生成与验收见 [标准 Replay](replay.md)、[启发式实例增强](oracle-replay.md)及 [Semantic-GT](semantic-gt.md)；训练／预测输入隔离见 [O2 指南](object-conditioning.md#数据与角色契约)。
+`BridgeVLA_RLBench_TRAIN_DATA/train` 是 raw → replay 的输入，`BridgeVLA_RLBench_EVAL_DATA` 用于闭环评估；`BridgeVLA/checkpoints` 用于初始化，`BridgeVLA/pretrain_data` 用于预训练，`semantic_role_visualizations` 不参与训练。生成与验收见 [标准 Replay](replay.md)、[启发式实例增强](oracle-replay.md)及 [Semantic-GT](semantic-gt.md)；训练／预测输入隔离见 [对象条件策略指南](object-conditioning.md#数据与角色契约)。
 
 <a id=rlbench-8x40></a>
 
@@ -102,6 +109,7 @@ GPUS_PER_NODE=8 bash train_8x40.sh \
     --exp_note trend_seed0 \
     --freeze_vision_tower \
     --log_dir exp/RLBench \
+    --train_replay_storage_dir /absolute/path/to/BridgeVLA_RLBench_TRAIN_Buffer \
     --load_pretrain \
     --pretrain_path PATH_TO_2D_HEATMAP_PRETRAINED_MODEL \
     --save_initial_checkpoint \
@@ -130,8 +138,8 @@ python eval_parallel.py \
 
 The runner creates a unique run directory, merges the 18 task CSV files, and
 writes `summary.json` with the macro success rate. It does not record videos.
-It currently exposes no Oracle provider, O2 config override, or episode-resume flags;
-use [O2 evaluation](object-conditioning.md#closed-loop评估) for those runs.
+It currently exposes no Oracle provider, object-conditioning config override, or episode-resume flags;
+use [object-conditioned evaluation](object-conditioning.md#closed-loop评估) for those runs.
 
 <a id=rlbench-training-logs></a>
 
@@ -140,6 +148,8 @@ use [O2 evaluation](object-conditioning.md#closed-loop评估) for those runs.
 训练日志可通过 `--log_backend` 在 TensorBoard、W&B 和关闭指标记录之间切换。
 默认使用 TensorBoard，不需要账号或网络连接；无论选择哪种后端，主进程都会在
 tqdm 进度条中实时显示 total、translation、rotation、gripper 和 collision loss。
+
+终端输出与 OHT 共用 `finetune/RLBench/training_utils.py` 的进度摘要及明细格式，统一显示 `[train] epoch=... iter=... step=... lr=...`，训练器原有 epoch/step 编号不变。小 loss 使用有效数字，避免非零 diversity 显示为零。OHT chunk 额外显示毫米误差摘要，完整明细仍使用米单位；详见 [OHT 日志与可视化](../oht/training.md#日志与可视化)。两者均接受 `--loss-print-interval` 和 `--loss_print_interval`。
 
 默认 TensorBoard 模式等价于：
 
@@ -211,5 +221,3 @@ bash train.sh --exp_cfg_path  configs/gembench_config.yaml \
               --load_pretrain \
               --pretrain_path  PATH_TO_PRETRAINED_MODEL
 ```
-
-> 预训练前还需设置 pretrain/pretrain.sh 内的端口、GPU 数和节点数；该脚本自身包含 cd pretrain，请从仓库根目录执行 bash pretrain/pretrain.sh 并传入上述参数。

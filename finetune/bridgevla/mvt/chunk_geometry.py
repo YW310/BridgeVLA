@@ -26,7 +26,7 @@ def pool_chunk_geometry(xyz, coverage, grid_shape):
 
 def chunk_geometry_to_world(output, cube_to_world):
     """Undo the exact predicted crop and per-sample world-to-cube transform."""
-    for name in (None, 'mvt2'):
+    for name in (None, 'mvt2', 'oht_chunk_tcp'):
         if name is not None and name not in output:
             continue
         stage = output if name is None else output[name]
@@ -36,8 +36,27 @@ def chunk_geometry_to_world(output, cube_to_world):
         if name is not None:
             # trans_pc's inverse is defined on [B,3]. Recover its diagonal
             # affine map rather than broadcasting a [B,3] origin over [B,N,3].
-            origin = output['rev_trans'](torch.zeros_like(points[:, 0]))
-            unit = output['rev_trans'](torch.ones_like(points[:, 0]))
+            reverse_crop = output['rev_trans' if name == 'mvt2' else 'oht_chunk_tcp_rev_trans']
+            origin = reverse_crop(torch.zeros_like(points[:, 0]))
+            unit = reverse_crop(torch.ones_like(points[:, 0]))
             points = points * (unit - origin)[:, None] + origin[:, None]
         points = torch.stack([reverse(value) for reverse, value in zip(cube_to_world, points)])
         stage['oht_chunk_xyz_world'] = torch.where(stage['oht_chunk_valid'][..., None], points, 0.).detach()
+
+
+def tcp_crop_in_cube(points, tcp_world, size_m, *, with_mean, scene_bounds):
+    """Use the same normalization as observed points, with a metric crop width."""
+    from .utils import place_pc_in_cube
+    tcp_world = torch.as_tensor(tcp_world, device=points.device, dtype=points.dtype)
+    if tcp_world.shape != (3,) or not torch.isfinite(tcp_world).all():
+        raise ValueError('TCP crop requires a finite measured world XYZ')
+    if type(size_m) not in (int, float) or not 0 < size_m < float('inf'):
+        raise ValueError('TCP crop size must be positive and finite')
+    probe = torch.stack((tcp_world, tcp_world + tcp_world.new_tensor([size_m / 2, 0., 0.])))
+    normalized, _ = place_pc_in_cube(points, app_pc=probe,
+        with_mean_or_bounds=with_mean, scene_bounds=None if with_mean else scene_bounds)
+    # Crop coordinates span [-1,1], hence one half-width maps to one unit.
+    scale = torch.linalg.vector_norm(normalized[1] - normalized[0]).reciprocal()
+    if not torch.isfinite(scale):
+        raise ValueError('TCP crop normalization is degenerate')
+    return normalized[0], scale

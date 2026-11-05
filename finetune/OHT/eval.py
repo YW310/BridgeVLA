@@ -13,12 +13,15 @@ from .data.replay import load_contract
 from .runtime.transport import Client
 from .runtime.progress import ProgressReporter
 from .action_modes import action_options, action_size, resolve_action, apply_eef_delta, action_descriptor
+from .evaluation_statistics import episode_reports, select_indices, summarize_errors
 
 
-def open_loop(policy, replay, split="val", limit=None, *, progress=None, visualizer=None):
+def open_loop(policy, replay, split="val", limit=None, *, progress=None, visualizer=None,
+              tasks=None, episode_indices=None):
     if getattr(policy, 'chunk_settings', None) is not None:
         from .chunk_eval import open_loop_chunk
-        return open_loop_chunk(policy, replay, split, limit, progress=progress, visualizer=visualizer)
+        return open_loop_chunk(policy, replay, split, limit, progress=progress, visualizer=visualizer,
+                               tasks=tasks, episode_indices=episode_indices)
     def report(stage, **details):
         if progress is not None:
             progress.update(stage, **details)
@@ -30,17 +33,16 @@ def open_loop(policy, replay, split="val", limit=None, *, progress=None, visuali
     data = OHTDataset(replay, split, "baseline", action_config=options)
     if policy.contract["sha256"] != data.contract["sha256"]:
         raise ValueError("Checkpoint/evaluation replay mismatch")
-    total = len(data) if limit is None else min(len(data), limit)
-    if not total:
-        raise ValueError(f"Evaluation split is empty: {split}")
+    indices, selected = select_indices(data.samples, tasks, episode_indices, limit)
+    total = len(indices)
     report("samples_ready", completed=0, total=total, split=split)
     rows, episode = [], None
-    for index in range(total):
-        meta = data.samples[index]
+    for index, data_index in enumerate(indices):
+        meta = data.samples[data_index]
         context = dict(total=total, sample=meta["id"], task=meta["task"])
         report("read_sample", emit=index == 0, completed=index, **context)
         started = time.perf_counter()
-        row = data[index]
+        row = data[data_index]
         read_seconds = time.perf_counter() - started
         report("predict", emit=index == 0, completed=index, read_s=round(read_seconds, 3), **context)
         current = (meta["task"], meta["episode_index"])
@@ -59,15 +61,19 @@ def open_loop(policy, replay, split="val", limit=None, *, progress=None, visuali
             for joint in options["joint_wrap"]:
                 errors[joint] = (errors[joint] + np.pi) % (2 * np.pi) - np.pi
             metrics.update(joint_mae_radians=float(np.abs(errors).mean()),
-                           joint_rmse_radians=float(np.sqrt(np.square(errors).mean())))
+                           joint_rmse_radians=float(np.sqrt(np.square(errors).mean())),
+                           joint_errors_radians=errors.tolist())
         else:
             first, second = predicted, target
             if options["mode"] == "relative_eef":
                 first = apply_eef_delta(row["tcp_pose"], predicted[:6], options)
                 second = apply_eef_delta(row["tcp_pose"], target[:6], options)
             metrics.update(translation_m=float(np.linalg.norm(first[:3] - second[:3])),
-                           rotation_degrees=float(np.rad2deg(rotation_error(first[3:7], second[3:7]))))
-        rows.append(dict(id=meta["id"], task=meta["task"], **metrics))
+                           rotation_degrees=float(np.rad2deg(rotation_error(first[3:7], second[3:7]))),
+                           translation_error_xyz_m=(first[:3] - second[:3]).tolist())
+        rows.append(dict(id=meta["id"], task=meta["task"], episode_index=meta["episode_index"],
+                         frame=meta["frame"], target_frame=meta["target_frame"],
+                         timestamp=meta.get("timestamp"), **metrics))
         if extra:
             if len(captured) != 1:
                 raise RuntimeError("Evaluation visualization requires exactly one payload from this inference")
@@ -79,15 +85,12 @@ def open_loop(policy, replay, split="val", limit=None, *, progress=None, visuali
     grouped = defaultdict(list)
     for row in rows:
         grouped[row["task"]].append(row)
-    def summarize(values):
-        metrics = {key + "_mean": float(np.mean([v[key] for v in values]))
-                   for key in values[0] if key not in ("id", "task", "gripper_correct")}
-        return dict(samples=len(values), gripper_accuracy=float(np.mean([v["gripper_correct"] for v in values])), **metrics)
-    per_task = {task: summarize(values) for task, values in grouped.items()}
+    per_task = {task: summarize_errors(values) for task, values in grouped.items()}
     result = dict(kind="open_loop_errors", split=split, contract_sha256=data.contract["sha256"],
                 action_spec=action_descriptor(options),
-                per_task=per_task, all_samples=summarize(rows), predictions=rows,
+                per_task=per_task, all_samples=summarize_errors(rows), predictions=rows,
                 note="Pose errors do not measure closed-loop task success.")
+    result.update(episode_reports(rows, selected))
     if visualizer is not None:
         report("write_visualization_index")
         result["visualization"] = visualizer.finish()
@@ -146,6 +149,10 @@ def main(argv=None):
     p.add_argument("--replay", required=True)
     p.add_argument("--split", choices=["val", "test"], default="val")
     p.add_argument("--limit", type=int)
+    p.add_argument("--task", action="append", dest="tasks",
+                   help="Restrict to a task; repeat to select multiple tasks")
+    p.add_argument("--episode-index", action="append", type=int, dest="episode_indices",
+                   help="Source episode index, not sample index; repeat to select multiple episodes")
     p.add_argument("--pretrain-path")
     p.add_argument("--predictor")
     p.add_argument("--predictor-provenance")
@@ -173,6 +180,8 @@ def main(argv=None):
     if args.kind == "open-loop":
         if args.limit is not None and args.limit < 1:
             raise ValueError("--limit must be positive")
+        if args.episode_indices is not None and any(index < 0 for index in args.episode_indices):
+            raise ValueError("--episode-index must be nonnegative")
         if args.visualize_every < 0:
             raise ValueError("--visualize-every must be nonnegative")
         if args.visualize_output_dir and not args.visualize_every:
@@ -186,7 +195,8 @@ def main(argv=None):
         with ProgressReporter(args.progress_interval, enabled=not args.quiet) as progress:
             policy = load_policy(args.checkpoint, args.device, args.pretrain_path,
                                  args.predictor, args.predictor_provenance, progress=progress)
-            result = open_loop(policy, args.replay, args.split, args.limit, progress=progress, visualizer=visualizer)
+            result = open_loop(policy, args.replay, args.split, args.limit, progress=progress, visualizer=visualizer,
+                               tasks=args.tasks, episode_indices=args.episode_indices)
             progress.update("hash_checkpoint", checkpoint=args.checkpoint)
             result["checkpoint_sha256"] = file_digest(args.checkpoint)
             progress.update("write_report", output=args.output)
@@ -214,7 +224,8 @@ def main(argv=None):
                       action_spec=action_descriptor(options),
                       max_steps=args.max_steps)
         write_json(args.output, result)
-    print(json.dumps({key: value for key, value in result.items() if key not in ("predictions", "cases")}))
+    print(json.dumps({key: value for key, value in result.items()
+                      if key not in ("predictions", "cases", "per_episode")}))
     return 0
 
 

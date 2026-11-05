@@ -1,0 +1,7 @@
+extends: oht_chunk_v4_delta_state_guided_8x40.yaml
+exp_id: oht-key-chunk-v4-delta-state-tcp-guided
+chunk_policy:
+  # The key branch retains goal-centered MVT2. Chunk local tokens come from
+  # a separate measured-TCP crop using the same visual/Gemma encoder weights.
+  local_context: tcp
+  tcp_crop_size_m: 0.4  # Full side length of the axis-aligned world-space cube.

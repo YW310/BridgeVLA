@@ -11,7 +11,12 @@ DEFAULTS = dict(enabled=False, horizon=16, execute_horizon=4, hidden_dim=256,
                 action_position_scale=None, geometry_scale=None, position_loss_scale=None,
                 normalization_quantile=.99, normalization_min_scale=.01, normalization_max_samples=4096,
                 flow_time_sampling='uniform', adaln=False, temporal_kernel_size=1,
-                second_difference_weight=0., second_difference_scale=.001)
+                second_difference_weight=0., second_difference_scale=.001,
+                state_conditioning=False, proprio_normalization='none',
+                proprio_center=None, proprio_scale=None, proprio_min_scale=.1,
+                key_condition_gate=False, key_condition_gate_init=.1, spatial_key_token=False,
+                prediction_representation='relative_pose',
+                local_context='key_refine', tcp_crop_size_m=.4)
 
 
 def chunk_scale(settings, name):
@@ -39,7 +44,7 @@ def chunk_settings(config, contract=None):
     for name in ('dropout', 'position_scale', 'position_weight', 'displacement_weight', 'displacement_scale',
                  'rotation_weight', 'gripper_weight', 'key_loss_weight', 'flow_weight',
                  'second_difference_weight', 'second_difference_scale', 'normalization_min_scale',
-                 'normalization_quantile'):
+                 'normalization_quantile', 'proprio_min_scale', 'key_condition_gate_init'):
         value = result[name]
         if type(value) not in (float, int) or not math.isfinite(value) or value < 0:
             raise ValueError(f'chunk_policy.{name} must be finite and nonnegative')
@@ -68,8 +73,47 @@ def chunk_settings(config, contract=None):
         raise ValueError('chunk_policy.goal_conditioning must be absolute or relative_tcp')
     if type(result['spatial_conditioning']) is not bool:
         raise ValueError('chunk_policy.spatial_conditioning must be boolean')
+    if result['local_context'] not in ('key_refine', 'tcp', 'coarse_only'):
+        raise ValueError('chunk_policy.local_context must be key_refine, tcp or coarse_only')
+    if result['local_context'] != 'key_refine' and not result['spatial_conditioning']:
+        raise ValueError('TCP/coarse-only context requires spatial_conditioning=true')
+    size = result['tcp_crop_size_m']
+    if type(size) not in (int, float) or not math.isfinite(size) or size <= 0:
+        raise ValueError('chunk_policy.tcp_crop_size_m must be positive and finite')
     if result['decoder_type'] not in ('regression', 'flow_matching'):
         raise ValueError('chunk_policy.decoder_type must be regression or flow_matching')
+    for name in ('state_conditioning', 'key_condition_gate', 'spatial_key_token'):
+        if type(result[name]) is not bool:
+            raise ValueError(f'chunk_policy.{name} must be boolean')
+    if result['state_conditioning'] and not (result['spatial_conditioning'] and result['adaln']):
+        raise ValueError('Direct state conditioning requires spatial_conditioning=true and adaln=true')
+    if result['key_condition_gate'] and not result['state_conditioning']:
+        raise ValueError('Key condition gate requires state_conditioning=true')
+    if result['spatial_key_token'] and not (result['state_conditioning'] and result['key_condition_gate']):
+        raise ValueError('Spatial key token requires state_conditioning=true and key_condition_gate=true')
+    if not 0 < result['key_condition_gate_init'] < 1:
+        raise ValueError('chunk_policy.key_condition_gate_init must be between 0 and 1')
+    if result['proprio_normalization'] not in ('none', 'train_quantile') or result['proprio_min_scale'] <= 0:
+        raise ValueError('Invalid proprio normalization method or minimum scale')
+    if result['proprio_normalization'] != 'none' and not result['spatial_conditioning']:
+        raise ValueError('Proprio normalization requires spatial_conditioning=true')
+    if result['proprio_normalization'] == 'train_quantile' and result['normalization_quantile'] <= .5:
+        raise ValueError('Proprio normalization requires normalization_quantile >0.5')
+    center, scale = result['proprio_center'], result['proprio_scale']
+    if (center is None) != (scale is None):
+        raise ValueError('Proprio normalization requires both center and scale')
+    if center is not None:
+        for name, values in (('proprio_center', center), ('proprio_scale', scale)):
+            if (not isinstance(values, list) or len(values) != 7 or
+                    any(type(v) not in (int, float) or not math.isfinite(v) for v in values)):
+                raise ValueError(f'chunk_policy.{name} must be a finite seven-element list')
+        if min(scale) <= 0 or result['proprio_normalization'] == 'none':
+            raise ValueError('Proprio scales must be positive and require train_quantile normalization')
+    if result['prediction_representation'] not in ('relative_pose', 'delta_pose'):
+        raise ValueError('chunk_policy.prediction_representation must be relative_pose or delta_pose')
+    if result['prediction_representation'] == 'delta_pose' and (
+            not result['spatial_conditioning'] or result['decoder_type'] != 'regression'):
+        raise ValueError('Delta pose representation currently requires spatial regression')
     if result['spatial_conditioning'] and result['goal_conditioning'] != 'relative_tcp':
         raise ValueError('Spatial chunk conditioning requires goal_conditioning=relative_tcp')
     if result['decoder_type'] == 'flow_matching' and (not result['spatial_conditioning'] or result['flow_weight'] <= 0):

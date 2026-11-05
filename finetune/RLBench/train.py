@@ -55,7 +55,7 @@ from utils.peract_utils_rlbench import (
 from training_utils import (
     build_batch_plan,
     freeze_for_oracle_adaptation,
-    format_training_metrics,
+    report_training_progress,
     optimizer_steps_per_epoch,
     resolve_training_epochs,
     should_disable_rgc_loss,
@@ -246,7 +246,7 @@ def train(
     iter_command = range(training_iterations)
 
     progress = tqdm.tqdm(
-        iter_command, disable=(rank != 0), position=0, leave=True
+        iter_command, disable=(rank != 0), position=0, leave=True, desc='train', dynamic_ncols=True
     )
     for iteration in progress:
 
@@ -307,39 +307,10 @@ def train(
                 )
                 wandb_run.log(wandb_metrics, step=step)
 
-            visible_losses = {
-                key: f'{metrics[key]:.4f}'
-                for key in (
-                    'total_loss',
-                    'total_loss_base',
-                    'total_loss_gain',
-                    'total_loss_gain_pct',
-                    'trans_loss',
-                    'trans_loss_base',
-                    'trans_loss_valid',
-                    'trans_loss_base_valid',
-                    'oracle_prior_coverage',
-                    'rot_loss_x',
-                    'rot_loss_y',
-                    'rot_loss_z',
-                    'grip_loss',
-                    'collision_loss',
-                )
-                if key in metrics
-            }
-            progress.set_postfix(visible_losses, refresh=False)
-            if (
-                loss_print_interval > 0
-                and (
-                    iteration % loss_print_interval == 0
-                    or iteration == training_iterations - 1
-                )
-            ):
-                loss_text = format_training_metrics(metrics)
-                tqdm.tqdm.write(
-                    f'[train] epoch={epoch} iter={iteration} '
-                    f'step={step} {loss_text}'
-                )
+            report_training_progress(progress, metrics, step=step, epoch=epoch,
+                iteration=iteration, learning_rate=agent._optimizer.param_groups[0]['lr'],
+                print_line=(loss_print_interval > 0 and (
+                    iteration % loss_print_interval == 0 or iteration == training_iterations - 1)))
     return log
 
 
@@ -363,7 +334,7 @@ def train_with_accumulation(
     agent.train()
     data_iter = iter(dataset)
     progress = tqdm.tqdm(
-        range(optimizer_steps), disable=(rank != 0), position=0, leave=True
+        range(optimizer_steps), disable=(rank != 0), position=0, leave=True, desc='train', dynamic_ncols=True
     )
 
     for optimizer_step_index in progress:
@@ -467,39 +438,10 @@ def train_with_accumulation(
                 )
                 wandb_run.log(wandb_metrics, step=global_step)
 
-            visible_losses = {
-                key: f'{metrics[key]:.4f}'
-                for key in (
-                    'total_loss',
-                    'total_loss_base',
-                    'total_loss_gain',
-                    'total_loss_gain_pct',
-                    'trans_loss',
-                    'trans_loss_base',
-                    'trans_loss_valid',
-                    'trans_loss_base_valid',
-                    'oracle_prior_coverage',
-                    'rot_loss_x',
-                    'rot_loss_y',
-                    'rot_loss_z',
-                    'grip_loss',
-                    'collision_loss',
-                )
-                if key in metrics
-            }
-            progress.set_postfix(visible_losses, refresh=False)
-            if (
-                loss_print_interval > 0
-                and (
-                    global_step % loss_print_interval == 0
-                    or optimizer_step_index == optimizer_steps - 1
-                )
-            ):
-                loss_text = format_training_metrics(metrics)
-                tqdm.tqdm.write(
-                    f'[train] epoch={epoch} optimizer_step={global_step} '
-                    f'{loss_text}'
-                )
+            report_training_progress(progress, metrics, step=global_step, epoch=epoch,
+                iteration=optimizer_step_index, learning_rate=agent._optimizer.param_groups[0]['lr'],
+                print_line=(loss_print_interval > 0 and (
+                    global_step % loss_print_interval == 0 or optimizer_step_index == optimizer_steps - 1)))
 
     return global_step_offset + optimizer_steps
 
@@ -1539,6 +1481,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         '--loss_print_interval',
+        '--loss-print-interval',
         type=int,
         default=10,
         help='Print scalar losses every N iterations; 0 disables text output.',

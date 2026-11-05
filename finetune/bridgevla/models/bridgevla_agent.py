@@ -921,16 +921,18 @@ class RVTAgent:
         stage_outputs = [output]
         if self.stage_two:
             stage_outputs.append(output['mvt2'])
-        sums = {
-            'mask': 0.0, 'mask_bce': 0.0, 'mask_dice': 0.0,
-            'role': 0.0, 'objectness': 0.0,
-            'presence': 0.0, 'diversity': 0.0, 'diversity_pixels': 0.0,
-        }
+        # Unused statistics (e.g. visible-surface pixel counts for unordered
+        # slots) still need scalar tensors: update() logs every value via item().
+        metric_zero = output['object_slot_prior'].new_zeros(())
+        sums = dict.fromkeys((
+            'mask', 'mask_bce', 'mask_dice', 'role', 'objectness',
+            'presence', 'diversity', 'diversity_pixels',
+        ), metric_zero)
         supervise_mixed = bool(getattr(
             self._net_mod, 'object_conditioning_supervise_mixed_role_maps', False))
         if supervise_mixed:
-            sums.update({'mixed_role': 0.0, 'mixed_role_bce': 0.0,
-                         'mixed_role_dice': 0.0})
+            sums.update(dict.fromkeys(('mixed_role', 'mixed_role_bce',
+                                       'mixed_role_dice'), metric_zero))
         raw_stage_count = 0
         mixed_stage_count = 0
         refine_stage_count = 0
@@ -2549,6 +2551,8 @@ class RVTAgent:
         visualize=False, visualize_save_dir="", return_gembench_action=False,
         visualization_callback=None,
         context_with_grad=False,
+        chunk_tcp_world=None,
+        chunk_tcp_crop_size_m=.4,
     ) -> ActResult:
         oracle_points, oracle_valid, oracle_slots = (
             self._select_oracle_prior_points(observation, allow_missing=True)
@@ -2603,6 +2607,11 @@ class RVTAgent:
         pc_new = []
         rev_trans = []
         oracle_points_local = [] if oracle_points is not None else None
+        tcp_crop_centers, tcp_crop_scales = [], []
+        if chunk_tcp_world is not None:
+            chunk_tcp_world = torch.as_tensor(chunk_tcp_world)
+            if chunk_tcp_world.shape != (len(pc), 3):
+                raise ValueError('Chunk TCP context requires measured XYZ with shape [B,3]')
         oracle_point_shape = (
             tuple(oracle_points.shape[1:])
             if oracle_points is not None else None
@@ -2615,6 +2624,12 @@ class RVTAgent:
             )
             pc_new.append(a)
             rev_trans.append(b)
+            if chunk_tcp_world is not None:
+                from bridgevla.mvt.chunk_geometry import tcp_crop_in_cube
+                center, scale = tcp_crop_in_cube(_pc, chunk_tcp_world[batch_index],
+                    chunk_tcp_crop_size_m, with_mean=self._place_with_mean, scene_bounds=self.scene_bounds)
+                tcp_crop_centers.append(center)
+                tcp_crop_scales.append(scale)
             if oracle_points_local is not None:
                 oracle_points_local.append(
                     mvt_utils.place_pc_in_cube(
@@ -2671,6 +2686,8 @@ class RVTAgent:
         dyn_cam_info = None
         # Retain inference routing and no-grad action decoding; OHT joint
         # training may retain the neural feature graph captured by its hook.
+        chunk_inputs = (dict(oht_chunk_tcp_local=torch.stack(tcp_crop_centers),
+                             oht_chunk_tcp_scale=torch.stack(tcp_crop_scales)) if tcp_crop_centers else {})
         with torch.set_grad_enabled(context_with_grad):
             out = self._network(
                 pc=pc,
@@ -2687,6 +2704,7 @@ class RVTAgent:
                     relation_state,
                 ),
                 language_goal=language_goal,
+                **chunk_inputs,
                 **self._network_extra_inputs(observation),
             )
         if getattr(self._net_mod.mvt1, 'oht_return_chunk_geometry', False):
