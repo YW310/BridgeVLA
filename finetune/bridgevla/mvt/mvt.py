@@ -624,6 +624,7 @@ class MVT(nn.Module):
         current_state=None,
         oht_chunk_tcp_local=None,
         oht_chunk_tcp_scale=None,
+        slot_guided_geometry=None,
         **kwargs,
     ):
         """
@@ -638,6 +639,23 @@ class MVT(nn.Module):
         :param rot_x_y: (bs, 2) rotation in x and y direction
         :param language_goal: str (bs,)language instruction
         """
+        if slot_guided_geometry is not None:
+            from bridgevla.models.slot_guided_geometry import (
+                AuthorizedGeometry, freeze_for_geometry_inference, geometry_for_render,
+            )
+            if self.training or img_aug != 0 or torch.is_grad_enabled():
+                raise ValueError('slot-guided SAM3 requires eval with no augmentation')
+            if not isinstance(slot_guided_geometry, AuthorizedGeometry):
+                raise ValueError('slot-guided SAM3 requires authorized geometry')
+            slot_guided_geometry.verify()
+            if not self.object_slots_enabled or not hasattr(self.oracle_prior_feature_adapter1, 'forward_with_anchor'):
+                raise ValueError('slot-guided SAM3 draft requires the existing Slot/Relation Anchor path')
+            adapters = [self.oracle_prior_feature_adapter1]
+            if self.stage_two:
+                adapters.append(self.oracle_prior_feature_adapter2)
+            if any(not getattr(adapter, 'role_conditioning', False) for adapter in adapters):
+                raise ValueError('slot-guided SAM3 requires existing role_conditioning=True Anchor adapters')
+            freeze_for_geometry_inference(self)
         if current_state is not None:
             if oracle_relation_state is not None:
                 raise ValueError('pass current_state or legacy oracle_relation_state, not both')
@@ -686,6 +704,11 @@ class MVT(nn.Module):
             oracle_prior_valid=policy_valid1,
             oracle_relation_points=policy_points1,
             oracle_relation_state=oracle_relation_state,
+            **({'slot_guided_geometry': geometry_for_render(
+                slot_guided_geometry, pc, norm_corr=self.mvt1.norm_corr,
+                clean_xyz=(self.object_conditioning_inherit_coarse_roles
+                           or self.object_slot_predictor_type == 'role_queries'))}
+               if slot_guided_geometry is not None else {}),
             object_slot_predictor=self.object_slot_predictor1,
             object_conditioning_shared_action_features=self.object_conditioning_shared_action_features,
             object_conditioning_use_context=self.object_conditioning_use_context,
@@ -858,6 +881,13 @@ class MVT(nn.Module):
                 oracle_relation_state=oracle_relation_state,
                 object_slot_predictor=(None if inherited_roles is not None else self.object_slot_predictor2),
                 inherited_object_roles=inherited_roles,
+                **({'slot_guided_geometry': geometry_for_render(
+                    slot_guided_geometry.transformed(
+                        lambda p: self.st_sca * (p - wpt_local_stage_one_noisy[:, None, None])),
+                    pc, norm_corr=self.mvt1.norm_corr,
+                    clean_xyz=(self.object_conditioning_inherit_coarse_roles
+                               or self.object_slot_predictor_type == 'role_queries'))}
+                   if slot_guided_geometry is not None else {}),
                 coarse_query_context=(
                     {'coarse_role_tokens': out['object_slot_role_tokens'],
                      'coarse_reference_null_probability': out['object_slot_reference_null_probability']}
