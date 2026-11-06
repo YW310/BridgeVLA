@@ -19,6 +19,8 @@ Email: peiyan.li@cripac.ia.ac.cn
 import os
 import yaml
 import csv
+import json
+import subprocess
 from pathlib import Path
 import torch
 import cv2
@@ -90,6 +92,14 @@ def _append_evaluation_diagnostic(path, message):
     with path.open('a', encoding='utf-8') as stream:
         stream.write(str(message).rstrip() + '\n')
 
+
+def _append_slot_sam3_step(path, task_name, episode_index, diagnostics):
+    if path is None or diagnostics is None:
+        return
+    with Path(path).open('a', encoding='utf-8') as stream:
+        stream.write(json.dumps(dict(task=task_name, episode_index=episode_index,
+                                     **diagnostics), allow_nan=False) + '\n')
+
 def _validate_role_feature_checkpoint(checkpoint, conditioning_cfg, source,
                                       predictor_type='slots'):
     """Require the eval role-routing path recorded during training."""
@@ -133,7 +143,8 @@ def load_agent(
     use_input_place_with_mean=False,
     oracle_role_config=None,
     oracle_num_points=512,
-    enforce_oracle_contract=False):
+    enforce_oracle_contract=False,
+    slot_sam3_options=None):
     device = f"cuda:{device}"
     assert model_path is not None
 
@@ -145,6 +156,21 @@ def load_agent(
         exp_cfg.merge_from_file(exp_cfg_path)
     else:
         exp_cfg.merge_from_file(os.path.join(model_folder, "exp_cfg.yaml"))
+
+    if (exp_cfg.rvt.enable_slot_guided_sam3
+            and exp_cfg.rvt.slot_guided_sam3_execution_mode == 'offline_experiment'):
+        raise ValueError(
+            'Use slot_guided_sam3_offline.py for offline_experiment snapshots; '
+            'this profile cannot launch an RLBench control rollout.')
+    online_runtime = None
+    online_checkpoint_sha = None
+    if (exp_cfg.rvt.enable_slot_guided_sam3
+            and exp_cfg.rvt.slot_guided_sam3_execution_mode == 'online_experiment'):
+        from bridgevla.online.slot_sam3_runtime import resolve_runtime
+        from bridgevla.models.slot_guided_geometry import sha256_file
+        online_runtime = resolve_runtime(exp_cfg, slot_sam3_options,
+                                         policy_device=device, validate_files=True)
+        online_checkpoint_sha = sha256_file(model_path)
 
     # NOTE: to not use place_with_mean in evaluation
     # needed for rvt-1 but not rvt-2
@@ -283,6 +309,16 @@ def load_agent(
         strict=(object_prior_mode != 'none'),
         checkpoint_validator=checkpoint_validator,
     )
+    if online_runtime is not None:
+        if sha256_file(model_path) != online_checkpoint_sha:
+            raise ValueError('BridgeVLA checkpoint changed while loading the online policy')
+        agent.slot_guided_sam3_runtime = online_runtime
+        agent.slot_guided_sam3_checkpoint_sha256 = online_checkpoint_sha
+        agent.slot_guided_sam3_checkpoint_path = str(Path(model_path).resolve())
+        agent.slot_guided_sam3_git_sha = subprocess.check_output(
+            ['git', '-C', str(Path(__file__).resolve().parents[2]), 'rev-parse', 'HEAD'],
+            text=True).strip()
+        agent.slot_guided_sam3_point_count = int(exp_cfg.object_slots.point_samples)
     agent.semantic_training_phase_source = semantic_training_phase_source
     agent.semantic_contract_status = semantic_contract_status['value']
     agent.eval()
@@ -330,6 +366,15 @@ def eval(
     eval_resume_signature_sha256=None,
     manifest_continue_on_error=False,
 ):
+    online_slot_sam3 = bool(
+        agent is not None and getattr(agent, 'enable_slot_guided_sam3', False)
+        and getattr(agent, 'slot_guided_sam3_execution_mode', None) == 'online_experiment')
+    if online_slot_sam3 and (replay_ground_truth or oracle_provider_name != 'none'
+                             or heatmap_action_anchor or bridgevla_aligned_objects
+                             or bridgevla_aligned_reference):
+        raise ValueError('online Slot/SAM3 uses current predicted roles without privileged Oracle/expert replay')
+    if online_slot_sam3 and eval_resume:
+        raise ValueError('online Slot/SAM3 requires fresh episodes; evaluation resume is not supported yet')
     if ground_truth_retries < 0:
         raise ValueError("ground_truth_retries must be non-negative")
     if oracle_debug_interval <= 0:
@@ -480,6 +525,13 @@ def eval(
             raise ValueError("Task %s not recognised!." % task)
         task_classes.append(task_file_to_task_class(task))
 
+    online_observer = None
+    online_env_kwargs = {}
+    if online_slot_sam3:
+        from utils.slot_sam3_observation import SlotSam3ObservationProvider
+        online_observer = SlotSam3ObservationProvider(
+            agent.slot_guided_sam3_runtime['task_repo'], agent.cameras)
+        online_env_kwargs['slot_sam3_observation_provider'] = online_observer
     eval_env = CustomMultiTaskRLBenchEnv(
         task_classes=task_classes,
         observation_config=obs_config,
@@ -492,9 +544,19 @@ def eval(
         time_in_state=True,
         record_every_n=1 if save_video else -1,
         oracle_provider=oracle_provider,
+        **online_env_kwargs,
     )
 
     eval_env.eval = True
+
+    online_step_log = None
+    if online_slot_sam3:
+        from bridgevla.online.slot_sam3_runtime import make_online_policy
+        agent = make_online_policy(agent, online_observer)
+        if logging and log_dir is not None:
+            online_step_log = Path(log_dir) / 'slot_sam3_steps.jsonl'
+            online_step_log.parent.mkdir(parents=True, exist_ok=True)
+            online_step_log.write_text('', encoding='utf-8')
 
     device = f"cuda:{device}"
 
@@ -676,6 +738,9 @@ def eval(
                 try:
                     for replay_transition in generator:
                         episode_rollout.append(replay_transition)
+                        if online_step_log is not None:
+                            _append_slot_sam3_step(online_step_log, tasks[task_id], ep,
+                                                  agent.last_diagnostics)
                 except StopIteration:
                     continue
                 except SemanticRoleMappingError as e:
@@ -728,6 +793,9 @@ def eval(
                     eval_env.shutdown()
                     raise
                 except Exception as e:
+                    if online_step_log is not None:
+                        _append_slot_sam3_step(online_step_log, tasks[task_id], ep,
+                                              agent.last_diagnostics)
                     if oracle_provider is not None:
                         oracle_provider.dump(
                             Path(log_dir) / "semantic_oracle",
@@ -967,11 +1035,18 @@ def eval(
 _RLBENCH_RUNTIME_FILES = (
     "utils/custom_rlbench_env.py",
     "utils/o2_oracle_provider.py",
+    "utils/slot_sam3_observation.py",
 )
 _FINETUNE_RUNTIME_FILES = (
     "bridgevla/models/bridgevla_agent.py",
     "bridgevla/models/oracle_prior.py",
     "bridgevla/models/slot_guided_geometry.py",
+    "bridgevla/models/coarse_slot_export.py",
+    "bridgevla/online/slot_sam3_runtime.py",
+    "bridgevla/online/slot_sam3_policy.py",
+    "bridgevla/online/slot_sam3_perception.py",
+    "bridgevla/offline/slot_sam3_perception.py",
+    "bridgevla/data/observations.py",
     "bridgevla/models/object_conditioning.py",
     "bridgevla/models/cross_scale_roles.py",
     "bridgevla/models/role_separation.py",
@@ -1097,6 +1172,14 @@ def _eval(args):
                     args.oracle_provider == 'rlbench_gt'
                     and not args.ground_truth
                 ),
+                slot_sam3_options={
+                    key: getattr(args, 'slot_sam3_' + option, None)
+                    for key, option in (
+                        ('task_repo', 'task_repo'), ('sam3_checkpoint', 'checkpoint'),
+                        ('perception_config', 'perception_config'), ('sam3_device', 'device'),
+                        ('prompt_mode', 'prompt_mode'), ('fallback', 'fallback'),
+                        ('diagnostics_dir', 'diagnostics_dir'))
+                },
             )
         if args.oracle_provider == "rlbench_gt":
             if (agent is not None and not agent.oracle_prior_enabled

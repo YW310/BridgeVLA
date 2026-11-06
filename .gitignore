@@ -81,6 +81,8 @@ LPY
 !tools/export_oht_replay_viewer.py
 !tools/export_oht_seg_roles.py
 !tools/export_oht_tensorboard.py
+!finetune/bridgevla/models/coarse_slot_export.py
+!tests/test_coarse_slot_export.py
 # Keep experiment documentation; generated experiment artifacts remain ignored.
 !/docs/experiments/
 !/docs/experiments/*.md

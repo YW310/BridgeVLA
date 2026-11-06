@@ -70,9 +70,15 @@ EOF
 | `internal_slots`（`bs: 48`） | 1、2、4 |
 | `rlbench_full_8x40`、`rlbench_trend_8x40`（`bs: 4`） | 1、2、3、4、6、8、12、16、24、48 |
 
-## Slot-guided SAM3 draft (disabled)
+## Slot-guided SAM3 online inference
 
-[rlbench_slot_guided_sam3_draft.yaml](rlbench_slot_guided_sam3_draft.yaml) mirrors the existing `rlbench_o2_role_queries.yaml` architecture and recipe, with a separate experiment name and explicit `rvt.enable_slot_guided_sam3: False`. It requires the existing role-conditioned Anchor; an arbitrary baseline/Slot/refine checkpoint cannot be substituted. This profile does not supply a current-frame payload importer, a REAL acceptance report, or an enabled runtime command. See the [API contract and verified CPU commands](../../../docs/slot_guided_sam3_action_draft.md#configuration-and-verified-cpu-commands).
+[rlbench_slot_guided_sam3_online.yaml](rlbench_slot_guided_sam3_online.yaml) enables `online_experiment` in the normal RLBench evaluation loop. Run `slot_guided_sam3_online.py`; its [commands and runtime contract](../../../docs/slot_guided_sam3_online.md) describe the persistent model, current-observation provider and TASK SAM3 reuse. Runtime paths live in `slot_guided_sam3` and support `--slot-sam3-*` overrides. The default config remains disabled.
+
+## Slot-guided SAM3 offline snapshots
+
+[rlbench_slot_guided_sam3_offline.yaml](rlbench_slot_guided_sam3_offline.yaml) enables frozen `offline_experiment` inference using `slot_guided_sam3_offline.py`. Read the [commands and single-frame input contract](../../../docs/slot_guided_sam3_offline.md). The loader checks the checkpoint's saved architecture and routing metadata, then loads existing weights strictly. It never starts an RLBench control rollout or trains a model.
+
+[rlbench_slot_guided_sam3_draft.yaml](rlbench_slot_guided_sam3_draft.yaml) remains a disabled compatibility profile for existing commands; new offline experiments use the profile above. Other configs and global defaults remain unchanged.
 
 ## 常用开关
 

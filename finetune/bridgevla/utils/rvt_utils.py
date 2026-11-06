@@ -261,6 +261,13 @@ def get_eval_parser():
             "invalid manifest, then continue with later episodes."
         ),
     )
+    parser.add_argument('--slot-sam3-task-repo', default=None)
+    parser.add_argument('--slot-sam3-checkpoint', default=None)
+    parser.add_argument('--slot-sam3-perception-config', default=None)
+    parser.add_argument('--slot-sam3-device', default=None)
+    parser.add_argument('--slot-sam3-prompt-mode', choices=('box-only', 'point+box'), default=None)
+    parser.add_argument('--slot-sam3-fallback', choices=('baseline', 'fail'), default=None)
+    parser.add_argument('--slot-sam3-diagnostics-dir', default=None)
     return parser
 
 

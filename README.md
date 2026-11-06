@@ -17,7 +17,7 @@ A 3D VLA framework that aligns the input and output within a shared 2D space in 
 As illustrated in the following figure, BridgeVLA employs a dual-phase training recipe. During pre-training, it is trained to predict 2D heatmaps on object detection datasets. During fine-tuning, point clouds are projected into multiple 2D images as inputs to the VLM backbone. The model is trained to predict 2D heatmaps for estimating the translational action and other action components. **This design aligns the input and output within a shared 2D space in both pre-training and fine-tuning.**
 ![](assets/network.png)
 
-Slot-guided SAM3 is a default-disabled software draft; see the [action-input contract and verified CPU commands](docs/slot_guided_sam3_action_draft.md) and the [disabled architecture example](finetune/RLBench/configs/rlbench_slot_guided_sam3_draft.yaml). Real SAM3/robot evaluation and runtime activation remain gated.
+Slot-guided SAM3 has an [online RLBench loop and commands](docs/slot_guided_sam3_online.md) with an [enabled online profile](finetune/RLBench/configs/rlbench_slot_guided_sam3_online.yaml). Each current observation supplies Coarse Guidance to persistent SAM3 and RGB-D fusion before the existing Anchor predicts the action. The [offline snapshot runner](docs/slot_guided_sam3_offline.md) remains for reproducible A/B/C experiments. Global defaults remain off; real manipulation results are still unmeasured.
 
 ## Current Status
 
