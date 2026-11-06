@@ -40,7 +40,15 @@ class TrajectoryReplay:
         contract_sha = None
         if args.replay_contract:
             from ..data.replay import load_contract
-            contract = load_contract(args.replay_contract)
+            # A recorded state/dense EEF replay needs calibration, not cached
+            # single-key targets. Accept the model's V4 contract through its
+            # strict reader; the legacy trainer must continue rejecting V4.
+            declared = json.loads((Path(args.replay_contract) / 'contract.json').read_text(encoding='utf-8'))
+            if declared.get('schema') == 'oht_bridgevla_v4':
+                from ..data.chunk_dataset import load_chunk_contract
+                contract = load_chunk_contract(args.replay_contract)
+            else:
+                contract = load_contract(args.replay_contract)
             profiles = contract.get('source_data_configs', {})
             if profiles:
                 if self.profile_name not in profiles:

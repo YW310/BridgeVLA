@@ -281,14 +281,17 @@ def test_repeated_episodes_restore_once_per_episode(trajectory, tmp_path, monkey
     assert summary['attempted'] == 2 and summary['success_rate'] is None
 
 
-def test_calibration_from_existing_buffer_matches_source_profile(trajectory, monkeypatch):
+def test_calibration_from_existing_buffer_matches_source_profile(trajectory, monkeypatch, tmp_path):
     from finetune.OHT.data import replay as buffers
     f = trajectory
     config = deepcopy(f.config)
     config['link_to_tcp'][2][3] = .03
     contract = dict(sha256='test-contract', source_data_configs={f'{f.task}/lerobot_dataset': {'data_config': config}})
     monkeypatch.setattr(buffers, 'load_contract', lambda path: contract)
-    source = TrajectoryReplay(source_args(f, replay_contract='existing-buffer', replay_data_config=None))
+    root = tmp_path / 'existing-buffer'
+    root.mkdir()
+    (root / 'contract.json').write_text(json.dumps(contract), encoding='utf-8')
+    source = TrajectoryReplay(source_args(f, replay_contract=str(root), replay_data_config=None))
     assert source.info['contract_sha256'] == 'test-contract'
     np.testing.assert_allclose(source.poses[:, 2], .63)
     assert source.metadata['calibration']['sha256'] == 'test-contract'

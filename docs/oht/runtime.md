@@ -441,8 +441,8 @@ episode/frame 默认 0，frame 可为最后一帧。每次先 env.reset，再恢
 | --- | --- |
 | initial-state-data-config | 完整数据 YAML，顶层含 cameras/gripper/link_to_tcp；不是训练 YAML 或 contract.json，仍按 raw dataset 解析 metadata |
 | 两种标定参数均省略 | 读当前仓库 configs/dataset.yaml，不会从 checkpoint 恢复原 YAML |
-| initial-state-contract | 替代 data-config 的 V3 replay 路径，两者互斥；需完整匹配的 contract.json、complete.json、samples.jsonl，不读取缓存图像，并要求 SHA 与服务契约一致 |
-| V4 checkpoint | 当前初态 loader 拒绝 V4 contract；使用已核对的数据 YAML，未提供 contract 时不要求本地 SHA 与 V4 服务相等 |
+| initial-state-contract | 替代 data-config 的 V3/V4 replay 路径，两者互斥；按 schema 调用对应严格校验器，需完整匹配的 contract.json、complete.json、samples.jsonl，不读取缓存图像或未来标签，并要求 SHA 与服务契约一致 |
+| V4 checkpoint | 推荐直接指定训练的 replay-source-v4 目录，避免当前 dataset.yaml 与训练时标定不同；也可使用已核对的数据 YAML，但该方式不核对契约 SHA |
 
 自动比对 task/profile、link_to_tcp、gripper.open/close、scene_bounds、image_size；
 矩阵/边界/尺寸绝对容差 1e-6，端点 1e-8，均 rtol=0。
@@ -452,6 +452,17 @@ episode/frame 默认 0，frame 可为最后一帧。每次先 env.reset，再恢
 initial-state-joint-names 和 initial-state-gripper-joint-names 可明确记录顺序。
 
 相同 contract SHA 不证明当前 raw 文件、完整场景或模型权重相同；run.initial_state 记录本次文件/标定哈希。
+
+TCP-guided chunk 的同初态对照可在原 policy 命令中加入以下参数；若原命令显式指定了
+`--initialization env-reset`，先移除该项。ROOT 是原始数据目录，OUT 是该 checkpoint 对应的生成输出目录：
+
+```bash
+--initial-state-root "$ROOT" \
+--initial-state-contract "$OUT/replay-source-v4" \
+--initial-state-episode 0 --initial-state-frame 0
+```
+
+这只恢复一次记录状态，后续仍使用实时相机/本体观测与模型预测。不要把它解释成 GT chunk 控制。
 dry-run 不恢复状态或运行恢复后的 TCP 门槛；起始对齐失败会写 episode 错误并在第一次预测前停止。
 数据/标定预检可能在创建输出目录前失败，应保留终端错误。
 对象默认是环境 reset 状态；可用 initial-state-object-map 按[明确映射](#可选物体恢复)恢复刚体，
@@ -487,7 +498,7 @@ python /home/yiwei/BridgeVLA/tools/oht_bridgevla_client.py \
 | replay-targets keypoints | 提取 gripper/geometric/bridgevla 未来终点，以 waypoint 执行；源时间戳仅作来源，不约束跟踪时长 |
 | replay-episode / replay-start-frame | 均默认 0；回放起点必须至少有一帧后续记录 |
 | episodes / max-steps | 默认回放一次直到结束；max-steps 限制 frame 转换数或 keypoint 数 |
-| replay-contract | 可替代 replay-data-config，只接受完整 V3 replay contract；不支持 V4 contract |
+| replay-contract | 可替代 replay-data-config，接受完整 V3/V4 replay；只复用经校验的标定，动作仍来自原始 Parquet 实测 TCP |
 | replay-cameras | 默认关闭；开启后绑定/刷新数据配置全部实时相机，不解码原始视频 |
 | initialization | 默认 trajectory，也可 env-reset 或已配置 task；起始 TCP 均须对齐 |
 

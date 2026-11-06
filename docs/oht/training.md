@@ -289,6 +289,25 @@ GPUS_PER_NODE=2 bash finetune/OHT/train_8x40.sh \
 
 TensorBoard 的 `mvt2` 仍显示关键目标分支的目标中心裁剪，并非新 chunk 的 TCP 局部输入；`train_visualization/chunk` 比较实际 chunk 预测和未来轨迹。闭环收益需固定初始化、预算、seed 与执行器，对照成功率、碰撞和抖动，不能由裁剪图或训练 loss 单独判定。
 
+TCP-guided 的 open-loop 每次读取专家记录的当前状态，预测前 K 个未来点；在线每次读取实际执行后的状态。
+当前数据只监督专家轨迹上的观测，没有自动提供偏离轨迹后的恢复示范。K=16、H=4 在 60 Hz 下分别覆盖
+约 0.267 s / 0.067 s，短窗准确并不证明能持续推进或恢复偏差。预测 key 是带 gate 的条件，不能保证 chunk
+朝它前进，也不构成避碰约束。全局 224 像素视图可能掩盖毫米误差，应同时核对前 H 项数值误差和姿态。
+
+方向或位置明显偏离时，先按[记录初态](runtime.md#记录初态)做一次同 episode/frame 的实时观测对照，
+再比较 episode 中的原始 actions、实际下发 target 与实测 TCP：
+
+| 现象 | 优先排查 |
+| --- | --- |
+| 同记录初态的第一次预测已经偏离 | 实际加载的 checkpoint、相机 K/T 与深度、TCP 定义、关节顺序/归一化、物体状态及模型预测误差 |
+| 模型目标合理，实测运动明显偏离 | TCP 到 OSC 控制点的变换、控制基坐标、姿态及实际跟踪误差 |
+| 前缀起初正常，滚动多次后逐渐偏离 | 执行误差、相邻 chunk 不一致、任务进度/接触状态变化及训练分布外的恢复能力 |
+
+server 只按 checkpoint 保存的配置建模；核对 `/model_info.chunk_policy` 中
+`decoder_type=regression`、`prediction_representation=delta_pose`、`local_context=tcp`、
+`tcp_crop_size_m=0.4`、`spatial_key_token=true`。这些路径检查不代替真实仿真验收，
+没有本次执行记录时不能从 open-loop 图单独确定碰撞根因。
+
 ### 预算与卡数
 
 | 当前三组共用设置 | 值 |

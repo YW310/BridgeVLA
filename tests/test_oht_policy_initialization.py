@@ -11,6 +11,7 @@ from finetune.OHT.runtime.isaaclab_bridge import IsaacLabBridge
 from finetune.OHT.runtime.isaaclab_runtime import IsaacLabRuntime
 from finetune.OHT.runtime import trajectory_initialization as initial
 from tests.test_oht_trajectory_replay import trajectory, replay_simulator  # noqa: F401
+from tests.test_oht_chunk_replay import chunk_fixture, replay_fixture  # noqa: F401
 
 
 def arguments(f, **changes):
@@ -131,7 +132,7 @@ def test_selected_model_task_and_profile_must_match(trajectory, failure):
 
 @pytest.mark.parametrize('matching', [True, False])
 @pytest.mark.parametrize('default_profile', [True, False])
-def test_explicit_initial_contract_requires_checkpoint_sha_match(trajectory, monkeypatch, matching, default_profile):
+def test_explicit_initial_contract_requires_checkpoint_sha_match(trajectory, monkeypatch, tmp_path, matching, default_profile):
     from finetune.OHT.data import replay as buffers
     f = trajectory
     client, profile = client_for(f)
@@ -140,13 +141,62 @@ def test_explicit_initial_contract_requires_checkpoint_sha_match(trajectory, mon
     if not default_profile:
         contract['source_data_configs'] = {profile: {'data_config': config}}
     monkeypatch.setattr(buffers, 'load_contract', lambda path: contract)
-    args = arguments(f, initial_state_contract='existing-replay-buffer', initial_state_data_config=None)
+    root = tmp_path / 'existing-replay-buffer'
+    root.mkdir()
+    (root / 'contract.json').write_text(json.dumps(contract), encoding='utf-8')
+    args = arguments(f, initial_state_contract=str(root), initial_state_data_config=None)
     if matching:
         initializer = initial.InitialState(args, client, f.task, profile)
         assert initializer.metadata['calibration']['sha256'] == client.info['contract_sha256']
     else:
         with pytest.raises(ValueError, match='contract SHA256'):
             initial.InitialState(args, client, f.task, profile)
+
+
+@pytest.mark.parametrize('matching', [True, False])
+def test_real_v4_initial_contract_is_validated_without_cached_future_inputs(chunk_fixture, monkeypatch, matching):
+    from finetune.OHT.data.chunk_dataset import load_chunk_contract
+    contract = load_chunk_contract(chunk_fixture.root)
+    task, profile = 'disassemble_left', 'disassemble_left/lerobot_dataset'
+    f = SimpleNamespace(root=chunk_fixture.source.root, task=task, config_path=None,
+                        config=contract['source_data_configs'][profile]['data_config'])
+    client, _ = client_for(f)
+    client.info['contract_sha256'] = contract['sha256'] if matching else '0' * 64
+    args = arguments(f, initial_state_contract=str(chunk_fixture.root), initial_state_data_config=None)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail('Recorded initialization must not read cached NPZ observations/future targets')
+
+    monkeypatch.setattr(np, 'load', forbidden)
+    if not matching:
+        with pytest.raises(ValueError, match='contract SHA256'):
+            initial.InitialState(args, client, task, profile)
+        return
+    initializer = initial.InitialState(args, client, task, profile)
+    assert initializer.metadata['calibration']['sha256'] == contract['sha256']
+    assert initializer.metadata['calibration_matches_model']
+    assert not initializer.metadata['future_actions_used']
+    np.testing.assert_allclose(initializer._source.poses[0], [.1, 0., .5, 0., 0., 0., 1.])
+
+
+def test_corrupted_v4_initial_contract_remains_rejected(chunk_fixture, tmp_path):
+    import shutil
+    from finetune.OHT.data.chunk_dataset import load_chunk_contract
+    contract = load_chunk_contract(chunk_fixture.root)
+    profile = 'disassemble_left/lerobot_dataset'
+    f = SimpleNamespace(root=chunk_fixture.source.root, task='disassemble_left', config_path=None,
+                        config=contract['source_data_configs'][profile]['data_config'])
+    client, _ = client_for(f)
+    client.info['contract_sha256'] = contract['sha256']
+    root = tmp_path / 'v4'
+    root.mkdir()
+    for name in ('contract.json', 'complete.json', 'samples.jsonl'):
+        shutil.copyfile(chunk_fixture.root / name, root / name)
+    with (root / 'samples.jsonl').open('a', encoding='utf-8') as stream:
+        stream.write('\n')
+    with pytest.raises(ValueError, match='sample index changed'):
+        initial.InitialState(arguments(f, initial_state_contract=str(root), initial_state_data_config=None),
+                             client, f.task, profile)
 
 
 def test_model_joint_names_are_inherited_and_explicit_conflicts_are_rejected(trajectory, monkeypatch):
