@@ -11,6 +11,7 @@ def format_training_metrics(metrics) -> str:
         for key, value in metrics.items()
         if isinstance(value, Real) and (
             'loss' in key or '_diversity_' in key or key.endswith('_error_m')
+            or key.endswith(('_error_degrees', '_max_degrees', '_accuracy'))
             or key.endswith(('_valid_rate', '_empty_rate', '_confidence', '_coverage', '_gate'))
         )
     )
@@ -32,6 +33,10 @@ def training_metric_postfix(metrics, learning_rate=None):
             visible[label] = f'{metrics[source] * 1000:.3g}'
     if learning_rate is not None:
         visible['lr'] = f'{learning_rate:.3g}'
+    if 'chunk_rotation_error_degrees' in metrics:
+        visible['rot_deg'] = f'{metrics["chunk_rotation_error_degrees"]:.3g}'
+    if 'chunk_gripper_accuracy' in metrics:
+        visible['grip_acc'] = f'{metrics["chunk_gripper_accuracy"]:.3g}'
     return visible
 
 

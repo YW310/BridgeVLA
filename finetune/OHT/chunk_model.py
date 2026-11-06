@@ -7,7 +7,9 @@ from torch.nn import functional as F
 
 from .action_modes import action_options, validate_action
 from .chunk_config import chunk_settings, chunk_scale
-from ..bridgevla.geometry.torch_ops import quaternion_matrix, rotation_6d, world_to_local_points
+from ..bridgevla.geometry.torch_ops import (
+    quaternion_matrix, rotation_6d, rotation_matrix_error_rad, world_to_local_points,
+)
 
 
 class ChunkDecoder(nn.Module):
@@ -117,6 +119,29 @@ def chunk_loss(prediction, target, valid, settings, *, current_position=None):
         chunk_stationary_displacement_error_m=stationary_displacement_error,
         chunk_rotation_loss=r.detach().item(),
         chunk_gripper_loss=g.detach().item(), chunk_valid_actions=int(valid.sum().item()))
+
+
+@torch.no_grad()
+def chunk_pose_metrics(prediction, target, valid, execute_horizon):
+    """Physical pose/gripper errors of the actual deployed prediction, not the loss scale."""
+    _, rotation, grip = prediction
+    target, valid = target[:, :rotation.shape[1]], valid[:, :rotation.shape[1]]
+    angles = torch.zeros(valid.shape, device=rotation.device, dtype=torch.float32)
+    # Invalid future labels can contain NaN in diagnostic fixtures. Only
+    # referenced quaternions participate in SO(3) conversion or statistics.
+    angles[valid] = torch.rad2deg(rotation_matrix_error_rad(
+        rotation[valid].float(), quaternion_matrix(target[..., 3:7][valid].float())))
+    correct = (grip >= 0) == (target[..., 7] > .5)
+    metrics = dict(chunk_rotation_error_degrees=angles[valid].mean().item(),
+                   chunk_rotation_error_max_degrees=angles[valid].max().item(),
+                   chunk_gripper_accuracy=correct[valid].float().mean().item())
+    for length in sorted({1, execute_horizon}):
+        selected = valid[:, :length]
+        metrics[f'chunk_prefix_{length}_rotation_error_degrees'] = (
+            angles[:, :length][selected].mean().item() if selected.any() else 0.)
+        metrics[f'chunk_prefix_{length}_gripper_accuracy'] = (
+            correct[:, :length][selected].float().mean().item() if selected.any() else 0.)
+    return metrics
 
 
 class ChunkNetwork(nn.Module):
@@ -363,6 +388,8 @@ class ChunkAgent:
             for length in sorted({1, self.settings['execute_horizon']}):
                 selected = valid[:, :length]
                 metrics[f'chunk_prefix_{length}_position_error_m'] = error[:, :length][selected].mean().item() if selected.any() else 0.
+        metrics.update(chunk_pose_metrics(prediction, batch['action_chunk'][:, 0], valid,
+                                          self.settings['execute_horizon']))
         metrics.update(chunk_total_loss=loss.detach().item(), **key_metrics)
         gate = getattr(self._net_mod.decoder, 'key_gate_logit', None)
         if gate is not None:
@@ -383,6 +410,13 @@ class ChunkAgent:
                 target=batch['action_chunk'][0, 0, :self.settings['horizon'], :3].detach().float().cpu().numpy(),
                 valid=batch['action_valid'][0, 0, :self.settings['horizon']].cpu().numpy(),
                 current=batch['tcp_pose'][0, 0, :3].detach().float().cpu().numpy(),
+                predicted_rotation_matrix=prediction[1][0].detach().float().cpu().numpy(),
+                target_quaternion_xyzw=batch['action_chunk'][0, 0, :self.settings['horizon'], 3:7].detach().float().cpu().numpy(),
+                predicted_gripper_open01=(prediction[2][0] >= 0).detach().cpu().numpy(),
+                target_gripper_open01=batch['action_chunk'][0, 0, :self.settings['horizon'], 7].detach().float().cpu().numpy(),
+                current_pose_xyzw=batch['tcp_pose'][0, 0].detach().float().cpu().numpy(),
+                pose_metrics=chunk_pose_metrics(tuple(value[:1] for value in prediction),
+                    batch['action_chunk'][:1, 0], valid[:1], self.settings['execute_horizon']),
                 sample_id=batch.get('sample_ids', [''])[0], action_dt=self.contract['chunk']['action_dt'])
         return result
 

@@ -79,7 +79,8 @@ def cpu_training(monkeypatch):
             (loss * loss_scale).backward()
             if step_optimizer:
                 optimizer.step()
-            return {"total_loss": float(loss.detach()), "collision_loss": 0.}
+            return {"total_loss": float(loss.detach()), "collision_loss": 0.,
+                    "chunk_rotation_error_max_degrees": 10. if reset_gradients else 30.}
         return SimpleNamespace(_net_mod=network, _optimizer=optimizer, update=update)
     monkeypatch.setattr(train, "build_agent", build)
 
@@ -93,6 +94,8 @@ def test_train_and_resume_write_matching_jsonl_and_events(replay_fixture, tmp_pa
     assert train.main(args) == 0
     rows = [json.loads(line) for line in (output / "metrics.jsonl").read_text().splitlines()]
     assert [row["step"] for row in rows] == [1, 2]
+    assert [row['chunk_rotation_error_max_degrees'] for row in rows] == [30., 30.]
+    assert scalars(output / 'tensorboard', 'train/chunk_rotation_error_max_degrees') == [(1, 30.), (2, 30.)]
     assert np.allclose([value for _, value in scalars(output / "tensorboard", "train/total_loss")],
                        [row["total_loss"] for row in rows])
     # Simulate events written after the last saved checkpoint, then resume it.

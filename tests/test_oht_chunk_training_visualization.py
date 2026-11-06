@@ -51,12 +51,15 @@ def test_plot_reports_metric_error_for_valid_ticks_and_current_pose(monkeypatch)
     monkeypatch.setattr(visualization.ImageDraw, 'Draw', Draw)
     target = np.array([[.1, 0., 0.], [.12, 0., 0.]])
     visualization.path_panel(target + [.01, 0., 0.], target,
-                             current=[0., 0., 0.], sample_id='task/000001/000030', step=500)
+                             current=[0., 0., 0.], sample_id='task/000001/000030', step=500,
+                             pose_metrics=dict(chunk_rotation_error_degrees=30.,
+                                               chunk_rotation_error_max_degrees=60., chunk_gripper_accuracy=.5))
     text = '\n'.join(texts)
     assert 'mean=10.00 mm' in text and 'max=10.00 mm' in text and 'last valid=10.00 mm' in text
     assert 'hold-current baseline=110.00 mm' in text
     assert 'task/000001/000030' in text and 'step=500' in text
     assert 'equal axis scale' in text and 'world XYZ (m)' in text
+    assert 'mean=30.00 deg' in text and 'max=60.00 deg' in text and 'gripper accuracy=50.0%' in text
 
 
 def test_training_snapshot_matches_same_sample_and_loss_forward(chunk_fixture, tmp_path):
@@ -75,15 +78,19 @@ def test_training_snapshot_matches_same_sample_and_loss_forward(chunk_fixture, t
     # Check exported coordinates, not a fresh post-optimizer prediction.
     expected = visualization.path_panel(payload['predicted'], payload['target'], payload['valid'],
         current=payload['current'], sample_id=payload['sample_id'], step=500, action_dt=payload['action_dt'],
-        scene_points=payload['scene_points'], scene_colors=payload['scene_colors'])
+        scene_points=payload['scene_points'], scene_colors=payload['scene_colors'], pose_metrics=payload['pose_metrics'])
     settings = dict(output_dir='images', save_png=True, tensorboard=True)
     with TensorBoardLogger(tmp_path / 'tensorboard') as logger:
         visualization.record(payload, 500, tmp_path, settings, logger)
     with Image.open(tmp_path / 'images/chunk_step_00000500.png') as saved:
         np.testing.assert_array_equal(np.asarray(saved), np.asarray(expected))
     with np.load(tmp_path / 'images/chunk_step_00000500.npz', allow_pickle=False) as arrays:
-        for key in ('predicted', 'target', 'valid', 'current', 'scene_points', 'scene_colors'):
+        for key in ('predicted', 'target', 'valid', 'current', 'scene_points', 'scene_colors',
+                    'predicted_rotation_matrix', 'target_quaternion_xyzw', 'predicted_gripper_open01',
+                    'target_gripper_open01', 'current_pose_xyzw'):
             np.testing.assert_array_equal(arrays[key], payload[key])
+        for key, value in payload['pose_metrics'].items():
+            assert arrays[key].item() == value
         assert arrays['sample_id'].item() == data[tail]['sample_id'] and arrays['step'] == 500
     events = EventAccumulator(str(tmp_path / 'tensorboard')).Reload()
     assert [e.step for e in events.Images('train_visualization/chunk')] == [500]

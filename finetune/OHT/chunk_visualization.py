@@ -66,7 +66,7 @@ def _scene_tile(points, colors, center, span, a, b):
 
 def path_panel(predicted, target=None, valid=None, *, target_color='#40db70',
                current=None, sample_id='', step=None, action_dt=None,
-               scene_points=None, scene_colors=None):
+               scene_points=None, scene_colors=None, pose_metrics=None):
     observed_only = predicted is None
     predicted = np.empty((0, 3)) if observed_only else np.asarray(predicted, dtype=float)[:, :3]
     target = np.empty((0, 3)) if target is None else np.asarray(target, dtype=float)[:, :3]
@@ -92,7 +92,7 @@ def path_panel(predicted, target=None, valid=None, *, target_color='#40db70',
     # changes the scale or compresses the prediction/GT comparison.
     margin = .05 if len(scene_points) else .01
     lower, upper = points.min(0) - margin, points.max(0) + margin
-    image = Image.new('RGB', (900, 400), '#f6f8fa')
+    image = Image.new('RGB', (900, 418 if pose_metrics else 400), '#f6f8fa')
     draw = ImageDraw.Draw(image)
     title = ('GT future TCP positions (valid labels only)' if observed_only else
              'Chunk: red prediction / green observed future (valid labels only)')
@@ -136,6 +136,11 @@ def path_panel(predicted, target=None, valid=None, *, target_color='#40db70',
     draw.text((8, 361), 'White cross: current measured TCP. Red/green use the SAME valid future ticks and scale.', fill='#202b36')
     background = 'Current RGB-D scene projected in world coordinates (local window).' if len(scene_points) else 'No valid scene points; showing a light coordinate grid.'
     draw.text((8, 379), background, fill='#516273')
+    if pose_metrics:
+        draw.text((8, 397),
+                  f'Rotation error: mean={pose_metrics["chunk_rotation_error_degrees"]:.2f} deg '
+                  f'| max={pose_metrics["chunk_rotation_error_max_degrees"]:.2f} deg '
+                  f'| gripper accuracy={pose_metrics["chunk_gripper_accuracy"]:.1%}', fill='#202b36')
     return image
 
 
@@ -143,7 +148,8 @@ def record(payload, step, output, settings, logger):
     image = path_panel(payload['predicted'], payload['target'], payload['valid'],
                        current=payload.get('current'), sample_id=payload.get('sample_id', ''),
                        step=step, action_dt=payload.get('action_dt'),
-                       scene_points=payload.get('scene_points'), scene_colors=payload.get('scene_colors'))
+                       scene_points=payload.get('scene_points'), scene_colors=payload.get('scene_colors'),
+                       pose_metrics=payload.get('pose_metrics'))
     directory = Path(settings['output_dir'])
     if not directory.is_absolute():
         directory = Path(output) / directory
@@ -156,6 +162,11 @@ def record(payload, step, output, settings, logger):
                             sample_id=payload.get('sample_id', ''), action_dt=payload.get('action_dt', np.nan),
                             scene_points=payload.get('scene_points', np.empty((0, 3), np.float32)),
                             scene_colors=payload.get('scene_colors', np.empty((0, 3), np.uint8)),
+                            **{name: payload[name] for name in (
+                                'predicted_rotation_matrix', 'target_quaternion_xyzw',
+                                'predicted_gripper_open01', 'target_gripper_open01', 'current_pose_xyzw')
+                               if name in payload},
+                            **payload.get('pose_metrics', {}),
                             step=step)
     if settings['tensorboard']:
         logger.writer.add_image('train_visualization/chunk', np.asarray(image), step, dataformats='HWC')

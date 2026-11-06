@@ -202,7 +202,10 @@ def main(argv=None):
                         image_payload = result.get("train_visualization")
                     for key, value in result.items():
                         if isinstance(value, (int, float)):
-                            losses[key] = losses.get(key, 0) + value / accumulation
+                            if key.endswith('_max_degrees'):
+                                losses[key] = max(losses.get(key, float('-inf')), value)
+                            else:
+                                losses[key] = losses.get(key, 0) + value / accumulation
                 step += 1
                 checkpoint_due = step % plan["checkpoint_interval"] == 0 or step == target_steps
                 # Collective: every rank contributes its stream even though only rank 0 saves.

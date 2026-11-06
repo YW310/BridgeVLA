@@ -28,11 +28,14 @@ def test_small_nonzero_diversity_is_not_formatted_as_zero():
 def test_shared_terminal_summary_reports_mm_without_changing_metric_units():
     metrics = dict(total_loss=.2, chunk_position_error_m=.006,
                    chunk_prefix_1_position_error_m=.002,
+                   chunk_rotation_error_degrees=30., chunk_rotation_error_max_degrees=60.,
+                   chunk_prefix_4_rotation_error_degrees=15., chunk_gripper_accuracy=.5,
                    chunk_local_empty_rate=.5,
                    object_refine_diversity_loss=1e-9,
                    object_refine_diversity_supervised_pixels=42.)
     summary = training_metric_postfix(metrics, learning_rate=1e-4)
     assert summary['pos_mm'] == '6' and summary['prefix1_mm'] == '2'
+    assert summary['rot_deg'] == '30' and summary['grip_acc'] == '0.5'
     assert summary['object_refine_diversity_loss'] == '1e-09'
     messages, summaries = [], []
     bar = SimpleNamespace(write=messages.append,
@@ -42,6 +45,10 @@ def test_shared_terminal_summary_reports_mm_without_changing_metric_units():
     assert summaries == [summary]
     assert messages[0].startswith('[train] epoch=2 iter=5 step=25 lr=0.0001 ')
     assert 'chunk_position_error_m=0.006' in messages[0]
+    assert 'chunk_rotation_error_degrees=30' in messages[0]
+    assert 'chunk_rotation_error_max_degrees=60' in messages[0]
+    assert 'chunk_prefix_4_rotation_error_degrees=15' in messages[0]
+    assert 'chunk_gripper_accuracy=0.5' in messages[0]
     assert 'chunk_local_empty_rate=0.5' in messages[0]
     assert 'object_refine_diversity_supervised_pixels=42' in messages[0]
     report_training_progress(bar, metrics, step=26, print_line=False)

@@ -11,7 +11,7 @@ from scipy.spatial.transform import Rotation
 import yaml
 
 from finetune.OHT.chunk_config import chunk_settings
-from finetune.OHT.chunk_model import chunk_loss, quaternion_matrix
+from finetune.OHT.chunk_model import chunk_loss, chunk_pose_metrics, quaternion_matrix
 from finetune.OHT.chunk_normalization import proprio_statistics, resolve_training_normalization
 from finetune.OHT.config import load
 from finetune.OHT.data.chunk_dataset import OHTChunkDataset
@@ -273,6 +273,59 @@ def test_normalized_state_reaches_queries_and_every_adaln_block_with_a_gated_key
     masked[3][:, :3] += 5.
     for a, b in zip(first, decoder(*masked)):
         torch.testing.assert_close(a, b)
+
+
+def test_perfect_xyz_can_hide_thirty_degree_rotation_and_wrong_gripper():
+    target = torch.tensor([[[0., 0., 0., 0., 0., 0., 1., 1.]] * 4])
+    matrix = torch.from_numpy(Rotation.from_rotvec(np.tile([0., 0., np.deg2rad(30.)], (4, 1))).as_matrix()).float()[None]
+    prediction = (target[..., :3].clone(), matrix, torch.full((1, 4), -1.))
+    valid = torch.tensor([[True, True, False, False]])
+    # Invalid labels/outputs do not pollute physical diagnostics.
+    target[:, 2:] = float('nan')
+    matrix[:, 2:] = float('nan')
+    settings = chunk_settings(dict(mode='baseline', chunk_policy=dict(enabled=True, horizon=4)))
+    _, losses = chunk_loss(prediction, target, valid, settings)
+    assert losses['chunk_position_loss'] == 0.
+    assert losses['chunk_rotation_loss'] == pytest.approx(8 * np.sin(np.deg2rad(15)) ** 2 / 9)
+    report = chunk_pose_metrics(prediction, target, valid, 4)
+    assert report['chunk_rotation_error_degrees'] == pytest.approx(30., abs=1e-4)
+    assert report['chunk_rotation_error_max_degrees'] == pytest.approx(30., abs=1e-4)
+    assert report['chunk_prefix_1_rotation_error_degrees'] == pytest.approx(30., abs=1e-4)
+    assert report['chunk_prefix_4_rotation_error_degrees'] == pytest.approx(30., abs=1e-4)
+    assert report['chunk_gripper_accuracy'] == report['chunk_prefix_4_gripper_accuracy'] == 0.
+
+
+def test_physical_pose_errors_respect_prefix_and_sign_equivalent_quaternions():
+    degrees = np.array([[0., 30., 60., 90.], [10., 20., 30., 40.]])
+    vectors = np.c_[np.deg2rad(degrees.ravel()), np.zeros((8, 2))]
+    matrices = torch.from_numpy(Rotation.from_rotvec(vectors).as_matrix()).float().reshape(2, 4, 3, 3)
+    target = torch.zeros(2, 4, 8)
+    target[..., 6], target[..., 7] = -1., 1.  # -q is the same identity rotation.
+    prediction = (target[..., :3], matrices, torch.tensor([[0., -1., 1., -1.], [1., 1., -1., -1.]]))
+    valid = torch.tensor([[True, True, False, False], [True, True, True, True]])
+    report = chunk_pose_metrics(prediction, target, valid, 2)
+    assert report['chunk_rotation_error_degrees'] == pytest.approx(degrees[valid.numpy()].mean(), abs=1e-4)
+    assert report['chunk_rotation_error_max_degrees'] == pytest.approx(40., abs=1e-4)
+    assert report['chunk_prefix_2_rotation_error_degrees'] == pytest.approx(15., abs=1e-4)
+    assert report['chunk_prefix_2_gripper_accuracy'] == .75
+    assert report['chunk_gripper_accuracy'] == .5
+
+
+def test_zero_adaln_gates_hide_visual_conditions_only_at_initialization():
+    _, context, _, _ = inputs('regression')
+    config = state_config(representation='delta_pose')
+    config['chunk_policy']['spatial_key_token'] = True
+    decoder = SpatialChunkDecoder(4, chunk_settings(config), 3, 1 / 60).eval()
+    changed = list(context)
+    changed[0], changed[1] = context[0] * 100., context[1] * -100.
+    for original, alternative in zip(decoder(*context), decoder(*changed)):
+        torch.testing.assert_close(original, alternative, rtol=0, atol=0)
+    # This is a training initialization risk, not evidence about a trained checkpoint.
+    # Once cross-attention gates open, this architecture can use the visual memory.
+    with torch.no_grad():
+        for block in decoder.blocks:
+            block.modulation[-1].bias.chunk(9)[5].fill_(.2)
+    assert not torch.allclose(decoder(*context)[0], decoder(*changed)[0], atol=1e-7, rtol=0)
 
 
 def test_delta_pose_roundtrip_noncommuting_rotations_and_cumulative_trajectory_loss():

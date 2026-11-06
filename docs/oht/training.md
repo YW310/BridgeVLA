@@ -308,6 +308,17 @@ server 只按 checkpoint 保存的配置建模；核对 `/model_info.chunk_polic
 `tcp_crop_size_m=0.4`、`spatial_key_token=true`。这些路径检查不代替真实仿真验收，
 没有本次执行记录时不能从 open-loop 图单独确定碰撞根因。
 
+核心审查还有三项边界：
+
+- **未来状态与控制命令不同。** V4 `action_chunk` 是未来实测 TCP/夹爪状态，client 用 OSC 残差跟踪；
+  它不是直接送进 `env.step` 的 7 维 OSC 命令，也不包含逆动力学或前馈控制。数据采集与在线跟踪的
+  控制响应不同，可能在重规划后累积偏差；应先量化预测目标与实测响应，不能仅用状态轨迹拟合误差比较控制策略。
+- **位置正确不代表姿态正确。** 三维位置图不显示整段旋转与夹爪时序。旋转矩阵逐元素 MSE
+  约 0.0595 已可对应 30° 姿态误差；这不是 0.0595°。检查下方角度/夹爪指标，尤其实际执行的前 H 项。
+- **状态捷径是待测风险。** 直接状态条件能绕过视觉 cross-attention；AdaLN 残差 gates 全零初始化时，
+  新动作头的初始输出不依赖视觉 memory，gates 学开后才有该路径。初始化测试可复现这一点，
+  但不能据此断言训练后的 checkpoint 忽略图像。须在实际权重上做固定状态的视觉条件对照，再决定是否改初始化或训练规则。
+
 ### 预算与卡数
 
 | 当前三组共用设置 | 值 |
@@ -402,6 +413,9 @@ Chunk 轨迹图默认将同一帧多相机 RGB/世界点云投影为 XY/XZ/YZ �
 | --- | --- |
 | `chunk_position_error_m` | 完整部署预测的平均位置误差 |
 | `chunk_prefix_1_position_error_m` / `chunk_prefix_4_position_error_m` | 前 1/默认 H 项误差 |
+| `chunk_rotation_error_degrees` / `chunk_rotation_error_max_degrees` | 完整部署预测的平均/最大 SO(3) 角度误差，单位度 |
+| `chunk_prefix_1_rotation_error_degrees` / `chunk_prefix_4_rotation_error_degrees` | 前 1/默认 H 项的姿态误差 |
+| `chunk_gripper_accuracy` / `chunk_prefix_4_gripper_accuracy` | 按部署阈值 logit ≥0 为开，统计完整/前 H 项有效 tick 的夹爪准确率 |
 | `chunk_stationary_error_m` | 始终保持当前 TCP 的对照 |
 | `chunk_displacement_error_m` / `chunk_second_difference_error_m` | GT 位移/位移变化匹配误差 |
 | `chunk_position_loss` | 按 position_loss_scale 归一化的 Smooth L1，不是米 |
@@ -410,6 +424,12 @@ Chunk 轨迹图默认将同一帧多相机 RGB/世界点云投影为 XY/XZ/YZ �
 | `chunk_key_condition_gate` | 显式 key gate，不代表整个 refine 已与 key 解耦 |
 
 `chunk_sampled_position_loss`、`chunk_sampled_displacement_loss` 仅作诊断不反传。JSONL 旧 run 可用 `python tools/export_oht_tensorboard.py --run "$RUN"` 导到新 `tensorboard-from-jsonl/`，不能补出未保存图片；用完整日志或快照，截断末行会报错。
+
+训练进度条新增 `rot_deg/grip_acc`，详细日志保留前 H 项角度和准确率；flow 使用独立部署采样的结果。
+最大角度指标在 rank 0 的累积 microbatch 间取最大值，其余均值指标沿用现有累积平均，不是跨卡全局统计。
+新生成的 `train_visualization/chunk` 图底部显示同一张样本的姿态误差/夹爪准确率，NPZ 另存
+`predicted_rotation_matrix`、`target_quaternion_xyzw`、预测/观测夹爪和当前 TCP pose，可核对位置图隐藏的误差。
+这些是诊断，不改变模型输出、loss、checkpoint 参数或执行协议；重启训练即可记录，不需要重建数据。
 
 ### 离线与闭环评估
 
