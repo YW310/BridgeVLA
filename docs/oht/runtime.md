@@ -643,6 +643,31 @@ python tools/smoke_oht_vla_server.py \
 ```
 
 烟测只发送缓存观测/返回预测，不执行动作，不等于 raw 相机链路或 GT 回放验收。
+
+若 action chunk 的平移方向明显错误，可指定与录制初始化相同的 task、episode、frame，
+在没有其他客户端占用服务时运行：
+
+```bash
+python tools/smoke_oht_vla_server.py \
+  --server http://109.105.46.126:8004 --replay "$OUT/replay-source-v4" \
+  --split all --task disassemble_left --episode-index 0 --frame 0 \
+  --compare-targets --compare-raw --output logs/oht-direction-probe.json
+```
+
+`--episode-index/--frame` 应与本次 `--initial-state-episode/--initial-state-frame` 一致；
+`--index` 是筛选结果内的索引。工具校验 replay 与服务 checkpoint 的 contract，
+只向服务发送当前帧观测，返回后在本地读取独立的 GT 标签做比较，不执行机械臂动作。
+
+- `direction_comparison.offsets` 保存预测和 GT 相对当前 TCP 的世界坐标位移，以及逐步位移方向误差。
+  `prefixes["1"]` 和 `prefixes["4"]`（默认 H）分别汇总第一项和实际执行前缀；
+  `opposite_directions` 统计角度大于 90° 的有效方向。任一位移不超过 0.1 mm 时方向记为 null，不能当作反向或正确。
+- `raw_roundtrip` 将同一缓存 RGB-D/相机标定/TCP 转成 raw 请求，在新 session 中再预测。
+  它验证的是缓存分辨率下的 synthetic raw roundtrip，不能验证实际相机绑定、实时渲染和场景一致性。
+  中间帧的夹爪历史、深度量化与未固定随机种子的 flow 采样也可能引入差异，不能将非零差异直接判为坐标错误。
+- prepared 请求本身已经反向，应先核对实际 checkpoint 和模型在该录制样本上的预测；
+  prepared 正常而 raw roundtrip 不同，继续查 raw 转换和 session 状态；两者都正常而在线失败，
+  才转向实时观测差异、控制跟踪或后续闭环状态。该实验不预先假定哪一项就是碰撞根因。
+
 先用 dry-run 排查完整场景/TCP/夹爪，再核对实时 RGB-D 与训练点云；
 随后按相同初态对照 dense GT、单目标 GT keypoints 或 chunk 时序执行，最后检验 policy 与任务评分。
 CUDA 前向、传感器/接触和闭环成功率仍须真实服务器验证；CPU 替身不提供这些结论。
