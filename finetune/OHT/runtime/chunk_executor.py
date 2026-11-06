@@ -2,7 +2,7 @@
 import numpy as np
 from scipy.spatial.transform import Rotation, Slerp
 from .chunk_protocol import validate_spec, validate_prediction
-from .control_diagnostics import joint_report
+from .control_diagnostics import joint_report, tcp_motion_report
 from ..data.geometry import rotation_error
 
 
@@ -53,7 +53,7 @@ class ChunkExecutor:
         actions = validate_prediction(dict(actions=actions, key_action=actions[0]), self.spec)['actions']
         start = np.asarray(bridge.measured_state(measured)['tcp_pose_xyzw'], dtype=float)
         _, opening = bridge.measured_gripper(measured)
-        commands, consumed = [], 0
+        commands, consumed, tracking_samples = [], 0, []
         last_gripper = int(opening)
         status = 'completed'
         errors, check_phase = None, None
@@ -80,12 +80,18 @@ class ChunkExecutor:
                 if self._tracking_failed(errors):
                     status = 'tracking_error'
                     break
+                errors_before = dict(errors)
                 commands.extend(bridge.step_target(target, grip, after_step))
                 last_gripper = grip
                 if sub == self.substeps:
                     consumed = tick + 1
                 state = bridge.measured_state()
                 errors, check_phase = bridge.tracking_errors(state), 'after_step'
+                tracking_samples.append(dict(chunk_tick=tick, control_substep=sub,
+                    target_pose_xyzw=target[:7].tolist(),
+                    measured_before_pose_xyzw=np.asarray(before['tcp_pose_xyzw']).tolist(),
+                    measured_after_pose_xyzw=np.asarray(state['tcp_pose_xyzw']).tolist(),
+                    errors_before=errors_before, errors_after=dict(errors)))
                 if bridge.last_done or bridge.last_stopped:
                     status = 'environment_done' if bridge.last_done else 'task_stopped'
                     break
@@ -102,5 +108,7 @@ class ChunkExecutor:
                                 errors=errors, tracking_check_phase=check_phase,
                                 last_commanded_gripper=last_gripper,
                                 step_violation=step_violation,
+                                tracking_samples=tracking_samples,
+                                tcp_motion=tcp_motion_report(tracking_samples),
                                 discarded_suffix=self.spec['horizon'] - consumed)
         return commands

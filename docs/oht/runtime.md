@@ -307,6 +307,16 @@ action_dt 必须是 env.step_dt 的正整数倍；首段从本次实测 TCP 开�
 `before_step` 停止时的 `target` 是被拒绝的目标；可视化可能显示它，但不代表已经发送了该控制步。
 这些阈值是跟踪停止门槛，不是碰撞检查或精度保证，也不会把错误预测修正到正确路径。
 
+每个真正执行的控制步另存到 `execution.tracking_samples`：`chunk_tick/control_substep`、
+`target_pose_xyzw`、`measured_before_pose_xyzw`、`measured_after_pose_xyzw` 和前后跟踪误差。
+记录使用已有测量，不增加物理步进或改变命令。执行前拒绝的目标不会伪装成已执行样本。
+`execution.tcp_motion` 汇总该前缀的世界坐标目标/实测净位移、最终跟踪误差和
+`projected_response_ratio = dot(实测净位移,目标净位移) / ||目标净位移||²`。
+目标位移不超过 0.1 mm 时比例记为 null；任一位移太小时方向角记为 null。
+这不是 OSC 增益估计或自动故障判定，惯性、转向和接触也会影响短前缀响应。
+正常收尾的 `episode_0000.json` 与逐前缀追加的 `episode_0000.jsonl` 都位于 client 的 `--output` 目录；
+smoke 只预测，不产生 episode 执行文件。原生崩溃时，JSONL 中此前完整的 action 行仍可用于检查。
+
 默认执行器直接消费新预测前缀。`regression_state` 的训练期
 时序卷积只关联同一 chunk 内的动作，不能保证相邻请求的预测连续。发生抖动时，应先对照原始
 预测、已发送目标与实测 TCP，区分预测边界变化和控制响应；不要直接跨不同未来时刻平均位姿。
@@ -671,6 +681,31 @@ python tools/smoke_oht_vla_server.py \
 先用 dry-run 排查完整场景/TCP/夹爪，再核对实时 RGB-D 与训练点云；
 随后按相同初态对照 dense GT、单目标 GT keypoints 或 chunk 时序执行，最后检验 policy 与任务评分。
 CUDA 前向、传感器/接触和闭环成功率仍须真实服务器验证；CPU 替身不提供这些结论。
+
+### 跟踪滞后与重新规划的机制验证
+
+```bash
+python tools/validate_oht_chunk_tracking.py \
+  --gains 1 0.3 0.1 --steps 600 --horizon 16 --execute-horizon 4 \
+  --output logs/oht-tracking-mechanism.json
+```
+
+该 CPU 实验调用实际 `ChunkExecutor` 和 OSC 残差转换，固定 K=16、H=4、dt=1/60 s，
+用在恒速演示路径上零预测误差的 oracle，比较按固定时间推进与从最新实测状态重新锚定两种目标调度。
+响应器明确假设 `下一位置 = 当前 + gain × (目标 − 当前)`；gain 是人为选择的每周期响应比例，
+不是从 IsaacLab 或本次机器人运行测得的参数。计划 10 秒前进 100 mm 时：
+
+| 假设的每周期响应比例 | 固定时间推进 | 每 4 步从实测位置重新预测 |
+| --- | --- | --- |
+| 1.0 | 约 100.0 mm | 约 100.0 mm |
+| 0.3 | 约 99.6 mm | 约 55.7 mm |
+| 0.1 | 约 98.5 mm | 约 22.6 mm |
+
+这验证了该机制可以导致推进不足，即使相对当前目标的平均跟踪误差很小。
+所有这些正响应、单轴实验均没有方向反转，不能用它解释服务器首条预测的 X 反向，
+也不能据此断言真实 OSC 就存在同样滞后。JSON 明确记录 `actual_robot_validated=false`。
+真实验证应对照上面的每步目标/实测 trace、模型原始预测和相邻请求的状态，
+区分预测偏差、跟踪偏差和重规划后的目标推进；没有执行记录时保留“真实根因未确认”的结论。
 
 实现入口：[vla_server.py](../../finetune/OHT/vla_server.py)、
 [isaaclab_client.py](../../finetune/OHT/isaaclab_client.py)、[runtime](../../finetune/OHT/runtime)。

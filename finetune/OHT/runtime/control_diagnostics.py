@@ -14,6 +14,29 @@ def serial(value):
     return numpy_value(value).tolist()
 
 
+def tcp_motion_report(samples, epsilon_m=1e-4):
+    """Describe actual response to executed TCP targets, without assuming tracking gains.
+
+    A small projection ratio is a measurement, not a controller-failure verdict:
+    velocity, contact and an intentional stop can all affect a short prefix.
+    """
+    if not samples:
+        return None
+    start = np.asarray(samples[0]['measured_before_pose_xyzw'][:3], dtype=float)
+    target = np.asarray(samples[-1]['target_pose_xyzw'][:3], dtype=float) - start
+    measured = np.asarray(samples[-1]['measured_after_pose_xyzw'][:3], dtype=float) - start
+    target_length, measured_length = np.linalg.norm(target), np.linalg.norm(measured)
+    ratio = float(np.dot(measured, target) / target_length ** 2) if target_length > epsilon_m else None
+    angle = (float(np.rad2deg(np.arccos(np.clip(np.dot(measured, target) /
+             (target_length * measured_length), -1., 1.))))
+             if min(target_length, measured_length) > epsilon_m else None)
+    return dict(frame='world', control_steps=len(samples), motion_epsilon_m=epsilon_m,
+                target_displacement_world_m=target.tolist(), measured_displacement_world_m=measured.tolist(),
+                target_displacement_m=float(target_length), measured_displacement_m=float(measured_length),
+                projected_response_ratio=ratio, target_vs_measured_angle_degrees=angle,
+                final_tracking_error_m=float(np.linalg.norm(target - measured)))
+
+
 def joint_report(bridge, state=None):
     """Read actual articulation limits; never treat soft margins as hard stops.
 
