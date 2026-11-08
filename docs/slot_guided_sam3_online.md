@@ -12,6 +12,38 @@ The [offline entrypoint](slot_guided_sam3_offline.md) remains available for
 reproducible A/B/C and box-only versus point+box experiments. The legacy draft
 profile stays disabled for old commands. Global defaults remain disabled.
 
+<a id="offline-online-training"></a>
+
+## Offline、Online 与训练
+
+这里的 offline / online 是两种**推理方式**，都不会更新模型权重。
+
+| 对比 | Offline | Online |
+| --- | --- | --- |
+| 输入 | 保存的单帧 RGB-D、相机参数和机器人状态 | RLBench 每一步的当前观测 |
+| 动作处理 | 保存动作预测和诊断，不执行环境动作 | 预测动作 → 环境执行 → 获取下一帧 |
+| 模型状态 | BridgeVLA 和 SAM3 全部冻结 | BridgeVLA 和 SAM3 全部冻结，模型常驻加载 |
+| 用途 | 可复现的 A/B/C、box-only / point+box 消融 | 当前观测驱动的闭环任务评估 |
+
+Online 不要求先运行 offline，也不表示在线学习或保证实时频率。
+TASK 中复用的 `configs/slot_guided_offline.json` 只是提示、候选选择和融合参数；
+该文件名不改变在线执行方式。
+
+当前支持的训练与使用顺序：
+
+1. 准备带 T/R 角色监督的 Semantic-GT replay，以及 BridgeVLA 初始化 checkpoint。
+   使用 `rlbench_o2_role_queries.yaml` 训练固定双角色 query、现有 Relation Anchor
+   和动作策略，保持 `rvt.enable_slot_guided_sam3=False`。
+   完整命令、冻结范围和续训方式见[Role Query 训练](guides/object-conditioning.md#role-query-training)。
+2. 训练完成后，使用实际输出的 run 目录中的 checkpoint、`exp_cfg.yaml` 和
+   `mvt_cfg.yaml`，运行下方的[在线命令](#commands-and-configuration)，或运行
+   [offline 快照实验](slot_guided_sam3_offline.md#commands)。已有兼容 checkpoint 可直接推理。
+   推理时冻结整个策略；训练时的部分冻结设置不代表在线仍有参数更新。
+3. 当前尚未实现“让 SAM3 几何参与动作微调”。启用新功能时，Agent 的
+   `build(training=True)`、`update()` 和 `train()` 均拒绝训练。
+   如需冻结 Slot/SAM3 后仅训练 Anchor / Action Head，仍需新增几何 replay、
+   训练接口和梯度隔离，不能把 online/offline YAML 直接交给 `train.py` 实现。
+
 ## Actual online path
 
 1. The existing evaluator strictly loads a matching role-query/Anchor checkpoint

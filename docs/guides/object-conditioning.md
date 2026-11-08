@@ -383,6 +383,8 @@ MVT2 裁剪只包含 Target、Reference 在 crop 外时，`paired_views=0` 可�
 
 不需要重建已有有效 semantic buffer/teacher cache，也不增加模型参数。新 loss 需要重新训练才影响预测，修改评估配置不会修复旧 checkpoint。旧实验评估仍使用保存的配置；新实验使用新输出目录及上述配置，按原初始化流程训练。消融时同时将两项权重设为 0，其余初始化、冻结范围和预算保持一致。
 
+<a id="role-query-training"></a>
+
 ### 固定 T/R role queries（opt-in）
 
 独立配置 `rlbench_o2_role_queries.yaml` 设置 `object_slots.predictor_type: role_queries`、`num_slots: 2`。
@@ -390,16 +392,33 @@ MVT2 裁剪只包含 Target、Reference 在 crop 外时，`paired_views=0` 可�
 使用同一次多视角 VLM 特征、instruction 和当前夹爪状态直接预测 T/R maps、tokens 及 Reference NULL；不加额外 VLM 前向。
 默认 `slots` 路线和旧 checkpoint 的动作行为不变。
 
+这也是当前 [Slot-guided SAM3 offline / online](../slot_guided_sam3_online.md#offline-online-training)
+接入所匹配的策略结构。下面训练原有角色与动作路径，SAM3 保持关闭。
+准备含 T/R 角色监督的 Semantic-GT replay，不能用缺少对象字段的普通 replay 替代；
+构建方式见 [Semantic-GT 数据](semantic-gt.md)。示例在已配置 CUDA / RLBench 的
+Linux / Bash 环境中从仓库根目录执行，先替换数据和完整模型 checkpoint 路径：
+
 ```bash
+SEMANTIC_BUFFER=/data/BridgeVLA_RLBench_SEMANTIC_GT_MASK_VERIFIED_Buffer
+BASE_CHECKPOINT=/models/bridgevla_baseline/model_last.pth
+
 cd finetune/RLBench
 GPUS_PER_NODE=2 bash train_8x40.sh \
   --exp_cfg_path configs/rlbench_o2_role_queries.yaml \
   --train_replay_storage_dir "$SEMANTIC_BUFFER" \
   --init_checkpoint "$BASE_CHECKPOINT" \
-  --exp_cfg_opts "seed 0 exp_id o2_role_queries"
+  --exp_note role_queries_s0 \
+  --log_dir exp/RLBench \
+  --save_optimizer_state \
+  --log_backend tensorboard \
+  --exp_cfg_opts "seed 0 exp_id o2_role_queries bs 2 num_workers 2 pin_memory False rvt.enable_slot_guided_sam3 False"
 ```
 
-该配置沿用 joint 的冻结范围、学习率与训练预算；不传 `--train_object_adapter_only`。
+`GPUS_PER_NODE=2` 表示两张 GPU；`bs=2` 是每卡 microbatch 示例，有效 batch 192
+由梯度累积实现，实际显存需测量。配置默认 microbatch 为 24，可按硬件调整。
+该配置沿用 joint 的冻结范围、学习率与训练预算：冻结 vision tower 和 Gemma 前 18 层，
+其余可训练层、projector、角色模块、Adapter 与动作头参与优化；本例不传
+`--train_object_adapter_only`。SAM3 不加载，也不参与这一步的训练。
 角色图 BCE/Dice 直接监督策略使用的 T/R maps，权重为 `rvt.object_slot_mask_loss_weight`；
 真实 Reference absence 才监督其 NULL posterior，权重为 `rvt.object_slot_null_loss_weight`。
 `supervise_mixed_role_maps: False` 避免重复计数；本模式没有 Hungarian、role CE、slot objectness 或无序 slot cosine diversity，也没有 Target NULL head。保留上述针对 T/R 的可见表面分离监督。
@@ -411,6 +430,10 @@ Reference 空间 prior 含一次 `(1-p_NULL)`，anchor 中的语义 token 另按
 从旧 slots checkpoint 切换结构时，`--init_checkpoint` 保留兼容的 BridgeVLA backbone/action 权重，
 **同时重新初始化 predictor 与 adapter**；不能用 `--resume_checkpoint` 沿用旧 optimizer。
 checkpoint 的 `object_predictor_type` 记录模式，缺字段的旧 checkpoint 按 `slots` 解释。
+同结构续训时，将 `--init_checkpoint` 替换为 `--resume_checkpoint /path/to/model_last.pth`，
+原训练需保存 optimizer 才能连续恢复其状态。训练后保留实际 run 目录中的
+checkpoint、`exp_cfg.yaml` 和 `mvt_cfg.yaml`；SAM3 在线评估的 `--model-folder`
+应指向该 run 目录，命令见[在线推理](../slot_guided_sam3_online.md#commands-and-configuration)。
 评估使用本次训练保存的 `exp_cfg.yaml`、`ORACLE_PROVIDER=none`，命令与上面的预测-only 示例相同；
 固定相同数据、初始化来源、训练预算与 episodes，和 6-slot 跨尺度配置做配对闭环对照。
 闭环收益待按相同 episodes 与 6-slot 对照验证。

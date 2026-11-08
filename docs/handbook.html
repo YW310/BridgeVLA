@@ -4706,19 +4706,36 @@ OHT <code>role_queries</code> 可在 <code>object</code> 中设置同名 <code>r
 <p>训练 PNG/TensorBoard 中 T/R GT、pred 和 prior 使用相同固定 <code>[0,1]</code> 色标；动作热图和 relation anchor 仍按视角显示对比度。图中注明色标，并显示各视角 T/R 峰值、cosine 和平均绝对差；对应标量位于 <code>train_visualization/mvt2/roles/view_N/</code>（coarse 为 <code>mvt1</code>），随图像记录间隔写入。cosine 只比较响应形状，不是身份正确率：例如 Reference 仅有 0.01 的弱响应，也可能与 Target 有很高 cosine；必须结合峰值、GT 和监督计数判断。Reference pred 显示策略实际使用、已乘非 NULL mass 的 map，分离 loss 使用未乘 NULL 的 logits，两者用途不同。</p>
 <p>旧版固定 T/R 路径曾将 diversity 直接置零；当前配置已分别设为 0.01。已启动的 Python 训练进程不会自动加载代码/YAML 更新。启动新实验时检查开头的 <code>T/R separation</code> 摘要及上述日志，评估旧实验仍沿用其保存配置。</p>
 <p>不需要重建已有有效 semantic buffer/teacher cache，也不增加模型参数。新 loss 需要重新训练才影响预测，修改评估配置不会修复旧 checkpoint。旧实验评估仍使用保存的配置；新实验使用新输出目录及上述配置，按原初始化流程训练。消融时同时将两项权重设为 0，其余初始化、冻结范围和预算保持一致。</p>
+<p><a id="doc-docs-guides-object-conditioning--role-query-training"></a></p>
 <h5 id="doc-docs-guides-object-conditioning--固定-tr-role-queriesopt-in">固定 T/R role queries（opt-in）</h5>
 <p>独立配置 <code>rlbench_o2_role_queries.yaml</code> 设置 <code>object_slots.predictor_type: role_queries</code>、<code>num_slots: 2</code>。
 这里的 2 是有序的 Target / Reference <strong>任务角色</strong>，不是 2 个无序物体 slots 或跨步实例 ID。
 使用同一次多视角 VLM 特征、instruction 和当前夹爪状态直接预测 T/R maps、tokens 及 Reference NULL；不加额外 VLM 前向。
 默认 <code>slots</code> 路线和旧 checkpoint 的动作行为不变。</p>
-<pre><code class="language-bash">cd finetune/RLBench
+<p>这也是当前 <a href="#doc-docs-slot-guided-sam3-online--offline-online-training">Slot-guided SAM3 offline / online</a>
+接入所匹配的策略结构。下面训练原有角色与动作路径，SAM3 保持关闭。
+准备含 T/R 角色监督的 Semantic-GT replay，不能用缺少对象字段的普通 replay 替代；
+构建方式见 <a href="#doc-docs-guides-semantic-gt">Semantic-GT 数据</a>。示例在已配置 CUDA / RLBench 的
+Linux / Bash 环境中从仓库根目录执行，先替换数据和完整模型 checkpoint 路径：</p>
+<pre><code class="language-bash">SEMANTIC_BUFFER=/data/BridgeVLA_RLBench_SEMANTIC_GT_MASK_VERIFIED_Buffer
+BASE_CHECKPOINT=/models/bridgevla_baseline/model_last.pth
+
+cd finetune/RLBench
 GPUS_PER_NODE=2 bash train_8x40.sh \
   --exp_cfg_path configs/rlbench_o2_role_queries.yaml \
   --train_replay_storage_dir &quot;$SEMANTIC_BUFFER&quot; \
   --init_checkpoint &quot;$BASE_CHECKPOINT&quot; \
-  --exp_cfg_opts &quot;seed 0 exp_id o2_role_queries&quot;
+  --exp_note role_queries_s0 \
+  --log_dir exp/RLBench \
+  --save_optimizer_state \
+  --log_backend tensorboard \
+  --exp_cfg_opts &quot;seed 0 exp_id o2_role_queries bs 2 num_workers 2 pin_memory False rvt.enable_slot_guided_sam3 False&quot;
 </code></pre>
-<p>该配置沿用 joint 的冻结范围、学习率与训练预算；不传 <code>--train_object_adapter_only</code>。
+<p><code>GPUS_PER_NODE=2</code> 表示两张 GPU；<code>bs=2</code> 是每卡 microbatch 示例，有效 batch 192
+由梯度累积实现，实际显存需测量。配置默认 microbatch 为 24，可按硬件调整。
+该配置沿用 joint 的冻结范围、学习率与训练预算：冻结 vision tower 和 Gemma 前 18 层，
+其余可训练层、projector、角色模块、Adapter 与动作头参与优化；本例不传
+<code>--train_object_adapter_only</code>。SAM3 不加载，也不参与这一步的训练。
 角色图 BCE/Dice 直接监督策略使用的 T/R maps，权重为 <code>rvt.object_slot_mask_loss_weight</code>；
 真实 Reference absence 才监督其 NULL posterior，权重为 <code>rvt.object_slot_null_loss_weight</code>。
 <code>supervise_mixed_role_maps: False</code> 避免重复计数；本模式没有 Hungarian、role CE、slot objectness 或无序 slot cosine diversity，也没有 Target NULL head。保留上述针对 T/R 的可见表面分离监督。
@@ -4729,6 +4746,10 @@ Reference 空间 prior 含一次 <code>(1-p_NULL)</code>，anchor 中的语义 t
 <p>从旧 slots checkpoint 切换结构时，<code>--init_checkpoint</code> 保留兼容的 BridgeVLA backbone/action 权重，
 <strong>同时重新初始化 predictor 与 adapter</strong>；不能用 <code>--resume_checkpoint</code> 沿用旧 optimizer。
 checkpoint 的 <code>object_predictor_type</code> 记录模式，缺字段的旧 checkpoint 按 <code>slots</code> 解释。
+同结构续训时，将 <code>--init_checkpoint</code> 替换为 <code>--resume_checkpoint /path/to/model_last.pth</code>，
+原训练需保存 optimizer 才能连续恢复其状态。训练后保留实际 run 目录中的
+checkpoint、<code>exp_cfg.yaml</code> 和 <code>mvt_cfg.yaml</code>；SAM3 在线评估的 <code>--model-folder</code>
+应指向该 run 目录，命令见<a href="#doc-docs-slot-guided-sam3-online--commands-and-configuration">在线推理</a>。
 评估使用本次训练保存的 <code>exp_cfg.yaml</code>、<code>ORACLE_PROVIDER=none</code>，命令与上面的预测-only 示例相同；
 固定相同数据、初始化来源、训练预算与 episodes，和 6-slot 跨尺度配置做配对闭环对照。
 闭环收益待按相同 episodes 与 6-slot 对照验证。</p>
@@ -5063,7 +5084,7 @@ python -m pytest -q tests/test_role_feature_config.py tests/test_mixed_role_supe
 隔离的 uv/PyTorch CPU 环境已通过相关回归（包括新增 role-query 配置/前向测试）；
 这不代表角色准确率或闭环收益。完整 PaliGemma/CUDA 训练和模拟器闭环仍需在目标环境验收。</p>
 <p>函数路径统一见<a href="#doc-docs-reference-code-map--policy-数据流">代码索引</a>，架构、teacher 隔离和后续设计统一见<a href="#doc-docs-design-role-relation-prior">主设计</a>。</p>
-</div><details class="doc-source"><summary>来源与维护</summary><p class="doc-provenance text-small">docs/guides/object-conditioning.md · SHA-256：5c5d1c1e3eec</p></details></article>
+</div><details class="doc-source"><summary>来源与维护</summary><p class="doc-provenance text-small">docs/guides/object-conditioning.md · SHA-256：b0662e2497d5</p></details></article>
 <article class="book-document" id="doc-docs-oht-training"><header><h3 id="doc-docs-oht-training--oht-模型训练与评估">OHT：连续轨迹模型与训练</h3><p class="doc-introduction">先看已确认 regression_state 基线及证据边界，再看动作表示、状态注入、损失和运行命令。</p></header><nav class="doc-toc" aria-label="OHT：连续轨迹模型与训练的章节"><ul><li><a href="#doc-docs-oht-training--已确认基线与交接">已确认基线与交接</a></li><li><a href="#doc-docs-oht-training--连续轨迹模型">连续轨迹模型</a></li><li><a href="#doc-docs-oht-training--训练与评估">训练与评估</a></li><li><a href="#doc-docs-oht-training--单关键点与物体辅助">单关键点与物体辅助</a></li><li><a href="#doc-docs-oht-training--单动作表示">单动作表示</a></li></ul></nav><div class="doc-body">
 <p>先理解数据流与张量维度，可看<a href="#book-algorithm">交互算法总览（HTML）</a>，切换到 Chunk 回归或 Flow；对象条件分支与当前 V4 chunk 尚未接通。</p>
 <p>当前主线为 <strong>V4 → 关键目标 + 连续 EEF chunk → 离线评估 → IsaacLab</strong>。所有命令从 BridgeVLA 仓库根目录执行，替换示例路径。数据构建/标注见 <a href="#doc-docs-oht-data">data.md</a>，HTTP、客户端、GT 回放和 waypoint 执行见 <a href="#doc-docs-oht-runtime">runtime.md</a>。</p>
@@ -5455,6 +5476,49 @@ EXP=oht-seg-v4-regression-state-s0
 <p>新 TCP 路径的正交渲染相机沿光轴后移，保持 XY 投影不变，同时将立方体内的表面放到相机前方，再过滤非正或非有限深度；旧 key/refine 路径保留原相机与深度规则。空点云直接返回空白图和无效覆盖，避免零线程块 CUDA 启动。训练诊断 <code>chunk_local_valid_rate</code> 是局部有效 patch 比例，<code>chunk_local_empty_rate</code> 是整份局部输入为空的样本比例；TCP 模式下若后者长期较高，应先检查点云 ROI、TCP 坐标和裁剪尺寸。coarse-only 不记录这两项，因其主动移除了局部输入。</p>
 <p>三组继续使用相同 V4 replay，不需要重建数据。可用相同数据与归一化的 delta/guided checkpoint 加 <code>--init-checkpoint</code> 开启新实验，兼容 encoder/decoder 权重保留；切换 <code>local_context</code> 或裁剪尺寸不能使用旧 run 的严格 <code>--resume</code>。server 按新 checkpoint 中保存的设置自动恢复，client 继续提供当前实测 TCP、关节和夹爪，动作协议不变。日志与 <code>/model_info.chunk_policy</code> 可核对 <code>local_context/tcp_crop_size_m</code>。</p>
 <p>TensorBoard 的 <code>mvt2</code> 仍显示关键目标分支的目标中心裁剪，并非新 chunk 的 TCP 局部输入；<code>train_visualization/chunk</code> 比较实际 chunk 预测和未来轨迹。闭环收益需固定初始化、预算、seed 与执行器，对照成功率、碰撞和抖动，不能由裁剪图或训练 loss 单独判定。</p>
+<p>TCP-guided 的 open-loop 每次读取专家记录的当前状态，预测前 K 个未来点；在线每次读取实际执行后的状态。
+当前数据只监督专家轨迹上的观测，没有自动提供偏离轨迹后的恢复示范。K=16、H=4 在 60 Hz 下分别覆盖
+约 0.267 s / 0.067 s，短窗准确并不证明能持续推进或恢复偏差。预测 key 是带 gate 的条件，不能保证 chunk
+朝它前进，也不构成避碰约束。全局 224 像素视图可能掩盖毫米误差，应同时核对前 H 项数值误差和姿态。</p>
+<p>方向或位置明显偏离时，先按<a href="#doc-docs-oht-runtime--记录初态">记录初态</a>做一次同 episode/frame 的实时观测对照，
+再比较 episode 中的原始 actions、实际下发 target 与实测 TCP：</p>
+<table>
+<thead>
+<tr>
+<th>现象</th>
+<th>优先排查</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>同记录初态的第一次预测已经偏离</td>
+<td>实际加载的 checkpoint、相机 K/T 与深度、TCP 定义、关节顺序/归一化、物体状态及模型预测误差</td>
+</tr>
+<tr>
+<td>模型目标合理，实测运动明显偏离</td>
+<td>TCP 到 OSC 控制点的变换、控制基坐标、姿态及实际跟踪误差</td>
+</tr>
+<tr>
+<td>前缀起初正常，滚动多次后逐渐偏离</td>
+<td>执行误差、相邻 chunk 不一致、任务进度/接触状态变化及训练分布外的恢复能力</td>
+</tr>
+</tbody>
+</table>
+<p>server 只按 checkpoint 保存的配置建模；核对 <code>/model_info.chunk_policy</code> 中
+<code>decoder_type=regression</code>、<code>prediction_representation=delta_pose</code>、<code>local_context=tcp</code>、
+<code>tcp_crop_size_m=0.4</code>、<code>spatial_key_token=true</code>。这些路径检查不代替真实仿真验收，
+没有本次执行记录时不能从 open-loop 图单独确定碰撞根因。</p>
+<p>核心审查还有三项边界：</p>
+<ul>
+<li><strong>未来状态与控制命令不同。</strong> V4 <code>action_chunk</code> 是未来实测 TCP/夹爪状态，client 用 OSC 残差跟踪；
+它不是直接送进 <code>env.step</code> 的 7 维 OSC 命令，也不包含逆动力学或前馈控制。数据采集与在线跟踪的
+控制响应不同，可能在重规划后累积偏差；应先量化预测目标与实测响应，不能仅用状态轨迹拟合误差比较控制策略。</li>
+<li><strong>位置正确不代表姿态正确。</strong> 三维位置图不显示整段旋转与夹爪时序。旋转矩阵逐元素 MSE
+约 0.0595 已可对应 30° 姿态误差；这不是 0.0595°。检查下方角度/夹爪指标，尤其实际执行的前 H 项。</li>
+<li><strong>状态捷径是待测风险。</strong> 直接状态条件能绕过视觉 cross-attention；AdaLN 残差 gates 全零初始化时，
+新动作头的初始输出不依赖视觉 memory，gates 学开后才有该路径。初始化测试可复现这一点，
+但不能据此断言训练后的 checkpoint 忽略图像。须在实际权重上做固定状态的视觉条件对照，再决定是否改初始化或训练规则。</li>
+</ul>
 <h5 id="doc-docs-oht-training--预算与卡数">预算与卡数</h5>
 <table>
 <thead>
@@ -5577,6 +5641,18 @@ tensorboard --logdir &quot;$OUT/runs/train&quot; --port 6006
 <td>前 1/默认 H 项误差</td>
 </tr>
 <tr>
+<td><code>chunk_rotation_error_degrees</code> / <code>chunk_rotation_error_max_degrees</code></td>
+<td>完整部署预测的平均/最大 SO(3) 角度误差，单位度</td>
+</tr>
+<tr>
+<td><code>chunk_prefix_1_rotation_error_degrees</code> / <code>chunk_prefix_4_rotation_error_degrees</code></td>
+<td>前 1/默认 H 项的姿态误差</td>
+</tr>
+<tr>
+<td><code>chunk_gripper_accuracy</code> / <code>chunk_prefix_4_gripper_accuracy</code></td>
+<td>按部署阈值 logit ≥0 为开，统计完整/前 H 项有效 tick 的夹爪准确率</td>
+</tr>
+<tr>
 <td><code>chunk_stationary_error_m</code></td>
 <td>始终保持当前 TCP 的对照</td>
 </tr>
@@ -5603,6 +5679,11 @@ tensorboard --logdir &quot;$OUT/runs/train&quot; --port 6006
 </tbody>
 </table>
 <p><code>chunk_sampled_position_loss</code>、<code>chunk_sampled_displacement_loss</code> 仅作诊断不反传。JSONL 旧 run 可用 <code>python tools/export_oht_tensorboard.py --run &quot;$RUN&quot;</code> 导到新 <code>tensorboard-from-jsonl/</code>，不能补出未保存图片；用完整日志或快照，截断末行会报错。</p>
+<p>训练进度条新增 <code>rot_deg/grip_acc</code>，详细日志保留前 H 项角度和准确率；flow 使用独立部署采样的结果。
+最大角度指标在 rank 0 的累积 microbatch 间取最大值，其余均值指标沿用现有累积平均，不是跨卡全局统计。
+新生成的 <code>train_visualization/chunk</code> 图底部显示同一张样本的姿态误差/夹爪准确率，NPZ 另存
+<code>predicted_rotation_matrix</code>、<code>target_quaternion_xyzw</code>、预测/观测夹爪和当前 TCP pose，可核对位置图隐藏的误差。
+这些是诊断，不改变模型输出、loss、checkpoint 参数或执行协议；重启训练即可记录，不需要重建数据。</p>
 <h5 id="doc-docs-oht-training--离线与闭环评估">离线与闭环评估</h5>
 <pre><code class="language-bash">RUN=/path/to/actual/run
 python -u -m finetune.OHT.eval open-loop \
@@ -5772,7 +5853,7 @@ agent:
 </code></pre>
 <p>相对继承路径按该 YAML 目录解析。向量模式必须关闭全局 transform_augmentation；action 的 hidden_dim 默认 256，translation/rotation/joint scale 默认 1，auxiliary_translation_weight 默认 1 且需大于 0。这些 scale 是训练归一化，输出还原物理单位，不是控制器 gain。adapter_only 时新动作头仍训练。</p>
 <p>checkpoint 保存完整动作配置，strict load/resume 拒绝不匹配；显式 init 可迁移骨干并在动作设置改变时重建回归头，必须重训。不能只改 EEF 配置就部署为 joint；预算/卡数/RNG 限制沿用<a href="#doc-docs-oht-training--初始化与续训">初始化与续训</a>。完整 CUDA/IsaacLab 四模式仍需现场验收。</p>
-</div><details class="doc-source"><summary>来源与维护</summary><p class="doc-provenance text-small">docs/oht/training.md · SHA-256：abc338ac420f</p></details></article>
+</div><details class="doc-source"><summary>来源与维护</summary><p class="doc-provenance text-small">docs/oht/training.md · SHA-256：ca8c0848720a</p></details></article>
 </section>
 <section class="book-part" id="book-part-4"><h2>4 / 评估、部署与执行</h2><a class="text-small" href="#handbook-home">↑ 全书目录</a>
 <article class="book-document" id="doc-docs-guides-evaluation"><header><h3>Benchmark 闭环评估</h3><p class="doc-introduction">RLBench、COLOSSEUM 和 GemBench 的评估入口；对象条件策略的诊断与统计细节见对象条件策略专节。</p></header><nav class="doc-toc" aria-label="Benchmark 闭环评估的章节"><ul><li><a href="#doc-docs-guides-evaluation--rlbench">RLBench</a></li><li><a href="#doc-docs-guides-evaluation--colosseum">COLOSSEUM</a></li><li><a href="#doc-docs-guides-evaluation--gembench">GemBench</a></li></ul></nav><div class="doc-body"><blockquote>
@@ -6284,6 +6365,15 @@ action_dt 必须是 env.step_dt 的正整数倍；首段从本次实测 TCP 开�
 <code>before_step</code> / <code>after_step</code>，<code>execution.errors</code> 保留触发检查的实际误差。
 <code>before_step</code> 停止时的 <code>target</code> 是被拒绝的目标；可视化可能显示它，但不代表已经发送了该控制步。
 这些阈值是跟踪停止门槛，不是碰撞检查或精度保证，也不会把错误预测修正到正确路径。</p>
+<p>每个真正执行的控制步另存到 <code>execution.tracking_samples</code>：<code>chunk_tick/control_substep</code>、
+<code>target_pose_xyzw</code>、<code>measured_before_pose_xyzw</code>、<code>measured_after_pose_xyzw</code> 和前后跟踪误差。
+记录使用已有测量，不增加物理步进或改变命令。执行前拒绝的目标不会伪装成已执行样本。
+<code>execution.tcp_motion</code> 汇总该前缀的世界坐标目标/实测净位移、最终跟踪误差和
+<code>projected_response_ratio = dot(实测净位移,目标净位移) / ||目标净位移||²</code>。
+目标位移不超过 0.1 mm 时比例记为 null；任一位移太小时方向角记为 null。
+这不是 OSC 增益估计或自动故障判定，惯性、转向和接触也会影响短前缀响应。
+正常收尾的 <code>episode_0000.json</code> 与逐前缀追加的 <code>episode_0000.jsonl</code> 都位于 client 的 <code>--output</code> 目录；
+smoke 只预测，不产生 episode 执行文件。原生崩溃时，JSONL 中此前完整的 action 行仍可用于检查。</p>
 <p>默认执行器直接消费新预测前缀。<code>regression_state</code> 的训练期
 时序卷积只关联同一 chunk 内的动作，不能保证相邻请求的预测连续。发生抖动时，应先对照原始
 预测、已发送目标与实测 TCP，区分预测边界变化和控制响应；不要直接跨不同未来时刻平均位姿。</p>
@@ -6487,11 +6577,11 @@ episode/frame 默认 0，frame 可为最后一帧。每次先 env.reset，再恢
 </tr>
 <tr>
 <td>initial-state-contract</td>
-<td>替代 data-config 的 V3 replay 路径，两者互斥；需完整匹配的 contract.json、complete.json、samples.jsonl，不读取缓存图像，并要求 SHA 与服务契约一致</td>
+<td>替代 data-config 的 V3/V4 replay 路径，两者互斥；按 schema 调用对应严格校验器，需完整匹配的 contract.json、complete.json、samples.jsonl，不读取缓存图像或未来标签，并要求 SHA 与服务契约一致</td>
 </tr>
 <tr>
 <td>V4 checkpoint</td>
-<td>当前初态 loader 拒绝 V4 contract；使用已核对的数据 YAML，未提供 contract 时不要求本地 SHA 与 V4 服务相等</td>
+<td>推荐直接指定训练的 replay-source-v4 目录，避免当前 dataset.yaml 与训练时标定不同；也可使用已核对的数据 YAML，但该方式不核对契约 SHA</td>
 </tr>
 </tbody>
 </table>
@@ -6501,7 +6591,14 @@ episode/frame 默认 0，frame 可为最后一帧。每次先 env.reset，再恢
 数据 YAML 的 ee_quaternion_order 解释 Parquet；CLI quaternion-order 解释安装的 SDK，不能互相替代。
 起始 TCP 默认阈值为 0.005 m / 0.05 rad，由 initial-state-position-tolerance/rotation-tolerance 调整。
 initial-state-joint-names 和 initial-state-gripper-joint-names 可明确记录顺序。</p>
-<p>相同 contract SHA 不证明当前 raw 文件、完整场景或模型权重相同；run.initial_state 记录本次文件/标定哈希。
+<p>相同 contract SHA 不证明当前 raw 文件、完整场景或模型权重相同；run.initial_state 记录本次文件/标定哈希。</p>
+<p>TCP-guided chunk 的同初态对照可在原 policy 命令中加入以下参数；若原命令显式指定了
+<code>--initialization env-reset</code>，先移除该项。ROOT 是原始数据目录，OUT 是该 checkpoint 对应的生成输出目录：</p>
+<pre><code class="language-bash">--initial-state-root &quot;$ROOT&quot; \
+--initial-state-contract &quot;$OUT/replay-source-v4&quot; \
+--initial-state-episode 0 --initial-state-frame 0
+</code></pre>
+<p>这只恢复一次记录状态，后续仍使用实时相机/本体观测与模型预测。不要把它解释成 GT chunk 控制。
 dry-run 不恢复状态或运行恢复后的 TCP 门槛；起始对齐失败会写 episode 错误并在第一次预测前停止。
 数据/标定预检可能在创建输出目录前失败，应保留终端错误。
 对象默认是环境 reset 状态；可用 initial-state-object-map 按<a href="#doc-docs-oht-runtime--可选物体恢复">明确映射</a>恢复刚体，
@@ -6549,7 +6646,7 @@ python /home/yiwei/BridgeVLA/tools/oht_bridgevla_client.py \
 </tr>
 <tr>
 <td>replay-contract</td>
-<td>可替代 replay-data-config，只接受完整 V3 replay contract；不支持 V4 contract</td>
+<td>可替代 replay-data-config，接受完整 V3/V4 replay；只复用经校验的标定，动作仍来自原始 Parquet 实测 TCP</td>
 </tr>
 <tr>
 <td>replay-cameras</td>
@@ -6739,15 +6836,76 @@ latest 可能早于当前 step，应按 episode/step 对照，不把旧诊断当
   --server http://109.105.46.126:8004 --replay /path/to/replay-v4 \
   --split val --index 0
 </code></pre>
-<p>烟测只发送缓存观测/返回预测，不执行动作，不等于 raw 相机链路或 GT 回放验收。
-先用 dry-run 排查完整场景/TCP/夹爪，再核对实时 RGB-D 与训练点云；
+<p>烟测只发送缓存观测/返回预测，不执行动作，不等于 raw 相机链路或 GT 回放验收。</p>
+<p>若 action chunk 的平移方向明显错误，可指定与录制初始化相同的 task、episode、frame，
+在没有其他客户端占用服务时运行：</p>
+<pre><code class="language-bash">python tools/smoke_oht_vla_server.py \
+  --server http://109.105.46.126:8004 --replay &quot;$OUT/replay-source-v4&quot; \
+  --split all --task disassemble_left --episode-index 0 --frame 0 \
+  --compare-targets --compare-raw --output logs/oht-direction-probe.json
+</code></pre>
+<p><code>--episode-index/--frame</code> 应与本次 <code>--initial-state-episode/--initial-state-frame</code> 一致；
+<code>--index</code> 是筛选结果内的索引。工具校验 replay 与服务 checkpoint 的 contract，
+只向服务发送当前帧观测，返回后在本地读取独立的 GT 标签做比较，不执行机械臂动作。</p>
+<ul>
+<li><code>direction_comparison.offsets</code> 保存预测和 GT 相对当前 TCP 的世界坐标位移，以及逐步位移方向误差。
+<code>prefixes[&quot;1&quot;]</code> 和 <code>prefixes[&quot;4&quot;]</code>（默认 H）分别汇总第一项和实际执行前缀；
+<code>opposite_directions</code> 统计角度大于 90° 的有效方向。任一位移不超过 0.1 mm 时方向记为 null，不能当作反向或正确。</li>
+<li><code>raw_roundtrip</code> 将同一缓存 RGB-D/相机标定/TCP 转成 raw 请求，在新 session 中再预测。
+它验证的是缓存分辨率下的 synthetic raw roundtrip，不能验证实际相机绑定、实时渲染和场景一致性。
+中间帧的夹爪历史、深度量化与未固定随机种子的 flow 采样也可能引入差异，不能将非零差异直接判为坐标错误。</li>
+<li>prepared 请求本身已经反向，应先核对实际 checkpoint 和模型在该录制样本上的预测；
+prepared 正常而 raw roundtrip 不同，继续查 raw 转换和 session 状态；两者都正常而在线失败，
+才转向实时观测差异、控制跟踪或后续闭环状态。该实验不预先假定哪一项就是碰撞根因。</li>
+</ul>
+<p>先用 dry-run 排查完整场景/TCP/夹爪，再核对实时 RGB-D 与训练点云；
 随后按相同初态对照 dense GT、单目标 GT keypoints 或 chunk 时序执行，最后检验 policy 与任务评分。
 CUDA 前向、传感器/接触和闭环成功率仍须真实服务器验证；CPU 替身不提供这些结论。</p>
+<h5 id="doc-docs-oht-runtime--跟踪滞后与重新规划的机制验证">跟踪滞后与重新规划的机制验证</h5>
+<pre><code class="language-bash">python tools/validate_oht_chunk_tracking.py \
+  --gains 1 0.3 0.1 --steps 600 --horizon 16 --execute-horizon 4 \
+  --output logs/oht-tracking-mechanism.json
+</code></pre>
+<p>该 CPU 实验调用实际 <code>ChunkExecutor</code> 和 OSC 残差转换，固定 K=16、H=4、dt=1/60 s，
+用在恒速演示路径上零预测误差的 oracle，比较按固定时间推进与从最新实测状态重新锚定两种目标调度。
+响应器明确假设 <code>下一位置 = 当前 + gain × (目标 − 当前)</code>；gain 是人为选择的每周期响应比例，
+不是从 IsaacLab 或本次机器人运行测得的参数。计划 10 秒前进 100 mm 时：</p>
+<table>
+<thead>
+<tr>
+<th>假设的每周期响应比例</th>
+<th>固定时间推进</th>
+<th>每 4 步从实测位置重新预测</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1.0</td>
+<td>约 100.0 mm</td>
+<td>约 100.0 mm</td>
+</tr>
+<tr>
+<td>0.3</td>
+<td>约 99.6 mm</td>
+<td>约 55.7 mm</td>
+</tr>
+<tr>
+<td>0.1</td>
+<td>约 98.5 mm</td>
+<td>约 22.6 mm</td>
+</tr>
+</tbody>
+</table>
+<p>这验证了该机制可以导致推进不足，即使相对当前目标的平均跟踪误差很小。
+所有这些正响应、单轴实验均没有方向反转，不能用它解释服务器首条预测的 X 反向，
+也不能据此断言真实 OSC 就存在同样滞后。JSON 明确记录 <code>actual_robot_validated=false</code>。
+真实验证应对照上面的每步目标/实测 trace、模型原始预测和相邻请求的状态，
+区分预测偏差、跟踪偏差和重规划后的目标推进；没有执行记录时保留“真实根因未确认”的结论。</p>
 <p>实现入口：<a href="../finetune/OHT/vla_server.py">vla_server.py</a>、
 <a href="../finetune/OHT/isaaclab_client.py">isaaclab_client.py</a>、<a href="../finetune/OHT/runtime">runtime</a>。
 协议与执行回归集中在 test_oht_vla_server、test_oht_isaaclab_http、test_oht_chunk_pipeline、
 test_oht_waypoint_executor 和 test_oht_policy_initialization；本页不将历史测试数量当作当前验收成绩。</p>
-</div><details class="doc-source"><summary>来源与维护</summary><p class="doc-provenance text-small">docs/oht/runtime.md · SHA-256：65edf268f75c</p></details></article>
+</div><details class="doc-source"><summary>来源与维护</summary><p class="doc-provenance text-small">docs/oht/runtime.md · SHA-256：a9c3de96da87</p></details></article>
 </section>
 <section class="book-part" id="book-part-5"><h2>5 / 研究依据与边界</h2><a class="text-small" href="#handbook-home">↑ 全书目录</a>
 <article class="book-document" id="doc-docs-research-object-centric-policy-memory"><header><h3 id="doc-docs-research-object-centric-policy-memory--object-centric-policy--memory-调研">相关工作：可以借鉴什么，不能推导什么</h3><p class="doc-introduction">保留原调研版本、监督前提与局限，不将论文方法或历史代码状态视为当前实验结论。</p></header><nav class="doc-toc" aria-label="相关工作：可以借鉴什么，不能推导什么的章节"><ul><li><a href="#doc-docs-research-object-centric-policy-memory--1-先明确需要解决的问题">1. 先明确需要解决的问题</a></li><li><a href="#doc-docs-research-object-centric-policy-memory--2-相关工作与适用条件">2. 相关工作与适用条件</a></li><li><a href="#doc-docs-research-object-centric-policy-memory--3-深读后影响设计的结论">3. 深读后影响设计的结论</a></li><li><a href="#doc-docs-research-object-centric-policy-memory--4-与当前代码和数据的差距">4. 与当前代码和数据的差距</a></li><li><a href="#doc-docs-research-object-centric-policy-memory--5-推荐的最小方案与后续-memory">5. 推荐的最小方案与后续 memory</a></li><li><a href="#doc-docs-research-object-centric-policy-memory--6-实验应怎样证明有效">6. 实验应怎样证明有效</a></li><li><a href="#doc-docs-research-object-centric-policy-memory--7-motivation-与创新主张">7. Motivation 与创新主张</a></li><li><a href="#doc-docs-research-object-centric-policy-memory--8-阅读与复现实验优先级">8. 阅读与复现实验优先级</a></li><li><a href="#doc-docs-research-object-centric-policy-memory--9-oht-连续轨迹与执行的相关工作边界">9. OHT 连续轨迹与执行的相关工作边界</a></li></ul></nav><div class="doc-body">
@@ -8278,6 +8436,7 @@ prediction 和 internal slots 才是无 Oracle 的部署路线。研究设计文
 <p>可编辑源文件为 <code>assets/algorithm-overview.fragment.html</code>；修改后在仓库根目录运行 <code>python tools/render_algorithm_overview.py</code>，用 <code>--check</code> 检查生成页面是否同步。</p>
 <h4 id="doc-docs-readme--slot-guided-sam3-online-and-offline-experiments">Slot-guided SAM3 online and offline experiments</h4>
 <p><a href="#doc-docs-slot-guided-sam3-online">Online commands and runtime contract</a> cover the enabled current-observation RLBench loop, persistent SAM3, dynamic camera calibration and current-frame fallback. <a href="#doc-docs-slot-guided-sam3-offline">Offline commands and snapshot formats</a> remain available for reproducible A/B/C comparisons. Both use the existing role-query Anchor architecture. The <a href="#doc-docs-slot-guided-sam3-action-draft">geometry contract</a> describes the separate reviewed-activation gate and legacy disabled profile.</p>
+<p>先看 <a href="#doc-docs-slot-guided-sam3-online--offline-online-training">offline / online 区别与训练流程</a>：二者均为冻结推理；当前可先用 <a href="#doc-docs-guides-object-conditioning--role-query-training">Role Query 训练命令</a>训练原策略，再启用 SAM3 做推理。SAM3 几何参与动作微调尚未实现。</p>
 <h4 id="doc-docs-readme--oht">OHT</h4>
 <p>OHT 的数据指南、模型设计、部署说明和交接记录统一合并为以下三份，按流程阅读即可。</p>
 <table>
@@ -8365,7 +8524,7 @@ prediction 和 internal slots 才是无 Oracle 的部署路线。研究设计文
 <h4 id="doc-docs-readme--命令约定">命令约定</h4>
 <p>运行示例默认使用 Linux / Bash，从仓库根目录或指定目录执行。新终端需重新设置示例变量，并替换机器路径；带 <code>cd</code> 的独立示例从仓库根目录开始。各文档按主题维护一份命令，避免复制后产生分歧。</p>
 <p>仓库根目录运行 <code>python tools/check_docs.py</code> 可离线检查本地链接与章节锚点；它不执行示例或访问外部网站。</p>
-</div><details class="doc-source"><summary>来源与维护</summary><p class="doc-provenance text-small">docs/README.md · SHA-256：3489583b9c4f</p></details></article>
+</div><details class="doc-source"><summary>来源与维护</summary><p class="doc-provenance text-small">docs/README.md · SHA-256：5c18264ef33b</p></details></article>
 </section>
 <section class="book-part" id="book-part-9"><h2>9 / 其他文档</h2><a class="text-small" href="#handbook-home">↑ 全书目录</a>
 <article class="book-document" id="doc-docs-design-local-geometry-refinement"><header><h3 id="doc-docs-design-local-geometry-refinement--观测约束的局部几何动作精修">观测约束的局部几何动作精修</h3><p class="doc-introduction"></p></header><nav class="doc-toc" aria-label="观测约束的局部几何动作精修的章节"><ul><li><a href="#doc-docs-design-local-geometry-refinement--研究问题与当前交付">研究问题与当前交付</a></li><li><a href="#doc-docs-design-local-geometry-refinement--与-oht-action-chunk-共用的模块">与 OHT action chunk 共用的模块</a></li><li><a href="#doc-docs-design-local-geometry-refinement--几何与动作定义">几何与动作定义</a></li><li><a href="#doc-docs-design-local-geometry-refinement--缓存契约与防泄漏">缓存契约与防泄漏</a></li><li><a href="#doc-docs-design-local-geometry-refinement--可运行的合成验证">可运行的合成验证</a></li><li><a href="#doc-docs-design-local-geometry-refinement--本机软件验证记录">本机软件验证记录</a></li><li><a href="#doc-docs-design-local-geometry-refinement--真实实验顺序与退出条件">真实实验顺序与退出条件</a></li></ul></nav><div class="doc-body">
@@ -8825,6 +8984,8 @@ acceptance and paired task evaluation remain required before reviewed activation
 <article class="book-document" id="doc-docs-slot-guided-sam3-offline"><header><h3 id="doc-docs-slot-guided-sam3-offline--slot-guided-sam3-runnable-offline-action-experiments">Slot-guided SAM3: runnable offline action experiments</h3><p class="doc-introduction"></p></header><nav class="doc-toc" aria-label="Slot-guided SAM3: runnable offline action experiments的章节"><ul><li><a href="#doc-docs-slot-guided-sam3-offline--what-runs">What runs</a></li><li><a href="#doc-docs-slot-guided-sam3-offline--inputs-one-actual-observation">Inputs: one actual observation</a></li><li><a href="#doc-docs-slot-guided-sam3-offline--commands">Commands</a></li><li><a href="#doc-docs-slot-guided-sam3-offline--outputs-and-fallback">Outputs and fallback</a></li><li><a href="#doc-docs-slot-guided-sam3-offline--software-validation">Software validation</a></li></ul></nav><div class="doc-body">
 <p>For the current-observation RLBench control loop, use the <a href="#doc-docs-slot-guided-sam3-online">online entrypoint</a>.
 This snapshot command remains the reproducible A/B/C experiment path.</p>
+<p>Offline/online 的区别和“先训练 Role Query 策略，再冻结运行 SAM3”的流程见
+<a href="#doc-docs-slot-guided-sam3-online--offline-online-training">推理方式与训练说明</a>。两者都不是训练入口。</p>
 <p><code>finetune/RLBench/slot_guided_sam3_offline.py</code> connects the current observation to
 the frozen policy. The enabled profile is
 <a href="../finetune/RLBench/configs/rlbench_slot_guided_sam3_offline.yaml">rlbench_slot_guided_sam3_offline.yaml</a>.
@@ -8991,7 +9152,7 @@ measurement. Existing coarse/refine checkpoints, training defaults and the
 original Qwen3-VL → SAM3 pipeline are preserved.</p>
 <p>See the <a href="#doc-docs-slot-guided-sam3-offline-validation">implementation review and measured test results</a>
 for this change's validation and environment limits.</p>
-</div><details class="doc-source"><summary>来源与维护</summary><p class="doc-provenance text-small">docs/slot_guided_sam3_offline.md · SHA-256：404d3d69ca48</p></details></article>
+</div><details class="doc-source"><summary>来源与维护</summary><p class="doc-provenance text-small">docs/slot_guided_sam3_offline.md · SHA-256：6ff6f20afcef</p></details></article>
 <article class="book-document" id="doc-docs-slot-guided-sam3-offline-validation"><header><h3 id="doc-docs-slot-guided-sam3-offline-validation--offline-implementation-review">Offline implementation review</h3><p class="doc-introduction"></p></header><nav class="doc-toc" aria-label="Offline implementation review的章节"><ul><li><a href="#doc-docs-slot-guided-sam3-offline-validation--files-and-interfaces">Files and interfaces</a></li><li><a href="#doc-docs-slot-guided-sam3-offline-validation--verification-on-the-local-cpu-environment">Verification on the local CPU environment</a></li><li><a href="#doc-docs-slot-guided-sam3-offline-validation--running-and-remaining-measurements">Running and remaining measurements</a></li></ul></nav><div class="doc-body">
 <p>This follow-up completes the software connection missing from the PR4 draft.
 It does not record a completed model or robot experiment.</p>
@@ -9043,8 +9204,8 @@ was supplied to this run. Real GPU rendering, SAM3/PaliGemma inference, mask IoU
 role accuracy, GT center/action errors, paired RLBench success, GPU memory and
 latency measurements remain unexecuted. Synthetic/Mock tests never set
 <code>real_offline_acceptance_passed=true</code> and no performance improvement is claimed.</p>
-</div><details class="doc-source"><summary>来源与维护</summary><p class="doc-provenance text-small">docs/slot_guided_sam3_offline_validation.md · SHA-256：9c88d5e7e6d1</p></details></article>
-<article class="book-document" id="doc-docs-slot-guided-sam3-online"><header><h3 id="doc-docs-slot-guided-sam3-online--slot-guided-sam3-online-rlbench-inference">Slot-guided SAM3 online RLBench inference</h3><p class="doc-introduction"></p></header><nav class="doc-toc" aria-label="Slot-guided SAM3 online RLBench inference的章节"><ul><li><a href="#doc-docs-slot-guided-sam3-online--actual-online-path">Actual online path</a></li><li><a href="#doc-docs-slot-guided-sam3-online--current-camera-coordinates-and-source-indices">Current camera coordinates and source indices</a></li><li><a href="#doc-docs-slot-guided-sam3-online--commands-and-configuration">Commands and configuration</a></li><li><a href="#doc-docs-slot-guided-sam3-online--fallback-and-practical-limits">Fallback and practical limits</a></li></ul></nav><div class="doc-body">
+</div><details class="doc-source"><summary>来源与维护</summary><p class="doc-provenance text-small">docs/slot_guided_sam3_offline_validation.md · SHA-256：79784d88f3e2</p></details></article>
+<article class="book-document" id="doc-docs-slot-guided-sam3-online"><header><h3 id="doc-docs-slot-guided-sam3-online--slot-guided-sam3-online-rlbench-inference">Slot-guided SAM3 online RLBench inference</h3><p class="doc-introduction"></p></header><nav class="doc-toc" aria-label="Slot-guided SAM3 online RLBench inference的章节"><ul><li><a href="#doc-docs-slot-guided-sam3-online--offlineonline-与训练">Offline、Online 与训练</a></li><li><a href="#doc-docs-slot-guided-sam3-online--actual-online-path">Actual online path</a></li><li><a href="#doc-docs-slot-guided-sam3-online--current-camera-coordinates-and-source-indices">Current camera coordinates and source indices</a></li><li><a href="#doc-docs-slot-guided-sam3-online--commands-and-configuration">Commands and configuration</a></li><li><a href="#doc-docs-slot-guided-sam3-online--fallback-and-practical-limits">Fallback and practical limits</a></li></ul></nav><div class="doc-body">
 <p>Use <a href="../finetune/RLBench/configs/rlbench_slot_guided_sam3_online.yaml">rlbench_slot_guided_sam3_online.yaml</a>
 and <code>finetune/RLBench/slot_guided_sam3_online.py</code> for the current-observation
 control loop. Models are frozen and persistent. Each policy step runs Coarse
@@ -9055,6 +9216,58 @@ command before each step.</p>
 <p>The <a href="#doc-docs-slot-guided-sam3-offline">offline entrypoint</a> remains available for
 reproducible A/B/C and box-only versus point+box experiments. The legacy draft
 profile stays disabled for old commands. Global defaults remain disabled.</p>
+<p><a id="doc-docs-slot-guided-sam3-online--offline-online-training"></a></p>
+<h4 id="doc-docs-slot-guided-sam3-online--offlineonline-与训练">Offline、Online 与训练</h4>
+<p>这里的 offline / online 是两种<strong>推理方式</strong>，都不会更新模型权重。</p>
+<table>
+<thead>
+<tr>
+<th>对比</th>
+<th>Offline</th>
+<th>Online</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>输入</td>
+<td>保存的单帧 RGB-D、相机参数和机器人状态</td>
+<td>RLBench 每一步的当前观测</td>
+</tr>
+<tr>
+<td>动作处理</td>
+<td>保存动作预测和诊断，不执行环境动作</td>
+<td>预测动作 → 环境执行 → 获取下一帧</td>
+</tr>
+<tr>
+<td>模型状态</td>
+<td>BridgeVLA 和 SAM3 全部冻结</td>
+<td>BridgeVLA 和 SAM3 全部冻结，模型常驻加载</td>
+</tr>
+<tr>
+<td>用途</td>
+<td>可复现的 A/B/C、box-only / point+box 消融</td>
+<td>当前观测驱动的闭环任务评估</td>
+</tr>
+</tbody>
+</table>
+<p>Online 不要求先运行 offline，也不表示在线学习或保证实时频率。
+TASK 中复用的 <code>configs/slot_guided_offline.json</code> 只是提示、候选选择和融合参数；
+该文件名不改变在线执行方式。</p>
+<p>当前支持的训练与使用顺序：</p>
+<ol>
+<li>准备带 T/R 角色监督的 Semantic-GT replay，以及 BridgeVLA 初始化 checkpoint。
+使用 <code>rlbench_o2_role_queries.yaml</code> 训练固定双角色 query、现有 Relation Anchor
+和动作策略，保持 <code>rvt.enable_slot_guided_sam3=False</code>。
+完整命令、冻结范围和续训方式见<a href="#doc-docs-guides-object-conditioning--role-query-training">Role Query 训练</a>。</li>
+<li>训练完成后，使用实际输出的 run 目录中的 checkpoint、<code>exp_cfg.yaml</code> 和
+<code>mvt_cfg.yaml</code>，运行下方的<a href="#doc-docs-slot-guided-sam3-online--commands-and-configuration">在线命令</a>，或运行
+<a href="#doc-docs-slot-guided-sam3-offline--commands">offline 快照实验</a>。已有兼容 checkpoint 可直接推理。
+推理时冻结整个策略；训练时的部分冻结设置不代表在线仍有参数更新。</li>
+<li>当前尚未实现“让 SAM3 几何参与动作微调”。启用新功能时，Agent 的
+<code>build(training=True)</code>、<code>update()</code> 和 <code>train()</code> 均拒绝训练。
+如需冻结 Slot/SAM3 后仅训练 Anchor / Action Head，仍需新增几何 replay、
+训练接口和梯度隔离，不能把 online/offline YAML 直接交给 <code>train.py</code> 实现。</li>
+</ol>
 <h4 id="doc-docs-slot-guided-sam3-online--actual-online-path">Actual online path</h4>
 <ol>
 <li>The existing evaluator strictly loads a matching role-query/Anchor checkpoint
@@ -9230,7 +9443,7 @@ is not claimed by that field. No real frequency, mask/role accuracy, action
 error, VRAM result or task-success improvement has been measured on this
 workstation, which lacks an installed SAM3/CUDA model environment. See the
 <a href="#doc-docs-slot-guided-sam3-online-validation">validation record</a>.</p>
-</div><details class="doc-source"><summary>来源与维护</summary><p class="doc-provenance text-small">docs/slot_guided_sam3_online.md · SHA-256：04bc23357232</p></details></article>
+</div><details class="doc-source"><summary>来源与维护</summary><p class="doc-provenance text-small">docs/slot_guided_sam3_online.md · SHA-256：bcc76622aeca</p></details></article>
 <article class="book-document" id="doc-docs-slot-guided-sam3-online-validation"><header><h3 id="doc-docs-slot-guided-sam3-online-validation--online-slot-guided-sam3-implementation-review">Online Slot-guided SAM3 implementation review</h3><p class="doc-introduction"></p></header><nav class="doc-toc" aria-label="Online Slot-guided SAM3 implementation review的章节"><ul><li><a href="#doc-docs-slot-guided-sam3-online-validation--interfaces-and-changed-areas">Interfaces and changed areas</a></li><li><a href="#doc-docs-slot-guided-sam3-online-validation--validation">Validation</a></li><li><a href="#doc-docs-slot-guided-sam3-online-validation--limits-requiring-real-experiments">Limits requiring real experiments</a></li></ul></nav><div class="doc-body">
 <p>This change connects the existing TASK SAM3 perception implementation to actual
 current-observation RLBench policy calls. The offline path remains an experiment
@@ -9317,7 +9530,7 @@ authorization on each step. That cost is included in online timing. SAM3's
 fingerprint is already cached. A future optimization must retain loaded-weight
 identity checks. Online resume and generic copied/multiprocess YARR worker
 integration are not enabled by this first direct-evaluator path.</p>
-</div><details class="doc-source"><summary>来源与维护</summary><p class="doc-provenance text-small">docs/slot_guided_sam3_online_validation.md · SHA-256：0e7db810f8c8</p></details></article>
+</div><details class="doc-source"><summary>来源与维护</summary><p class="doc-provenance text-small">docs/slot_guided_sam3_online_validation.md · SHA-256：dda9a64dd0b8</p></details></article>
 </section>
 
       <footer class="book-footer"><p>本手册由仓库源文档自动生成。更新 Markdown 或图解源后运行 <code>python tools/build_docs_handbook.py</code>，用 <code>--check</code> 检查同步。命令、外链论文和历史测试记录被保留，不表示构建本页时执行或重新验证了它们。</p><a href="#handbook-home">回到开头 ↑</a></footer>
@@ -9440,5 +9653,5 @@ integration are not enabled by this first direct-evaluator path.</p>
 })();
 </script>
 
-<script type="application/json" id="book-source-manifest">[{"source": "docs/design/role-relation-prior.md", "id": "doc-docs-design-role-relation-prior", "sha256": "39fe889916d8b44feb7c43a1283b6d8ea230262432e415795d5d3469f77e7a5a"}, {"source": "docs/guides/replay.md", "id": "doc-docs-guides-replay", "sha256": "d48a1fc97615472cd72bec9ab8d885ace93eed715da3ff3990a3a91fdfc60f47"}, {"source": "docs/guides/oracle-replay.md", "id": "doc-docs-guides-oracle-replay", "sha256": "842cafb030c3eb9a0ac8c206e6731935dea08c212d25392edb22215b9247731c"}, {"source": "docs/guides/semantic-gt.md", "id": "doc-docs-guides-semantic-gt", "sha256": "dd0d68b21a56fc7199cae4fd85fb83adc7142533e4a95900a254957871a0f5e7"}, {"source": "docs/oht/data.md", "id": "doc-docs-oht-data", "sha256": "598dc2a8f4fa62a3842ca9dee30a8a4de86e0d7ebb25fb9264497cb23b349f09"}, {"source": "docs/guides/installation.md", "id": "doc-docs-guides-installation", "sha256": "d92f5023ee6d51a7401e7cd1bce861840f76077842d4e47ac770632771c52ee7"}, {"source": "docs/guides/training.md", "id": "doc-docs-guides-training", "sha256": "ff7924c495de69335376572772afa3362fd0610168b3fbab1890495a47c324e0"}, {"source": "docs/guides/object-conditioning.md", "id": "doc-docs-guides-object-conditioning", "sha256": "5c5d1c1e3eec55c29c5e23e0677ad651f3827065f01dac67b79a9923ae329fbb"}, {"source": "docs/oht/training.md", "id": "doc-docs-oht-training", "sha256": "abc338ac420f49ce8446049a3f37e546eaa8d34ded6bea80ae589e9c2b238031"}, {"source": "docs/guides/evaluation.md", "id": "doc-docs-guides-evaluation", "sha256": "38bf662bb3e1914cb834965820bf31715e2429cf3f9327f6a86b6aa586833aee"}, {"source": "docs/oht/runtime.md", "id": "doc-docs-oht-runtime", "sha256": "65edf268f75c52fd4175ea80e7991f7627a755445901c0a8153a3c8748aa6dfc"}, {"source": "docs/research/object-centric-policy-memory.md", "id": "doc-docs-research-object-centric-policy-memory", "sha256": "a9c2ebc5db0ddc90c05d9a81796573ac6e124bf50e957dc96232cc34f8197808"}, {"source": "docs/experiments/results.md", "id": "doc-docs-experiments-results", "sha256": "b8c24c690e67e406fed54fe51c2a217d23b32ca6cce3c357d92c68bf9a71ae3d"}, {"source": "docs/reference/code-map.md", "id": "doc-docs-reference-code-map", "sha256": "cb5a7846e6b73bbe0b6b27da44b3f9343c6d5ee22e62bd085c3375b2f5f6b417"}, {"source": "README.md", "id": "doc-readme", "sha256": "b24c37d3f3224c3a578823ce9abe68d81feb93952a3a372448cb699ec2fd6f25"}, {"source": "finetune/OHT/README.md", "id": "doc-finetune-oht-readme", "sha256": "a6472eadf30576a5f37797f94e69a016c35b45c0f317c63334c2eaf73321d5ad"}, {"source": "docs/README.md", "id": "doc-docs-readme", "sha256": "3489583b9c4f24fc37071880f906da7d63775aa0fb40745c55a4484e62e770b7"}, {"source": "docs/design/local-geometry-refinement.md", "id": "doc-docs-design-local-geometry-refinement", "sha256": "5e1e6c47d05213cd146a365e4f360e4b2a1ae509cee968608fcaef79a8e26c4f"}, {"source": "docs/slot_guided_sam3_action_draft.md", "id": "doc-docs-slot-guided-sam3-action-draft", "sha256": "1da9f59df27eefda5eb3a9389b29170039195c70ff8d08e457d701e468691647"}, {"source": "docs/slot_guided_sam3_offline.md", "id": "doc-docs-slot-guided-sam3-offline", "sha256": "404d3d69ca4818114f028bf3339b0f79e27f99f7976f2debea64c15ab35d110a"}, {"source": "docs/slot_guided_sam3_offline_validation.md", "id": "doc-docs-slot-guided-sam3-offline-validation", "sha256": "9c88d5e7e6d1601d595e3ea0a87c07bddf6cc80b809721282cd5d0a7b2f34028"}, {"source": "docs/slot_guided_sam3_online.md", "id": "doc-docs-slot-guided-sam3-online", "sha256": "04bc233572321ae24db3e86a9c6386779e372b3c2b6cf409623b825fa0358a34"}, {"source": "docs/slot_guided_sam3_online_validation.md", "id": "doc-docs-slot-guided-sam3-online-validation", "sha256": "0e7db810f8c8f32b5d292f473c8db1f5c3b0b9e060024fdfbb688c9ac5d19369"}, {"source": "docs/assets/algorithm-overview.fragment.html", "sha256": "d229a285623a00a9701b1a125127772cef70658c6827b49b4224fd86ae48ecb4"}]</script><noscript>所有 Markdown 正文均可直接阅读；节点交互和动态生成的算法逐步说明需要启用 JavaScript。</noscript>
+<script type="application/json" id="book-source-manifest">[{"source": "docs/design/role-relation-prior.md", "id": "doc-docs-design-role-relation-prior", "sha256": "39fe889916d8b44feb7c43a1283b6d8ea230262432e415795d5d3469f77e7a5a"}, {"source": "docs/guides/replay.md", "id": "doc-docs-guides-replay", "sha256": "d48a1fc97615472cd72bec9ab8d885ace93eed715da3ff3990a3a91fdfc60f47"}, {"source": "docs/guides/oracle-replay.md", "id": "doc-docs-guides-oracle-replay", "sha256": "842cafb030c3eb9a0ac8c206e6731935dea08c212d25392edb22215b9247731c"}, {"source": "docs/guides/semantic-gt.md", "id": "doc-docs-guides-semantic-gt", "sha256": "dd0d68b21a56fc7199cae4fd85fb83adc7142533e4a95900a254957871a0f5e7"}, {"source": "docs/oht/data.md", "id": "doc-docs-oht-data", "sha256": "598dc2a8f4fa62a3842ca9dee30a8a4de86e0d7ebb25fb9264497cb23b349f09"}, {"source": "docs/guides/installation.md", "id": "doc-docs-guides-installation", "sha256": "d92f5023ee6d51a7401e7cd1bce861840f76077842d4e47ac770632771c52ee7"}, {"source": "docs/guides/training.md", "id": "doc-docs-guides-training", "sha256": "ff7924c495de69335376572772afa3362fd0610168b3fbab1890495a47c324e0"}, {"source": "docs/guides/object-conditioning.md", "id": "doc-docs-guides-object-conditioning", "sha256": "b0662e2497d598f49447a6e1c6563d4ffa3617bbb1351ee53dfb7b97d6dfaf48"}, {"source": "docs/oht/training.md", "id": "doc-docs-oht-training", "sha256": "ca8c0848720a579fa3ade015b7a9bbbf95db0871a655df6edca60c0f87bcb15f"}, {"source": "docs/guides/evaluation.md", "id": "doc-docs-guides-evaluation", "sha256": "38bf662bb3e1914cb834965820bf31715e2429cf3f9327f6a86b6aa586833aee"}, {"source": "docs/oht/runtime.md", "id": "doc-docs-oht-runtime", "sha256": "a9c3de96da87f21222f35c4d63546832865931c7c09e30b330decb5271cb68db"}, {"source": "docs/research/object-centric-policy-memory.md", "id": "doc-docs-research-object-centric-policy-memory", "sha256": "a9c2ebc5db0ddc90c05d9a81796573ac6e124bf50e957dc96232cc34f8197808"}, {"source": "docs/experiments/results.md", "id": "doc-docs-experiments-results", "sha256": "b8c24c690e67e406fed54fe51c2a217d23b32ca6cce3c357d92c68bf9a71ae3d"}, {"source": "docs/reference/code-map.md", "id": "doc-docs-reference-code-map", "sha256": "cb5a7846e6b73bbe0b6b27da44b3f9343c6d5ee22e62bd085c3375b2f5f6b417"}, {"source": "README.md", "id": "doc-readme", "sha256": "b24c37d3f3224c3a578823ce9abe68d81feb93952a3a372448cb699ec2fd6f25"}, {"source": "finetune/OHT/README.md", "id": "doc-finetune-oht-readme", "sha256": "a6472eadf30576a5f37797f94e69a016c35b45c0f317c63334c2eaf73321d5ad"}, {"source": "docs/README.md", "id": "doc-docs-readme", "sha256": "5c18264ef33baa91700beae7b2629dd97d6776b1cddf0fce02fc8ce010c3910d"}, {"source": "docs/design/local-geometry-refinement.md", "id": "doc-docs-design-local-geometry-refinement", "sha256": "5e1e6c47d05213cd146a365e4f360e4b2a1ae509cee968608fcaef79a8e26c4f"}, {"source": "docs/slot_guided_sam3_action_draft.md", "id": "doc-docs-slot-guided-sam3-action-draft", "sha256": "1da9f59df27eefda5eb3a9389b29170039195c70ff8d08e457d701e468691647"}, {"source": "docs/slot_guided_sam3_offline.md", "id": "doc-docs-slot-guided-sam3-offline", "sha256": "6ff6f20afcef01bc4012ffd41d6cb78c778be4f18afae726c4223cd4083217c3"}, {"source": "docs/slot_guided_sam3_offline_validation.md", "id": "doc-docs-slot-guided-sam3-offline-validation", "sha256": "79784d88f3e279261669e127a3573ddb325498ae953e5743f93ff1d18f97e102"}, {"source": "docs/slot_guided_sam3_online.md", "id": "doc-docs-slot-guided-sam3-online", "sha256": "bcc76622aecaa9ad8f1cb9f3def715c2152915c9b1a8705f9da098ed61737886"}, {"source": "docs/slot_guided_sam3_online_validation.md", "id": "doc-docs-slot-guided-sam3-online-validation", "sha256": "dda9a64dd0b899b56378dbaa322b1d76d5f9cf754424f8a83788ff82446169d1"}, {"source": "docs/assets/algorithm-overview.fragment.html", "sha256": "d229a285623a00a9701b1a125127772cef70658c6827b49b4224fd86ae48ecb4"}]</script><noscript>所有 Markdown 正文均可直接阅读；节点交互和动态生成的算法逐步说明需要启用 JavaScript。</noscript>
 </body></html>

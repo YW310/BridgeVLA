@@ -3,6 +3,9 @@
 For the current-observation RLBench control loop, use the [online entrypoint](slot_guided_sam3_online.md).
 This snapshot command remains the reproducible A/B/C experiment path.
 
+Offline/online 的区别和“先训练 Role Query 策略，再冻结运行 SAM3”的流程见
+[推理方式与训练说明](slot_guided_sam3_online.md#offline-online-training)。两者都不是训练入口。
+
 `finetune/RLBench/slot_guided_sam3_offline.py` connects the current observation to
 the frozen policy. The enabled profile is
 [rlbench_slot_guided_sam3_offline.yaml](../finetune/RLBench/configs/rlbench_slot_guided_sam3_offline.yaml).
