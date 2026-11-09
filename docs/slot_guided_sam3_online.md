@@ -182,6 +182,64 @@ Optional diagnostic writes get a unique run subdirectory and preserve SAM3
 masks, scores, prompts, camera overlays and fused object geometry; these files
 are not read back into the action path.
 
+<a id="sam3-source-contract"></a>
+
+## SAM3 源码版本不匹配
+
+若启动报 `unverified SAM3 API: source mismatch in model/sam3_image.py`，说明实际导入的
+SAM3 源码与 TASK 的四文件审计哈希不同；这不是 BridgeVLA checkpoint 加载错误，
+也不能仅凭哈希差异判断新版本的 API 是否兼容。相关约定见 TASK 工程的
+`docs/sam3_api_contract.md`。当前审计 revision 为
+`f1647e8d0c1d280991f4d1b7d974c2704537fe66`。
+
+可以单独检出审计源码，只为本次评测选择它，不替换现有环境的 SAM3 安装。
+从服务器 BridgeVLA 根目录执行；示例中的 `/data/project/SAM31` 是用户部署的
+TASK 工程目录，不是固定目录名。首次创建下面的新源码目录：
+
+```bash
+SAM3_SOURCE=/data/project/deps/sam3-f1647e8
+mkdir -p /data/project/deps
+git clone https://github.com/facebookresearch/sam3.git "$SAM3_SOURCE"
+git -C "$SAM3_SOURCE" checkout --detach f1647e8d0c1d280991f4d1b7d974c2704537fe66
+```
+
+如果已存在该源码目录，核对其 remote、工作区和 revision 后复用；不要在 TASK
+工程目录切换这个 SAM3 commit。先做纯源码校验，无需加载模型权重或模拟器：
+
+```bash
+PYTHONPATH="$SAM3_SOURCE${PYTHONPATH:+:$PYTHONPATH}" python - <<'PY'
+import importlib.util
+from pathlib import Path
+import sys
+
+spec = importlib.util.find_spec("sam3")
+if spec is None or not spec.submodule_search_locations:
+    raise RuntimeError("SAM3 source is not on the selected Python path")
+package_root = Path(next(iter(spec.submodule_search_locations))).resolve()
+sys.path.insert(0, "/data/project/SAM31")
+from slot_guided_sam3 import AUDITED_SAM3_SHA, verify_sam3_api_contract
+
+hashes = verify_sam3_api_contract(package_root)
+print("SAM3 source:", package_root)
+print("API source audit:", AUDITED_SAM3_SHA, "files:", len(hashes))
+PY
+```
+
+启动评测时，将原命令的 `python finetune/RLBench/slot_guided_sam3_online.py`
+替换为下面的**命令前缀**，并在其后接回原有 `--model-folder`、`--model-name`、
+`--eval-datafolder`、`--tasks` 和所有 `--slot-sam3-*` 参数：
+
+```bash
+PYTHONPATH="$SAM3_SOURCE${PYTHONPATH:+:$PYTHONPATH}" python -c 'import runpy, sam3; print("SAM3 source:", sam3.__file__); runpy.run_path("finetune/RLBench/slot_guided_sam3_online.py", run_name="__main__")'
+```
+
+这里先绑定选定的 `sam3` 包，随后 TASK 插入自己的模块目录也不会改选另一份包。
+`PYTHONPATH` 只作用于这一条命令；原 Qwen/SAM3 命令和已安装的包保持原样。
+源码校验、运行时参数签名检查及正常模型加载仍会执行，未关闭任何验证。
+这只证明所选四文件与审计源码一致；GPU 依赖、权重和实际分割仍需在模型环境验证。
+若需要支持另一份源码，应审查其 image state、原图坐标转换及联合提示实现，再更新
+TASK 的审计记录，不能只替换哈希或仅依据函数参数名放行。
+
 <a id="paligemma-checkpoint-loading"></a>
 
 ## PaliGemma checkpoint 命名兼容
