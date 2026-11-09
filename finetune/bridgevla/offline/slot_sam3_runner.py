@@ -293,7 +293,7 @@ def main(argv=None):
         if args.output_dir.exists() and any(args.output_dir.iterdir()):
             raise FileExistsError('use a new empty --output-dir')
         if importlib.util.find_spec('sam3') is None:
-            raise RuntimeError('SAM3 is not installed in this Python; install the TASK-audited SAM3 package before model inference')
+            raise RuntimeError('SAM3 is not installed in this Python; install a package supporting the TASK interactive API before model inference')
         import torch
         if torch.device(args.device).type == 'cuda' and not torch.cuda.is_available():
             raise RuntimeError('the selected policy device requires CUDA, which is unavailable in this Python')

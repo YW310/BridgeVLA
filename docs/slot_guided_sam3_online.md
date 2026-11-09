@@ -47,7 +47,7 @@ TASK 中复用的 `configs/slot_guided_offline.json` 只是提示、候选选择
 ## Actual online path
 
 1. The existing evaluator strictly loads a matching role-query/Anchor checkpoint
-   and freezes BridgeVLA. SAM3's audited TASK backend loads once, before the
+   and freezes BridgeVLA. SAM3's runtime-checked TASK backend loads once, before the
    simulator launches. A package/API/weight loading failure stops startup.
 2. An opt-in `extract_obs` hook captures the actual current RGB, world point
    cloud and `Observation.misc` camera matrices alongside the original policy
@@ -184,61 +184,31 @@ are not read back into the action path.
 
 <a id="sam3-source-contract"></a>
 
-## SAM3 源码版本不匹配
+## SAM3 运行时兼容检查
 
-若启动报 `unverified SAM3 API: source mismatch in model/sam3_image.py`，说明实际导入的
-SAM3 源码与 TASK 的四文件审计哈希不同；这不是 BridgeVLA checkpoint 加载错误，
-也不能仅凭哈希差异判断新版本的 API 是否兼容。相关约定见 TASK 工程的
-`docs/sam3_api_contract.md`。当前审计 revision 为
-`f1647e8d0c1d280991f4d1b7d974c2704537fe66`。
+2026-11-09 按用户要求移除了 TASK 后端的固定源码哈希/commit 门禁。
+安装的 SAM3 不再因为源码与参考 revision 不同而被拒绝；无需切换到指定 commit，
+也不需要前一版说明中的独立源码检出或 `PYTHONPATH` 启动包装。
 
-可以单独检出审计源码，只为本次评测选择它，不替换现有环境的 SAM3 安装。
-从服务器 BridgeVLA 根目录执行；示例中的 `/data/project/SAM31` 是用户部署的
-TASK 工程目录，不是固定目录名。首次创建下面的新源码目录：
+如果仍看到 `unverified SAM3 API: source mismatch ...`，服务器使用的 TASK 后端
+尚未更新。下面的 `/data/project/SAM31` 是用户部署的 TASK 工程目录，更新该仓库：
 
 ```bash
-SAM3_SOURCE=/data/project/deps/sam3-f1647e8
-mkdir -p /data/project/deps
-git clone https://github.com/facebookresearch/sam3.git "$SAM3_SOURCE"
-git -C "$SAM3_SOURCE" checkout --detach f1647e8d0c1d280991f4d1b7d974c2704537fe66
+git -C /data/project/SAM31 pull --ff-only origin main
 ```
 
-如果已存在该源码目录，核对其 remote、工作区和 revision 后复用；不要在 TASK
-工程目录切换这个 SAM3 commit。先做纯源码校验，无需加载模型权重或模拟器：
+随后直接使用本页的普通 `python finetune/RLBench/slot_guided_sam3_online.py`
+命令，传入 `--slot-sam3-task-repo /data/project/SAM31`。
 
-```bash
-PYTHONPATH="$SAM3_SOURCE${PYTHONPATH:+:$PYTHONPATH}" python - <<'PY'
-import importlib.util
-from pathlib import Path
-import sys
+实际交互 predictor、point/box 参数签名、原图尺寸、候选 mask 形状、数值和几何
+质量检查仍保留。模型加载或真正不支持的接口仍会明确报错。
+签名与尺寸检查不能证明所有版本的坐标语义相同，改变实现后仍需用代表性标定帧
+检查 prompt/mask 对齐及实际推理。
 
-spec = importlib.util.find_spec("sam3")
-if spec is None or not spec.submodule_search_locations:
-    raise RuntimeError("SAM3 source is not on the selected Python path")
-package_root = Path(next(iter(spec.submodule_search_locations))).resolve()
-sys.path.insert(0, "/data/project/SAM31")
-from slot_guided_sam3 import AUDITED_SAM3_SHA, verify_sam3_api_contract
-
-hashes = verify_sam3_api_contract(package_root)
-print("SAM3 source:", package_root)
-print("API source audit:", AUDITED_SAM3_SHA, "files:", len(hashes))
-PY
-```
-
-启动评测时，将原命令的 `python finetune/RLBench/slot_guided_sam3_online.py`
-替换为下面的**命令前缀**，并在其后接回原有 `--model-folder`、`--model-name`、
-`--eval-datafolder`、`--tasks` 和所有 `--slot-sam3-*` 参数：
-
-```bash
-PYTHONPATH="$SAM3_SOURCE${PYTHONPATH:+:$PYTHONPATH}" python -c 'import runpy, sam3; print("SAM3 source:", sam3.__file__); runpy.run_path("finetune/RLBench/slot_guided_sam3_online.py", run_name="__main__")'
-```
-
-这里先绑定选定的 `sam3` 包，随后 TASK 插入自己的模块目录也不会改选另一份包。
-`PYTHONPATH` 只作用于这一条命令；原 Qwen/SAM3 命令和已安装的包保持原样。
-源码校验、运行时参数签名检查及正常模型加载仍会执行，未关闭任何验证。
-这只证明所选四文件与审计源码一致；GPU 依赖、权重和实际分割仍需在模型环境验证。
-若需要支持另一份源码，应审查其 image state、原图坐标转换及联合提示实现，再更新
-TASK 的审计记录，不能只替换哈希或仅依据函数参数名放行。
+源码哈希只记录实际可读文件作为缓存溯源，不再与固定值比较，缺少源码文件也不会
+阻止启动。指纹记录实际包路径、版本及 `source_hash_enforced=false`，不再将参考
+commit 写成实际安装版本。checkpoint、mask 内容和缓存完整性校验保持不变。
+原 Qwen/SAM3 入口保持原样，详细调用约定见 TASK 的 `docs/sam3_api_contract.md`。
 
 <a id="paligemma-checkpoint-loading"></a>
 

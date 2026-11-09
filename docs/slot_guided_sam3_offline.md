@@ -47,11 +47,12 @@ Global `enable_slot_guided_sam3=False` remains unchanged.
 Use the TASK checkout containing PR1–PR3, for example
 `C:\Users\yiwei.chen\TASK_Relevant_object-main`. A prepared BridgeVLA inference
 environment, matching role-query checkpoint, PaliGemma model/processor cache,
-renderer dependencies, TASK dependencies and the locally installed audited SAM3
-package plus its checkpoint are required for real inference. The SAM3 source
-contract is documented in that repository's `docs/sam3_api_contract.md`; an
-arbitrary installed SAM version is rejected by its backend. A source-only API
-audit does not prove that weights can execute on this machine.
+renderer dependencies, TASK dependencies and a locally installed SAM3 package
+supporting the required interactive API plus its checkpoint are required for
+real inference. The runtime contract is documented in that repository's
+`docs/sam3_api_contract.md`. The fixed source-hash/commit gate has been removed;
+runtime signature and image/mask checks remain. Source inspection or software
+checks alone do not prove that weights can execute on this machine.
 
 `frame.json` uses TASK's strict `slot_rgbd_frame` schema:
 

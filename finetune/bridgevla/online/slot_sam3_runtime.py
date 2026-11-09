@@ -61,7 +61,7 @@ def resolve_runtime(cfg, overrides=None, *, policy_device='cuda:0', validate_fil
         if not (config if config.is_absolute() else repo / config).is_file():
             raise FileNotFoundError('online TASK perception config is missing')
         if importlib.util.find_spec('sam3') is None:
-            raise RuntimeError('install the TASK-audited SAM3 package in the model environment')
+            raise RuntimeError('install a SAM3 package supporting the TASK interactive API in the model environment')
     return values
 
 
@@ -73,7 +73,7 @@ def make_online_policy(agent, observer):
     perception = OnlineTaskPerception(
         values['task_repo'], values['perception_config'], values['sam3_checkpoint'],
         values['sam3_device'], values['prompt_mode'])
-    # Startup fails before env.launch() if SAM3's audited API/weights cannot load.
+    # Startup fails before env.launch() if SAM3's runtime API/weights cannot load.
     agent.slot_guided_sam3_model_load_ms = perception.prepare_model()
     diagnostics_dir = values['diagnostics_dir']
     if diagnostics_dir is not None:

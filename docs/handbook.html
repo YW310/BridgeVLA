@@ -9024,11 +9024,12 @@ Global <code>enable_slot_guided_sam3=False</code> remains unchanged.</p>
 <p>Use the TASK checkout containing PR1–PR3, for example
 <code>C:\Users\yiwei.chen\TASK_Relevant_object-main</code>. A prepared BridgeVLA inference
 environment, matching role-query checkpoint, PaliGemma model/processor cache,
-renderer dependencies, TASK dependencies and the locally installed audited SAM3
-package plus its checkpoint are required for real inference. The SAM3 source
-contract is documented in that repository's <code>docs/sam3_api_contract.md</code>; an
-arbitrary installed SAM version is rejected by its backend. A source-only API
-audit does not prove that weights can execute on this machine.</p>
+renderer dependencies, TASK dependencies and a locally installed SAM3 package
+supporting the required interactive API plus its checkpoint are required for
+real inference. The runtime contract is documented in that repository's
+<code>docs/sam3_api_contract.md</code>. The fixed source-hash/commit gate has been removed;
+runtime signature and image/mask checks remain. Source inspection or software
+checks alone do not prove that weights can execute on this machine.</p>
 <p><code>frame.json</code> uses TASK's strict <code>slot_rgbd_frame</code> schema:</p>
 <details class="long-example"><summary>长示例 · json（展开查看完整内容）</summary><pre><code class="language-json">{
   &quot;schema_version&quot;: 1,
@@ -9155,7 +9156,7 @@ measurement. Existing coarse/refine checkpoints, training defaults and the
 original Qwen3-VL → SAM3 pipeline are preserved.</p>
 <p>See the <a href="#doc-docs-slot-guided-sam3-offline-validation">implementation review and measured test results</a>
 for this change's validation and environment limits.</p>
-</div><details class="doc-source"><summary>来源与维护</summary><p class="doc-provenance text-small">docs/slot_guided_sam3_offline.md · SHA-256：51e626b7a991</p></details></article>
+</div><details class="doc-source"><summary>来源与维护</summary><p class="doc-provenance text-small">docs/slot_guided_sam3_offline.md · SHA-256：ff3025f5b881</p></details></article>
 <article class="book-document" id="doc-docs-slot-guided-sam3-offline-validation"><header><h3 id="doc-docs-slot-guided-sam3-offline-validation--offline-implementation-review">Offline implementation review</h3><p class="doc-introduction"></p></header><nav class="doc-toc" aria-label="Offline implementation review的章节"><ul><li><a href="#doc-docs-slot-guided-sam3-offline-validation--files-and-interfaces">Files and interfaces</a></li><li><a href="#doc-docs-slot-guided-sam3-offline-validation--verification-on-the-local-cpu-environment">Verification on the local CPU environment</a></li><li><a href="#doc-docs-slot-guided-sam3-offline-validation--running-and-remaining-measurements">Running and remaining measurements</a></li></ul></nav><div class="doc-body">
 <p>This follow-up completes the software connection missing from the PR4 draft.
 It does not record a completed model or robot experiment.</p>
@@ -9208,7 +9209,7 @@ role accuracy, GT center/action errors, paired RLBench success, GPU memory and
 latency measurements remain unexecuted. Synthetic/Mock tests never set
 <code>real_offline_acceptance_passed=true</code> and no performance improvement is claimed.</p>
 </div><details class="doc-source"><summary>来源与维护</summary><p class="doc-provenance text-small">docs/slot_guided_sam3_offline_validation.md · SHA-256：79784d88f3e2</p></details></article>
-<article class="book-document" id="doc-docs-slot-guided-sam3-online"><header><h3 id="doc-docs-slot-guided-sam3-online--slot-guided-sam3-online-rlbench-inference">Slot-guided SAM3 online RLBench inference</h3><p class="doc-introduction"></p></header><nav class="doc-toc" aria-label="Slot-guided SAM3 online RLBench inference的章节"><ul><li><a href="#doc-docs-slot-guided-sam3-online--offlineonline-与训练">Offline、Online 与训练</a></li><li><a href="#doc-docs-slot-guided-sam3-online--actual-online-path">Actual online path</a></li><li><a href="#doc-docs-slot-guided-sam3-online--current-camera-coordinates-and-source-indices">Current camera coordinates and source indices</a></li><li><a href="#doc-docs-slot-guided-sam3-online--commands-and-configuration">Commands and configuration</a></li><li><a href="#doc-docs-slot-guided-sam3-online--sam3-源码版本不匹配">SAM3 源码版本不匹配</a></li><li><a href="#doc-docs-slot-guided-sam3-online--paligemma-checkpoint-命名兼容">PaliGemma checkpoint 命名兼容</a></li><li><a href="#doc-docs-slot-guided-sam3-online--fallback-and-practical-limits">Fallback and practical limits</a></li></ul></nav><div class="doc-body">
+<article class="book-document" id="doc-docs-slot-guided-sam3-online"><header><h3 id="doc-docs-slot-guided-sam3-online--slot-guided-sam3-online-rlbench-inference">Slot-guided SAM3 online RLBench inference</h3><p class="doc-introduction"></p></header><nav class="doc-toc" aria-label="Slot-guided SAM3 online RLBench inference的章节"><ul><li><a href="#doc-docs-slot-guided-sam3-online--offlineonline-与训练">Offline、Online 与训练</a></li><li><a href="#doc-docs-slot-guided-sam3-online--actual-online-path">Actual online path</a></li><li><a href="#doc-docs-slot-guided-sam3-online--current-camera-coordinates-and-source-indices">Current camera coordinates and source indices</a></li><li><a href="#doc-docs-slot-guided-sam3-online--commands-and-configuration">Commands and configuration</a></li><li><a href="#doc-docs-slot-guided-sam3-online--sam3-运行时兼容检查">SAM3 运行时兼容检查</a></li><li><a href="#doc-docs-slot-guided-sam3-online--paligemma-checkpoint-命名兼容">PaliGemma checkpoint 命名兼容</a></li><li><a href="#doc-docs-slot-guided-sam3-online--fallback-and-practical-limits">Fallback and practical limits</a></li></ul></nav><div class="doc-body">
 <p>Use <a href="../finetune/RLBench/configs/rlbench_slot_guided_sam3_online.yaml">rlbench_slot_guided_sam3_online.yaml</a>
 and <code>finetune/RLBench/slot_guided_sam3_online.py</code> for the current-observation
 control loop. Models are frozen and persistent. Each policy step runs Coarse
@@ -9274,7 +9275,7 @@ TASK 中复用的 <code>configs/slot_guided_offline.json</code> 只是提示、�
 <h4 id="doc-docs-slot-guided-sam3-online--actual-online-path">Actual online path</h4>
 <ol>
 <li>The existing evaluator strictly loads a matching role-query/Anchor checkpoint
-and freezes BridgeVLA. SAM3's audited TASK backend loads once, before the
+and freezes BridgeVLA. SAM3's runtime-checked TASK backend loads once, before the
 simulator launches. A package/API/weight loading failure stops startup.</li>
 <li>An opt-in <code>extract_obs</code> hook captures the actual current RGB, world point
 cloud and <code>Observation.misc</code> camera matrices alongside the original policy
@@ -9425,50 +9426,24 @@ Optional diagnostic writes get a unique run subdirectory and preserve SAM3
 masks, scores, prompts, camera overlays and fused object geometry; these files
 are not read back into the action path.</p>
 <p><a id="doc-docs-slot-guided-sam3-online--sam3-source-contract"></a></p>
-<h4 id="doc-docs-slot-guided-sam3-online--sam3-源码版本不匹配">SAM3 源码版本不匹配</h4>
-<p>若启动报 <code>unverified SAM3 API: source mismatch in model/sam3_image.py</code>，说明实际导入的
-SAM3 源码与 TASK 的四文件审计哈希不同；这不是 BridgeVLA checkpoint 加载错误，
-也不能仅凭哈希差异判断新版本的 API 是否兼容。相关约定见 TASK 工程的
-<code>docs/sam3_api_contract.md</code>。当前审计 revision 为
-<code>f1647e8d0c1d280991f4d1b7d974c2704537fe66</code>。</p>
-<p>可以单独检出审计源码，只为本次评测选择它，不替换现有环境的 SAM3 安装。
-从服务器 BridgeVLA 根目录执行；示例中的 <code>/data/project/SAM31</code> 是用户部署的
-TASK 工程目录，不是固定目录名。首次创建下面的新源码目录：</p>
-<pre><code class="language-bash">SAM3_SOURCE=/data/project/deps/sam3-f1647e8
-mkdir -p /data/project/deps
-git clone https://github.com/facebookresearch/sam3.git &quot;$SAM3_SOURCE&quot;
-git -C &quot;$SAM3_SOURCE&quot; checkout --detach f1647e8d0c1d280991f4d1b7d974c2704537fe66
+<h4 id="doc-docs-slot-guided-sam3-online--sam3-运行时兼容检查">SAM3 运行时兼容检查</h4>
+<p>2026-11-09 按用户要求移除了 TASK 后端的固定源码哈希/commit 门禁。
+安装的 SAM3 不再因为源码与参考 revision 不同而被拒绝；无需切换到指定 commit，
+也不需要前一版说明中的独立源码检出或 <code>PYTHONPATH</code> 启动包装。</p>
+<p>如果仍看到 <code>unverified SAM3 API: source mismatch ...</code>，服务器使用的 TASK 后端
+尚未更新。下面的 <code>/data/project/SAM31</code> 是用户部署的 TASK 工程目录，更新该仓库：</p>
+<pre><code class="language-bash">git -C /data/project/SAM31 pull --ff-only origin main
 </code></pre>
-<p>如果已存在该源码目录，核对其 remote、工作区和 revision 后复用；不要在 TASK
-工程目录切换这个 SAM3 commit。先做纯源码校验，无需加载模型权重或模拟器：</p>
-<pre><code class="language-bash">PYTHONPATH=&quot;$SAM3_SOURCE${PYTHONPATH:+:$PYTHONPATH}&quot; python - &lt;&lt;'PY'
-import importlib.util
-from pathlib import Path
-import sys
-
-spec = importlib.util.find_spec(&quot;sam3&quot;)
-if spec is None or not spec.submodule_search_locations:
-    raise RuntimeError(&quot;SAM3 source is not on the selected Python path&quot;)
-package_root = Path(next(iter(spec.submodule_search_locations))).resolve()
-sys.path.insert(0, &quot;/data/project/SAM31&quot;)
-from slot_guided_sam3 import AUDITED_SAM3_SHA, verify_sam3_api_contract
-
-hashes = verify_sam3_api_contract(package_root)
-print(&quot;SAM3 source:&quot;, package_root)
-print(&quot;API source audit:&quot;, AUDITED_SAM3_SHA, &quot;files:&quot;, len(hashes))
-PY
-</code></pre>
-<p>启动评测时，将原命令的 <code>python finetune/RLBench/slot_guided_sam3_online.py</code>
-替换为下面的<strong>命令前缀</strong>，并在其后接回原有 <code>--model-folder</code>、<code>--model-name</code>、
-<code>--eval-datafolder</code>、<code>--tasks</code> 和所有 <code>--slot-sam3-*</code> 参数：</p>
-<pre><code class="language-bash">PYTHONPATH=&quot;$SAM3_SOURCE${PYTHONPATH:+:$PYTHONPATH}&quot; python -c 'import runpy, sam3; print(&quot;SAM3 source:&quot;, sam3.__file__); runpy.run_path(&quot;finetune/RLBench/slot_guided_sam3_online.py&quot;, run_name=&quot;__main__&quot;)'
-</code></pre>
-<p>这里先绑定选定的 <code>sam3</code> 包，随后 TASK 插入自己的模块目录也不会改选另一份包。
-<code>PYTHONPATH</code> 只作用于这一条命令；原 Qwen/SAM3 命令和已安装的包保持原样。
-源码校验、运行时参数签名检查及正常模型加载仍会执行，未关闭任何验证。
-这只证明所选四文件与审计源码一致；GPU 依赖、权重和实际分割仍需在模型环境验证。
-若需要支持另一份源码，应审查其 image state、原图坐标转换及联合提示实现，再更新
-TASK 的审计记录，不能只替换哈希或仅依据函数参数名放行。</p>
+<p>随后直接使用本页的普通 <code>python finetune/RLBench/slot_guided_sam3_online.py</code>
+命令，传入 <code>--slot-sam3-task-repo /data/project/SAM31</code>。</p>
+<p>实际交互 predictor、point/box 参数签名、原图尺寸、候选 mask 形状、数值和几何
+质量检查仍保留。模型加载或真正不支持的接口仍会明确报错。
+签名与尺寸检查不能证明所有版本的坐标语义相同，改变实现后仍需用代表性标定帧
+检查 prompt/mask 对齐及实际推理。</p>
+<p>源码哈希只记录实际可读文件作为缓存溯源，不再与固定值比较，缺少源码文件也不会
+阻止启动。指纹记录实际包路径、版本及 <code>source_hash_enforced=false</code>，不再将参考
+commit 写成实际安装版本。checkpoint、mask 内容和缓存完整性校验保持不变。
+原 Qwen/SAM3 入口保持原样，详细调用约定见 TASK 的 <code>docs/sam3_api_contract.md</code>。</p>
 <p><a id="doc-docs-slot-guided-sam3-online--paligemma-checkpoint-loading"></a></p>
 <h4 id="doc-docs-slot-guided-sam3-online--paligemma-checkpoint-命名兼容">PaliGemma checkpoint 命名兼容</h4>
 <p>如果程序已经找到 TASK 工程，但在 <code>loading state_dict for MVT</code> 报出成对的
@@ -9545,7 +9520,7 @@ is not claimed by that field. No real frequency, mask/role accuracy, action
 error, VRAM result or task-success improvement has been measured on this
 workstation, which lacks an installed SAM3/CUDA model environment. See the
 <a href="#doc-docs-slot-guided-sam3-online-validation">validation record</a>.</p>
-</div><details class="doc-source"><summary>来源与维护</summary><p class="doc-provenance text-small">docs/slot_guided_sam3_online.md · SHA-256：a953ef0328aa</p></details></article>
+</div><details class="doc-source"><summary>来源与维护</summary><p class="doc-provenance text-small">docs/slot_guided_sam3_online.md · SHA-256：0be7a88d2d02</p></details></article>
 <article class="book-document" id="doc-docs-slot-guided-sam3-online-validation"><header><h3 id="doc-docs-slot-guided-sam3-online-validation--online-slot-guided-sam3-implementation-review">Online Slot-guided SAM3 implementation review</h3><p class="doc-introduction"></p></header><nav class="doc-toc" aria-label="Online Slot-guided SAM3 implementation review的章节"><ul><li><a href="#doc-docs-slot-guided-sam3-online-validation--interfaces-and-changed-areas">Interfaces and changed areas</a></li><li><a href="#doc-docs-slot-guided-sam3-online-validation--validation">Validation</a></li><li><a href="#doc-docs-slot-guided-sam3-online-validation--limits-requiring-real-experiments">Limits requiring real experiments</a></li></ul></nav><div class="doc-body">
 <p>This change connects the existing TASK SAM3 perception implementation to actual
 current-observation RLBench policy calls. The offline path remains an experiment
@@ -9755,5 +9730,5 @@ integration are not enabled by this first direct-evaluator path.</p>
 })();
 </script>
 
-<script type="application/json" id="book-source-manifest">[{"source": "docs/design/role-relation-prior.md", "id": "doc-docs-design-role-relation-prior", "sha256": "39fe889916d8b44feb7c43a1283b6d8ea230262432e415795d5d3469f77e7a5a"}, {"source": "docs/guides/replay.md", "id": "doc-docs-guides-replay", "sha256": "d48a1fc97615472cd72bec9ab8d885ace93eed715da3ff3990a3a91fdfc60f47"}, {"source": "docs/guides/oracle-replay.md", "id": "doc-docs-guides-oracle-replay", "sha256": "842cafb030c3eb9a0ac8c206e6731935dea08c212d25392edb22215b9247731c"}, {"source": "docs/guides/semantic-gt.md", "id": "doc-docs-guides-semantic-gt", "sha256": "dd0d68b21a56fc7199cae4fd85fb83adc7142533e4a95900a254957871a0f5e7"}, {"source": "docs/oht/data.md", "id": "doc-docs-oht-data", "sha256": "598dc2a8f4fa62a3842ca9dee30a8a4de86e0d7ebb25fb9264497cb23b349f09"}, {"source": "docs/guides/installation.md", "id": "doc-docs-guides-installation", "sha256": "d92f5023ee6d51a7401e7cd1bce861840f76077842d4e47ac770632771c52ee7"}, {"source": "docs/guides/training.md", "id": "doc-docs-guides-training", "sha256": "ff7924c495de69335376572772afa3362fd0610168b3fbab1890495a47c324e0"}, {"source": "docs/guides/object-conditioning.md", "id": "doc-docs-guides-object-conditioning", "sha256": "b0662e2497d598f49447a6e1c6563d4ffa3617bbb1351ee53dfb7b97d6dfaf48"}, {"source": "docs/oht/training.md", "id": "doc-docs-oht-training", "sha256": "ca8c0848720a579fa3ade015b7a9bbbf95db0871a655df6edca60c0f87bcb15f"}, {"source": "docs/guides/evaluation.md", "id": "doc-docs-guides-evaluation", "sha256": "38bf662bb3e1914cb834965820bf31715e2429cf3f9327f6a86b6aa586833aee"}, {"source": "docs/oht/runtime.md", "id": "doc-docs-oht-runtime", "sha256": "a9c3de96da87f21222f35c4d63546832865931c7c09e30b330decb5271cb68db"}, {"source": "docs/research/object-centric-policy-memory.md", "id": "doc-docs-research-object-centric-policy-memory", "sha256": "a9c2ebc5db0ddc90c05d9a81796573ac6e124bf50e957dc96232cc34f8197808"}, {"source": "docs/experiments/results.md", "id": "doc-docs-experiments-results", "sha256": "b8c24c690e67e406fed54fe51c2a217d23b32ca6cce3c357d92c68bf9a71ae3d"}, {"source": "docs/reference/code-map.md", "id": "doc-docs-reference-code-map", "sha256": "cb5a7846e6b73bbe0b6b27da44b3f9343c6d5ee22e62bd085c3375b2f5f6b417"}, {"source": "README.md", "id": "doc-readme", "sha256": "b24c37d3f3224c3a578823ce9abe68d81feb93952a3a372448cb699ec2fd6f25"}, {"source": "finetune/OHT/README.md", "id": "doc-finetune-oht-readme", "sha256": "a6472eadf30576a5f37797f94e69a016c35b45c0f317c63334c2eaf73321d5ad"}, {"source": "docs/README.md", "id": "doc-docs-readme", "sha256": "5c18264ef33baa91700beae7b2629dd97d6776b1cddf0fce02fc8ce010c3910d"}, {"source": "docs/design/local-geometry-refinement.md", "id": "doc-docs-design-local-geometry-refinement", "sha256": "5e1e6c47d05213cd146a365e4f360e4b2a1ae509cee968608fcaef79a8e26c4f"}, {"source": "docs/slot_guided_sam3_action_draft.md", "id": "doc-docs-slot-guided-sam3-action-draft", "sha256": "1da9f59df27eefda5eb3a9389b29170039195c70ff8d08e457d701e468691647"}, {"source": "docs/slot_guided_sam3_offline.md", "id": "doc-docs-slot-guided-sam3-offline", "sha256": "51e626b7a991dd580be3f1075e607d628313f682778672372ade8665723b3ba6"}, {"source": "docs/slot_guided_sam3_offline_validation.md", "id": "doc-docs-slot-guided-sam3-offline-validation", "sha256": "79784d88f3e279261669e127a3573ddb325498ae953e5743f93ff1d18f97e102"}, {"source": "docs/slot_guided_sam3_online.md", "id": "doc-docs-slot-guided-sam3-online", "sha256": "a953ef0328aa3a3bebd7d7628ec5aac894f589f9cb81cfe7e3d38cf08ff0b962"}, {"source": "docs/slot_guided_sam3_online_validation.md", "id": "doc-docs-slot-guided-sam3-online-validation", "sha256": "dda9a64dd0b899b56378dbaa322b1d76d5f9cf754424f8a83788ff82446169d1"}, {"source": "docs/assets/algorithm-overview.fragment.html", "sha256": "d229a285623a00a9701b1a125127772cef70658c6827b49b4224fd86ae48ecb4"}]</script><noscript>所有 Markdown 正文均可直接阅读；节点交互和动态生成的算法逐步说明需要启用 JavaScript。</noscript>
+<script type="application/json" id="book-source-manifest">[{"source": "docs/design/role-relation-prior.md", "id": "doc-docs-design-role-relation-prior", "sha256": "39fe889916d8b44feb7c43a1283b6d8ea230262432e415795d5d3469f77e7a5a"}, {"source": "docs/guides/replay.md", "id": "doc-docs-guides-replay", "sha256": "d48a1fc97615472cd72bec9ab8d885ace93eed715da3ff3990a3a91fdfc60f47"}, {"source": "docs/guides/oracle-replay.md", "id": "doc-docs-guides-oracle-replay", "sha256": "842cafb030c3eb9a0ac8c206e6731935dea08c212d25392edb22215b9247731c"}, {"source": "docs/guides/semantic-gt.md", "id": "doc-docs-guides-semantic-gt", "sha256": "dd0d68b21a56fc7199cae4fd85fb83adc7142533e4a95900a254957871a0f5e7"}, {"source": "docs/oht/data.md", "id": "doc-docs-oht-data", "sha256": "598dc2a8f4fa62a3842ca9dee30a8a4de86e0d7ebb25fb9264497cb23b349f09"}, {"source": "docs/guides/installation.md", "id": "doc-docs-guides-installation", "sha256": "d92f5023ee6d51a7401e7cd1bce861840f76077842d4e47ac770632771c52ee7"}, {"source": "docs/guides/training.md", "id": "doc-docs-guides-training", "sha256": "ff7924c495de69335376572772afa3362fd0610168b3fbab1890495a47c324e0"}, {"source": "docs/guides/object-conditioning.md", "id": "doc-docs-guides-object-conditioning", "sha256": "b0662e2497d598f49447a6e1c6563d4ffa3617bbb1351ee53dfb7b97d6dfaf48"}, {"source": "docs/oht/training.md", "id": "doc-docs-oht-training", "sha256": "ca8c0848720a579fa3ade015b7a9bbbf95db0871a655df6edca60c0f87bcb15f"}, {"source": "docs/guides/evaluation.md", "id": "doc-docs-guides-evaluation", "sha256": "38bf662bb3e1914cb834965820bf31715e2429cf3f9327f6a86b6aa586833aee"}, {"source": "docs/oht/runtime.md", "id": "doc-docs-oht-runtime", "sha256": "a9c3de96da87f21222f35c4d63546832865931c7c09e30b330decb5271cb68db"}, {"source": "docs/research/object-centric-policy-memory.md", "id": "doc-docs-research-object-centric-policy-memory", "sha256": "a9c2ebc5db0ddc90c05d9a81796573ac6e124bf50e957dc96232cc34f8197808"}, {"source": "docs/experiments/results.md", "id": "doc-docs-experiments-results", "sha256": "b8c24c690e67e406fed54fe51c2a217d23b32ca6cce3c357d92c68bf9a71ae3d"}, {"source": "docs/reference/code-map.md", "id": "doc-docs-reference-code-map", "sha256": "cb5a7846e6b73bbe0b6b27da44b3f9343c6d5ee22e62bd085c3375b2f5f6b417"}, {"source": "README.md", "id": "doc-readme", "sha256": "b24c37d3f3224c3a578823ce9abe68d81feb93952a3a372448cb699ec2fd6f25"}, {"source": "finetune/OHT/README.md", "id": "doc-finetune-oht-readme", "sha256": "a6472eadf30576a5f37797f94e69a016c35b45c0f317c63334c2eaf73321d5ad"}, {"source": "docs/README.md", "id": "doc-docs-readme", "sha256": "5c18264ef33baa91700beae7b2629dd97d6776b1cddf0fce02fc8ce010c3910d"}, {"source": "docs/design/local-geometry-refinement.md", "id": "doc-docs-design-local-geometry-refinement", "sha256": "5e1e6c47d05213cd146a365e4f360e4b2a1ae509cee968608fcaef79a8e26c4f"}, {"source": "docs/slot_guided_sam3_action_draft.md", "id": "doc-docs-slot-guided-sam3-action-draft", "sha256": "1da9f59df27eefda5eb3a9389b29170039195c70ff8d08e457d701e468691647"}, {"source": "docs/slot_guided_sam3_offline.md", "id": "doc-docs-slot-guided-sam3-offline", "sha256": "ff3025f5b881b8c7e99ac33ad5d0f29f13e8e42fee15325aabf4e96f9c1cb9d3"}, {"source": "docs/slot_guided_sam3_offline_validation.md", "id": "doc-docs-slot-guided-sam3-offline-validation", "sha256": "79784d88f3e279261669e127a3573ddb325498ae953e5743f93ff1d18f97e102"}, {"source": "docs/slot_guided_sam3_online.md", "id": "doc-docs-slot-guided-sam3-online", "sha256": "0be7a88d2d02b63024b41e2e8982f0a122ce05c151007a1d94098c3b11d437cc"}, {"source": "docs/slot_guided_sam3_online_validation.md", "id": "doc-docs-slot-guided-sam3-online-validation", "sha256": "dda9a64dd0b899b56378dbaa322b1d76d5f9cf754424f8a83788ff82446169d1"}, {"source": "docs/assets/algorithm-overview.fragment.html", "sha256": "d229a285623a00a9701b1a125127772cef70658c6827b49b4224fd86ae48ecb4"}]</script><noscript>所有 Markdown 正文均可直接阅读；节点交互和动态生成的算法逐步说明需要启用 JavaScript。</noscript>
 </body></html>
