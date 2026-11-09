@@ -9107,6 +9107,9 @@ $SlotArgs = @(
 the profile. The command does not rewrite them or partially load an incompatible
 checkpoint. <code>--perception-config</code> selects TASK's existing offline JSON config;
 without it, TASK uses its own validated defaults.</p>
+<p>若 PaliGemma 权重出现成对的旧/新参数路径，参见
+<a href="#doc-docs-slot-guided-sam3-online--paligemma-checkpoint-loading">checkpoint 命名兼容</a>。
+共享加载器会校验形状并保留严格加载，不需要改写原 checkpoint。</p>
 <p>For A, add <code>--guidance-source oracle_gt --oracle-labels data/current/oracle.json</code>
 and use a separate output directory. <code>oracle.json</code> contains the same four identity
 fields, explicit <code>reference_is_null</code>, and <code>role_masks</code> mapping <strong>every</strong> camera
@@ -9152,7 +9155,7 @@ measurement. Existing coarse/refine checkpoints, training defaults and the
 original Qwen3-VL → SAM3 pipeline are preserved.</p>
 <p>See the <a href="#doc-docs-slot-guided-sam3-offline-validation">implementation review and measured test results</a>
 for this change's validation and environment limits.</p>
-</div><details class="doc-source"><summary>来源与维护</summary><p class="doc-provenance text-small">docs/slot_guided_sam3_offline.md · SHA-256：6ff6f20afcef</p></details></article>
+</div><details class="doc-source"><summary>来源与维护</summary><p class="doc-provenance text-small">docs/slot_guided_sam3_offline.md · SHA-256：51e626b7a991</p></details></article>
 <article class="book-document" id="doc-docs-slot-guided-sam3-offline-validation"><header><h3 id="doc-docs-slot-guided-sam3-offline-validation--offline-implementation-review">Offline implementation review</h3><p class="doc-introduction"></p></header><nav class="doc-toc" aria-label="Offline implementation review的章节"><ul><li><a href="#doc-docs-slot-guided-sam3-offline-validation--files-and-interfaces">Files and interfaces</a></li><li><a href="#doc-docs-slot-guided-sam3-offline-validation--verification-on-the-local-cpu-environment">Verification on the local CPU environment</a></li><li><a href="#doc-docs-slot-guided-sam3-offline-validation--running-and-remaining-measurements">Running and remaining measurements</a></li></ul></nav><div class="doc-body">
 <p>This follow-up completes the software connection missing from the PR4 draft.
 It does not record a completed model or robot experiment.</p>
@@ -9205,7 +9208,7 @@ role accuracy, GT center/action errors, paired RLBench success, GPU memory and
 latency measurements remain unexecuted. Synthetic/Mock tests never set
 <code>real_offline_acceptance_passed=true</code> and no performance improvement is claimed.</p>
 </div><details class="doc-source"><summary>来源与维护</summary><p class="doc-provenance text-small">docs/slot_guided_sam3_offline_validation.md · SHA-256：79784d88f3e2</p></details></article>
-<article class="book-document" id="doc-docs-slot-guided-sam3-online"><header><h3 id="doc-docs-slot-guided-sam3-online--slot-guided-sam3-online-rlbench-inference">Slot-guided SAM3 online RLBench inference</h3><p class="doc-introduction"></p></header><nav class="doc-toc" aria-label="Slot-guided SAM3 online RLBench inference的章节"><ul><li><a href="#doc-docs-slot-guided-sam3-online--offlineonline-与训练">Offline、Online 与训练</a></li><li><a href="#doc-docs-slot-guided-sam3-online--actual-online-path">Actual online path</a></li><li><a href="#doc-docs-slot-guided-sam3-online--current-camera-coordinates-and-source-indices">Current camera coordinates and source indices</a></li><li><a href="#doc-docs-slot-guided-sam3-online--commands-and-configuration">Commands and configuration</a></li><li><a href="#doc-docs-slot-guided-sam3-online--fallback-and-practical-limits">Fallback and practical limits</a></li></ul></nav><div class="doc-body">
+<article class="book-document" id="doc-docs-slot-guided-sam3-online"><header><h3 id="doc-docs-slot-guided-sam3-online--slot-guided-sam3-online-rlbench-inference">Slot-guided SAM3 online RLBench inference</h3><p class="doc-introduction"></p></header><nav class="doc-toc" aria-label="Slot-guided SAM3 online RLBench inference的章节"><ul><li><a href="#doc-docs-slot-guided-sam3-online--offlineonline-与训练">Offline、Online 与训练</a></li><li><a href="#doc-docs-slot-guided-sam3-online--actual-online-path">Actual online path</a></li><li><a href="#doc-docs-slot-guided-sam3-online--current-camera-coordinates-and-source-indices">Current camera coordinates and source indices</a></li><li><a href="#doc-docs-slot-guided-sam3-online--commands-and-configuration">Commands and configuration</a></li><li><a href="#doc-docs-slot-guided-sam3-online--paligemma-checkpoint-命名兼容">PaliGemma checkpoint 命名兼容</a></li><li><a href="#doc-docs-slot-guided-sam3-online--fallback-and-practical-limits">Fallback and practical limits</a></li></ul></nav><div class="doc-body">
 <p>Use <a href="../finetune/RLBench/configs/rlbench_slot_guided_sam3_online.yaml">rlbench_slot_guided_sam3_online.yaml</a>
 and <code>finetune/RLBench/slot_guided_sam3_online.py</code> for the current-observation
 control loop. Models are frozen and persistent. Each policy step runs Coarse
@@ -9421,6 +9424,60 @@ fallback and error reasons. It also records fail-mode errors before shutdown.
 Optional diagnostic writes get a unique run subdirectory and preserve SAM3
 masks, scores, prompts, camera overlays and fused object geometry; these files
 are not read back into the action path.</p>
+<p><a id="doc-docs-slot-guided-sam3-online--paligemma-checkpoint-loading"></a></p>
+<h4 id="doc-docs-slot-guided-sam3-online--paligemma-checkpoint-命名兼容">PaliGemma checkpoint 命名兼容</h4>
+<p>如果程序已经找到 TASK 工程，但在 <code>loading state_dict for MVT</code> 报出成对的
+<code>Missing key(s)</code> / <code>Unexpected key(s)</code>，先比较两组参数路径。已观察到的日志是
+604 个缺失键与 604 个多余键，全部符合下面的 PaliGemma 模块布局变化。
+下表省略共同的 <code>mvt1.model.</code> 前缀：</p>
+<table>
+<thead>
+<tr>
+<th>较旧布局</th>
+<th>较新布局</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>vision_tower.*</code></td>
+<td><code>model.vision_tower.*</code></td>
+</tr>
+<tr>
+<td><code>multi_modal_projector.*</code></td>
+<td><code>model.multi_modal_projector.*</code></td>
+</tr>
+<tr>
+<td><code>language_model.model.*</code></td>
+<td><code>model.language_model.*</code></td>
+</tr>
+<tr>
+<td><code>language_model.lm_head.*</code></td>
+<td><code>lm_head.*</code></td>
+</tr>
+</tbody>
+</table>
+<p>这两种结构可分别在 Transformers 的 <a href="https://github.com/huggingface/transformers/blob/v4.51.3/src/transformers/models/paligemma/modeling_paligemma.py">v4.51.3 源码</a>
+和 <a href="https://github.com/huggingface/transformers/blob/v4.53.3/src/transformers/models/paligemma/modeling_paligemma.py">v4.53.3 转换规则</a>中核对。
+仅凭键名不能确定服务器的具体包版本。</p>
+<p>共享评测加载器现在会针对实际模型执行上述双向键名转换，覆盖 online 和 offline
+入口。每次重命名必须找到同形状目标参数；重复映射或形状不一致会明确报错。
+转换保留原 tensor，不改写 <code>.pth</code>，角色架构元数据校验及严格加载继续生效。
+真正缺少的 Slot、Adapter 或动作头权重仍会失败。</p>
+<p>更新 BridgeVLA 后重新运行原命令；TASK 路径使用服务器实际目录即可，例如
+<code>--slot-sam3-task-repo /data/project/SAM31</code>。服务器根目录示例：</p>
+<pre><code class="language-bash">git -C /data/project/BridgeVLA pull --ff-only origin master
+python -m pip show transformers torch
+</code></pre>
+<p>若发生命名转换，启动日志会出现
+<code>PaliGemma checkpoint compatibility: remapped ... parameter keys</code>。
+这项修复针对推理权重加载；它不转换训练 optimizer state，也不保证不同 Transformers
+版本的前向数值完全相同。复现实验仍应统一并记录训练与评测的依赖和处理器设置。</p>
+<p>CPU 验证命令（无需下载模型权重或启动模拟器）：</p>
+<pre><code class="language-bash">python -m pytest tests/test_paligemma_checkpoint_compat.py -q
+</code></pre>
+<p>测试包含真实小型 Hugging Face PaliGemma 的键名覆盖、双向严格加载、参数及小模型
+预测一致、原 checkpoint 文件不变、元数据拒绝和实际架构错误仍报错。
+完整服务器 checkpoint 与 RLBench rollout 需要在模型环境中重试。</p>
 <h4 id="doc-docs-slot-guided-sam3-online--fallback-and-practical-limits">Fallback and practical limits</h4>
 <p>Missing/invalid calibration, failed prompts, exceptions, low-confidence or empty
 Target geometry, a changed checkpoint or an outdated frame cause an explicit
@@ -9443,7 +9500,7 @@ is not claimed by that field. No real frequency, mask/role accuracy, action
 error, VRAM result or task-success improvement has been measured on this
 workstation, which lacks an installed SAM3/CUDA model environment. See the
 <a href="#doc-docs-slot-guided-sam3-online-validation">validation record</a>.</p>
-</div><details class="doc-source"><summary>来源与维护</summary><p class="doc-provenance text-small">docs/slot_guided_sam3_online.md · SHA-256：bcc76622aeca</p></details></article>
+</div><details class="doc-source"><summary>来源与维护</summary><p class="doc-provenance text-small">docs/slot_guided_sam3_online.md · SHA-256：6e368ee95056</p></details></article>
 <article class="book-document" id="doc-docs-slot-guided-sam3-online-validation"><header><h3 id="doc-docs-slot-guided-sam3-online-validation--online-slot-guided-sam3-implementation-review">Online Slot-guided SAM3 implementation review</h3><p class="doc-introduction"></p></header><nav class="doc-toc" aria-label="Online Slot-guided SAM3 implementation review的章节"><ul><li><a href="#doc-docs-slot-guided-sam3-online-validation--interfaces-and-changed-areas">Interfaces and changed areas</a></li><li><a href="#doc-docs-slot-guided-sam3-online-validation--validation">Validation</a></li><li><a href="#doc-docs-slot-guided-sam3-online-validation--limits-requiring-real-experiments">Limits requiring real experiments</a></li></ul></nav><div class="doc-body">
 <p>This change connects the existing TASK SAM3 perception implementation to actual
 current-observation RLBench policy calls. The offline path remains an experiment
@@ -9653,5 +9710,5 @@ integration are not enabled by this first direct-evaluator path.</p>
 })();
 </script>
 
-<script type="application/json" id="book-source-manifest">[{"source": "docs/design/role-relation-prior.md", "id": "doc-docs-design-role-relation-prior", "sha256": "39fe889916d8b44feb7c43a1283b6d8ea230262432e415795d5d3469f77e7a5a"}, {"source": "docs/guides/replay.md", "id": "doc-docs-guides-replay", "sha256": "d48a1fc97615472cd72bec9ab8d885ace93eed715da3ff3990a3a91fdfc60f47"}, {"source": "docs/guides/oracle-replay.md", "id": "doc-docs-guides-oracle-replay", "sha256": "842cafb030c3eb9a0ac8c206e6731935dea08c212d25392edb22215b9247731c"}, {"source": "docs/guides/semantic-gt.md", "id": "doc-docs-guides-semantic-gt", "sha256": "dd0d68b21a56fc7199cae4fd85fb83adc7142533e4a95900a254957871a0f5e7"}, {"source": "docs/oht/data.md", "id": "doc-docs-oht-data", "sha256": "598dc2a8f4fa62a3842ca9dee30a8a4de86e0d7ebb25fb9264497cb23b349f09"}, {"source": "docs/guides/installation.md", "id": "doc-docs-guides-installation", "sha256": "d92f5023ee6d51a7401e7cd1bce861840f76077842d4e47ac770632771c52ee7"}, {"source": "docs/guides/training.md", "id": "doc-docs-guides-training", "sha256": "ff7924c495de69335376572772afa3362fd0610168b3fbab1890495a47c324e0"}, {"source": "docs/guides/object-conditioning.md", "id": "doc-docs-guides-object-conditioning", "sha256": "b0662e2497d598f49447a6e1c6563d4ffa3617bbb1351ee53dfb7b97d6dfaf48"}, {"source": "docs/oht/training.md", "id": "doc-docs-oht-training", "sha256": "ca8c0848720a579fa3ade015b7a9bbbf95db0871a655df6edca60c0f87bcb15f"}, {"source": "docs/guides/evaluation.md", "id": "doc-docs-guides-evaluation", "sha256": "38bf662bb3e1914cb834965820bf31715e2429cf3f9327f6a86b6aa586833aee"}, {"source": "docs/oht/runtime.md", "id": "doc-docs-oht-runtime", "sha256": "a9c3de96da87f21222f35c4d63546832865931c7c09e30b330decb5271cb68db"}, {"source": "docs/research/object-centric-policy-memory.md", "id": "doc-docs-research-object-centric-policy-memory", "sha256": "a9c2ebc5db0ddc90c05d9a81796573ac6e124bf50e957dc96232cc34f8197808"}, {"source": "docs/experiments/results.md", "id": "doc-docs-experiments-results", "sha256": "b8c24c690e67e406fed54fe51c2a217d23b32ca6cce3c357d92c68bf9a71ae3d"}, {"source": "docs/reference/code-map.md", "id": "doc-docs-reference-code-map", "sha256": "cb5a7846e6b73bbe0b6b27da44b3f9343c6d5ee22e62bd085c3375b2f5f6b417"}, {"source": "README.md", "id": "doc-readme", "sha256": "b24c37d3f3224c3a578823ce9abe68d81feb93952a3a372448cb699ec2fd6f25"}, {"source": "finetune/OHT/README.md", "id": "doc-finetune-oht-readme", "sha256": "a6472eadf30576a5f37797f94e69a016c35b45c0f317c63334c2eaf73321d5ad"}, {"source": "docs/README.md", "id": "doc-docs-readme", "sha256": "5c18264ef33baa91700beae7b2629dd97d6776b1cddf0fce02fc8ce010c3910d"}, {"source": "docs/design/local-geometry-refinement.md", "id": "doc-docs-design-local-geometry-refinement", "sha256": "5e1e6c47d05213cd146a365e4f360e4b2a1ae509cee968608fcaef79a8e26c4f"}, {"source": "docs/slot_guided_sam3_action_draft.md", "id": "doc-docs-slot-guided-sam3-action-draft", "sha256": "1da9f59df27eefda5eb3a9389b29170039195c70ff8d08e457d701e468691647"}, {"source": "docs/slot_guided_sam3_offline.md", "id": "doc-docs-slot-guided-sam3-offline", "sha256": "6ff6f20afcef01bc4012ffd41d6cb78c778be4f18afae726c4223cd4083217c3"}, {"source": "docs/slot_guided_sam3_offline_validation.md", "id": "doc-docs-slot-guided-sam3-offline-validation", "sha256": "79784d88f3e279261669e127a3573ddb325498ae953e5743f93ff1d18f97e102"}, {"source": "docs/slot_guided_sam3_online.md", "id": "doc-docs-slot-guided-sam3-online", "sha256": "bcc76622aecaa9ad8f1cb9f3def715c2152915c9b1a8705f9da098ed61737886"}, {"source": "docs/slot_guided_sam3_online_validation.md", "id": "doc-docs-slot-guided-sam3-online-validation", "sha256": "dda9a64dd0b899b56378dbaa322b1d76d5f9cf754424f8a83788ff82446169d1"}, {"source": "docs/assets/algorithm-overview.fragment.html", "sha256": "d229a285623a00a9701b1a125127772cef70658c6827b49b4224fd86ae48ecb4"}]</script><noscript>所有 Markdown 正文均可直接阅读；节点交互和动态生成的算法逐步说明需要启用 JavaScript。</noscript>
+<script type="application/json" id="book-source-manifest">[{"source": "docs/design/role-relation-prior.md", "id": "doc-docs-design-role-relation-prior", "sha256": "39fe889916d8b44feb7c43a1283b6d8ea230262432e415795d5d3469f77e7a5a"}, {"source": "docs/guides/replay.md", "id": "doc-docs-guides-replay", "sha256": "d48a1fc97615472cd72bec9ab8d885ace93eed715da3ff3990a3a91fdfc60f47"}, {"source": "docs/guides/oracle-replay.md", "id": "doc-docs-guides-oracle-replay", "sha256": "842cafb030c3eb9a0ac8c206e6731935dea08c212d25392edb22215b9247731c"}, {"source": "docs/guides/semantic-gt.md", "id": "doc-docs-guides-semantic-gt", "sha256": "dd0d68b21a56fc7199cae4fd85fb83adc7142533e4a95900a254957871a0f5e7"}, {"source": "docs/oht/data.md", "id": "doc-docs-oht-data", "sha256": "598dc2a8f4fa62a3842ca9dee30a8a4de86e0d7ebb25fb9264497cb23b349f09"}, {"source": "docs/guides/installation.md", "id": "doc-docs-guides-installation", "sha256": "d92f5023ee6d51a7401e7cd1bce861840f76077842d4e47ac770632771c52ee7"}, {"source": "docs/guides/training.md", "id": "doc-docs-guides-training", "sha256": "ff7924c495de69335376572772afa3362fd0610168b3fbab1890495a47c324e0"}, {"source": "docs/guides/object-conditioning.md", "id": "doc-docs-guides-object-conditioning", "sha256": "b0662e2497d598f49447a6e1c6563d4ffa3617bbb1351ee53dfb7b97d6dfaf48"}, {"source": "docs/oht/training.md", "id": "doc-docs-oht-training", "sha256": "ca8c0848720a579fa3ade015b7a9bbbf95db0871a655df6edca60c0f87bcb15f"}, {"source": "docs/guides/evaluation.md", "id": "doc-docs-guides-evaluation", "sha256": "38bf662bb3e1914cb834965820bf31715e2429cf3f9327f6a86b6aa586833aee"}, {"source": "docs/oht/runtime.md", "id": "doc-docs-oht-runtime", "sha256": "a9c3de96da87f21222f35c4d63546832865931c7c09e30b330decb5271cb68db"}, {"source": "docs/research/object-centric-policy-memory.md", "id": "doc-docs-research-object-centric-policy-memory", "sha256": "a9c2ebc5db0ddc90c05d9a81796573ac6e124bf50e957dc96232cc34f8197808"}, {"source": "docs/experiments/results.md", "id": "doc-docs-experiments-results", "sha256": "b8c24c690e67e406fed54fe51c2a217d23b32ca6cce3c357d92c68bf9a71ae3d"}, {"source": "docs/reference/code-map.md", "id": "doc-docs-reference-code-map", "sha256": "cb5a7846e6b73bbe0b6b27da44b3f9343c6d5ee22e62bd085c3375b2f5f6b417"}, {"source": "README.md", "id": "doc-readme", "sha256": "b24c37d3f3224c3a578823ce9abe68d81feb93952a3a372448cb699ec2fd6f25"}, {"source": "finetune/OHT/README.md", "id": "doc-finetune-oht-readme", "sha256": "a6472eadf30576a5f37797f94e69a016c35b45c0f317c63334c2eaf73321d5ad"}, {"source": "docs/README.md", "id": "doc-docs-readme", "sha256": "5c18264ef33baa91700beae7b2629dd97d6776b1cddf0fce02fc8ce010c3910d"}, {"source": "docs/design/local-geometry-refinement.md", "id": "doc-docs-design-local-geometry-refinement", "sha256": "5e1e6c47d05213cd146a365e4f360e4b2a1ae509cee968608fcaef79a8e26c4f"}, {"source": "docs/slot_guided_sam3_action_draft.md", "id": "doc-docs-slot-guided-sam3-action-draft", "sha256": "1da9f59df27eefda5eb3a9389b29170039195c70ff8d08e457d701e468691647"}, {"source": "docs/slot_guided_sam3_offline.md", "id": "doc-docs-slot-guided-sam3-offline", "sha256": "51e626b7a991dd580be3f1075e607d628313f682778672372ade8665723b3ba6"}, {"source": "docs/slot_guided_sam3_offline_validation.md", "id": "doc-docs-slot-guided-sam3-offline-validation", "sha256": "79784d88f3e279261669e127a3573ddb325498ae953e5743f93ff1d18f97e102"}, {"source": "docs/slot_guided_sam3_online.md", "id": "doc-docs-slot-guided-sam3-online", "sha256": "6e368ee9505636da2efd1dc9575ac88d6e958524073b3836e85e311e073a2b19"}, {"source": "docs/slot_guided_sam3_online_validation.md", "id": "doc-docs-slot-guided-sam3-online-validation", "sha256": "dda9a64dd0b899b56378dbaa322b1d76d5f9cf754424f8a83788ff82446169d1"}, {"source": "docs/assets/algorithm-overview.fragment.html", "sha256": "d229a285623a00a9701b1a125127772cef70658c6827b49b4224fd86ae48ecb4"}]</script><noscript>所有 Markdown 正文均可直接阅读；节点交互和动态生成的算法逐步说明需要启用 JavaScript。</noscript>
 </body></html>

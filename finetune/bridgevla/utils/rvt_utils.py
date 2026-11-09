@@ -5,6 +5,7 @@ import sys
 
 import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
+from bridgevla.utils.checkpoint_compat import remap_paligemma_state_dict
 
 
 def get_pc_img_feat(obs, pcd, bounds=None):
@@ -322,6 +323,14 @@ def load_agent(
             print(
                 'WARNING: ignored deprecated post-hoc Oracle fusion weights '
                 f'({len(removed_fusion_keys)} tensors).'
+            )
+        model_state, renamed_keys = remap_paligemma_state_dict(
+            model_state, model.state_dict())
+        if renamed_keys:
+            print(
+                'PaliGemma checkpoint compatibility: remapped '
+                f'{len(renamed_keys)} parameter keys to the current model namespace '
+                '(tensor values unchanged).'
             )
         if strict:
             model.load_state_dict(model_state)

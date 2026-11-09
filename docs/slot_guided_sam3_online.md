@@ -182,6 +182,54 @@ Optional diagnostic writes get a unique run subdirectory and preserve SAM3
 masks, scores, prompts, camera overlays and fused object geometry; these files
 are not read back into the action path.
 
+<a id="paligemma-checkpoint-loading"></a>
+
+## PaliGemma checkpoint 命名兼容
+
+如果程序已经找到 TASK 工程，但在 `loading state_dict for MVT` 报出成对的
+`Missing key(s)` / `Unexpected key(s)`，先比较两组参数路径。已观察到的日志是
+604 个缺失键与 604 个多余键，全部符合下面的 PaliGemma 模块布局变化。
+下表省略共同的 `mvt1.model.` 前缀：
+
+| 较旧布局 | 较新布局 |
+| --- | --- |
+| `vision_tower.*` | `model.vision_tower.*` |
+| `multi_modal_projector.*` | `model.multi_modal_projector.*` |
+| `language_model.model.*` | `model.language_model.*` |
+| `language_model.lm_head.*` | `lm_head.*` |
+
+这两种结构可分别在 Transformers 的 [v4.51.3 源码](https://github.com/huggingface/transformers/blob/v4.51.3/src/transformers/models/paligemma/modeling_paligemma.py)
+和 [v4.53.3 转换规则](https://github.com/huggingface/transformers/blob/v4.53.3/src/transformers/models/paligemma/modeling_paligemma.py)中核对。
+仅凭键名不能确定服务器的具体包版本。
+
+共享评测加载器现在会针对实际模型执行上述双向键名转换，覆盖 online 和 offline
+入口。每次重命名必须找到同形状目标参数；重复映射或形状不一致会明确报错。
+转换保留原 tensor，不改写 `.pth`，角色架构元数据校验及严格加载继续生效。
+真正缺少的 Slot、Adapter 或动作头权重仍会失败。
+
+更新 BridgeVLA 后重新运行原命令；TASK 路径使用服务器实际目录即可，例如
+`--slot-sam3-task-repo /data/project/SAM31`。服务器根目录示例：
+
+```bash
+git -C /data/project/BridgeVLA pull --ff-only origin master
+python -m pip show transformers torch
+```
+
+若发生命名转换，启动日志会出现
+`PaliGemma checkpoint compatibility: remapped ... parameter keys`。
+这项修复针对推理权重加载；它不转换训练 optimizer state，也不保证不同 Transformers
+版本的前向数值完全相同。复现实验仍应统一并记录训练与评测的依赖和处理器设置。
+
+CPU 验证命令（无需下载模型权重或启动模拟器）：
+
+```bash
+python -m pytest tests/test_paligemma_checkpoint_compat.py -q
+```
+
+测试包含真实小型 Hugging Face PaliGemma 的键名覆盖、双向严格加载、参数及小模型
+预测一致、原 checkpoint 文件不变、元数据拒绝和实际架构错误仍报错。
+完整服务器 checkpoint 与 RLBench rollout 需要在模型环境中重试。
+
 ## Fallback and practical limits
 
 Missing/invalid calibration, failed prompts, exceptions, low-confidence or empty

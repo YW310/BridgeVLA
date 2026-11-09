@@ -146,6 +146,10 @@ the profile. The command does not rewrite them or partially load an incompatible
 checkpoint. `--perception-config` selects TASK's existing offline JSON config;
 without it, TASK uses its own validated defaults.
 
+若 PaliGemma 权重出现成对的旧/新参数路径，参见
+[checkpoint 命名兼容](slot_guided_sam3_online.md#paligemma-checkpoint-loading)。
+共享加载器会校验形状并保留严格加载，不需要改写原 checkpoint。
+
 For A, add `--guidance-source oracle_gt --oracle-labels data/current/oracle.json`
 and use a separate output directory. `oracle.json` contains the same four identity
 fields, explicit `reference_is_null`, and `role_masks` mapping **every** camera
