@@ -23,6 +23,7 @@ class EvalRuntimeFingerprintTest(unittest.TestCase):
             self.assertTrue((FINETUNE / name).is_file(), name)
 
     def test_object_conditioning_and_policy_modules_are_covered(self):
+        self.assertIn('utils/simulator_qt.py', _constant('_RLBENCH_RUNTIME_FILES'))
         listed = set(_constant('_FINETUNE_RUNTIME_FILES'))
         required = {'bridgevla/models/oracle_prior.py', 'bridgevla/models/slot_guided_geometry.py',
                     'bridgevla/models/coarse_slot_export.py',

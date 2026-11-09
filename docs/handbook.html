@@ -4011,8 +4011,9 @@ export LD_LIBRARY_PATH=&quot;$COPPELIASIM_ROOT:${LD_LIBRARY_PATH:-}&quot;
 export QT_QPA_PLATFORM_PLUGIN_PATH=&quot;$COPPELIASIM_ROOT&quot;
 </code></pre>
 <p>需要渲染时配置本机可用 <code>DISPLAY</code>，或在 Linux 使用 Xvfb；不沿用脚本中的远端 display/IP。
+若出现指向 <code>cv2/qt/plugins</code> 的 xcb 错误，见<a href="#doc-docs-guides-evaluation--rlbench-qt">Qt 路径与显示排查</a>。
 训练脚本选择与路径问题见<a href="#doc-docs-guides-training--rlbench-fine-tuning">训练</a>，未修复的代码问题集中于<a href="#doc-docs-reference-code-map--项目审查2026-09-29">项目审查</a>。</p>
-</div><details class="doc-source"><summary>来源与维护</summary><p class="doc-provenance text-small">docs/guides/installation.md · SHA-256：d92f5023ee6d</p></details></article>
+</div><details class="doc-source"><summary>来源与维护</summary><p class="doc-provenance text-small">docs/guides/installation.md · SHA-256：91e4fd6379ef</p></details></article>
 <article class="book-document" id="doc-docs-guides-training"><header><h3>BridgeVLA 基础训练</h3><p class="doc-introduction">预训练、benchmark fine-tuning、数据目录和多卡日志；对象分支的细节在下一节。</p></header><nav class="doc-toc" aria-label="BridgeVLA 基础训练的章节"><ul><li><a href="#doc-docs-guides-training--pre-training">Pre-training</a></li><li><a href="#doc-docs-guides-training--rlbench-fine-tuning">RLBench Fine-tuning</a></li><li><a href="#doc-docs-guides-training--colosseum-fine-tuning">COLOSSEUM Fine-tuning</a></li><li><a href="#doc-docs-guides-training--gembench-fine-tuning">GemBench Fine-tuning</a></li></ul></nav><div class="doc-body"><blockquote>
 <p>命令不在 docs/ 下执行。带 cd 的独立示例从仓库根目录开始；其后命令沿用该目录。替换所有示例路径后再运行。</p>
 </blockquote>
@@ -5881,6 +5882,38 @@ DISPLAY 使用实际可用的显示/Xvfb 配置，不沿用脚本中机器专属
 同一路径续跑需显式 <code>EVAL_RESUME=1</code>；更换 checkpoint、配置或任务预算时使用独立实验目录。</p>
 <p>多 GPU 评估见 <a href="#doc-docs-guides-training--rlbench-8x40">8×40GB 说明</a>；
 Oracle/GT replay 与训练后模型评估的差异见 <a href="#doc-docs-guides-object-conditioning--closed-loop评估">对象条件策略评估</a>。</p>
+<p><a id="doc-docs-guides-evaluation--rlbench-qt"></a></p>
+<h5 id="doc-docs-guides-evaluation--qt-xcb--opencv-插件目录冲突">Qt xcb / OpenCV 插件目录冲突</h5>
+<p>若权重已经加载，但在启动环境时报 <code>Could not find the Qt platform plugin &quot;xcb&quot;</code>
+且目录包含 <code>site-packages/cv2/qt/plugins</code>，优先检查 OpenCV 与 CoppeliaSim 的 Qt 路径冲突。
+<a href="https://github.com/opencv/opencv-python/blob/4.x/scripts/__init__.py">OpenCV Linux GUI 包</a>
+会在导入时覆盖 <code>QT_QPA_PLATFORM_PLUGIN_PATH</code> 和 <code>QT_QPA_FONTDIR</code>；
+仅在 Bash 提前 export 插件路径，之后仍可能被 SAM3 或其他模块的 <code>import cv2</code> 覆盖。
+TASK 工程的独立图像推理不启动 CoppeliaSim，因此未必触发这一冲突。</p>
+<p>当前 <code>eval.py</code> 在模型（含 SAM3）加载后、模拟器启动前，将 OpenCV 插件路径恢复为
+<code>COPPELIASIM_ROOT</code>，并移除 OpenCV 的字体路径；其他显式 Qt 路径、DISPLAY 和渲染设置保持原值。
+这适用于普通评测与 online SAM3 入口，也记录在运行指纹中。先更新代码并配置真实安装目录：</p>
+<pre><code class="language-bash">git pull --ff-only
+export COPPELIASIM_ROOT=/absolute/path/to/CoppeliaSim_Edu_V4_1_0_Ubuntu20_04
+test -d &quot;$COPPELIASIM_ROOT&quot; || { echo &quot;CoppeliaSim directory does not exist&quot;; exit 1; }
+export LD_LIBRARY_PATH=&quot;$COPPELIASIM_ROOT:${LD_LIBRARY_PATH:-}&quot;
+export QT_QPA_PLATFORM_PLUGIN_PATH=&quot;$COPPELIASIM_ROOT&quot;
+</code></pre>
+<p>随后重跑原命令。发生修复时应看到 <code>[CoppeliaSim][Qt] Environment repair</code>。
+若仍崩溃，使用以下命令定位插件文件及其缺失依赖，再给原命令加上 <code>QT_DEBUG_PLUGINS=1</code>
+收集实际加载日志；不要将 OpenCV 自带的插件复制进模拟器目录：</p>
+<pre><code class="language-bash">find &quot;$COPPELIASIM_ROOT&quot; -name libqxcb.so -print -exec ldd {} \;
+printf 'DISPLAY=%s\n' &quot;${DISPLAY:-&lt;unset&gt;}&quot;
+# 如已安装 xdpyinfo，验证当前显示可连接：
+xdpyinfo -display &quot;$DISPLAY&quot; &gt;/dev/null
+</code></pre>
+<p>RLBench 的 <code>headless=True</code> 隐藏模拟器界面，不能据此认定相机渲染无需显示/OpenGL。
+已有可用 X/VirtualGL 显示时保留它；没有显示且已安装 Xvfb 时，可试用
+<code>xvfb-run -a -s &quot;-screen 0 1280x1024x24&quot; python finetune/RLBench/slot_guided_sam3_online.py ...</code>
+（将 <code>...</code> 替换为原参数）。Xvfb 启动成功仍不证明 GPU/GLX 渲染可用，需检查实际相机输出。
+不要默认强制 <code>QT_QPA_PLATFORM=offscreen</code>。环境配置参考
+<a href="https://github.com/stepjam/PyRep/blob/master/README.md">PyRep 安装与 headless 说明</a>。
+此修复的单元测试不替代服务器上的 Qt、显示和模拟器渲染验证。</p>
 <h4 id="doc-docs-guides-evaluation--colosseum">COLOSSEUM</h4>
 <p>先阅读 <code>finetune/Colosseum/cleanup_script.py</code>：它会原地删除 stack_cups 下的 ZIP，
 并将名字以 <code>_13</code> 结尾目录中的内容移动到 variation0。先备份或在副本上处理，
@@ -5927,7 +5960,7 @@ python3 cal_results.py
 <p>OHT 的单目标/chunk open-loop 指标见 <a href="#doc-docs-oht-training--离线与闭环评估">OHT 离线评估</a>，
 HTTP 与原生 IsaacLab 执行见<a href="#doc-docs-oht-runtime--启动与连接">服务指南</a>。
 离线位姿/轨迹误差不能作为闭环任务成功率。</p>
-</div><details class="doc-source"><summary>来源与维护</summary><p class="doc-provenance text-small">docs/guides/evaluation.md · SHA-256：38bf662bb3e1</p></details></article>
+</div><details class="doc-source"><summary>来源与维护</summary><p class="doc-provenance text-small">docs/guides/evaluation.md · SHA-256：b7157a88bfbd</p></details></article>
 <article class="book-document" id="doc-docs-oht-runtime"><header><h3 id="doc-docs-oht-runtime--oht-推理执行与回放">OHT：服务、执行与回放</h3><p class="doc-introduction">按 server → client → 请求协议 → 执行器 → GT 回放 → 验收组织，分清物理时钟与墙钟开销。</p></header><nav class="doc-toc" aria-label="OHT：服务、执行与回放的章节"><ul><li><a href="#doc-docs-oht-runtime--启动与连接">启动与连接</a></li><li><a href="#doc-docs-oht-runtime--http-与观测协议">HTTP 与观测协议</a></li><li><a href="#doc-docs-oht-runtime--单目标与-chunk-执行">单目标与 chunk 执行</a></li><li><a href="#doc-docs-oht-runtime--记录初态">记录初态</a></li><li><a href="#doc-docs-oht-runtime--gt-回放">GT 回放</a></li><li><a href="#doc-docs-oht-runtime--排错与验收">排错与验收</a></li></ul></nav><div class="doc-body">
 <p>本页统一说明 VLA server、IsaacLab 在线执行、记录初态与 GT 回放。
 当前 V4 chunk 优先使用新 <code>/predict</code> 服务和原生客户端；V3 单目标与旧 <code>/act</code> 的兼容边界另列。
@@ -9444,6 +9477,9 @@ are not read back into the action path.</p>
 阻止启动。指纹记录实际包路径、版本及 <code>source_hash_enforced=false</code>，不再将参考
 commit 写成实际安装版本。checkpoint、mask 内容和缓存完整性校验保持不变。
 原 Qwen/SAM3 入口保持原样，详细调用约定见 TASK 的 <code>docs/sam3_api_contract.md</code>。</p>
+<p>若权重加载成功后在启动 CoppeliaSim 时报 <code>xcb</code> / <code>cv2/qt/plugins</code>，见
+<a href="#doc-docs-guides-evaluation--rlbench-qt">Qt 插件路径与显示排查</a>。当前入口在 SAM3 加载后、
+模拟器启动前修复 OpenCV 的 Qt 环境覆盖；仍需设置真实 <code>COPPELIASIM_ROOT</code> 和可用显示。</p>
 <p><a id="doc-docs-slot-guided-sam3-online--paligemma-checkpoint-loading"></a></p>
 <h4 id="doc-docs-slot-guided-sam3-online--paligemma-checkpoint-命名兼容">PaliGemma checkpoint 命名兼容</h4>
 <p>如果程序已经找到 TASK 工程，但在 <code>loading state_dict for MVT</code> 报出成对的
@@ -9520,7 +9556,7 @@ is not claimed by that field. No real frequency, mask/role accuracy, action
 error, VRAM result or task-success improvement has been measured on this
 workstation, which lacks an installed SAM3/CUDA model environment. See the
 <a href="#doc-docs-slot-guided-sam3-online-validation">validation record</a>.</p>
-</div><details class="doc-source"><summary>来源与维护</summary><p class="doc-provenance text-small">docs/slot_guided_sam3_online.md · SHA-256：0be7a88d2d02</p></details></article>
+</div><details class="doc-source"><summary>来源与维护</summary><p class="doc-provenance text-small">docs/slot_guided_sam3_online.md · SHA-256：f673103da4c2</p></details></article>
 <article class="book-document" id="doc-docs-slot-guided-sam3-online-validation"><header><h3 id="doc-docs-slot-guided-sam3-online-validation--online-slot-guided-sam3-implementation-review">Online Slot-guided SAM3 implementation review</h3><p class="doc-introduction"></p></header><nav class="doc-toc" aria-label="Online Slot-guided SAM3 implementation review的章节"><ul><li><a href="#doc-docs-slot-guided-sam3-online-validation--interfaces-and-changed-areas">Interfaces and changed areas</a></li><li><a href="#doc-docs-slot-guided-sam3-online-validation--validation">Validation</a></li><li><a href="#doc-docs-slot-guided-sam3-online-validation--limits-requiring-real-experiments">Limits requiring real experiments</a></li></ul></nav><div class="doc-body">
 <p>This change connects the existing TASK SAM3 perception implementation to actual
 current-observation RLBench policy calls. The offline path remains an experiment
@@ -9730,5 +9766,5 @@ integration are not enabled by this first direct-evaluator path.</p>
 })();
 </script>
 
-<script type="application/json" id="book-source-manifest">[{"source": "docs/design/role-relation-prior.md", "id": "doc-docs-design-role-relation-prior", "sha256": "39fe889916d8b44feb7c43a1283b6d8ea230262432e415795d5d3469f77e7a5a"}, {"source": "docs/guides/replay.md", "id": "doc-docs-guides-replay", "sha256": "d48a1fc97615472cd72bec9ab8d885ace93eed715da3ff3990a3a91fdfc60f47"}, {"source": "docs/guides/oracle-replay.md", "id": "doc-docs-guides-oracle-replay", "sha256": "842cafb030c3eb9a0ac8c206e6731935dea08c212d25392edb22215b9247731c"}, {"source": "docs/guides/semantic-gt.md", "id": "doc-docs-guides-semantic-gt", "sha256": "dd0d68b21a56fc7199cae4fd85fb83adc7142533e4a95900a254957871a0f5e7"}, {"source": "docs/oht/data.md", "id": "doc-docs-oht-data", "sha256": "598dc2a8f4fa62a3842ca9dee30a8a4de86e0d7ebb25fb9264497cb23b349f09"}, {"source": "docs/guides/installation.md", "id": "doc-docs-guides-installation", "sha256": "d92f5023ee6d51a7401e7cd1bce861840f76077842d4e47ac770632771c52ee7"}, {"source": "docs/guides/training.md", "id": "doc-docs-guides-training", "sha256": "ff7924c495de69335376572772afa3362fd0610168b3fbab1890495a47c324e0"}, {"source": "docs/guides/object-conditioning.md", "id": "doc-docs-guides-object-conditioning", "sha256": "b0662e2497d598f49447a6e1c6563d4ffa3617bbb1351ee53dfb7b97d6dfaf48"}, {"source": "docs/oht/training.md", "id": "doc-docs-oht-training", "sha256": "ca8c0848720a579fa3ade015b7a9bbbf95db0871a655df6edca60c0f87bcb15f"}, {"source": "docs/guides/evaluation.md", "id": "doc-docs-guides-evaluation", "sha256": "38bf662bb3e1914cb834965820bf31715e2429cf3f9327f6a86b6aa586833aee"}, {"source": "docs/oht/runtime.md", "id": "doc-docs-oht-runtime", "sha256": "a9c3de96da87f21222f35c4d63546832865931c7c09e30b330decb5271cb68db"}, {"source": "docs/research/object-centric-policy-memory.md", "id": "doc-docs-research-object-centric-policy-memory", "sha256": "a9c2ebc5db0ddc90c05d9a81796573ac6e124bf50e957dc96232cc34f8197808"}, {"source": "docs/experiments/results.md", "id": "doc-docs-experiments-results", "sha256": "b8c24c690e67e406fed54fe51c2a217d23b32ca6cce3c357d92c68bf9a71ae3d"}, {"source": "docs/reference/code-map.md", "id": "doc-docs-reference-code-map", "sha256": "cb5a7846e6b73bbe0b6b27da44b3f9343c6d5ee22e62bd085c3375b2f5f6b417"}, {"source": "README.md", "id": "doc-readme", "sha256": "b24c37d3f3224c3a578823ce9abe68d81feb93952a3a372448cb699ec2fd6f25"}, {"source": "finetune/OHT/README.md", "id": "doc-finetune-oht-readme", "sha256": "a6472eadf30576a5f37797f94e69a016c35b45c0f317c63334c2eaf73321d5ad"}, {"source": "docs/README.md", "id": "doc-docs-readme", "sha256": "5c18264ef33baa91700beae7b2629dd97d6776b1cddf0fce02fc8ce010c3910d"}, {"source": "docs/design/local-geometry-refinement.md", "id": "doc-docs-design-local-geometry-refinement", "sha256": "5e1e6c47d05213cd146a365e4f360e4b2a1ae509cee968608fcaef79a8e26c4f"}, {"source": "docs/slot_guided_sam3_action_draft.md", "id": "doc-docs-slot-guided-sam3-action-draft", "sha256": "1da9f59df27eefda5eb3a9389b29170039195c70ff8d08e457d701e468691647"}, {"source": "docs/slot_guided_sam3_offline.md", "id": "doc-docs-slot-guided-sam3-offline", "sha256": "ff3025f5b881b8c7e99ac33ad5d0f29f13e8e42fee15325aabf4e96f9c1cb9d3"}, {"source": "docs/slot_guided_sam3_offline_validation.md", "id": "doc-docs-slot-guided-sam3-offline-validation", "sha256": "79784d88f3e279261669e127a3573ddb325498ae953e5743f93ff1d18f97e102"}, {"source": "docs/slot_guided_sam3_online.md", "id": "doc-docs-slot-guided-sam3-online", "sha256": "0be7a88d2d02b63024b41e2e8982f0a122ce05c151007a1d94098c3b11d437cc"}, {"source": "docs/slot_guided_sam3_online_validation.md", "id": "doc-docs-slot-guided-sam3-online-validation", "sha256": "dda9a64dd0b899b56378dbaa322b1d76d5f9cf754424f8a83788ff82446169d1"}, {"source": "docs/assets/algorithm-overview.fragment.html", "sha256": "d229a285623a00a9701b1a125127772cef70658c6827b49b4224fd86ae48ecb4"}]</script><noscript>所有 Markdown 正文均可直接阅读；节点交互和动态生成的算法逐步说明需要启用 JavaScript。</noscript>
+<script type="application/json" id="book-source-manifest">[{"source": "docs/design/role-relation-prior.md", "id": "doc-docs-design-role-relation-prior", "sha256": "39fe889916d8b44feb7c43a1283b6d8ea230262432e415795d5d3469f77e7a5a"}, {"source": "docs/guides/replay.md", "id": "doc-docs-guides-replay", "sha256": "d48a1fc97615472cd72bec9ab8d885ace93eed715da3ff3990a3a91fdfc60f47"}, {"source": "docs/guides/oracle-replay.md", "id": "doc-docs-guides-oracle-replay", "sha256": "842cafb030c3eb9a0ac8c206e6731935dea08c212d25392edb22215b9247731c"}, {"source": "docs/guides/semantic-gt.md", "id": "doc-docs-guides-semantic-gt", "sha256": "dd0d68b21a56fc7199cae4fd85fb83adc7142533e4a95900a254957871a0f5e7"}, {"source": "docs/oht/data.md", "id": "doc-docs-oht-data", "sha256": "598dc2a8f4fa62a3842ca9dee30a8a4de86e0d7ebb25fb9264497cb23b349f09"}, {"source": "docs/guides/installation.md", "id": "doc-docs-guides-installation", "sha256": "91e4fd6379ef583044625a567a1ee9d1ba2884aa4fb828293e0c231d1eef1233"}, {"source": "docs/guides/training.md", "id": "doc-docs-guides-training", "sha256": "ff7924c495de69335376572772afa3362fd0610168b3fbab1890495a47c324e0"}, {"source": "docs/guides/object-conditioning.md", "id": "doc-docs-guides-object-conditioning", "sha256": "b0662e2497d598f49447a6e1c6563d4ffa3617bbb1351ee53dfb7b97d6dfaf48"}, {"source": "docs/oht/training.md", "id": "doc-docs-oht-training", "sha256": "ca8c0848720a579fa3ade015b7a9bbbf95db0871a655df6edca60c0f87bcb15f"}, {"source": "docs/guides/evaluation.md", "id": "doc-docs-guides-evaluation", "sha256": "b7157a88bfbd9d61bb53c71f99a27ec41ecf1b5f4589711ea51acbc03f3077d1"}, {"source": "docs/oht/runtime.md", "id": "doc-docs-oht-runtime", "sha256": "a9c3de96da87f21222f35c4d63546832865931c7c09e30b330decb5271cb68db"}, {"source": "docs/research/object-centric-policy-memory.md", "id": "doc-docs-research-object-centric-policy-memory", "sha256": "a9c2ebc5db0ddc90c05d9a81796573ac6e124bf50e957dc96232cc34f8197808"}, {"source": "docs/experiments/results.md", "id": "doc-docs-experiments-results", "sha256": "b8c24c690e67e406fed54fe51c2a217d23b32ca6cce3c357d92c68bf9a71ae3d"}, {"source": "docs/reference/code-map.md", "id": "doc-docs-reference-code-map", "sha256": "cb5a7846e6b73bbe0b6b27da44b3f9343c6d5ee22e62bd085c3375b2f5f6b417"}, {"source": "README.md", "id": "doc-readme", "sha256": "b24c37d3f3224c3a578823ce9abe68d81feb93952a3a372448cb699ec2fd6f25"}, {"source": "finetune/OHT/README.md", "id": "doc-finetune-oht-readme", "sha256": "a6472eadf30576a5f37797f94e69a016c35b45c0f317c63334c2eaf73321d5ad"}, {"source": "docs/README.md", "id": "doc-docs-readme", "sha256": "5c18264ef33baa91700beae7b2629dd97d6776b1cddf0fce02fc8ce010c3910d"}, {"source": "docs/design/local-geometry-refinement.md", "id": "doc-docs-design-local-geometry-refinement", "sha256": "5e1e6c47d05213cd146a365e4f360e4b2a1ae509cee968608fcaef79a8e26c4f"}, {"source": "docs/slot_guided_sam3_action_draft.md", "id": "doc-docs-slot-guided-sam3-action-draft", "sha256": "1da9f59df27eefda5eb3a9389b29170039195c70ff8d08e457d701e468691647"}, {"source": "docs/slot_guided_sam3_offline.md", "id": "doc-docs-slot-guided-sam3-offline", "sha256": "ff3025f5b881b8c7e99ac33ad5d0f29f13e8e42fee15325aabf4e96f9c1cb9d3"}, {"source": "docs/slot_guided_sam3_offline_validation.md", "id": "doc-docs-slot-guided-sam3-offline-validation", "sha256": "79784d88f3e279261669e127a3573ddb325498ae953e5743f93ff1d18f97e102"}, {"source": "docs/slot_guided_sam3_online.md", "id": "doc-docs-slot-guided-sam3-online", "sha256": "f673103da4c26d9c310784b2792383b6ce2a33ab93ca5e2ea4975aa06b8494e1"}, {"source": "docs/slot_guided_sam3_online_validation.md", "id": "doc-docs-slot-guided-sam3-online-validation", "sha256": "dda9a64dd0b899b56378dbaa322b1d76d5f9cf754424f8a83788ff82446169d1"}, {"source": "docs/assets/algorithm-overview.fragment.html", "sha256": "d229a285623a00a9701b1a125127772cef70658c6827b49b4224fd86ae48ecb4"}]</script><noscript>所有 Markdown 正文均可直接阅读；节点交互和动态生成的算法逐步说明需要启用 JavaScript。</noscript>
 </body></html>

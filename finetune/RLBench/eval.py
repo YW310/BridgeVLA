@@ -599,6 +599,12 @@ def eval(
 
     environment_launched = not all_manifests_resumable
     if environment_launched:
+        # SAM3 may import GUI OpenCV after eval.py's imports. Repair its Qt
+        # environment side effects only after model loading, before Qt starts.
+        from utils.simulator_qt import prepare_coppeliasim_qt_environment
+        qt_changes = prepare_coppeliasim_qt_environment()
+        if qt_changes:
+            print(f"[CoppeliaSim][Qt] Environment repair: {qt_changes}", flush=True)
         eval_env.launch()
     else:
         print(
@@ -1034,6 +1040,7 @@ def eval(
 # the resumable-run signature so edited code never reuses stale episodes.
 _RLBENCH_RUNTIME_FILES = (
     "utils/custom_rlbench_env.py",
+    "utils/simulator_qt.py",
     "utils/o2_oracle_provider.py",
     "utils/slot_sam3_observation.py",
 )

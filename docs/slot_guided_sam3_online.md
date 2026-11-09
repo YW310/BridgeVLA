@@ -210,6 +210,10 @@ git -C /data/project/SAM31 pull --ff-only origin main
 commit 写成实际安装版本。checkpoint、mask 内容和缓存完整性校验保持不变。
 原 Qwen/SAM3 入口保持原样，详细调用约定见 TASK 的 `docs/sam3_api_contract.md`。
 
+若权重加载成功后在启动 CoppeliaSim 时报 `xcb` / `cv2/qt/plugins`，见
+[Qt 插件路径与显示排查](guides/evaluation.md#rlbench-qt)。当前入口在 SAM3 加载后、
+模拟器启动前修复 OpenCV 的 Qt 环境覆盖；仍需设置真实 `COPPELIASIM_ROOT` 和可用显示。
+
 <a id="paligemma-checkpoint-loading"></a>
 
 ## PaliGemma checkpoint 命名兼容

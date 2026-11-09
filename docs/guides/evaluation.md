@@ -32,6 +32,48 @@ DISPLAY 使用实际可用的显示/Xvfb 配置，不沿用脚本中机器专属
 多 GPU 评估见 [8×40GB 说明](training.md#rlbench-8x40)；
 Oracle/GT replay 与训练后模型评估的差异见 [对象条件策略评估](object-conditioning.md#closed-loop评估)。
 
+<a id="rlbench-qt"></a>
+
+### Qt xcb / OpenCV 插件目录冲突
+
+若权重已经加载，但在启动环境时报 `Could not find the Qt platform plugin "xcb"`
+且目录包含 `site-packages/cv2/qt/plugins`，优先检查 OpenCV 与 CoppeliaSim 的 Qt 路径冲突。
+[OpenCV Linux GUI 包](https://github.com/opencv/opencv-python/blob/4.x/scripts/__init__.py)
+会在导入时覆盖 `QT_QPA_PLATFORM_PLUGIN_PATH` 和 `QT_QPA_FONTDIR`；
+仅在 Bash 提前 export 插件路径，之后仍可能被 SAM3 或其他模块的 `import cv2` 覆盖。
+TASK 工程的独立图像推理不启动 CoppeliaSim，因此未必触发这一冲突。
+
+当前 `eval.py` 在模型（含 SAM3）加载后、模拟器启动前，将 OpenCV 插件路径恢复为
+`COPPELIASIM_ROOT`，并移除 OpenCV 的字体路径；其他显式 Qt 路径、DISPLAY 和渲染设置保持原值。
+这适用于普通评测与 online SAM3 入口，也记录在运行指纹中。先更新代码并配置真实安装目录：
+
+```bash
+git pull --ff-only
+export COPPELIASIM_ROOT=/absolute/path/to/CoppeliaSim_Edu_V4_1_0_Ubuntu20_04
+test -d "$COPPELIASIM_ROOT" || { echo "CoppeliaSim directory does not exist"; exit 1; }
+export LD_LIBRARY_PATH="$COPPELIASIM_ROOT:${LD_LIBRARY_PATH:-}"
+export QT_QPA_PLATFORM_PLUGIN_PATH="$COPPELIASIM_ROOT"
+```
+
+随后重跑原命令。发生修复时应看到 `[CoppeliaSim][Qt] Environment repair`。
+若仍崩溃，使用以下命令定位插件文件及其缺失依赖，再给原命令加上 `QT_DEBUG_PLUGINS=1`
+收集实际加载日志；不要将 OpenCV 自带的插件复制进模拟器目录：
+
+```bash
+find "$COPPELIASIM_ROOT" -name libqxcb.so -print -exec ldd {} \;
+printf 'DISPLAY=%s\n' "${DISPLAY:-<unset>}"
+# 如已安装 xdpyinfo，验证当前显示可连接：
+xdpyinfo -display "$DISPLAY" >/dev/null
+```
+
+RLBench 的 `headless=True` 隐藏模拟器界面，不能据此认定相机渲染无需显示/OpenGL。
+已有可用 X/VirtualGL 显示时保留它；没有显示且已安装 Xvfb 时，可试用
+`xvfb-run -a -s "-screen 0 1280x1024x24" python finetune/RLBench/slot_guided_sam3_online.py ...`
+（将 `...` 替换为原参数）。Xvfb 启动成功仍不证明 GPU/GLX 渲染可用，需检查实际相机输出。
+不要默认强制 `QT_QPA_PLATFORM=offscreen`。环境配置参考
+[PyRep 安装与 headless 说明](https://github.com/stepjam/PyRep/blob/master/README.md)。
+此修复的单元测试不替代服务器上的 Qt、显示和模拟器渲染验证。
+
 ## COLOSSEUM
 
 先阅读 `finetune/Colosseum/cleanup_script.py`：它会原地删除 stack_cups 下的 ZIP，

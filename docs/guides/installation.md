@@ -69,4 +69,5 @@ export QT_QPA_PLATFORM_PLUGIN_PATH="$COPPELIASIM_ROOT"
 ```
 
 需要渲染时配置本机可用 `DISPLAY`，或在 Linux 使用 Xvfb；不沿用脚本中的远端 display/IP。
+若出现指向 `cv2/qt/plugins` 的 xcb 错误，见[Qt 路径与显示排查](evaluation.md#rlbench-qt)。
 训练脚本选择与路径问题见[训练](training.md#rlbench-fine-tuning)，未修复的代码问题集中于[项目审查](../reference/code-map.md#项目审查2026-09-29)。
