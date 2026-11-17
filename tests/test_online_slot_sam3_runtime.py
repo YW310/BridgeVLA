@@ -61,6 +61,31 @@ def test_second_profile_cannot_silently_disable_online(monkeypatch, capsys):
     assert 'second --exp_cfg_path' in capsys.readouterr().err
 
 
+@pytest.mark.parametrize('error_type', [RuntimeError, ValueError, FileNotFoundError, ImportError])
+def test_evaluation_failures_preserve_traceback_chain_and_restore_argv(monkeypatch, error_type):
+    import traceback
+
+    previous = sys.argv
+    failure = error_type('expected scalar type Float but found BFloat16')
+
+    def mixed_dtype_operation():
+        try:
+            raise TypeError('original operator failure')
+        except TypeError as cause:
+            raise failure from cause
+
+    monkeypatch.setattr(runtime.runpy, 'run_path', lambda *a, **k: mixed_dtype_operation())
+    with pytest.raises(error_type) as caught:
+        runtime.main(['--tasks', 'open_drawer'])
+    assert caught.value is failure
+    assert sys.argv is previous
+    rendered = ''.join(traceback.format_exception(
+        type(caught.value), caught.value, caught.value.__traceback__))
+    assert 'mixed_dtype_operation' in rendered
+    assert 'original operator failure' in rendered
+    assert 'expected scalar type Float but found BFloat16' in rendered
+
+
 def test_factory_preloads_one_backend_and_uses_same_observer(monkeypatch):
     import bridgevla.online.slot_sam3_perception as perception_module
     events = []

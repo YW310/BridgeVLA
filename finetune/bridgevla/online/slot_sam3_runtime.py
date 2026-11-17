@@ -120,13 +120,16 @@ def main(argv=None):
             evaluation_args += ['--log-name', 'slot_sam3_online/'
                                 + datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
                                 + '_' + uuid4().hex[:8]]
-        previous = sys.argv
-        sys.argv = [str(eval_path), '--exp_cfg_path', str(args.config.resolve()), *evaluation_args]
-        try:
-            runpy.run_path(str(eval_path), run_name='__main__')
-        finally:
-            sys.argv = previous
-        return 0
     except (ValueError, OSError, ImportError, RuntimeError) as error:
         print(f'{type(error).__name__}: {error}', file=sys.stderr)
         return 2
+
+    # Keep concise errors for configuration above, but let evaluation failures
+    # retain their full traceback and exception chain (e.g. a mixed-dtype op).
+    previous = sys.argv
+    sys.argv = [str(eval_path), '--exp_cfg_path', str(args.config.resolve()), *evaluation_args]
+    try:
+        runpy.run_path(str(eval_path), run_name='__main__')
+    finally:
+        sys.argv = previous
+    return 0

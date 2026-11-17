@@ -214,6 +214,40 @@ commit 写成实际安装版本。checkpoint、mask 内容和缓存完整性校�
 [Qt 插件路径与显示排查](guides/evaluation.md#rlbench-qt)。当前入口在 SAM3 加载后、
 模拟器启动前修复 OpenCV 的 Qt 环境覆盖；仍需设置真实 `COPPELIASIM_ROOT` 和可用显示。
 
+<a id="runtime-traceback"></a>
+
+## 运行时错误与 Float / BFloat16 排查
+
+若评测只打印 `RuntimeError: expected scalar type Float but found BFloat16`，
+不能仅凭这一行判断是 PaliGemma、动作/几何算子还是 SAM3 出错。
+PaliGemma 主干按 BF16 加载，Slot/动作特征进入相应模块前有 FP32 转换；
+SAM3 在设备支持时另有 BF16 autocast。需用调用栈确定发生冲突的边界。
+
+旧 online 启动器会将评测过程中的异常截成单行。当前启动器只对配置错误保留简短
+提示和退出码 2；评测启动后的异常会正常传播，显示完整 traceback 和异常链，
+未捕获异常按 Python 默认方式非零退出。这里修复的是诊断输出，尚未确定具体
+Float/BFloat16 算子故障，也没有因此更改模型精度或 checkpoint。
+
+更新 BridgeVLA 后重跑原评测参数，可保存两路日志：
+
+```bash
+git -C /data/project/BridgeVLA pull --ff-only origin master
+cd /data/project/BridgeVLA
+set -o pipefail
+python -u finetune/RLBench/slot_guided_sam3_online.py \
+  --model-folder /data/project/BridgeVLA/finetune/RLBench/train/rlbench_o2_role_queries/11_08_09_27 \
+  --model-name model_last.pth \
+  --eval-datafolder /data/project/BridgeVLA/LPY/BridgeVLA_RLBench_EVAL_DATA \
+  --tasks open_drawer --eval-episodes 25 --episode-length 25 --device 0 \
+  --slot-sam3-task-repo /data/project/SAM31 \
+  --slot-sam3-checkpoint /data/project/BridgeVLA/checkpoints/sam3/sam3.pt \
+  --slot-sam3-prompt-mode point+box \
+  2>&1 | tee slot_sam3_online.log
+```
+
+以上为用户部署路径示例；换机器时替换目录。保留从 `Traceback (most recent call last)`
+到最终异常的内容，包括 `direct cause` / `During handling` 部分，才能定位实际算子。
+
 <a id="paligemma-checkpoint-loading"></a>
 
 ## PaliGemma checkpoint 命名兼容
