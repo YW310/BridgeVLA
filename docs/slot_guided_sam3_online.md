@@ -84,6 +84,36 @@ Enabled training remains rejected.
 
 ## Current camera coordinates and source indices
 
+If a frame reports `current online RGB-D unavailable` with the old combined
+`rigid zero-skew pinhole camera` error, its SAM3 geometry was not used: the
+policy returned the original current-frame action as `baseline_fallback`.
+That message alone does not identify which camera/condition failed.
+
+The earlier `1e-7` rigid-rotation bound could reject single-precision simulator
+arithmetic. Both the BridgeVLA observation adapter and TASK's slot prompt/snapshot
+validator now use `1e-5` absolute bounds for maximum `R.T @ R - I` error and
+`abs(det(R) - 1)`. They retain the supplied matrices, without orthogonalizing
+or changing the world frame. Zero-skew K/homogeneous T bounds remain `1e-10`;
+larger scale/shear, reflections, stale calibration and pixel/world round-trip
+failures are still rejected. This is a bounded numerical tolerance, not proof
+that arbitrary camera metadata is correct.
+
+Update **both** checkouts and restart evaluation:
+
+```bash
+git -C /absolute/path/to/BridgeVLA pull --ff-only origin master
+git -C /absolute/path/to/TASK_checkout pull --ff-only origin main
+```
+
+The TASK path must be the directory supplied to `--slot-sam3-task-repo`
+(named `SAM31` on the user's server). A remaining failure now includes the
+camera name and specific residual/determinant/threshold. Successful captures
+record these under `current_frame.camera_calibration_checks` in online step
+diagnostics. The measured camera parameters were not supplied with the original
+error, so the deployed frame still needs rerunning to distinguish numerical
+roundoff from a genuinely invalid calibration. No model/config precision flag
+or Qwen/SAM3 default-path change is required.
+
 All object geometry stays in RLBench world metres. The hook takes each wrist
 camera matrix from the **current** raw observation, independently for every
 step. It does not look up calibration using the policy-step/sample counter or

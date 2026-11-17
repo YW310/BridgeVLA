@@ -253,3 +253,62 @@ def test_float32_general_camera_rotations_keep_world_projection():
         world_optical = (probes @ basis[:3, :3]) @ optical[:3, :3].T + optical[:3, 3]
         np.testing.assert_allclose(world_optical, world_raw, rtol=0, atol=1e-6)
         assert positive_k[0, 0] > 0 and positive_k[1, 1] > 0
+
+
+def test_float32_camera_arithmetic_residual_preserves_raw_pose_and_round_trip(current):
+    provider, clock, raw, extracted = current
+    previous_digest = provider._packet.receipt['calibration_sha256']
+    clock[0] += 17 * clock[1]
+    name = 'wrist'
+    original = raw.misc[f'{name}_camera_extrinsics']
+    measured = np.isfinite(raw.wrist_point_cloud).all(-1)
+    camera_xyz = (raw.wrist_point_cloud[measured] - original[:3, 3]) @ np.linalg.inv(original[:3, :3]).T
+    rounded = original.astype(np.float32)
+    rounded[0, 3] = .7  # Current wrist pose after simulator microsteps.
+    # A few ULPs of single-precision simulator arithmetic, beyond merely
+    # casting an ideal double-precision rotation once at the very end.
+    rounded[:3, :3] *= np.float32(1. + 2e-7)
+    rotation = rounded[:3, :3].astype(np.float64)
+    error = np.max(np.abs(rotation.T @ rotation - np.eye(3)))
+    assert 1e-7 < error < 1e-5
+    raw.misc[f'{name}_camera_extrinsics'] = rounded
+    extracted[f'{name}_camera_extrinsics'] = rounded.copy()
+    raw.wrist_point_cloud[measured] = camera_xyz @ rotation.T + rounded[:3, 3]
+    extracted['wrist_point_cloud'] = np.moveaxis(raw.wrist_point_cloud.astype(np.float32), -1, 0)
+    provider.capture_raw(raw, extracted, task_name='pick_up_cup', instruction='move the red object')
+    packet = provider.capture(prepped(extracted))
+    assert packet.receipt['source_frame_index'] == 17
+    assert packet.receipt['calibration_sha256'] != previous_digest
+    frame = packet.snapshot.cameras[name]
+    np.testing.assert_array_equal(frame.camera.extrinsics, rounded @ np.diag([-1., -1., 1., 1.]))
+    checks = packet.receipt['camera_calibration_checks'][name]
+    assert checks['rotation_orthogonality_error'] == pytest.approx(error)
+    assert checks['rotation_atol'] == 1e-5
+    api = provider._load_api()
+    valid = np.isfinite(frame.depth_m) & (frame.depth_m > 0)
+    restored = api.camera_geometry.transform_points(api.camera_geometry.backproject_mask(
+        frame.depth_m, valid, frame.camera.intrinsics, max_points=0), frame.camera.extrinsics)
+    np.testing.assert_allclose(restored, raw.wrist_point_cloud[valid], rtol=1e-10, atol=1e-10)
+    # Snapshot acceptance above also exercises TASK's downstream camera check.
+
+
+@pytest.mark.parametrize('kind', ['scale', 'shear', 'reflection', 'skew', 'homogeneous'])
+def test_invalid_camera_reports_name_and_specific_metric(current, kind):
+    provider, _, raw, extracted = current
+    k = raw.misc['wrist_camera_intrinsics'].copy()
+    t = raw.misc['wrist_camera_extrinsics'].copy()
+    if kind == 'scale':
+        t[:3, :3] *= 1.001
+    elif kind == 'shear':
+        t[0, 1] += .001
+    elif kind == 'reflection':
+        t[:3, 0] *= -1
+    elif kind == 'skew':
+        k[0, 1] = 1e-6
+    else:
+        t[3, 0] = 1e-6
+    raw.misc['wrist_camera_intrinsics'], raw.misc['wrist_camera_extrinsics'] = k, t
+    with pytest.raises(ValueError, match='wrist:.*(orthogonality_error|structure_error|bottom_row_error)'):
+        provider.capture_raw(raw, extracted, task_name='pick_up_cup', instruction='move the red object')
+    with pytest.raises(ValueError, match='unavailable'):
+        provider.capture(prepped(extracted))

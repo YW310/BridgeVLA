@@ -22,6 +22,17 @@ from uuid import uuid4
 import numpy as np
 
 
+# PyRep computes camera matrices in single precision. Keep this bound aligned
+# with TASK's slot_prompt_adapter.RIGID_ROTATION_ATOL, including JSON reloads.
+RIGID_ROTATION_ATOL = 1e-5
+
+
+def _rotation_checks(transform):
+    rotation = np.asarray(transform, dtype=np.float64)[:3, :3]
+    return dict(rotation_orthogonality_error=float(np.max(np.abs(rotation.T @ rotation - np.eye(3)))),
+                rotation_determinant=float(np.linalg.det(rotation)), rotation_atol=RIGID_ROTATION_ATOL)
+
+
 @dataclass(frozen=True)
 class CurrentFramePacket:
     snapshot: Any
@@ -66,11 +77,18 @@ def optical_calibration(intrinsics, extrinsics):
     k, t = np.asarray(intrinsics, dtype=np.float64), np.asarray(extrinsics, dtype=np.float64)
     if k.shape != (3, 3) or t.shape != (4, 4) or not np.isfinite(k).all() or not np.isfinite(t).all():
         raise ValueError('current observation requires finite 3x3 K and 4x4 T_world_camera')
-    if (not np.allclose(k[[0, 1, 2, 2, 2], [1, 0, 0, 1, 2]], [0, 0, 0, 0, 1], rtol=0, atol=1e-10)
-            or not np.allclose(t[3], [0, 0, 0, 1], rtol=0, atol=1e-10)
-            or not np.allclose(t[:3, :3].T @ t[:3, :3], np.eye(3), rtol=0, atol=1e-7)
-            or not np.isclose(np.linalg.det(t[:3, :3]), 1., rtol=0, atol=1e-7)):
-        raise ValueError('current K/T must describe a rigid zero-skew pinhole camera')
+    structure_error = float(np.max(np.abs(k[[0, 1, 2, 2, 2], [1, 0, 0, 1, 2]] - [0, 0, 0, 0, 1])))
+    if structure_error > 1e-10:
+        raise ValueError(f'current K must describe a zero-skew pinhole camera (structure_error={structure_error:.9g}, atol=1e-10)')
+    bottom_row_error = float(np.max(np.abs(t[3] - [0, 0, 0, 1])))
+    if bottom_row_error > 1e-10:
+        raise ValueError(f'current T_world_camera must be homogeneous (bottom_row_error={bottom_row_error:.9g}, atol=1e-10)')
+    checks = _rotation_checks(t)
+    if (checks['rotation_orthogonality_error'] > RIGID_ROTATION_ATOL
+            or abs(checks['rotation_determinant'] - 1.) > RIGID_ROTATION_ATOL):
+        raise ValueError('current T_world_camera must have a rigid proper rotation '
+                         f"(orthogonality_error={checks['rotation_orthogonality_error']:.9g}, "
+                         f"determinant={checks['rotation_determinant']:.9g}, atol={RIGID_ROTATION_ATOL:g})")
     d = np.eye(4)
     if k[0, 0] < 0 and k[1, 1] < 0:
         d[0, 0] = d[1, 1] = -1.
@@ -163,7 +181,7 @@ class SlotSam3ObservationProvider:
         misc = getattr(obs, 'misc', None)
         if not isinstance(misc, dict):
             raise ValueError('current raw Observation.misc camera metadata is required')
-        rows, frames, binding, bases = [], {}, {}, {}
+        rows, frames, binding, bases, calibration_checks = [], {}, {}, {}, {}
         for name in self.cameras:
             rgb = np.asarray(getattr(obs, f'{name}_rgb', None))
             cloud = np.asarray(getattr(obs, f'{name}_point_cloud', None))
@@ -172,7 +190,11 @@ class SlotSam3ObservationProvider:
             if cloud.shape != rgb.shape or cloud.dtype.kind not in 'fiu':
                 raise ValueError(f'{name}: registered current world XYZ is required')
             k_raw, t_raw = misc.get(f'{name}_camera_intrinsics'), misc.get(f'{name}_camera_extrinsics')
-            k, t, basis = optical_calibration(k_raw, t_raw)
+            try:
+                k, t, basis = optical_calibration(k_raw, t_raw)
+            except (ValueError, TypeError) as error:
+                raise ValueError(f'{name}: {error}') from error
+            calibration_checks[name] = _rotation_checks(t_raw)
             valid = np.isfinite(cloud).all(-1)
             camera_points = api.camera_geometry.transform_points(cloud[valid], np.linalg.inv(t))
             depth = np.full(rgb.shape[:2], np.nan, dtype=np.float64)
@@ -224,7 +246,8 @@ class SlotSam3ObservationProvider:
                    'simulation_time_s': seconds, 'simulation_timestep_s': step,
                    'episode_simulation_origin_s': self._origin_time,
                    'depth_source': 'current_observation_world_point_cloud_to_camera_z',
-                   'depth_units': 'm', 'raw_camera_from_optical': bases}
+                   'depth_units': 'm', 'raw_camera_from_optical': bases,
+                   'camera_calibration_checks': calibration_checks}
         after, after_step = self._clock()
         if after != seconds or after_step != step:
             raise ValueError('simulation advanced during current observation capture')
