@@ -64,13 +64,14 @@ class OnlineSlotSam3Policy:
                  checkpoint_path: str | Path | None = None, bridge_git_sha: str | None = None,
                  *, enabled: bool = False, point_count: int = 128,
                  diagnostics_dir: str | Path | None = None, fallback: str = "baseline",
-                 expected_checkpoint_sha256: str | None = None, stage: str = 'action'):
+                 expected_checkpoint_sha256: str | None = None, stage: str = 'action', guidance_stage: str = 'coarse'):
         self.agent, self.perception, self.snapshot_provider = agent, perception, snapshot_provider
         self.enabled = bool(enabled)
         self.checkpoint_path, self.bridge_git_sha = checkpoint_path, bridge_git_sha
         self.point_count, self.diagnostics_dir, self.fallback = point_count, diagnostics_dir, fallback
         self.expected_checkpoint_sha256 = expected_checkpoint_sha256
         self.stage = stage
+        self.guidance_stage = guidance_stage
         self.last_diagnostics: dict[str, Any] | None = None
         self._episode_number, self._frame_sequence = 0, 0
         # The disabled constructor does not inspect a provider, perception,
@@ -84,6 +85,8 @@ class OnlineSlotSam3Policy:
                 raise ValueError("fallback must be baseline or fail")
             if stage not in ('action', 'prompts'):
                 raise ValueError('stage must be action or prompts')
+            if guidance_stage not in ('coarse', 'refine'):
+                raise ValueError('guidance_stage must be coarse or refine')
             if stage == 'prompts' and diagnostics_dir is None:
                 raise ValueError('prompts stage requires a diagnostics directory')
             self._validate_agent()
@@ -174,11 +177,13 @@ class OnlineSlotSam3Policy:
         self._frame_sequence += 1
         diagnostics['policy_call_index'] = self._frame_sequence
         callback = packets.append
-        if self.stage == 'prompts':
+        if self.stage == 'prompts' or self.guidance_stage == 'refine':
             def collect(packet):
                 packets.append(packet)
-            collect.include_visualization = True
+            collect.include_visualization = self.stage == 'prompts'
+            collect.guidance_stage = self.guidance_stage
             callback = collect
+        if self.stage == 'prompts':
             diagnostics.update(stage='prompts', action_source='baseline_C', sam3_executed=False)
         try:
             with torch.inference_mode():
@@ -198,6 +203,10 @@ class OnlineSlotSam3Policy:
                 timings["baseline_C"] = (time.perf_counter() - coarse_started) * 1000
                 if len(packets) != 1:
                     raise ValueError("expected exactly one current-frame Coarse export")
+                diagnostics['guidance_selection'] = copy.deepcopy(packets[0].get('guidance_selection',
+                    dict(requested_stage=self.guidance_stage, roles={role: dict(selected_stage='coarse',
+                        failure_reason='REFINE_SELECTION_UNAVAILABLE' if self.guidance_stage == 'refine' else None)
+                                                        for role in ('target', 'reference')})))
                 capture = self.snapshot_provider.capture(observation)
                 receipt = _receipt(capture.receipt)
                 # Preserve live simulator index/optical-conversion provenance;

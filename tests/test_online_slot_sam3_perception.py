@@ -202,3 +202,50 @@ def test_model_backend_constructed_once_and_frames_encode_fresh(scene, monkeypat
     assert len(constructed) == 1
     # A shared backend still encodes once for each of two cameras per frame.
     assert scene["backends"]["front"].set_image_calls == 4
+
+
+def refined_packet(scene):
+    """Actual local readout -> world guidance -> TASK prompts/fusion with Mock."""
+    from types import SimpleNamespace
+    import torch
+    from test_coarse_slot_export import CoverageRenderer
+    from bridgevla.models.refine_slot_export import attach_refine_guidance
+
+    packet = copy.deepcopy(scene['packet'])
+    points = torch.tensor(packet['slot_output']['points'], dtype=torch.float32)
+    center = points.mean(dim=(0, 1))[None]
+    local = 4 * (points - center)
+    count = points.shape[1]
+    xyz = torch.zeros(1, 1, 3, 32, 32)
+    xyz[0, 0].reshape(3, -1)[:, :2 * count] = local.reshape(-1, 3).T
+    prior = torch.zeros(1, 1, 2, 32, 32)
+    prior[0, 0, 0].flatten()[:count] = .9
+    prior[0, 0, 1].flatten()[count:2 * count] = .8
+    coverage = torch.zeros(1, 32, 32)
+    coverage.flatten()[:2 * count] = 1.
+    output = dict(mvt2=dict(object_slot_prior=prior, object_slot_masks_refined=True,
+                           object_slot_roles_inherited=True,
+                           object_slot_role_token_valid=torch.ones(1, 2, dtype=torch.bool),
+                           object_slot_valid=torch.ones(1, 2, dtype=torch.bool)),
+                  mvt2_ori_img=torch.cat((xyz, torch.zeros_like(xyz)), dim=2),
+                  wpt_local1=center, rev_trans=lambda p: p / 4 + center)
+    network = SimpleNamespace(training=False, st_sca=4., renderer=CoverageRenderer(coverage))
+    packet['slot_output']['reference_is_null'] = np.array(False)
+    # Semantic identity survives a weak coarse spatial response; the local
+    # mask must independently provide >=.25 current observed support.
+    packet['slot_output']['confidence'][0] = .1
+    packet['slot_output']['points'][0] += .5
+    return attach_refine_guidance(network, output, [points.reshape(-1, 3)], packet)
+
+
+def test_refine_readout_drives_real_task_prompts_and_fusion_without_changing_schema(scene):
+    scene['packet'] = refined_packet(scene)
+    result = _run(scene)
+    assert result.geometry.object_role_valid.all()
+    assert result.guidance.metadata['guidance_source'] == 'predicted_coarse_slot'
+    assert 'guidance_selection=' in result.guidance.metadata['transform']['source']
+    for role in ('target', 'reference'):
+        assert result.inference['guidance_selection']['roles'][role]['selected_stage'] == 'refine'
+        assert result.geometry.provenance[0]['guidance_selection']['roles'][role]['selected_stage'] == 'refine'
+        assert result.fused_geometry['roles'][role]['support_cameras'] == ['front', 'wrist']
+    assert all(item.set_image_calls == 1 for item in scene['backends'].values())

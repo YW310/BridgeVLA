@@ -20,6 +20,7 @@ def test_enabled_online_profile_preserves_original_architecture_and_default_off(
     assert profile.rvt.slot_guided_sam3_execution_mode == 'online_experiment'
     assert not get_cfg_defaults().rvt.enable_slot_guided_sam3
     assert profile.slot_guided_sam3.prompt_mode == 'point+box'
+    assert profile.slot_guided_sam3.guidance_stage == 'coarse'
     settings = runtime.resolve_runtime(profile)
     assert Path(settings['task_repo']) == ROOT.parent / 'TASK_Relevant_object-main'
     assert settings['diagnostics_dir'] is None
@@ -193,9 +194,36 @@ def test_real_eval_parser_accepts_online_paths_without_enabling_other_modes():
     scope = {'argparse': argparse}
     exec(compile(ast.Module(body=[function], type_ignores=[]), '<actual_eval_parser>', 'exec'), scope)
     args = scope['get_eval_parser']().parse_args(['--slot-sam3-task-repo', 'TASK',
-                                                '--slot-sam3-prompt-mode', 'box-only'])
+                                                '--slot-sam3-prompt-mode', 'box-only',
+                                                '--slot-sam3-guidance-stage', 'refine'])
     assert args.slot_sam3_task_repo == 'TASK' and args.slot_sam3_prompt_mode == 'box-only'
     assert args.oracle_provider == 'none' and not args.ground_truth
+    assert args.slot_sam3_guidance_stage == 'refine'
+
+
+def test_refine_profile_matches_existing_training_architecture_and_keeps_sam_frozen():
+    path = runtime.PROFILE.with_name('rlbench_slot_guided_sam3_refine_online.yaml')
+    online = runtime.load_online_profile(path)
+    trained = get_cfg_defaults()
+    trained.merge_from_file(str(runtime.PROFILE.with_name('rlbench_o2_internal_slots_refine.yaml')))
+    assert online.object_conditioning == trained.object_conditioning
+    assert online.object_slots == trained.object_slots
+    assert not trained.rvt.enable_slot_guided_sam3
+    assert online.rvt.object_prediction_confidence_threshold == trained.rvt.object_prediction_confidence_threshold
+    assert runtime.resolve_runtime(online)['guidance_stage'] == 'refine'
+    assert not get_cfg_defaults().rvt.enable_slot_guided_sam3
+
+
+def test_launcher_forwards_refine_source_and_reports_it_in_config_check(monkeypatch, capsys):
+    observed = []
+    monkeypatch.setattr(runtime.runpy, 'run_path', lambda path, **kw: observed.append(list(sys.argv)))
+    assert runtime.main(['--slot-sam3-guidance-stage', 'refine']) == 0
+    index = observed[0].index('--slot-sam3-guidance-stage')
+    assert observed[0][index + 1] == 'refine'
+    assert runtime.main(['--check-config', '--slot-sam3-guidance-stage', 'refine']) == 0
+    assert json.loads(capsys.readouterr().out)['settings']['guidance_stage'] == 'refine'
+    with pytest.raises(ValueError, match='guidance_stage'):
+        runtime.resolve_runtime(runtime.load_online_profile(runtime.PROFILE), {'guidance_stage': 'unknown'})
 
 
 def test_fail_mode_diagnostics_can_be_saved_without_a_transition(tmp_path):

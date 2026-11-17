@@ -8470,6 +8470,7 @@ prediction 和 internal slots 才是无 Oracle 的部署路线。研究设计文
 <h4 id="doc-docs-readme--slot-guided-sam3-online-and-offline-experiments">Slot-guided SAM3 online and offline experiments</h4>
 <p><a href="#doc-docs-slot-guided-sam3-online">Online commands and runtime contract</a> cover the enabled current-observation RLBench loop, persistent SAM3, dynamic camera calibration and current-frame fallback. <a href="#doc-docs-slot-guided-sam3-offline">Offline commands and snapshot formats</a> remain available for reproducible A/B/C comparisons. Both use the existing role-query Anchor architecture. The <a href="#doc-docs-slot-guided-sam3-action-draft">geometry contract</a> describes the separate reviewed-activation gate and legacy disabled profile.</p>
 <p>先检查角色图与提示位置，可运行<a href="#doc-docs-slot-guided-sam3-online--slot-prompt-probe">不加载 SAM3 的 Slot/Prompt 诊断</a>，分别查看 Coarse/Refine 及当前原相机提示。</p>
+<p>使用训练过的局部 mask head 时，可选 <a href="#doc-docs-slot-guided-sam3-online--refine-guidance">Refine Guidance → SAM3</a>：包含训练、诊断命令、逐角色 Coarse 回退及纠错边界。</p>
 <p>先看 <a href="#doc-docs-slot-guided-sam3-online--offline-online-training">offline / online 区别与训练流程</a>：二者均为冻结推理；当前可先用 <a href="#doc-docs-guides-object-conditioning--role-query-training">Role Query 训练命令</a>训练原策略，再启用 SAM3 做推理。SAM3 几何参与动作微调尚未实现。</p>
 <h4 id="doc-docs-readme--oht">OHT</h4>
 <p>OHT 的数据指南、模型设计、部署说明和交接记录统一合并为以下三份，按流程阅读即可。</p>
@@ -8558,7 +8559,7 @@ prediction 和 internal slots 才是无 Oracle 的部署路线。研究设计文
 <h4 id="doc-docs-readme--命令约定">命令约定</h4>
 <p>运行示例默认使用 Linux / Bash，从仓库根目录或指定目录执行。新终端需重新设置示例变量，并替换机器路径；带 <code>cd</code> 的独立示例从仓库根目录开始。各文档按主题维护一份命令，避免复制后产生分歧。</p>
 <p>仓库根目录运行 <code>python tools/check_docs.py</code> 可离线检查本地链接与章节锚点；它不执行示例或访问外部网站。</p>
-</div><details class="doc-source"><summary>来源与维护</summary><p class="doc-provenance text-small">docs/README.md · SHA-256：e4acadd230e2</p></details></article>
+</div><details class="doc-source"><summary>来源与维护</summary><p class="doc-provenance text-small">docs/README.md · SHA-256：2b50c82620c7</p></details></article>
 </section>
 <section class="book-part" id="book-part-9"><h2>9 / 其他文档</h2><a class="text-small" href="#handbook-home">↑ 全书目录</a>
 <article class="book-document" id="doc-docs-design-local-geometry-refinement"><header><h3 id="doc-docs-design-local-geometry-refinement--观测约束的局部几何动作精修">观测约束的局部几何动作精修</h3><p class="doc-introduction"></p></header><nav class="doc-toc" aria-label="观测约束的局部几何动作精修的章节"><ul><li><a href="#doc-docs-design-local-geometry-refinement--研究问题与当前交付">研究问题与当前交付</a></li><li><a href="#doc-docs-design-local-geometry-refinement--与-oht-action-chunk-共用的模块">与 OHT action chunk 共用的模块</a></li><li><a href="#doc-docs-design-local-geometry-refinement--几何与动作定义">几何与动作定义</a></li><li><a href="#doc-docs-design-local-geometry-refinement--缓存契约与防泄漏">缓存契约与防泄漏</a></li><li><a href="#doc-docs-design-local-geometry-refinement--可运行的合成验证">可运行的合成验证</a></li><li><a href="#doc-docs-design-local-geometry-refinement--本机软件验证记录">本机软件验证记录</a></li><li><a href="#doc-docs-design-local-geometry-refinement--真实实验顺序与退出条件">真实实验顺序与退出条件</a></li></ul></nav><div class="doc-body">
@@ -9344,6 +9345,97 @@ fabricate a reviewed performance report and cannot satisfy the separate
 real SAM3 only; Oracle labels and Mock backends cannot condition its actions.
 Enabled training remains rejected.</p>
 <h4 id="doc-docs-slot-guided-sam3-online--current-camera-coordinates-and-source-indices">Current camera coordinates and source indices</h4>
+<p><a id="doc-docs-slot-guided-sam3-online--refine-guidance"></a></p>
+<h5 id="doc-docs-slot-guided-sam3-online--refine-修正定位后生成-sam3-提示可选">Refine 修正定位后生成 SAM3 提示（可选）</h5>
+<p>原 online 配置仍使用 Coarse Guidance。新增 <code>--slot-sam3-guidance-stage refine</code>，
+逐角色优先使用<strong>实际运行过的 Refine mask head</strong>，失败时保留 Coarse 并记录原因。
+<code>--slot-sam3-stage prompts</code> 控制是否执行 SAM3；<code>guidance-stage</code> 控制提示的几何来源，两者独立。</p>
+<pre><code class="language-text">Coarse 角色/NULL → 当前局部 RGB/XYZ + 已训练 Refine head
+  → 从 Refine 角色图重新提取观测点 → 实际裁剪逆变换 → Coarse cube → world 米
+  → 原相机 box/point → SAM3 → RGB-D 融合 → 既有动作条件接口
+</code></pre>
+<p>实现位于 <a href="../finetune/bridgevla/models/refine_slot_export.py">refine_slot_export.py</a>。
+不使用 Refine 输出里可能继承自 Coarse 的旧 <code>points</code> 或 <code>geometry[17]</code> 作为新几何。
+独立 coverage render 使用当前场景点和同一组虚拟相机；校验 <code>rev_trans</code> 确实还原当前场景。
+在支持像素、有限非背景 XYZ 和局部 cube 范围内，读取概率 ≥0.25 的点，
+要求选中至少 4 个不同 XYZ，再以 top-k 上限输出。该分数是地图支持强度，未校准为实例身份概率。
+所有导出均在 no-grad 下完成；新功能关闭或选择 <code>coarse</code> 时不增加 Refine coverage render。</p>
+<p><code>guidance_selection</code> 同时写入逐步日志、<code>prompt_report.json</code>、推理记录和几何 provenance，
+包括每个角色的 <code>selected_stage</code>、<code>failure_reason</code>、点数和裁剪逆矩阵；
+<code>guidance.json</code> 的 <code>transform.source</code> 也保留来源。TASK v1 的 <code>guidance_source</code> 仍为
+<code>predicted_coarse_slot</code>，表示 Coarse 条件下的预测路线，具体点来源以选择记录为准。
+诊断时 <code>slot_arrays.npz</code> 的 <code>slot_*</code> 是实际提示输入，<code>coarse_original_*</code> 保留选择前输出。</p>
+<table>
+<thead>
+<tr>
+<th>情况</th>
+<th>行为</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>没有局部 mask head / 仅继承重投影</td>
+<td><code>REFINE_MASK_HEAD_NOT_RUN</code>，使用 Coarse</td>
+</tr>
+<tr>
+<td>局部不可用或响应不足</td>
+<td><code>REFINE_LOCAL_INVALID</code> / <code>REFINE_NO_SUPPORTED_RESPONSE</code>，使用 Coarse</td>
+</tr>
+<tr>
+<td>支持点不足 / 重复点</td>
+<td><code>REFINE_INSUFFICIENT_POINTS</code>，使用 Coarse</td>
+</tr>
+<tr>
+<td>语义无效 / Reference NULL</td>
+<td>保留原语义；不靠局部亮点复活对象</td>
+</tr>
+<tr>
+<td>逆变换错误 / 非法概率</td>
+<td>显式失败，按既有 baseline/fail 策略处理</td>
+</tr>
+</tbody>
+</table>
+<p>回退并不意味着 Coarse 正确；它仍须通过原有 Guidance、投影、深度和候选检查。
+不会在失败时构造框，也不会读取未来 observation、expert action 或 Oracle 标签。</p>
+<p><strong>先训练，再启用。</strong> <code>rlbench_o2_role_queries/11_08_09_27</code> 的旧权重不含已训练局部头，
+不能只换 YAML 评估。复用已有训练配置
+<a href="../finetune/RLBench/configs/rlbench_o2_internal_slots_refine.yaml">rlbench_o2_internal_slots_refine.yaml</a>，
+从同为 <code>role_queries</code> 的 checkpoint 用 <code>--init_checkpoint</code> 初始化，保留兼容的角色与动作权重，
+新增局部头重新初始化；不用旧 optimizer resume。以下从仓库根目录执行并替换数据路径：</p>
+<pre><code class="language-bash">SEMANTIC_BUFFER=/data/BridgeVLA_RLBench_SEMANTIC_GT_MASK_VERIFIED_Buffer
+COARSE_CHECKPOINT=&quot;$PWD/finetune/RLBench/train/rlbench_o2_role_queries/11_08_09_27/model_last.pth&quot;
+cd finetune/RLBench
+GPUS_PER_NODE=2 bash train_8x40.sh \
+  --exp_cfg_path configs/rlbench_o2_internal_slots_refine.yaml \
+  --train_replay_storage_dir &quot;$SEMANTIC_BUFFER&quot; \
+  --init_checkpoint &quot;$COARSE_CHECKPOINT&quot; \
+  --exp_note refine_guidance_s0 --log_dir exp/RLBench \
+  --save_optimizer_state --log_backend tensorboard \
+  --exp_cfg_opts &quot;bs 2 num_workers 2 pin_memory False&quot;
+</code></pre>
+<p>此训练不运行 SAM3，沿用已有 Coarse/Refine 角色、NULL、分离和动作损失；
+局部监督是点投影热图，尚非密集实例 mask GT。训练配置的 0.05 gate 让较弱的
+Coarse token 进入局部头，最终 Guidance 与 TASK 的默认 0.25 gate 保留。
+现有裁剪扰动是 waypoint 扰动；本次没有新增角色漏检模拟、多候选搜索或全局重搜训练。</p>
+<p>训练后回到仓库根目录，用<strong>实际新 run 目录</strong>先检查提示。启动校验会拒绝与局部头结构不匹配的旧权重：</p>
+<pre><code class="language-bash">REFINE_MODEL_DIR=/absolute/path/to/trained/refine/run
+python -u finetune/RLBench/slot_guided_sam3_online.py \
+  --config finetune/RLBench/configs/rlbench_slot_guided_sam3_refine_online.yaml \
+  --model-folder &quot;$REFINE_MODEL_DIR&quot; --model-name model_last.pth \
+  --eval-datafolder &quot;$PWD/LPY/BridgeVLA_RLBench_EVAL_DATA&quot; \
+  --tasks open_drawer --eval-episodes 1 --episode-length 3 --device 0 \
+  --slot-sam3-task-repo ../SAM31 \
+  --slot-sam3-stage prompts --slot-sam3-guidance-stage refine \
+  --slot-sam3-diagnostics-dir &quot;$PWD/eval_debug/refine_prompt&quot;
+</code></pre>
+<p>查看 <code>index.html</code> 的选择记录、Coarse/Refine 各自热图和原相机提示。环境仍执行 baseline 动作。
+确认后将 <code>--slot-sam3-stage prompts</code> 改为 <code>action</code>，并添加
+<code>--slot-sam3-checkpoint &quot;$PWD/checkpoints/sam3/sam3.pt&quot;</code> 执行真实 SAM3 路径。
+对照实验用同一新 checkpoint、同一配置与 episodes，只切换 <code>--slot-sam3-guidance-stage coarse</code>。</p>
+<p><strong>纠错边界：</strong> 目标在局部观测内且角色 token 尚有效时，可由已训练局部头提供修正证据；
+Coarse 硬判无效、错误 NULL、目标在裁剪外或语义选错实例，目前没有全局恢复机制。
+这条路径只是具备局部修正接口，不能保证恢复 FN。
+本机只验证 CPU/Mock 契约与回归，未测真实 mask IoU、定位误差、FN 恢复率或操作成功率。</p>
 <p><a id="doc-docs-slot-guided-sam3-online--slot-prompt-probe"></a></p>
 <h5 id="doc-docs-slot-guided-sam3-online--先检查-slot-图与-prompt不运行-sam3">先检查 Slot 图与 Prompt：不运行 SAM3</h5>
 <p>同一 <code>slot_guided_sam3_online.py</code> 入口新增显式 <code>--slot-sam3-stage prompts</code>。
@@ -9737,7 +9829,7 @@ is not claimed by that field. No real frequency, mask/role accuracy, action
 error, VRAM result or task-success improvement has been measured on this
 workstation, which lacks an installed SAM3/CUDA model environment. See the
 <a href="#doc-docs-slot-guided-sam3-online-validation">validation record</a>.</p>
-</div><details class="doc-source"><summary>来源与维护</summary><p class="doc-provenance text-small">docs/slot_guided_sam3_online.md · SHA-256：3b8114085d12</p></details></article>
+</div><details class="doc-source"><summary>来源与维护</summary><p class="doc-provenance text-small">docs/slot_guided_sam3_online.md · SHA-256：0f17bacc1b8c</p></details></article>
 <article class="book-document" id="doc-docs-slot-guided-sam3-online-validation"><header><h3 id="doc-docs-slot-guided-sam3-online-validation--online-slot-guided-sam3-implementation-review">Online Slot-guided SAM3 implementation review</h3><p class="doc-introduction"></p></header><nav class="doc-toc" aria-label="Online Slot-guided SAM3 implementation review的章节"><ul><li><a href="#doc-docs-slot-guided-sam3-online-validation--interfaces-and-changed-areas">Interfaces and changed areas</a></li><li><a href="#doc-docs-slot-guided-sam3-online-validation--validation">Validation</a></li><li><a href="#doc-docs-slot-guided-sam3-online-validation--limits-requiring-real-experiments">Limits requiring real experiments</a></li></ul></nav><div class="doc-body">
 <p>This change connects the existing TASK SAM3 perception implementation to actual
 current-observation RLBench policy calls. The offline path remains an experiment
@@ -9947,5 +10039,5 @@ integration are not enabled by this first direct-evaluator path.</p>
 })();
 </script>
 
-<script type="application/json" id="book-source-manifest">[{"source": "docs/design/role-relation-prior.md", "id": "doc-docs-design-role-relation-prior", "sha256": "39fe889916d8b44feb7c43a1283b6d8ea230262432e415795d5d3469f77e7a5a"}, {"source": "docs/guides/replay.md", "id": "doc-docs-guides-replay", "sha256": "d48a1fc97615472cd72bec9ab8d885ace93eed715da3ff3990a3a91fdfc60f47"}, {"source": "docs/guides/oracle-replay.md", "id": "doc-docs-guides-oracle-replay", "sha256": "842cafb030c3eb9a0ac8c206e6731935dea08c212d25392edb22215b9247731c"}, {"source": "docs/guides/semantic-gt.md", "id": "doc-docs-guides-semantic-gt", "sha256": "dd0d68b21a56fc7199cae4fd85fb83adc7142533e4a95900a254957871a0f5e7"}, {"source": "docs/oht/data.md", "id": "doc-docs-oht-data", "sha256": "598dc2a8f4fa62a3842ca9dee30a8a4de86e0d7ebb25fb9264497cb23b349f09"}, {"source": "docs/guides/installation.md", "id": "doc-docs-guides-installation", "sha256": "91e4fd6379ef583044625a567a1ee9d1ba2884aa4fb828293e0c231d1eef1233"}, {"source": "docs/guides/training.md", "id": "doc-docs-guides-training", "sha256": "ff7924c495de69335376572772afa3362fd0610168b3fbab1890495a47c324e0"}, {"source": "docs/guides/object-conditioning.md", "id": "doc-docs-guides-object-conditioning", "sha256": "b0662e2497d598f49447a6e1c6563d4ffa3617bbb1351ee53dfb7b97d6dfaf48"}, {"source": "docs/oht/training.md", "id": "doc-docs-oht-training", "sha256": "ca8c0848720a579fa3ade015b7a9bbbf95db0871a655df6edca60c0f87bcb15f"}, {"source": "docs/guides/evaluation.md", "id": "doc-docs-guides-evaluation", "sha256": "b7157a88bfbd9d61bb53c71f99a27ec41ecf1b5f4589711ea51acbc03f3077d1"}, {"source": "docs/oht/runtime.md", "id": "doc-docs-oht-runtime", "sha256": "a9c3de96da87f21222f35c4d63546832865931c7c09e30b330decb5271cb68db"}, {"source": "docs/research/object-centric-policy-memory.md", "id": "doc-docs-research-object-centric-policy-memory", "sha256": "a9c2ebc5db0ddc90c05d9a81796573ac6e124bf50e957dc96232cc34f8197808"}, {"source": "docs/experiments/results.md", "id": "doc-docs-experiments-results", "sha256": "b8c24c690e67e406fed54fe51c2a217d23b32ca6cce3c357d92c68bf9a71ae3d"}, {"source": "docs/reference/code-map.md", "id": "doc-docs-reference-code-map", "sha256": "cb5a7846e6b73bbe0b6b27da44b3f9343c6d5ee22e62bd085c3375b2f5f6b417"}, {"source": "README.md", "id": "doc-readme", "sha256": "b24c37d3f3224c3a578823ce9abe68d81feb93952a3a372448cb699ec2fd6f25"}, {"source": "finetune/OHT/README.md", "id": "doc-finetune-oht-readme", "sha256": "a6472eadf30576a5f37797f94e69a016c35b45c0f317c63334c2eaf73321d5ad"}, {"source": "docs/README.md", "id": "doc-docs-readme", "sha256": "e4acadd230e25b75d4b4d4f5e144ce509e28b66b0b89cdfc6206f3a1e8d0c031"}, {"source": "docs/design/local-geometry-refinement.md", "id": "doc-docs-design-local-geometry-refinement", "sha256": "5e1e6c47d05213cd146a365e4f360e4b2a1ae509cee968608fcaef79a8e26c4f"}, {"source": "docs/slot_guided_sam3_action_draft.md", "id": "doc-docs-slot-guided-sam3-action-draft", "sha256": "1da9f59df27eefda5eb3a9389b29170039195c70ff8d08e457d701e468691647"}, {"source": "docs/slot_guided_sam3_offline.md", "id": "doc-docs-slot-guided-sam3-offline", "sha256": "ff3025f5b881b8c7e99ac33ad5d0f29f13e8e42fee15325aabf4e96f9c1cb9d3"}, {"source": "docs/slot_guided_sam3_offline_validation.md", "id": "doc-docs-slot-guided-sam3-offline-validation", "sha256": "79784d88f3e279261669e127a3573ddb325498ae953e5743f93ff1d18f97e102"}, {"source": "docs/slot_guided_sam3_online.md", "id": "doc-docs-slot-guided-sam3-online", "sha256": "3b8114085d122a57a39bc3c69fb8eabd43c90a06af2fefe06f795f579f18c749"}, {"source": "docs/slot_guided_sam3_online_validation.md", "id": "doc-docs-slot-guided-sam3-online-validation", "sha256": "dda9a64dd0b899b56378dbaa322b1d76d5f9cf754424f8a83788ff82446169d1"}, {"source": "docs/assets/algorithm-overview.fragment.html", "sha256": "d229a285623a00a9701b1a125127772cef70658c6827b49b4224fd86ae48ecb4"}]</script><noscript>所有 Markdown 正文均可直接阅读；节点交互和动态生成的算法逐步说明需要启用 JavaScript。</noscript>
+<script type="application/json" id="book-source-manifest">[{"source": "docs/design/role-relation-prior.md", "id": "doc-docs-design-role-relation-prior", "sha256": "39fe889916d8b44feb7c43a1283b6d8ea230262432e415795d5d3469f77e7a5a"}, {"source": "docs/guides/replay.md", "id": "doc-docs-guides-replay", "sha256": "d48a1fc97615472cd72bec9ab8d885ace93eed715da3ff3990a3a91fdfc60f47"}, {"source": "docs/guides/oracle-replay.md", "id": "doc-docs-guides-oracle-replay", "sha256": "842cafb030c3eb9a0ac8c206e6731935dea08c212d25392edb22215b9247731c"}, {"source": "docs/guides/semantic-gt.md", "id": "doc-docs-guides-semantic-gt", "sha256": "dd0d68b21a56fc7199cae4fd85fb83adc7142533e4a95900a254957871a0f5e7"}, {"source": "docs/oht/data.md", "id": "doc-docs-oht-data", "sha256": "598dc2a8f4fa62a3842ca9dee30a8a4de86e0d7ebb25fb9264497cb23b349f09"}, {"source": "docs/guides/installation.md", "id": "doc-docs-guides-installation", "sha256": "91e4fd6379ef583044625a567a1ee9d1ba2884aa4fb828293e0c231d1eef1233"}, {"source": "docs/guides/training.md", "id": "doc-docs-guides-training", "sha256": "ff7924c495de69335376572772afa3362fd0610168b3fbab1890495a47c324e0"}, {"source": "docs/guides/object-conditioning.md", "id": "doc-docs-guides-object-conditioning", "sha256": "b0662e2497d598f49447a6e1c6563d4ffa3617bbb1351ee53dfb7b97d6dfaf48"}, {"source": "docs/oht/training.md", "id": "doc-docs-oht-training", "sha256": "ca8c0848720a579fa3ade015b7a9bbbf95db0871a655df6edca60c0f87bcb15f"}, {"source": "docs/guides/evaluation.md", "id": "doc-docs-guides-evaluation", "sha256": "b7157a88bfbd9d61bb53c71f99a27ec41ecf1b5f4589711ea51acbc03f3077d1"}, {"source": "docs/oht/runtime.md", "id": "doc-docs-oht-runtime", "sha256": "a9c3de96da87f21222f35c4d63546832865931c7c09e30b330decb5271cb68db"}, {"source": "docs/research/object-centric-policy-memory.md", "id": "doc-docs-research-object-centric-policy-memory", "sha256": "a9c2ebc5db0ddc90c05d9a81796573ac6e124bf50e957dc96232cc34f8197808"}, {"source": "docs/experiments/results.md", "id": "doc-docs-experiments-results", "sha256": "b8c24c690e67e406fed54fe51c2a217d23b32ca6cce3c357d92c68bf9a71ae3d"}, {"source": "docs/reference/code-map.md", "id": "doc-docs-reference-code-map", "sha256": "cb5a7846e6b73bbe0b6b27da44b3f9343c6d5ee22e62bd085c3375b2f5f6b417"}, {"source": "README.md", "id": "doc-readme", "sha256": "b24c37d3f3224c3a578823ce9abe68d81feb93952a3a372448cb699ec2fd6f25"}, {"source": "finetune/OHT/README.md", "id": "doc-finetune-oht-readme", "sha256": "a6472eadf30576a5f37797f94e69a016c35b45c0f317c63334c2eaf73321d5ad"}, {"source": "docs/README.md", "id": "doc-docs-readme", "sha256": "2b50c82620c7ac2758563f267248ac986a59ba24e15f6797a95c6a98ec17249e"}, {"source": "docs/design/local-geometry-refinement.md", "id": "doc-docs-design-local-geometry-refinement", "sha256": "5e1e6c47d05213cd146a365e4f360e4b2a1ae509cee968608fcaef79a8e26c4f"}, {"source": "docs/slot_guided_sam3_action_draft.md", "id": "doc-docs-slot-guided-sam3-action-draft", "sha256": "1da9f59df27eefda5eb3a9389b29170039195c70ff8d08e457d701e468691647"}, {"source": "docs/slot_guided_sam3_offline.md", "id": "doc-docs-slot-guided-sam3-offline", "sha256": "ff3025f5b881b8c7e99ac33ad5d0f29f13e8e42fee15325aabf4e96f9c1cb9d3"}, {"source": "docs/slot_guided_sam3_offline_validation.md", "id": "doc-docs-slot-guided-sam3-offline-validation", "sha256": "79784d88f3e279261669e127a3573ddb325498ae953e5743f93ff1d18f97e102"}, {"source": "docs/slot_guided_sam3_online.md", "id": "doc-docs-slot-guided-sam3-online", "sha256": "0f17bacc1b8ce99f71bf5545073b1330e4143da88da8322721fdf59cc3640cff"}, {"source": "docs/slot_guided_sam3_online_validation.md", "id": "doc-docs-slot-guided-sam3-online-validation", "sha256": "dda9a64dd0b899b56378dbaa322b1d76d5f9cf754424f8a83788ff82446169d1"}, {"source": "docs/assets/algorithm-overview.fragment.html", "sha256": "d229a285623a00a9701b1a125127772cef70658c6827b49b4224fd86ae48ecb4"}]</script><noscript>所有 Markdown 正文均可直接阅读；节点交互和动态生成的算法逐步说明需要启用 JavaScript。</noscript>
 </body></html>

@@ -9,6 +9,7 @@ it does not grant control authorization or claim manipulation acceptance.
 from __future__ import annotations
 
 import copy
+import json
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -83,6 +84,8 @@ class OnlineTaskPerception(TaskPerception):
                 timestamp=snapshot.metadata["observed_at"],
                 source="current policy Coarse renderer support and actual scene inverse",
             )
+        if 'guidance_selection' in packet:
+            transform['source'] += '; guidance_selection=' + json.dumps(packet['guidance_selection'], sort_keys=True)
         return {**{key: packet[key] for key in required}, "transform": transform,
                 **{key: packet[key] for key in ("reference_exists", "role_visibility") if key in packet}}
 
@@ -159,6 +162,8 @@ class OnlineTaskPerception(TaskPerception):
             "guidance_input_sha256": api.slot_guided_io.guidance_input_digest(guidance),
             "effective_config": {"adapter": asdict(self._config.adapter), "selection": asdict(self._config.selection)},
         }
+        if 'guidance_selection' in coarse_packet:
+            inference['guidance_selection'] = copy.deepcopy(coarse_packet['guidance_selection'])
         fused = api.slot_geometry_fusion.fuse_geometry(snapshot, guidance, inference, config=self._config.fusion)
         fused_at = time.perf_counter()
         # The sampler is the existing BridgeVLA fixed geometry interface. No
@@ -168,6 +173,8 @@ class OnlineTaskPerception(TaskPerception):
         provenance = {key: copy.deepcopy(value) for key, value in fused.items() if key != "points"}
         provenance.update(snapshot_input_sha256=receipt["snapshot_input_sha256"],
                           max_source_frame_index_read=index, execution_mode="online_experiment")
+        if 'guidance_selection' in coarse_packet:
+            provenance['guidance_selection'] = copy.deepcopy(coarse_packet['guidance_selection'])
         geometry = sample_geometry(
             [[fused["points"][f"{role}_points_world"] for role in ("target", "reference")]],
             [[fused["roles"][role]["status"] for role in ("target", "reference")]],

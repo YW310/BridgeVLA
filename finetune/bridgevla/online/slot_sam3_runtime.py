@@ -10,13 +10,14 @@ import sys
 ROOT = Path(__file__).resolve().parents[3]
 PROFILE = ROOT / 'finetune/RLBench/configs/rlbench_slot_guided_sam3_online.yaml'
 FIELDS = ('task_repo', 'sam3_checkpoint', 'perception_config', 'sam3_device',
-          'prompt_mode', 'fallback', 'diagnostics_dir', 'stage')
+          'prompt_mode', 'fallback', 'diagnostics_dir', 'stage', 'guidance_stage')
 CLI_FIELDS = {
     'task_repo': '--slot-sam3-task-repo', 'sam3_checkpoint': '--slot-sam3-checkpoint',
     'perception_config': '--slot-sam3-perception-config', 'sam3_device': '--slot-sam3-device',
     'prompt_mode': '--slot-sam3-prompt-mode', 'fallback': '--slot-sam3-fallback',
     'diagnostics_dir': '--slot-sam3-diagnostics-dir',
     'stage': '--slot-sam3-stage',
+    'guidance_stage': '--slot-sam3-guidance-stage',
 }
 
 
@@ -46,6 +47,8 @@ def resolve_runtime(cfg, overrides=None, *, policy_device='cuda:0', validate_fil
         raise ValueError('invalid online prompt or fallback mode')
     if values['stage'] not in ('action', 'prompts'):
         raise ValueError('online stage must be action or prompts')
+    if values['guidance_stage'] not in ('coarse', 'refine'):
+        raise ValueError('guidance_stage must be coarse or refine')
     for key in ('task_repo', 'sam3_checkpoint', 'diagnostics_dir'):
         if not values[key] and key == 'diagnostics_dir':
             values[key] = None
@@ -96,7 +99,8 @@ def make_online_policy(agent, observer):
         agent.slot_guided_sam3_git_sha, enabled=True,
         point_count=agent.slot_guided_sam3_point_count,
         expected_checkpoint_sha256=agent.slot_guided_sam3_checkpoint_sha256,
-        diagnostics_dir=diagnostics_dir, fallback=values['fallback'], stage=values['stage'])
+        diagnostics_dir=diagnostics_dir, fallback=values['fallback'], stage=values['stage'],
+        guidance_stage=values['guidance_stage'])
 
 
 def main(argv=None):
@@ -110,7 +114,8 @@ def main(argv=None):
     for key, flag in CLI_FIELDS.items():
         choices = ('box-only', 'point+box') if key == 'prompt_mode' else (
             ('baseline', 'fail') if key == 'fallback' else (
-                ('action', 'prompts') if key == 'stage' else None))
+                ('action', 'prompts') if key == 'stage' else (
+                    ('coarse', 'refine') if key == 'guidance_stage' else None)))
         parser.add_argument(flag, dest=key, default=None, choices=choices,
                             help=('prompts: inspect Coarse/Refine Slot maps and camera prompts; '
                                   'no SAM3 or conditioned action; diagnostics directory required')

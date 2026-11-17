@@ -84,6 +84,92 @@ Enabled training remains rejected.
 
 ## Current camera coordinates and source indices
 
+<a id="refine-guidance"></a>
+
+### Refine 修正定位后生成 SAM3 提示（可选）
+
+原 online 配置仍使用 Coarse Guidance。新增 `--slot-sam3-guidance-stage refine`，
+逐角色优先使用**实际运行过的 Refine mask head**，失败时保留 Coarse 并记录原因。
+`--slot-sam3-stage prompts` 控制是否执行 SAM3；`guidance-stage` 控制提示的几何来源，两者独立。
+
+```text
+Coarse 角色/NULL → 当前局部 RGB/XYZ + 已训练 Refine head
+  → 从 Refine 角色图重新提取观测点 → 实际裁剪逆变换 → Coarse cube → world 米
+  → 原相机 box/point → SAM3 → RGB-D 融合 → 既有动作条件接口
+```
+
+实现位于 [refine_slot_export.py](../finetune/bridgevla/models/refine_slot_export.py)。
+不使用 Refine 输出里可能继承自 Coarse 的旧 `points` 或 `geometry[17]` 作为新几何。
+独立 coverage render 使用当前场景点和同一组虚拟相机；校验 `rev_trans` 确实还原当前场景。
+在支持像素、有限非背景 XYZ 和局部 cube 范围内，读取概率 ≥0.25 的点，
+要求选中至少 4 个不同 XYZ，再以 top-k 上限输出。该分数是地图支持强度，未校准为实例身份概率。
+所有导出均在 no-grad 下完成；新功能关闭或选择 `coarse` 时不增加 Refine coverage render。
+
+`guidance_selection` 同时写入逐步日志、`prompt_report.json`、推理记录和几何 provenance，
+包括每个角色的 `selected_stage`、`failure_reason`、点数和裁剪逆矩阵；
+`guidance.json` 的 `transform.source` 也保留来源。TASK v1 的 `guidance_source` 仍为
+`predicted_coarse_slot`，表示 Coarse 条件下的预测路线，具体点来源以选择记录为准。
+诊断时 `slot_arrays.npz` 的 `slot_*` 是实际提示输入，`coarse_original_*` 保留选择前输出。
+
+| 情况 | 行为 |
+| --- | --- |
+| 没有局部 mask head / 仅继承重投影 | `REFINE_MASK_HEAD_NOT_RUN`，使用 Coarse |
+| 局部不可用或响应不足 | `REFINE_LOCAL_INVALID` / `REFINE_NO_SUPPORTED_RESPONSE`，使用 Coarse |
+| 支持点不足 / 重复点 | `REFINE_INSUFFICIENT_POINTS`，使用 Coarse |
+| 语义无效 / Reference NULL | 保留原语义；不靠局部亮点复活对象 |
+| 逆变换错误 / 非法概率 | 显式失败，按既有 baseline/fail 策略处理 |
+
+回退并不意味着 Coarse 正确；它仍须通过原有 Guidance、投影、深度和候选检查。
+不会在失败时构造框，也不会读取未来 observation、expert action 或 Oracle 标签。
+
+**先训练，再启用。** `rlbench_o2_role_queries/11_08_09_27` 的旧权重不含已训练局部头，
+不能只换 YAML 评估。复用已有训练配置
+[rlbench_o2_internal_slots_refine.yaml](../finetune/RLBench/configs/rlbench_o2_internal_slots_refine.yaml)，
+从同为 `role_queries` 的 checkpoint 用 `--init_checkpoint` 初始化，保留兼容的角色与动作权重，
+新增局部头重新初始化；不用旧 optimizer resume。以下从仓库根目录执行并替换数据路径：
+
+```bash
+SEMANTIC_BUFFER=/data/BridgeVLA_RLBench_SEMANTIC_GT_MASK_VERIFIED_Buffer
+COARSE_CHECKPOINT="$PWD/finetune/RLBench/train/rlbench_o2_role_queries/11_08_09_27/model_last.pth"
+cd finetune/RLBench
+GPUS_PER_NODE=2 bash train_8x40.sh \
+  --exp_cfg_path configs/rlbench_o2_internal_slots_refine.yaml \
+  --train_replay_storage_dir "$SEMANTIC_BUFFER" \
+  --init_checkpoint "$COARSE_CHECKPOINT" \
+  --exp_note refine_guidance_s0 --log_dir exp/RLBench \
+  --save_optimizer_state --log_backend tensorboard \
+  --exp_cfg_opts "bs 2 num_workers 2 pin_memory False"
+```
+
+此训练不运行 SAM3，沿用已有 Coarse/Refine 角色、NULL、分离和动作损失；
+局部监督是点投影热图，尚非密集实例 mask GT。训练配置的 0.05 gate 让较弱的
+Coarse token 进入局部头，最终 Guidance 与 TASK 的默认 0.25 gate 保留。
+现有裁剪扰动是 waypoint 扰动；本次没有新增角色漏检模拟、多候选搜索或全局重搜训练。
+
+训练后回到仓库根目录，用**实际新 run 目录**先检查提示。启动校验会拒绝与局部头结构不匹配的旧权重：
+
+```bash
+REFINE_MODEL_DIR=/absolute/path/to/trained/refine/run
+python -u finetune/RLBench/slot_guided_sam3_online.py \
+  --config finetune/RLBench/configs/rlbench_slot_guided_sam3_refine_online.yaml \
+  --model-folder "$REFINE_MODEL_DIR" --model-name model_last.pth \
+  --eval-datafolder "$PWD/LPY/BridgeVLA_RLBench_EVAL_DATA" \
+  --tasks open_drawer --eval-episodes 1 --episode-length 3 --device 0 \
+  --slot-sam3-task-repo ../SAM31 \
+  --slot-sam3-stage prompts --slot-sam3-guidance-stage refine \
+  --slot-sam3-diagnostics-dir "$PWD/eval_debug/refine_prompt"
+```
+
+查看 `index.html` 的选择记录、Coarse/Refine 各自热图和原相机提示。环境仍执行 baseline 动作。
+确认后将 `--slot-sam3-stage prompts` 改为 `action`，并添加
+`--slot-sam3-checkpoint "$PWD/checkpoints/sam3/sam3.pt"` 执行真实 SAM3 路径。
+对照实验用同一新 checkpoint、同一配置与 episodes，只切换 `--slot-sam3-guidance-stage coarse`。
+
+**纠错边界：** 目标在局部观测内且角色 token 尚有效时，可由已训练局部头提供修正证据；
+Coarse 硬判无效、错误 NULL、目标在裁剪外或语义选错实例，目前没有全局恢复机制。
+这条路径只是具备局部修正接口，不能保证恢复 FN。
+本机只验证 CPU/Mock 契约与回归，未测真实 mask IoU、定位误差、FN 恢复率或操作成功率。
+
 <a id="slot-prompt-probe"></a>
 
 ### 先检查 Slot 图与 Prompt：不运行 SAM3

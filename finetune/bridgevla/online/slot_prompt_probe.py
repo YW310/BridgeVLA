@@ -3,6 +3,7 @@
 from datetime import datetime, timezone
 import importlib
 import html
+import json
 from pathlib import Path
 
 import numpy as np
@@ -115,6 +116,11 @@ class SlotPromptProbe(TaskPerception):
         root.mkdir(parents=True, exist_ok=True)
         arrays = {f'slot_{key}': np.asarray(value).copy() for key, value in export['slot_output'].items()
                   if value is not None}
+        arrays.update({f'coarse_original_{key}': np.asarray(value).copy()
+                       for key, value in coarse_packet.get('coarse_original_slot_output', {}).items()
+                       if value is not None})
+        if 'coarse_original_point_valid' in coarse_packet:
+            arrays['coarse_original_point_valid'] = np.asarray(coarse_packet['coarse_original_point_valid']).copy()
         arrays['point_valid'] = np.asarray(export['point_valid']).copy()
         arrays['matrix_world_from_source'] = np.asarray(export['transform']['matrix_world_from_source']).copy()
         stages = {'coarse': _stage_images(root, 'coarse', visualization, arrays)}
@@ -156,6 +162,7 @@ class SlotPromptProbe(TaskPerception):
                                     ('status', 'semantic_valid', 'confidence', 'center_world', 'point_count')}
                              for role in ('target', 'reference')},
                       reference_null_probability=guidance.metadata['reference_null_probability'])
+        report['guidance_selection'] = coarse_packet.get('guidance_selection', dict(requested_stage='coarse'))
         api.slot_guided_io.save_inference_artifact(root / 'prompt_report.json', report, snapshot)
         # A static contact sheet is convenient over VS Code Remote; it runs no
         # server, browser commands or simulator control code.
@@ -168,11 +175,13 @@ class SlotPromptProbe(TaskPerception):
             '<h1>Slot prompt probe: baseline action, SAM3 not run</h1>'
             f'<p>{html.escape(instruction)}</p><p>Virtual Coarse/Refine views have separate crop coordinates. '
             'Original-camera images show boxes/points only, with no instance masks.</p>'
+            + '<pre>' + html.escape(json.dumps(report['guidance_selection'], indent=2)) + '</pre>'
             + ''.join(f'<figure><figcaption>{html.escape(name)}</figcaption><img src="{html.escape(name, quote=True)}"></figure>'
                       for name in images), encoding='utf-8')
         print(f'[SlotPromptProbe] source_frame={index}; index={root / "index.html"}', flush=True)
         return dict(stage='prompts', sam3_executed=False, action_source='baseline_C',
                     index_path=str(root / 'index.html'),
                     report_path=str(root / 'prompt_report.json'), slot_arrays_path=str(root / 'slot_arrays.npz'),
+                    guidance_selection=report['guidance_selection'],
                     stages=stages, roles=report['roles'], reference_null_probability=report['reference_null_probability'],
                     prompts=prompts)

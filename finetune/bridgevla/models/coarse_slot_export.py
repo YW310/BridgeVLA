@@ -85,10 +85,13 @@ def coarse_point_support(prior, rendered_xyz, role_points, role_valid, coverage,
 
 
 @torch.no_grad()
-def build_coarse_slot_packet(network, output, scene_cube, reverse_cube, scene_world, *, include_visualization=False):
-    """Export the first/coarse stage only, for supported role-query checkpoints."""
+def build_coarse_slot_packet(network, output, scene_cube, reverse_cube, scene_world, *, include_visualization=False,
+                             guidance_stage='coarse'):
+    """Export Coarse by default; optionally read supported learned Refine maps."""
     if getattr(network, 'training', False):
         raise ValueError('coarse Slot export requires eval mode')
+    if guidance_stage not in ('coarse', 'refine'):
+        raise ValueError('guidance_stage must be coarse or refine')
     if getattr(network, 'object_slot_predictor_type', None) != 'role_queries':
         raise ValueError('coarse Slot export currently requires role_queries architecture')
     if len(scene_cube) != 1 or len(reverse_cube) != 1 or len(scene_world) != 1:
@@ -151,4 +154,7 @@ def build_coarse_slot_packet(network, output, scene_cube, reverse_cube, scene_wo
                 packet['visualization']['refine'][key] = _numpy(refine['object_slot_' + key][0])
             if 'trans' in refine:
                 packet['visualization']['refine']['translation_logits'] = _numpy(refine['trans'][0])
+    if guidance_stage == 'refine':
+        from .refine_slot_export import attach_refine_guidance
+        packet = attach_refine_guidance(network, output, scene_cube, packet)
     return packet

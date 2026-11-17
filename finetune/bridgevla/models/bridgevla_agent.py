@@ -2774,7 +2774,8 @@ class RVTAgent:
             from bridgevla.models.coarse_slot_export import build_coarse_slot_packet
             coarse_slot_callback(build_coarse_slot_packet(
                 self._net_mod, out, pc, rev_trans, coarse_scene_world,
-                include_visualization=bool(getattr(coarse_slot_callback, 'include_visualization', False))))
+                include_visualization=bool(getattr(coarse_slot_callback, 'include_visualization', False)),
+                guidance_stage=getattr(coarse_slot_callback, 'guidance_stage', 'coarse')))
         if getattr(self._net_mod.mvt1, 'oht_return_chunk_geometry', False):
             from bridgevla.mvt.chunk_geometry import chunk_geometry_to_world
             chunk_geometry_to_world(out, rev_trans)

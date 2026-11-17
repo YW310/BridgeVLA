@@ -8,7 +8,7 @@ import numpy as np
 from PIL import Image
 import pytest
 
-from test_online_slot_sam3_perception import scene
+from test_online_slot_sam3_perception import scene, refined_packet
 from bridgevla.online.slot_prompt_probe import SlotPromptProbe
 
 
@@ -107,3 +107,14 @@ def test_probe_requires_actual_maps_instead_of_fabricating_masks(scene, tmp_path
     del value['visualization']
     with pytest.raises(ValueError, match='visualization arrays'):
         inspect(scene, tmp_path, value)
+
+
+def test_probe_records_refine_selection_and_uses_refined_points_for_camera_prompts(scene, tmp_path):
+    value = refined_packet(scene)
+    value['visualization'] = packet(scene)['visualization']
+    _, _, result = inspect(scene, tmp_path, value)
+    saved = json.loads(Path(result['report_path']).read_text(encoding='utf-8'))
+    assert saved['guidance_selection']['roles']['target']['selected_stage'] == 'refine'
+    assert result['guidance_selection'] == saved['guidance_selection']
+    assert all(row['target']['prompt_valid'] for row in result['prompts'].values())
+    assert 'selected_stage' in Path(result['index_path']).read_text(encoding='utf-8')

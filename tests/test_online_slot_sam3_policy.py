@@ -204,6 +204,22 @@ def test_prompts_only_uses_exact_baseline_action_with_no_geometry_or_second_forw
     assert agent.enable_slot_guided_sam3 is True
 
 
+@pytest.mark.parametrize('stage', ['action', 'prompts'])
+def test_refine_guidance_is_requested_only_on_first_forward_and_selection_is_logged(stage, tmp_path):
+    policy, agent, perception, _ = policy_fixture(stage=stage, guidance_stage='refine', diagnostics_dir=tmp_path)
+    perception.inspect = lambda *a, **kw: dict(sam3_executed=False)
+    result = policy.act(5, {'current_index': 0})
+    callback = agent.calls[0][4]['coarse_slot_callback']
+    assert callback.guidance_stage == 'refine'
+    assert callback.include_visualization == (stage == 'prompts')
+    assert result.info['slot_guided_sam3']['guidance_selection']['requested_stage'] == 'refine'
+    assert result.info['slot_guided_sam3']['guidance_selection']['roles']['target']['failure_reason'] == 'REFINE_SELECTION_UNAVAILABLE'
+    if stage == 'action':
+        assert 'coarse_slot_callback' not in agent.calls[1][4]
+    else:
+        assert len(agent.calls) == 1 and not perception.calls
+
+
 def test_next_frame_failure_uses_its_current_C_and_never_previous_geometry():
     policy, agent, perception, _ = policy_fixture()
     assert policy.act(10, {"current_index": 0}).action[0] == pytest.approx(10.1)
