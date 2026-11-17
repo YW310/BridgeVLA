@@ -90,8 +90,8 @@ class PointRenderer:
 
         # Make sure inputs are on the rendering device
         cameras = cameras.to(self.device)
-        features = features.to(self.device)
-        points = points.to(self.device)
+        features = features.to(device=self.device, dtype=torch.float32)
+        points = points.to(device=self.device, dtype=torch.float32)
 
         # A local observation crop can be empty. Do not launch a zero-block
         # CUDA grid, splat an empty depth vector or mutate camera AA state.
@@ -106,8 +106,14 @@ class PointRenderer:
 
         # Project points to image space depending on the camera type
         # (these would be more elegant as class methods, but TorchScript doesn't support it)
-        point_pixel_index, point_depths, features = _prep_render_batch_inputs(
-            points, features, cameras.inv_poses, cameras.intrinsics, img_h, img_w, type(cameras) == OrthographicCameras)
+        # Projection uses einsum, which otherwise returns BF16 under an outer
+        # autocast context even for FP32 inputs. The CUDA kernel below accesses
+        # depths/features as float pointers. Compute geometry in FP32 rather
+        # than casting already-quantized pixel coordinates/depths afterwards.
+        with torch.autocast(device_type=points.device.type, enabled=False):
+            point_pixel_index, point_depths, features = _prep_render_batch_inputs(
+                points, features, cameras.inv_poses.float(), cameras.intrinsics.float(),
+                img_h, img_w, type(cameras) == OrthographicCameras)
         if positive_depth_only:
             # Opt-in for TCP crops: orthographic XY projection alone can accept
             # points behind a camera; CUDA packs depths into unsigned integers.

@@ -36,6 +36,12 @@ class EvalRuntimeFingerprintTest(unittest.TestCase):
                     'bridgevla/models/cross_scale_roles.py', 'bridgevla/models/role_separation.py',
                     'bridgevla/mvt/mvt.py', 'bridgevla/mvt/mvt_single.py'}
         self.assertLessEqual(required, listed)
+        self.assertLessEqual({
+            'bridgevla/libs/point-renderer/point_renderer/renderer.py',
+            'bridgevla/libs/point-renderer/point_renderer/ops.py',
+            'bridgevla/libs/point-renderer/point_renderer/cameras.py',
+            'bridgevla/libs/point-renderer/point_renderer/rvt_renderer.py',
+        }, listed)
 
     def test_signature_builder_uses_the_shared_helper(self):
         source = EVAL.read_text(encoding='utf-8')

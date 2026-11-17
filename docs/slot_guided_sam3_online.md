@@ -225,8 +225,25 @@ SAM3 在设备支持时另有 BF16 autocast。需用调用栈确定发生冲突�
 
 旧 online 启动器会将评测过程中的异常截成单行。当前启动器只对配置错误保留简短
 提示和退出码 2；评测启动后的异常会正常传播，显示完整 traceback 和异常链，
-未捕获异常按 Python 默认方式非零退出。这里修复的是诊断输出，尚未确定具体
-Float/BFloat16 算子故障，也没有因此更改模型精度或 checkpoint。
+未捕获异常按 Python 默认方式非零退出。启动器的这一改动负责保留诊断信息，
+已定位的渲染算子故障及其精度修复见下文。
+
+已确认的一类故障出现在第一遍 BridgeVLA 前向的 `PointRenderer.render_batch`，
+调用栈终点为 `render_feature_pointcloud_to_image`。该 CUDA 内核通过
+`data_ptr<float>()` 读取深度，但此前的投影 `einsum` 在外层 autocast 下可产生
+BF16 深度，即使输入点与相机矩阵原本为 FP32。此阶段还没有执行当前帧的 SAM3 分割。
+
+当前修复将渲染点、特征及投影矩阵转换为 FP32，并在投影区域局部禁用 autocast。
+像素索引和深度从 FP32 运算得到，避免先用 BF16 投影再转回 FP32 所造成的位置精度损失。
+退出该区域后恢复调用方的 autocast；PaliGemma/SAM3 精度配置与权重保持原样。
+FP32 基线与 BF16 autocast 下的投影索引、深度在 CPU 回归测试中逐值一致，
+覆盖正交/透视相机以及 Python/TorchScript 投影；CUDA 内核由严格检查输入类型的
+Mock 替代，真实 GPU/RLBench 闭环仍需在部署环境验证。
+
+此改动只有 Python 代码，已有可用 CUDA 扩展且按 editable 方式安装时无需重编译。
+若 traceback 指向其他安装目录，先确认 point-renderer 使用本仓库源码；按本页安装环境
+重新执行 `python -m pip install --no-build-isolation -e finetune/bridgevla/libs/point-renderer`。
+评测运行指纹同时纳入 point-renderer 的 Python 源码，避免旧运行错误地复用新渲染路径。
 
 更新 BridgeVLA 后重跑原评测参数，可保存两路日志：
 
