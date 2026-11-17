@@ -73,6 +73,7 @@ rvt:
 
 # Paths resolve from the BridgeVLA root; perception_config is TASK-relative.
 slot_guided_sam3:
+  stage: action  # Override with --slot-sam3-stage prompts to inspect without SAM3.
   task_repo: ../TASK_Relevant_object-main
   sam3_checkpoint: checkpoints/sam3.pt
   perception_config: configs/slot_guided_offline.json

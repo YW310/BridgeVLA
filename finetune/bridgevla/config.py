@@ -155,6 +155,7 @@ _C.slot_guided_sam3.sam3_device = ''
 _C.slot_guided_sam3.prompt_mode = 'point+box'
 _C.slot_guided_sam3.fallback = 'baseline'
 _C.slot_guided_sam3.diagnostics_dir = ''
+_C.slot_guided_sam3.stage = 'action'  # prompts: baseline action + Slot/Prompt diagnostics, no SAM3.
 
 # arguments present in peract official
 _C.peract_official = CN()

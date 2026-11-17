@@ -84,6 +84,64 @@ Enabled training remains rejected.
 
 ## Current camera coordinates and source indices
 
+<a id="slot-prompt-probe"></a>
+
+### 先检查 Slot 图与 Prompt：不运行 SAM3
+
+同一 `slot_guided_sam3_online.py` 入口新增显式 `--slot-sam3-stage prompts`。
+默认 `action` 模式不变。`prompts` 模式只执行当前 baseline 前向、导出 Slot 和构造提示，
+不加载 SAM3、不分割、不融合、不进行第二遍几何条件动作预测。环境仍按原 baseline
+动作推进，并非只读观察或静止场景。checkpoint 的启动完整性校验保留，未加入摘要缓存。
+
+下面使用用户最近的仓库/模型路径；TASK 假设为同级 `SAM31`。按实际部署替换目录。
+先用 1 episode、3 steps 检查；只看初始观测可设 `--episode-length 1`，但仍会执行一步 baseline 动作。
+
+```bash
+cd /media/34.92/common-data-2t/project/BridgeVLA
+RUN_DIR="$PWD/eval_debug/slot_prompt_$(date +%Y%m%d_%H%M%S)"
+mkdir -p "$RUN_DIR"
+set -o pipefail
+python -u finetune/RLBench/slot_guided_sam3_online.py \
+  --model-folder "$PWD/finetune/RLBench/train/rlbench_o2_role_queries/11_08_09_27" \
+  --model-name model_last.pth \
+  --eval-datafolder "$PWD/LPY/BridgeVLA_RLBench_EVAL_DATA" \
+  --tasks open_drawer --eval-episodes 1 --episode-length 3 --device 0 \
+  --slot-sam3-task-repo ../SAM31 \
+  --slot-sam3-stage prompts \
+  --slot-sam3-diagnostics-dir "$RUN_DIR/probe" \
+  2>&1 | tee "$RUN_DIR/runtime.log"
+```
+
+这里无需 `--slot-sam3-checkpoint` 或 `--visualize`，也无需安装 SAM3；BridgeVLA 模型、
+TASK、RLBench/PyRep 和 GPU 渲染依赖仍然需要。`--check-config` 可先检查参数而不启动模型：
+
+```bash
+python finetune/RLBench/slot_guided_sam3_online.py --check-config \
+  --slot-sam3-stage prompts --slot-sam3-diagnostics-dir /tmp/slot_prompt_probe
+```
+
+输出目录为 `probe/run_<id>/episode_<counter>/frame_<call>/`，终端打印具体 `index.html` 路径：
+
+| 文件 | 含义 |
+| --- | --- |
+| `index.html` | 静态汇总页；查看本地副本时复制整个 frame 目录 |
+| `coarse/view_*.png` | Coarse 自身虚拟 RGB、Target/Reference 软角色图和动作热图 |
+| `refine/view_*.png` | Refine 自身局部虚拟 RGB 和对应角色/动作图；单阶段模型无此目录 |
+| `<camera>.diagnostic.png` | 当前原相机 RGB、框和正负提示点；没有 SAM mask 是正常的 |
+| `slot_arrays.npz` | 原始概率/logits、角色有效性、点支持及坐标变换，非二值实例 mask |
+| `guidance.json` / `prompt_report.json` | 角色状态、NULL、置信度、提示失败原因及当前帧标定身份 |
+
+角色图按固定绝对概率着色；动作热图单独使用相对空间 softmax。不能把动作位置热图当成
+对象实例分割。当前 role-query 配置的 Refine 继承 Coarse 角色；报告标明 `roles_inherited`、
+`masks_refined`、几何 `valid` 与语义 `role_token_valid`，以及 Refine 裁剪中心、比例和
+`matrix_world_from_refine_cube`。Coarse 是全局 cube，Refine 是局部 crop，两个阶段的像素
+不能直接叠在同一幅图上比较。若 Target 在 Coarse 已错，先查角色选择；若裁剪中心偏离目标，
+先查 Coarse 动作定位；若目标位于 crop 内但 Refine 图仍偏，保留上述数组与图片继续定位。
+
+JSONL 使用 `status=prompts_only`、`sam3_executed=false`、`action_source=baseline_C`，
+它不是 `conditioned`，也不提供 GT mask IoU、正确实例命中率或任务效果提升证据。
+CPU/Mock 测试覆盖真实 TASK 提示、分阶段保存、原动作保留和禁止 SAM/融合调用；本机未运行真实模型/模拟器。
+
 ### Multi-step dtype binding and step-log interpretation
 
 YARR converts float64 observation arrays to float32 when creating reset history,
@@ -237,13 +295,14 @@ Runtime fields are under `slot_guided_sam3`:
 
 | Config key | CLI override | Meaning |
 | --- | --- | --- |
+| `stage` | `--slot-sam3-stage` | `action` (default) or `prompts` (baseline action; no SAM3) |
 | `task_repo` | `--slot-sam3-task-repo` | Existing TASK implementation |
 | `sam3_checkpoint` | `--slot-sam3-checkpoint` | Actual local SAM3 weights |
 | `perception_config` | `--slot-sam3-perception-config` | TASK prompt/selection/fusion JSON |
 | `sam3_device` | `--slot-sam3-device` | Defaults to the policy CUDA device |
 | `prompt_mode` | `--slot-sam3-prompt-mode` | `point+box` or `box-only` |
 | `fallback` | `--slot-sam3-fallback` | `baseline` or `fail` |
-| `diagnostics_dir` | `--slot-sam3-diagnostics-dir` | Optional per-frame mask/geometry output |
+| `diagnostics_dir` | `--slot-sam3-diagnostics-dir` | Optional in action stage; required for prompts stage |
 
 Runtime paths resolve from the BridgeVLA root. A relative `perception_config`
 resolves inside the TASK checkout; its existing `slot_guided_offline.json` name

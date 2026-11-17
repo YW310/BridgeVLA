@@ -269,6 +269,8 @@ def get_eval_parser():
     parser.add_argument('--slot-sam3-prompt-mode', choices=('box-only', 'point+box'), default=None)
     parser.add_argument('--slot-sam3-fallback', choices=('baseline', 'fail'), default=None)
     parser.add_argument('--slot-sam3-diagnostics-dir', default=None)
+    parser.add_argument('--slot-sam3-stage', choices=('action', 'prompts'), default=None,
+                        help='prompts: save Slot/Prompt diagnostics and use baseline action without SAM3')
     return parser
 
 

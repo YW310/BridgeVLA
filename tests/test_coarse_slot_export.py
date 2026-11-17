@@ -164,3 +164,23 @@ def test_actual_act_callback_control_is_opt_in_and_runs_once():
     exec(callback_block(), scope)
     assert network.renderer.calls == 1 and len(collected) == 1
     assert collected[0]['slot_output']['points'].shape == (2, 5, 3)
+
+
+def test_visualization_export_keeps_raw_coarse_and_refine_frames_detached():
+    network, output, cube, reverse, world = sample()
+    network.st_sca = 4.
+    output['mvt2'] = {key: value.detach().clone() if isinstance(value, torch.Tensor) else value
+                      for key, value in output.items() if key.startswith('object_slot_')}
+    output['mvt2']['object_slot_roles_inherited'] = True
+    output['mvt2_ori_img'] = output['mvt1_ori_img'].clone()
+    output['mvt2_ori_img'][:, :, 3:6] = .7
+    output['wpt_local1'] = torch.tensor([[.2, -.1, .3]])
+    standard = build_coarse_slot_packet(network, output, cube, reverse, world)
+    assert 'visualization' not in standard
+    captured = build_coarse_slot_packet(network, output, cube, reverse, world, include_visualization=True)
+    views = captured['visualization']
+    np.testing.assert_array_equal(views['role_prior'], output['object_slot_prior'][0].detach().numpy())
+    assert views['refine']['roles_inherited'] and views['refine']['crop_scale'] == 4.
+    assert np.allclose(views['rendered_rgb'], 0.) and np.allclose(views['refine']['rendered_rgb'], .7)
+    views['role_prior'][:] = 99
+    assert output['object_slot_prior'].max() < 1.

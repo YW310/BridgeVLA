@@ -185,6 +185,25 @@ def test_current_C_then_fresh_geometry_then_conditioned_action_preserves_YARR_fi
     assert agent.calls[1][4]["slot_guided_sam3"]["geometry"].object_points.data_ptr() != perception.last_geometry.object_points.data_ptr()
 
 
+def test_prompts_only_uses_exact_baseline_action_with_no_geometry_or_second_forward(tmp_path):
+    policy, agent, perception, provider = policy_fixture(stage='prompts', diagnostics_dir=tmp_path)
+    inspected = []
+    def inspect(snapshot, packet, **kwargs):
+        inspected.append((snapshot, packet, kwargs))
+        return {'report_path': 'probe.json', 'sam3_executed': False}
+    perception.inspect = inspect
+    result = policy.act(5, {'current_index': 0})
+    assert result.action[0] == 5 and len(agent.calls) == 1
+    assert not perception.calls and len(inspected) == 1
+    assert agent.calls[0][4]['coarse_slot_callback'].include_visualization is True
+    assert 'slot_guided_sam3' not in agent.calls[0][4]
+    assert result.info['slot_guided_sam3']['status'] == 'prompts_only'
+    assert result.info['slot_guided_sam3']['action_source'] == 'baseline_C'
+    assert not result.replay_elements['slot_guided_sam3_used']
+    assert not result.replay_elements['slot_guided_sam3_fallback']
+    assert agent.enable_slot_guided_sam3 is True
+
+
 def test_next_frame_failure_uses_its_current_C_and_never_previous_geometry():
     policy, agent, perception, _ = policy_fixture()
     assert policy.act(10, {"current_index": 0}).action[0] == pytest.approx(10.1)

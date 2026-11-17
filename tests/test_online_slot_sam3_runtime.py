@@ -42,6 +42,35 @@ def test_runtime_overrides_and_config_check_do_not_load_models(tmp_path, monkeyp
     assert report['settings']['sam3_checkpoint'] == str(tmp_path / 'selected.pt')
 
 
+def test_prompt_stage_needs_no_sam_install_or_weights_and_forwards_to_eval(tmp_path, monkeypatch, capsys):
+    cfg = runtime.load_online_profile(runtime.PROFILE)
+    cfg.slot_guided_sam3.stage = 'prompts'
+    cfg.slot_guided_sam3.diagnostics_dir = str(tmp_path)
+    cfg.slot_guided_sam3.sam3_checkpoint = str(tmp_path / 'not-installed.pt')
+    monkeypatch.setattr(runtime.importlib.util, 'find_spec', lambda *a: pytest.fail('must not inspect SAM3'))
+    assert runtime.resolve_runtime(cfg, validate_files=True)['stage'] == 'prompts'
+    received = []
+    monkeypatch.setattr(runtime.runpy, 'run_path', lambda *a, **k: received.append(list(sys.argv)))
+    assert runtime.main(['--slot-sam3-stage', 'prompts', '--slot-sam3-diagnostics-dir', str(tmp_path)]) == 0
+    assert received[0][received[0].index('--slot-sam3-stage') + 1] == 'prompts'
+    assert runtime.main(['--check-config', '--slot-sam3-stage', 'prompts']) == 2
+    assert 'diagnostics' in capsys.readouterr().err
+
+
+def test_prompt_stage_factory_does_not_construct_or_prepare_sam(tmp_path, monkeypatch):
+    import bridgevla.online.slot_sam3_perception as module
+    monkeypatch.setattr(module.OnlineTaskPerception, '__init__',
+                        lambda *a, **kw: pytest.fail('must not construct SAM perception'))
+    cfg = runtime.load_online_profile(runtime.PROFILE)
+    values = runtime.resolve_runtime(cfg, {'stage': 'prompts', 'diagnostics_dir': str(tmp_path)})
+    agent = SimpleNamespace(_training=False, slot_guided_sam3_execution_mode='online_experiment',
+        slot_guided_sam3_runtime=values, slot_guided_sam3_checkpoint_path='loaded.pt',
+        slot_guided_sam3_git_sha='a' * 40, slot_guided_sam3_checkpoint_sha256='b' * 64,
+        slot_guided_sam3_point_count=128)
+    policy = runtime.make_online_policy(agent, object())
+    assert policy.stage == 'prompts' and agent.slot_guided_sam3_model_load_ms == 0.
+
+
 def test_online_launcher_forwards_real_eval_options_and_restores_argv(monkeypatch):
     previous, observed = sys.argv, []
     monkeypatch.setattr(runtime.runpy, 'run_path', lambda path, **kwargs: observed.append((path, list(sys.argv), kwargs)))

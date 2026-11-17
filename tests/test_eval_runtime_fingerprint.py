@@ -30,6 +30,7 @@ class EvalRuntimeFingerprintTest(unittest.TestCase):
                     'bridgevla/online/slot_sam3_runtime.py',
                     'bridgevla/online/slot_sam3_policy.py',
                     'bridgevla/online/slot_sam3_perception.py',
+                    'bridgevla/online/slot_prompt_probe.py',
                     'bridgevla/offline/slot_sam3_perception.py',
                     'bridgevla/data/observations.py',
                     'bridgevla/models/object_conditioning.py',

@@ -1052,6 +1052,7 @@ _FINETUNE_RUNTIME_FILES = (
     "bridgevla/online/slot_sam3_runtime.py",
     "bridgevla/online/slot_sam3_policy.py",
     "bridgevla/online/slot_sam3_perception.py",
+    "bridgevla/online/slot_prompt_probe.py",
     "bridgevla/offline/slot_sam3_perception.py",
     "bridgevla/data/observations.py",
     "bridgevla/models/object_conditioning.py",
@@ -1189,7 +1190,7 @@ def _eval(args):
                         ('task_repo', 'task_repo'), ('sam3_checkpoint', 'checkpoint'),
                         ('perception_config', 'perception_config'), ('sam3_device', 'device'),
                         ('prompt_mode', 'prompt_mode'), ('fallback', 'fallback'),
-                        ('diagnostics_dir', 'diagnostics_dir'))
+                        ('diagnostics_dir', 'diagnostics_dir'), ('stage', 'stage'))
                 },
             )
         if args.oracle_provider == "rlbench_gt":

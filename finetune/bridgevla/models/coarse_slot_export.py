@@ -1,6 +1,6 @@
 """Detached coarse Slot export using actual renderer support and cube inverse.
 
-This optional offline hook performs one extra coverage render, never an image
+This optional frozen-inference hook performs one extra coverage render, never an image
 encoder pass. It reads no episode, checkpoint, robot action or future state.
 """
 from __future__ import annotations
@@ -85,7 +85,7 @@ def coarse_point_support(prior, rendered_xyz, role_points, role_valid, coverage,
 
 
 @torch.no_grad()
-def build_coarse_slot_packet(network, output, scene_cube, reverse_cube, scene_world):
+def build_coarse_slot_packet(network, output, scene_cube, reverse_cube, scene_world, *, include_visualization=False):
     """Export the first/coarse stage only, for supported role-query checkpoints."""
     if getattr(network, 'training', False):
         raise ValueError('coarse Slot export requires eval mode')
@@ -123,8 +123,32 @@ def build_coarse_slot_packet(network, output, scene_cube, reverse_cube, scene_wo
             if value.shape[0] != 1:
                 raise ValueError('coarse output batch is not B=1')
             slot_output[key] = _numpy(value[0])
-    return dict(schema_version=1, artifact_type='bridgevla_coarse_slot_export',
+    packet = dict(schema_version=1, artifact_type='bridgevla_coarse_slot_export',
                 source_frame='bridgevla_coarse', slot_output=slot_output,
                 point_valid=_numpy(point_valid[0]), support_pixel_indices=_numpy(indices[0]),
                 point_support_source='renderer_coverage_and_predictor_topk',
                 **cube_inverse_metadata(reverse_cube[0], points, scene_world[0]))
+    if include_visualization:
+        if image.shape[2] < 6:
+            raise ValueError('Slot visualization needs XYZ followed by rendered RGB channels')
+        packet['visualization'] = dict(role_prior=_numpy(output['object_slot_prior'][0]),
+                                       rendered_rgb=_numpy(image[0, :, 3:6]), rgb_range='zero_to_one',
+                                       coordinate_frame='bridgevla_coarse_virtual_views')
+        for key in ('confidence', 'valid', 'role_token_valid', 'reference_null_probability'):
+            packet['visualization'][key] = _numpy(output['object_slot_' + key][0])
+        if 'trans' in output:
+            packet['visualization']['translation_logits'] = _numpy(output['trans'][0])
+        if 'mvt2' in output and 'mvt2_ori_img' in output:
+            refine = output['mvt2']
+            packet['visualization']['refine'] = dict(
+                role_prior=_numpy(refine['object_slot_prior'][0]),
+                rendered_rgb=_numpy(output['mvt2_ori_img'][0, :, 3:6]), rgb_range='zero_to_one',
+                coordinate_frame='bridgevla_refine_virtual_views',
+                roles_inherited=bool(refine.get('object_slot_roles_inherited', False)),
+                masks_refined=bool(refine.get('object_slot_masks_refined', False)),
+                crop_scale=float(network.st_sca), crop_center_coarse=_numpy(output['wpt_local1'][0]))
+            for key in ('confidence', 'valid', 'role_token_valid', 'reference_null_probability'):
+                packet['visualization']['refine'][key] = _numpy(refine['object_slot_' + key][0])
+            if 'trans' in refine:
+                packet['visualization']['refine']['translation_logits'] = _numpy(refine['trans'][0])
+    return packet

@@ -64,12 +64,13 @@ class OnlineSlotSam3Policy:
                  checkpoint_path: str | Path | None = None, bridge_git_sha: str | None = None,
                  *, enabled: bool = False, point_count: int = 128,
                  diagnostics_dir: str | Path | None = None, fallback: str = "baseline",
-                 expected_checkpoint_sha256: str | None = None):
+                 expected_checkpoint_sha256: str | None = None, stage: str = 'action'):
         self.agent, self.perception, self.snapshot_provider = agent, perception, snapshot_provider
         self.enabled = bool(enabled)
         self.checkpoint_path, self.bridge_git_sha = checkpoint_path, bridge_git_sha
         self.point_count, self.diagnostics_dir, self.fallback = point_count, diagnostics_dir, fallback
         self.expected_checkpoint_sha256 = expected_checkpoint_sha256
+        self.stage = stage
         self.last_diagnostics: dict[str, Any] | None = None
         self._episode_number, self._frame_sequence = 0, 0
         # The disabled constructor does not inspect a provider, perception,
@@ -81,6 +82,10 @@ class OnlineSlotSam3Policy:
                 raise ValueError("point_count must be a positive integer")
             if fallback not in ("baseline", "fail"):
                 raise ValueError("fallback must be baseline or fail")
+            if stage not in ('action', 'prompts'):
+                raise ValueError('stage must be action or prompts')
+            if stage == 'prompts' and diagnostics_dir is None:
+                raise ValueError('prompts stage requires a diagnostics directory')
             self._validate_agent()
             expected = (expected_checkpoint_sha256 if expected_checkpoint_sha256 is not None
                         else getattr(agent, "slot_guided_sam3_checkpoint_sha256", None))
@@ -168,6 +173,13 @@ class OnlineSlotSam3Policy:
         coarse_kwargs.update(visualize=False, visualization_callback=None)
         self._frame_sequence += 1
         diagnostics['policy_call_index'] = self._frame_sequence
+        callback = packets.append
+        if self.stage == 'prompts':
+            def collect(packet):
+                packets.append(packet)
+            collect.include_visualization = True
+            callback = collect
+            diagnostics.update(stage='prompts', action_source='baseline_C', sam3_executed=False)
         try:
             with torch.inference_mode():
                 self.agent.enable_slot_guided_sam3 = False
@@ -175,7 +187,7 @@ class OnlineSlotSam3Policy:
                 try:
                     original = _policy_result(self.agent.act(
                         step, observation, deterministic=deterministic,
-                        coarse_slot_callback=packets.append, **coarse_kwargs))
+                        coarse_slot_callback=callback, **coarse_kwargs))
                 except Exception:
                     # Export can fail after the original network forward. A
                     # fresh original call without export is the current C action;
@@ -195,6 +207,15 @@ class OnlineSlotSam3Policy:
                 if self.diagnostics_dir is not None:
                     diagnostic_path = Path(self.diagnostics_dir) / f"episode_{self._episode_number:05d}" / f"frame_{self._frame_sequence:06d}"
                 perceived_at = time.perf_counter()
+                if self.stage == 'prompts':
+                    report = self.perception.inspect(
+                        capture.snapshot, packets[0], instruction=capture.instruction,
+                        task_name=capture.task_name, checkpoint_path=self.checkpoint_path,
+                        bridge_git_sha=self.bridge_git_sha, diagnostics_dir=diagnostic_path,
+                        expected_snapshot_digest=receipt['snapshot_input_sha256'])
+                    diagnostics.update(status='prompts_only', probe=report)
+                    timings['prompt_probe'] = (time.perf_counter() - perceived_at) * 1000
+                    return self._finish(original, diagnostics, started)
                 result = self.perception.perceive(
                     capture.snapshot, packets[0], instruction=capture.instruction,
                     task_name=capture.task_name, checkpoint_path=self.checkpoint_path,
