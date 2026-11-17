@@ -90,3 +90,4 @@ exp/RLBench
 checkpoints
 *_visualizations*
 finetune/RLBench/train/*
+eval_debug
