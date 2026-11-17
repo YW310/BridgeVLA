@@ -58,6 +58,7 @@ class PerceptionSeam:
         self.checkpoint_sha = "f" * 64
         self.camera_peaks = {"front": None, "wrist": None}
         self.model_identity = object()
+        self.camera_roles, self.fused_roles = {}, {}
 
     def perceive(self, snapshot, packet, **kwargs):
         self.calls.append((snapshot, packet, kwargs))
@@ -69,7 +70,10 @@ class PerceptionSeam:
                                                                      "source_checkpoint_sha256": self.checkpoint_sha},))
         return SimpleNamespace(geometry=self.last_geometry, backend_kind=self.kind,
                                receipt={**receipt(snapshot.index), **self.receipt_update}, timings_ms={"segmentation": 5.},
-                               inference={"cameras": {name: {"peak_vram_bytes": value} for name, value in self.camera_peaks.items()}})
+                               inference={"cameras": {name: {"peak_vram_bytes": value,
+                                                          "roles": self.camera_roles.get(name, {})}
+                                                      for name, value in self.camera_peaks.items()}},
+                               fused_geometry={'roles': self.fused_roles})
 
     def reset(self):
         self.resets += 1
@@ -227,6 +231,38 @@ def test_diagnostics_keep_capture_index_provenance_and_real_measurement_scope():
     assert diagnostics["roles"]["target"]["point_count"] == 2
     assert diagnostics["roles"]["reference"]["status"] == "NULL"
     assert all("mask" not in str(row) for row in diagnostics.values())
+
+
+def test_target_fallback_retains_prompt_candidate_and_fusion_reasons_without_mask_arrays():
+    import json
+
+    policy, agent, perception, _ = policy_fixture()
+    perception.empty = True
+    perception.camera_roles = {
+        'front': {'target': {'prompt': {'prompt_valid': True}, 'selected_index': None,
+                            'failure_reason': 'all_candidates_rejected',
+                            'candidates': [{'accepted': False, 'failure_reasons': ['positive_prompt_miss'],
+                                            'mask': np.ones((4, 4), dtype=bool)}]},
+                  'reference': {'prompt': {'prompt_valid': False}, 'failure_reason': 'NULL', 'candidates': []}},
+        'wrist': {'target': {'prompt': {'prompt_valid': False}, 'failure_reason': 'OUTSIDE_IMAGE', 'candidates': []}}
+    }
+    perception.fused_roles = {
+        'target': {'failure_reason': 'NO_GEOMETRIC_SUPPORT', 'role_confidence': .7, 'support_cameras': []},
+        'reference': {'failure_reason': 'NULL', 'role_confidence': 0., 'support_cameras': []}
+    }
+    result = policy.act(3, {'current_index': 0})
+    diagnostics = result.info['slot_guided_sam3']
+    assert diagnostics['status'] == 'baseline_fallback' and result.action[0] == 3
+    assert len(agent.calls) == 1 and diagnostics['policy_call_index'] == 1
+    front = diagnostics['camera_roles']['front']['target']
+    assert front['candidate_count'] == 1 and front['accepted_candidate_count'] == 0
+    assert front['candidate_failure_reasons'] == ['positive_prompt_miss']
+    assert diagnostics['camera_roles']['wrist']['target']['failure_reason'] == 'OUTSIDE_IMAGE'
+    assert diagnostics['roles']['target']['failure_reason'] == 'NO_GEOMETRIC_SUPPORT'
+    assert diagnostics['roles']['reference']['status'] == 'NULL'
+    json.dumps(diagnostics, allow_nan=False)  # Only compact diagnostics; no NumPy masks.
+    policy.act(4, {'current_index': 1})
+    assert policy.last_diagnostics['policy_call_index'] == 2
 
 
 @pytest.mark.parametrize("kind,empty,confidence", [("mock", False, .9), ("sam3", True, 0.), ("sam3", False, .1)])

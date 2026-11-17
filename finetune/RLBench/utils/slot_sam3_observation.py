@@ -269,7 +269,10 @@ class SlotSam3ObservationProvider:
             value = _array(prepped_observation[key])
             if value.ndim != expected.ndim + 2 or value.shape[0] != 1 or value.shape[1] < 1:
                 raise ValueError(f'{key}: expected one batch with an explicit current time axis')
-            latest = value[0, -1]
+            # YARR casts float64 arrays on reset, then appends raw dtypes on
+            # later steps. Bind both in the same float32 policy representation
+            # without relaxing the existing equality tolerance.
+            latest = np.asarray(value[0, -1], dtype=expected.dtype)
             if (latest.shape != expected.shape or not np.allclose(latest, expected, rtol=0, atol=1e-7, equal_nan=True)):
                 raise ValueError(f'{key}: policy tensors do not match the cached current frame')
         if _language(prepped_observation.get('language_goal')) != self._packet.instruction:

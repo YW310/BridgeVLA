@@ -84,6 +84,54 @@ Enabled training remains rejected.
 
 ## Current camera coordinates and source indices
 
+### Multi-step dtype binding and step-log interpretation
+
+YARR converts float64 observation arrays to float32 when creating reset history,
+but appends subsequent raw observations without that conversion. With a
+non-float32-exact K, comparing a later float64 tensor directly against the
+provider's float32 binding can incorrectly report
+`front_camera_intrinsics: policy tensors do not match the cached current frame`.
+The provider now compares the latest B,T entry in the same float32 representation
+used at capture/reset, retaining the existing equality tolerance. It does not
+modify YARR or policy observations. Tests run the actual rollout generator for
+three calls with one/two history entries, moving wrist poses and nonexact focal
+values; genuine changed K/T, stale frames and RGB-D mismatches still fail.
+
+The supplied `open_drawer` step log contained 30 policy calls across episodes
+0–9, with 7 `conditioned` calls, 20 calibration-binding fallbacks and 3 fallbacks
+without reliable Target geometry. All 10 captured frames were `simstep-0`;
+later calls were rejected before SAM3. This confirms that the route reached
+action conditioning on some initial frames, not that the intended instance was
+correct or that any episode succeeded. The file has no success/GT mask/action
+labels, so role accuracy, mask IoU and paired success rate cannot be inferred.
+
+Observed medians were 0.265 s for baseline_C, 42.425 s total for conditioned
+calls, 20.877 s for the fusion phase, and 21.116 s for conditioned_action.
+The segmentation-phase median was 0.121 s across ten attempts, including prompt
+failures/skips; it is not a per-image SAM3 speed benchmark. The maximum logged
+allocator peak was 13.14 GiB during per-camera segmentation measurement,
+including resident models, not SAM3-exclusive memory or a full-frame peak.
+Fusion and action authorization both currently compute full-file Coarse
+checkpoint SHA256 digests. These repeated reads are a suspected major contributor
+to the two roughly 21 s phases; their isolated cost has not been profiled here.
+Full-file integrity checks remain in place, and no latency improvement is claimed.
+
+Step diagnostics now include an episode-local `policy_call_index`,
+`camera_roles.<camera>.<role>` prompt failure/candidate counts/rejection reasons,
+and `roles.<role>` fusion failure reason, role confidence and supporting cameras.
+Mask arrays are excluded from JSONL. To inspect actual boxes, masks and overlays,
+append the existing option to the original online command:
+
+```bash
+--slot-sam3-diagnostics-dir /absolute/path/to/slot_sam3_diagnostics
+```
+
+Each invocation creates its own run directory. Keep that directory alongside
+`slot_sam3_steps.jsonl` and episode result files. An empty/low-confidence Target
+still falls back to the current baseline; do not lower gates solely to increase
+the number of `conditioned` rows. The recorded Reference `NULL` is the model's
+semantic prediction and is not a verified GT role label.
+
 If a frame reports `current online RGB-D unavailable` with the old combined
 `rigid zero-skew pinhole camera` error, its SAM3 geometry was not used: the
 policy returned the original current-frame action as `baseline_fallback`.

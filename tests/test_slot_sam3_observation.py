@@ -27,12 +27,12 @@ def task_repo():
     return path
 
 
-def raw_observation(wrist_translation=.2):
+def raw_observation(wrist_translation=.2, focal_offset=0.):
     obs = SimpleNamespace(misc={})
     extracted = {'low_dim_state': np.array([1., .03, .03, .95], dtype=np.float32)}
     for name, x in (('front', 0.), ('wrist', wrist_translation)):
         h, w = 8, 10
-        k = np.array([[-80., 0., 4.5], [0., -90., 3.5], [0., 0., 1.]])
+        k = np.array([[-80. - focal_offset, 0., 4.5], [0., -90. - focal_offset, 3.5], [0., 0., 1.]])
         angle = .3 if name == 'wrist' else 0.
         c, s = np.cos(angle), np.sin(angle)
         t = np.array([[c, -s, 0., x], [s, c, 0., -.1], [0., 0., 1., .6], [0., 0., 0., 1.]])
@@ -312,3 +312,65 @@ def test_invalid_camera_reports_name_and_specific_metric(current, kind):
         provider.capture_raw(raw, extracted, task_name='pick_up_cup', instruction='move the red object')
     with pytest.raises(ValueError, match='unavailable'):
         provider.capture(prepped(extracted))
+
+
+@pytest.mark.parametrize('timesteps', [1, 2])
+def test_actual_rollout_reset_and_later_float64_frames_share_canonical_binding(task_repo, timesteps):
+    import torch
+
+    path = ROOT / 'finetune/bridgevla/libs/YARR/yarr/utils/rollout_generator.py'
+    tree = ast.parse(path.read_text(encoding='utf-8'))
+    cls = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == 'RolloutGenerator')
+    scope = dict(np=np, torch=torch, Value=object, Env=object, Agent=object, ActResult=object,
+                 ReplayTransition=lambda *a, **kw: SimpleNamespace(**kw))
+    exec(compile(ast.Module(body=[cls], type_ignores=[]), str(path), 'exec'), scope)
+    clock = [1., .05]
+    provider = SlotSam3ObservationProvider(task_repo, ['front', 'wrist'], time_source=lambda: tuple(clock))
+    packets, input_dtypes = [], []
+
+    class Environment:
+        _lang_goal, active_task_id = 'move the red object', 0
+
+        def observation(self, index):
+            raw, extracted = raw_observation(wrist_translation=.2 + .1 * index, focal_offset=.123456789)
+            # This is not an exactly float32-representable focal length; the
+            # previous raw-vs-canonical comparison genuinely rejected it.
+            k = extracted['front_camera_intrinsics']
+            assert not np.allclose(k, k.astype(np.float32), rtol=0, atol=1e-7)
+            provider.capture_raw(raw, extracted, task_name='pick_up_cup', instruction=self._lang_goal)
+            return extracted
+
+        def reset_to_demo(self, seed):
+            self.index = 0
+            provider.begin_episode()
+            return self.observation(0)
+
+        def step(self, result):
+            self.index += 1
+            clock[0] += clock[1]
+            return SimpleNamespace(observation=self.observation(self.index), terminal=self.index == 3,
+                                   reward=0., info={}, summaries=[])
+
+    class Agent:
+        def reset(self):
+            pass
+
+        def act(self, step, observation):
+            input_dtypes.append(observation['front_camera_intrinsics'].dtype)
+            packets.append(provider.capture(observation))
+            return SimpleNamespace(action=np.zeros(9), observation_elements={}, replay_elements={})
+
+    generator = scope['RolloutGenerator'](env_device='cpu')
+    list(generator.generator(SimpleNamespace(value=0), Environment(), Agent(), 3, timesteps, True))
+    assert input_dtypes == [torch.float32, torch.float64, torch.float64]
+    assert [packet.receipt['source_frame_index'] for packet in packets] == [0, 1, 2]
+    assert len({packet.receipt['calibration_sha256'] for packet in packets}) == 3
+    # Genuine stale K/T is still rejected after dtype normalization.
+    raw, extracted = raw_observation(wrist_translation=.5, focal_offset=.123456789)
+    provider.capture_raw(raw, extracted, task_name='pick_up_cup', instruction='move the red object')
+    wrong = {key: np.asarray(value)[None, None] for key, value in extracted.items()}
+    wrong['language_goal'] = [[['move the red object']]]
+    wrong['front_camera_intrinsics'] = wrong['front_camera_intrinsics'].copy()
+    wrong['front_camera_intrinsics'][0, 0, 0, 0] += .001
+    with pytest.raises(ValueError, match='front_camera_intrinsics.*do not match'):
+        provider.capture(wrong)

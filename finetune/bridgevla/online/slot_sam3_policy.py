@@ -167,6 +167,7 @@ class OnlineSlotSam3Policy:
         # Avoid duplicate visualization writes/callbacks in the two-pass route.
         coarse_kwargs.update(visualize=False, visualization_callback=None)
         self._frame_sequence += 1
+        diagnostics['policy_call_index'] = self._frame_sequence
         try:
             with torch.inference_mode():
                 self.agent.enable_slot_guided_sam3 = False
@@ -209,6 +210,20 @@ class OnlineSlotSam3Policy:
                 diagnostics["peak_gpu_memory_bytes"] = max(measured_peaks) if measured_peaks else None
                 diagnostics["peak_gpu_memory_scope"] = "maximum SAM3 per-camera torch allocator peak; policy forward excluded"
                 diagnostics["camera_peak_vram_bytes"] = camera_peaks
+                diagnostics['camera_roles'] = {
+                    name: {
+                        role: dict(prompt_valid=row.get('prompt', {}).get('prompt_valid'),
+                                   failure_reason=row.get('failure_reason'),
+                                   candidate_count=len(row.get('candidates', [])),
+                                   accepted_candidate_count=sum(candidate.get('accepted') is True
+                                                                for candidate in row.get('candidates', [])),
+                                   candidate_failure_reasons=sorted({
+                                       reason for candidate in row.get('candidates', [])
+                                       for reason in candidate.get('failure_reasons', [])}),
+                                   selected_index=row.get('selected_index'))
+                        for role, row in camera.get('roles', {}).items()
+                    } for name, camera in camera_results.items()
+                }
                 if result.backend_kind != "sam3":
                     raise ValueError("Mock perception cannot condition an online action")
                 returned_receipt = _receipt(result.receipt)
@@ -225,6 +240,12 @@ class OnlineSlotSam3Policy:
                                geometry_confidence=float(geometry.object_geometry_confidence[0, index]))
                     for index, role in enumerate(("target", "reference"))
                 }
+                for role, row in getattr(result, 'fused_geometry', {}).get('roles', {}).items():
+                    if role in diagnostics['roles']:
+                        diagnostics['roles'][role].update(
+                            failure_reason=row.get('failure_reason'),
+                            role_confidence=row.get('role_confidence'),
+                            support_cameras=row.get('support_cameras', []))
                 if any(meta.get("source_checkpoint_sha256") != self.expected_checkpoint_sha256
                        for meta in geometry.provenance):
                     raise ValueError("Coarse checkpoint changed or differs from the loaded policy checkpoint")
