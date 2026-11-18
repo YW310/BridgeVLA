@@ -490,6 +490,7 @@ class RVTAgent:
         object_slot_diversity_loss_weight: float = 0.01,
         object_slot_mixed_role_loss_weight: float = 1.0,
         object_refine_mask_loss_weight: float = 1.0,
+        object_refine_center_loss_weight: float = 0.0,
         object_refine_diversity_loss_weight: float = 0.0,
         log_dir="",
         collision_loss_weight: float = 1.0,
@@ -555,6 +556,7 @@ class RVTAgent:
         self.oracle_log_base_loss = bool(oracle_log_base_loss)
         self.oracle_valid_only_loss = bool(oracle_valid_only_loss)
         slot_loss_weights = (
+            object_refine_center_loss_weight,
             object_slot_mask_loss_weight,
             object_slot_null_loss_weight,
             object_slot_diversity_loss_weight,
@@ -568,6 +570,7 @@ class RVTAgent:
         if not math.isfinite(object_refine_mask_loss_weight):
             raise ValueError('object_refine_mask_loss_weight must be finite')
         self.object_refine_mask_loss_weight = float(object_refine_mask_loss_weight)
+        self.object_refine_center_loss_weight = float(object_refine_center_loss_weight)
         self.object_refine_diversity_loss_weight = float(object_refine_diversity_loss_weight)
         self.object_slot_null_loss_weight = float(object_slot_null_loss_weight)
         self.object_slot_diversity_loss_weight = float(
@@ -1002,10 +1005,14 @@ class RVTAgent:
                         stage_output['object_slot_target_prior'], teacher_valid,
                         stage_output['object_refine_pixel_valid'],
                         role_present, role_present_known,
+                        rendered_xyz=stage_output.get('object_refine_rendered_xyz'),
+                        visible_support=stage_output.get('object_role_visible_support'),
                     )
                     for name in ('mask', 'bce', 'dice'):
                         key = 'refine_' + name
                         sums[key] = sums.get(key, 0.) + local[name]
+                    if 'center' in local:
+                        sums['refine_center'] = sums.get('refine_center', 0.) + local['center']
                     separation = role_separation_loss(
                         stage_output['object_refine_mask_logits'].float().sigmoid(),
                         stage_output['object_slot_target_prior'], teacher_valid,
@@ -1736,6 +1743,9 @@ class RVTAgent:
                 if 'refine_mask' in object_slot_losses:
                     total_loss = (total_loss + self.object_refine_mask_loss_weight
                                   * object_slot_losses['refine_mask'])
+                    if 'refine_center' in object_slot_losses:
+                        total_loss = (total_loss + self.object_refine_center_loss_weight
+                                      * object_slot_losses['refine_center'])
                     total_loss = (total_loss + self.object_refine_diversity_loss_weight
                                   * object_slot_losses['refine_diversity'])
             base_total_loss = None
@@ -1826,6 +1836,8 @@ class RVTAgent:
                         'object_refine_diversity_supervised_pixels': object_slot_losses['refine_diversity_pixels'].item(),
                         'object_refine_diversity_loss_weight': self.object_refine_diversity_loss_weight,
                     })
+                    if 'refine_center' in object_slot_losses:
+                        loss_log['object_refine_center_loss'] = object_slot_losses['refine_center'].item()
                 for prefix, log_prefix in (('diversity_', 'object_slot_diversity_'),
                                            ('refine_diversity_', 'object_refine_diversity_')):
                     for name in ('visibility_available', 'teacher_role_views',

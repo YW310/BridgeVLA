@@ -165,10 +165,74 @@ python -u finetune/RLBench/slot_guided_sam3_online.py \
 `--slot-sam3-checkpoint "$PWD/checkpoints/sam3/sam3.pt"` 执行真实 SAM3 路径。
 对照实验用同一新 checkpoint、同一配置与 episodes，只切换 `--slot-sam3-guidance-stage coarse`。
 
-**纠错边界：** 目标在局部观测内且角色 token 尚有效时，可由已训练局部头提供修正证据；
+**上述残差配置的纠错边界：** 目标在局部观测内且角色 token 尚有效时，可由已训练局部头提供修正证据；
 Coarse 硬判无效、错误 NULL、目标在裁剪外或语义选错实例，目前没有全局恢复机制。
 这条路径只是具备局部修正接口，不能保证恢复 FN。
 本机只验证 CPU/Mock 契约与回归，未测真实 mask IoU、定位误差、FN 恢复率或操作成功率。
+
+<a id="local-relocalize"></a>
+
+### 像 fine key-action 一样独立修正角色定位
+
+新增 `object_conditioning.refine_relocalize: True`，默认 False，所有旧配置不变。
+它复用当前 action waypoint 的局部渲染与 VLM 特征，独立预测 T/R 图；
+Coarse token 保留角色条件，位置仅为有界软偏置，不再以 Coarse 峰值有效性或三倍 spread 限制搜索。
+该模式要求 local mask/query head，并关闭 `refine_heatmap_residual`，避免未知位置被固定的极低投影概率锁住。
+不新增 VLM 前向、无序 slot 角色匹配或双向 Cross-Attention。
+
+局部图在当前观测表面预测，按局部峰值重新判断可靠性。只有可靠角色更新局部点与软几何，
+否则保留原全局角色上下文。Reference NULL posterior 不重选，空深度和 cube 外 XYZ 不产生局部证据。
+SAM3 导出允许经过新模式验证的局部结果恢复 Coarse 低峰值门控；仍要求 coverage、至少 4 个不同 XYZ、
+0.25 响应与原相机深度/投影检查。选择记录中的 `coarse_gate_recovered` 表示软件门控被恢复，**不是 GT 检测召回率**。
+
+训练使用 [rlbench_o2_role_relocalize.yaml](../finetune/RLBench/configs/rlbench_o2_role_relocalize.yaml)：
+原 Coarse/Refine 图、NULL、角色分离和动作损失保留，增加
+`rvt.object_refine_center_loss_weight: 1.0`。该项是**局部 cube 内、经 XYZ 可见性核验的 GT 表面点重心 L1**，
+不是完整对象中心或密集分割 GT；没有可靠可见 GT、未知角色或语义不存在时跳过。
+它不受预测的 valid/NULL 门控，teacher/XYZ 不接收梯度，未标注像素不伪造成背景。
+沿用 waypoint 裁剪扰动，并以 `refine_hint_dropout: 0.25` 在训练时按角色随机移除位置提示，
+角色 token、实际 RGB-D、NULL 和全局回退上下文保持原样。评估不执行该 dropout。
+
+以下在仓库根目录初始化新实验；替换 Semantic-GT replay 路径：
+
+```bash
+SEMANTIC_BUFFER=/data/BridgeVLA_RLBench_SEMANTIC_GT_MASK_VERIFIED_Buffer
+COARSE_CHECKPOINT="$PWD/finetune/RLBench/train/rlbench_o2_role_queries/11_08_09_27/model_last.pth"
+cd finetune/RLBench
+GPUS_PER_NODE=2 bash train_8x40.sh \
+  --exp_cfg_path configs/rlbench_o2_role_relocalize.yaml \
+  --train_replay_storage_dir "$SEMANTIC_BUFFER" \
+  --init_checkpoint "$COARSE_CHECKPOINT" \
+  --exp_note role_relocalize_s0 --log_dir exp/RLBench \
+  --save_optimizer_state --log_backend tensorboard \
+  --exp_cfg_opts "bs 2 num_workers 2 pin_memory False"
+```
+
+SAM3 在训练中关闭。现有 role-query checkpoint 可保留兼容权重并初始化新局部头；
+不要用旧 optimizer resume，也不要直接加载旧残差头到独立头。
+checkpoint 记录新路由，评估会拒绝用未训练该模式的旧权重冒充新模型。
+
+回到仓库根目录，训练后先做提示诊断：
+
+```bash
+MODEL_DIR=/absolute/path/to/trained/role_relocalize/run
+python -u finetune/RLBench/slot_guided_sam3_online.py \
+  --config finetune/RLBench/configs/rlbench_slot_guided_sam3_relocalize_online.yaml \
+  --model-folder "$MODEL_DIR" --model-name model_last.pth \
+  --eval-datafolder "$PWD/LPY/BridgeVLA_RLBench_EVAL_DATA" \
+  --tasks open_drawer --eval-episodes 1 --episode-length 3 --device 0 \
+  --slot-sam3-task-repo ../SAM31 --slot-sam3-stage prompts \
+  --slot-sam3-diagnostics-dir "$PWD/eval_debug/role_relocalize"
+```
+
+诊断显示 `relocalized`、Coarse/Refine 各自定位图和最终原图提示；环境仍执行当前 baseline 动作。
+真实 SAM3 模式改用 `--slot-sam3-stage action` 并添加实际 `--slot-sam3-checkpoint`。
+用同一新 checkpoint 将 `--slot-sam3-guidance-stage` 设为 `coarse` 或 `refine` 比较提示来源；
+新旧定位架构则需按相同数据、初始化、训练预算重新训练后配对评估。
+
+当前仍共享 action 裁剪，目标完全在裁剪外、语义选错实例或错误 NULL 没有全局恢复保证；
+独立角色裁剪/重搜尚未实现。CPU 合成优化测试只验证能从错误先验学习移动局部定位，
+Mock 验证软件链路；真实 FN、3D 误差、IoU、延迟及 paired task success 仍需实测。
 
 <a id="slot-prompt-probe"></a>
 

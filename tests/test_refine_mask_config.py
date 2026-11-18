@@ -85,7 +85,7 @@ class RefineMaskConfigTest(unittest.TestCase):
             call = next(node for node in ast.walk(tree) if isinstance(node, ast.Call)
                         and isinstance(node.func, ast.Name) and node.func.id == 'MVT')
             args = {item.arg: ast.unparse(item.value) for item in call.keywords}
-            for flag in ('refine_role_masks', 'refine_local_query', 'refine_heatmap_residual', 'refine_mask_detach'):
+            for flag in ('refine_role_masks', 'refine_local_query', 'refine_heatmap_residual', 'refine_relocalize', 'refine_mask_detach'):
                 self.assertEqual(args['object_conditioning_' + flag],
                                  'exp_cfg.object_conditioning.' + flag)
         model = _model(refine_role_masks=True, refine_local_query=True, refine_mask_detach=True)
@@ -94,6 +94,33 @@ class RefineMaskConfigTest(unittest.TestCase):
         self.assertTrue(saved[0][0]['object_conditioning']['refine_role_masks'])
         self.assertTrue(saved[0][0]['object_conditioning']['refine_local_query'])
         self.assertTrue(saved[0][0]['object_conditioning']['refine_mask_detach'])
+
+    def test_relocalization_requires_independent_trained_routing_and_is_default_off(self):
+        self.assertFalse(get_cfg_defaults().object_conditioning.refine_relocalize)
+        cfg = get_cfg_defaults()
+        cfg.merge_from_file(str(ROOT / 'finetune/RLBench/configs/rlbench_o2_role_relocalize.yaml'))
+        self.assertTrue(cfg.object_conditioning.refine_relocalize)
+        self.assertFalse(cfg.object_conditioning.refine_heatmap_residual)
+        self.assertEqual(cfg.rvt.object_prediction_confidence_threshold, .25)
+        self.assertEqual(cfg.rvt.object_refine_center_loss_weight, 1.)
+        self.assertFalse(cfg.rvt.enable_slot_guided_sam3)
+        _model_guard_namespace(object_slot_predictor_type='role_queries', object_slot_num_slots=2,
+            object_conditioning_inherit_coarse_roles=True, object_conditioning_preserve_role_tokens=True,
+            object_conditioning_refine_role_masks=True, object_conditioning_refine_local_query=True,
+            object_conditioning_refine_relocalize=True)
+        with self.assertRaisesRegex(ValueError, 'refine_relocalize'):
+            _model_guard_namespace(object_conditioning_refine_relocalize=True)
+        model = _model(refine_relocalize=True)
+        namespace, saved = _train_namespace({})
+        namespace['save_agent'](SimpleNamespace(_network=model), 'new.pth', 0)
+        self.assertTrue(saved[0][0]['object_conditioning']['refine_relocalize'])
+        validate = _isolated_functions('finetune/RLBench/eval.py',
+            {'_validate_role_feature_checkpoint'}, {})['_validate_role_feature_checkpoint']
+        with self.assertRaisesRegex(RuntimeError, 'refine_relocalize'):
+            validate({}, SimpleNamespace(refine_relocalize=True), 'old.pth')
+        namespace, _ = _train_namespace({'epoch': 0, 'model_state': {}, 'object_conditioning': {}})
+        with self.assertRaisesRegex(RuntimeError, '--init_checkpoint'):
+            namespace['load_training_checkpoint'](SimpleNamespace(_network=model), 'old.pth')
 
     def test_constructor_requires_role_inheritance_and_preservation(self):
         with self.assertRaisesRegex(ValueError, 'refine_local_query requires'):

@@ -96,11 +96,22 @@ class MVT(nn.Module):
         object_conditioning_refine_role_masks=False,
         object_conditioning_refine_local_query=False,
         object_conditioning_refine_heatmap_residual=False,
+        object_conditioning_refine_relocalize=False,
+        object_conditioning_refine_hint_dropout=0.,
         object_conditioning_soft_coarse_queries=False,
         object_conditioning_soft_coarse_null_renorm=False,
         object_conditioning_refine_mask_detach=False,
     ):
         super().__init__()
+        if not 0 <= object_conditioning_refine_hint_dropout <= 1 or (
+            object_conditioning_refine_hint_dropout and not object_conditioning_refine_relocalize
+        ):
+            raise ValueError('refine_hint_dropout requires relocalize and a probability in [0,1]')
+        if object_conditioning_refine_relocalize and not (
+            object_conditioning_refine_role_masks and object_conditioning_refine_local_query
+            and object_slot_predictor_type == 'role_queries' and not object_conditioning_refine_heatmap_residual
+        ):
+            raise ValueError('refine_relocalize requires role_queries, local mask/query heads and no heatmap residual')
         if object_conditioning_soft_coarse_null_renorm and not object_conditioning_soft_coarse_queries:
             raise ValueError('soft_coarse_null_renorm requires soft_coarse_queries=True')
         if object_conditioning_soft_coarse_queries:
@@ -211,6 +222,8 @@ class MVT(nn.Module):
         del args['object_conditioning_refine_role_masks']
         del args['object_conditioning_refine_local_query']
         del args['object_conditioning_refine_heatmap_residual']
+        del args['object_conditioning_refine_relocalize']
+        del args['object_conditioning_refine_hint_dropout']
         del args['object_conditioning_soft_coarse_queries']
         del args['object_conditioning_soft_coarse_null_renorm']
         del args['object_conditioning_refine_mask_detach']
@@ -240,6 +253,7 @@ class MVT(nn.Module):
         self.object_conditioning_refine_role_masks = bool(object_conditioning_refine_role_masks)
         self.object_conditioning_refine_local_query = bool(object_conditioning_refine_local_query)
         self.object_conditioning_refine_heatmap_residual = bool(object_conditioning_refine_heatmap_residual)
+        self.object_conditioning_refine_relocalize = bool(object_conditioning_refine_relocalize)
         self.object_conditioning_soft_coarse_queries = bool(object_conditioning_soft_coarse_queries)
         self.object_conditioning_soft_coarse_null_renorm = bool(object_conditioning_soft_coarse_null_renorm)
         self.object_conditioning_refine_mask_detach = bool(object_conditioning_refine_mask_detach)
@@ -321,7 +335,10 @@ class MVT(nn.Module):
         self.refine_role_mask_head = (
             RoleConditionedRefineMaskHead(self.mvt1.vlm_dim, object_slot_dim,
                                          local_query=self.object_conditioning_refine_local_query,
-                                         heatmap_residual=self.object_conditioning_refine_heatmap_residual)
+                                         heatmap_residual=self.object_conditioning_refine_heatmap_residual,
+                                         relocalize=self.object_conditioning_refine_relocalize,
+                                         confidence_threshold=object_slot_confidence_threshold,
+                                         hint_dropout=object_conditioning_refine_hint_dropout)
             if self.object_conditioning_refine_role_masks else None
         )
 

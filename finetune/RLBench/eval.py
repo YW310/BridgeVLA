@@ -117,7 +117,7 @@ def _validate_role_feature_checkpoint(checkpoint, conditioning_cfg, source,
     # not change inference and is deliberately excluded from this comparison.
     for flag in ('shared_action_features', 'use_context',
                  'inherit_coarse_roles', 'preserve_role_tokens', 'refine_role_masks',
-                 'refine_local_query', 'refine_heatmap_residual', 'soft_coarse_queries',
+                 'refine_local_query', 'refine_heatmap_residual', 'refine_relocalize', 'soft_coarse_queries',
                  'soft_coarse_null_renorm'):
         if bool(stored.get(flag, False)) != bool(getattr(conditioning_cfg, flag, False)):
             raise RuntimeError(
@@ -210,6 +210,8 @@ def load_agent(
         object_conditioning_refine_role_masks=exp_cfg.object_conditioning.refine_role_masks,
         object_conditioning_refine_local_query=exp_cfg.object_conditioning.refine_local_query,
         object_conditioning_refine_heatmap_residual=exp_cfg.object_conditioning.refine_heatmap_residual,
+        object_conditioning_refine_relocalize=exp_cfg.object_conditioning.refine_relocalize,
+        object_conditioning_refine_hint_dropout=exp_cfg.object_conditioning.refine_hint_dropout,
         object_conditioning_soft_coarse_queries=exp_cfg.object_conditioning.soft_coarse_queries,
         object_conditioning_soft_coarse_null_renorm=exp_cfg.object_conditioning.soft_coarse_null_renorm,
         object_conditioning_refine_mask_detach=exp_cfg.object_conditioning.refine_mask_detach,

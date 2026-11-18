@@ -149,6 +149,7 @@ def build_coarse_slot_packet(network, output, scene_cube, reverse_cube, scene_wo
                 coordinate_frame='bridgevla_refine_virtual_views',
                 roles_inherited=bool(refine.get('object_slot_roles_inherited', False)),
                 masks_refined=bool(refine.get('object_slot_masks_refined', False)),
+                relocalized=bool(refine.get('object_slot_relocalized', False)),
                 crop_scale=float(network.st_sca), crop_center_coarse=_numpy(output['wpt_local1'][0]))
             for key in ('confidence', 'valid', 'role_token_valid', 'reference_null_probability'):
                 packet['visualization']['refine'][key] = _numpy(refine['object_slot_' + key][0])

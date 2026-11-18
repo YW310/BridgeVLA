@@ -204,7 +204,7 @@ def test_model_backend_constructed_once_and_frames_encode_fresh(scene, monkeypat
     assert scene["backends"]["front"].set_image_calls == 4
 
 
-def refined_packet(scene):
+def refined_packet(scene, *, recover_coarse=False):
     """Actual local readout -> world guidance -> TASK prompts/fusion with Mock."""
     from types import SimpleNamespace
     import torch
@@ -235,6 +235,13 @@ def refined_packet(scene):
     # mask must independently provide >=.25 current observed support.
     packet['slot_output']['confidence'][0] = .1
     packet['slot_output']['points'][0] += .5
+    if recover_coarse:
+        network.object_conditioning_refine_relocalize = True
+        output['mvt2']['object_slot_relocalized'] = True
+        packet['slot_output']['role_token_valid'][0] = False
+        packet['slot_output']['valid'][0] = False
+        packet['point_valid'][0] = False
+        packet['slot_output']['points'][0] = 0.
     return attach_refine_guidance(network, output, [points.reshape(-1, 3)], packet)
 
 
@@ -249,3 +256,14 @@ def test_refine_readout_drives_real_task_prompts_and_fusion_without_changing_sch
         assert result.geometry.provenance[0]['guidance_selection']['roles'][role]['selected_stage'] == 'refine'
         assert result.fused_geometry['roles'][role]['support_cameras'] == ['front', 'wrist']
     assert all(item.set_image_calls == 1 for item in scene['backends'].values())
+
+
+def test_relocalization_recovers_coarse_gate_through_real_task_prompts_and_mock_fusion(scene):
+    scene['packet'] = refined_packet(scene, recover_coarse=True)
+    result = _run(scene)
+    row = result.inference['guidance_selection']['roles']['target']
+    assert row['coarse_gate_recovered'] and row['selected_stage'] == 'refine'
+    assert not row['coarse_role_token_valid']
+    assert result.guidance.metadata['target']['status'] == 'VISIBLE'
+    assert result.geometry.object_role_valid[0, 0]
+    assert all(camera['roles']['target']['prompt']['prompt_valid'] for camera in result.inference['cameras'].values())

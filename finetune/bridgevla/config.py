@@ -83,6 +83,8 @@ _C.object_conditioning.preserve_role_tokens = False
 _C.object_conditioning.refine_role_masks = False
 _C.object_conditioning.refine_local_query = False
 _C.object_conditioning.refine_heatmap_residual = False
+_C.object_conditioning.refine_relocalize = False  # Independent local prediction; soft coarse spatial hints.
+_C.object_conditioning.refine_hint_dropout = 0.0  # Training-only per-role spatial-prior dropout.
 # Independent unordered refine slots receive zero-init soft coarse token hints.
 _C.object_conditioning.soft_coarse_queries = False
 # Renormalize coarse role attention when Reference is NULL (opt-in; needs soft_coarse_queries).
@@ -134,6 +136,7 @@ _C.rvt.object_prediction_confidence_threshold = 0.25
 _C.rvt.object_slot_mask_loss_weight = 1.0
 _C.rvt.object_slot_mixed_role_loss_weight = 1.0
 _C.rvt.object_refine_mask_loss_weight = 1.0
+_C.rvt.object_refine_center_loss_weight = 0.0  # Visible local-cube centroid L1; opt-in.
 _C.rvt.object_refine_diversity_loss_weight = 0.0
 _C.rvt.object_slot_null_loss_weight = 0.0
 _C.rvt.object_slot_diversity_loss_weight = 0.01

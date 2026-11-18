@@ -830,6 +830,10 @@ class MVT(nn.Module):
                 out['object_slot_masks_refined'] = True
                 out['object_refine_mask_logits'] = object_slot_output['refine_mask_logits']
                 out['object_refine_pixel_valid'] = object_slot_output['refine_pixel_valid']
+                if object_slot_output.get('relocalized', False):
+                    out['object_slot_relocalized'] = True
+                    out['object_refine_local_confidence'] = object_slot_output['refine_local_confidence']
+                    out['object_refine_rendered_xyz'] = object_slot_output['refine_rendered_xyz']
                 if 'refine_role_pixel_valid' in object_slot_output:
                     out['object_refine_role_pixel_valid'] = object_slot_output['refine_role_pixel_valid']
                 if object_slot_output.get('heatmap_residual', False):

@@ -472,6 +472,7 @@ def save_agent(
         'refine_role_masks': bool(getattr(conditioning_model, 'object_conditioning_refine_role_masks', False)),
         'refine_local_query': bool(getattr(conditioning_model, 'object_conditioning_refine_local_query', False)),
         'refine_heatmap_residual': bool(getattr(conditioning_model, 'object_conditioning_refine_heatmap_residual', False)),
+        'refine_relocalize': bool(getattr(conditioning_model, 'object_conditioning_refine_relocalize', False)),
         'soft_coarse_queries': bool(getattr(conditioning_model, 'object_conditioning_soft_coarse_queries', False)),
         'soft_coarse_null_renorm': bool(getattr(conditioning_model, 'object_conditioning_soft_coarse_null_renorm', False)),
         'refine_mask_detach': bool(getattr(conditioning_model, 'object_conditioning_refine_mask_detach', False)),
@@ -519,6 +520,7 @@ def load_training_checkpoint(agent, path, semantic_contract=None):
         'refine_role_masks': bool(getattr(model, 'object_conditioning_refine_role_masks', False)),
         'refine_local_query': bool(getattr(model, 'object_conditioning_refine_local_query', False)),
         'refine_heatmap_residual': bool(getattr(model, 'object_conditioning_refine_heatmap_residual', False)),
+        'refine_relocalize': bool(getattr(model, 'object_conditioning_refine_relocalize', False)),
         'soft_coarse_queries': bool(getattr(model, 'object_conditioning_soft_coarse_queries', False)),
         'soft_coarse_null_renorm': bool(getattr(model, 'object_conditioning_soft_coarse_null_renorm', False)),
         'refine_mask_detach': bool(getattr(model, 'object_conditioning_refine_mask_detach', False)),
@@ -532,7 +534,7 @@ def load_training_checkpoint(agent, path, semantic_contract=None):
     routing_keys = (
         'shared_action_features', 'use_context',
         'inherit_coarse_roles', 'preserve_role_tokens',
-        'refine_role_masks', 'refine_local_query', 'refine_heatmap_residual',
+        'refine_role_masks', 'refine_local_query', 'refine_heatmap_residual', 'refine_relocalize',
         'soft_coarse_queries', 'soft_coarse_null_renorm',
     )
     routing_changed = any(
@@ -1115,6 +1117,8 @@ def experiment(cmd_args):
         object_conditioning_refine_role_masks=exp_cfg.object_conditioning.refine_role_masks,
         object_conditioning_refine_local_query=exp_cfg.object_conditioning.refine_local_query,
         object_conditioning_refine_heatmap_residual=exp_cfg.object_conditioning.refine_heatmap_residual,
+        object_conditioning_refine_relocalize=exp_cfg.object_conditioning.refine_relocalize,
+        object_conditioning_refine_hint_dropout=exp_cfg.object_conditioning.refine_hint_dropout,
         object_conditioning_soft_coarse_queries=exp_cfg.object_conditioning.soft_coarse_queries,
         object_conditioning_soft_coarse_null_renorm=exp_cfg.object_conditioning.soft_coarse_null_renorm,
         object_conditioning_refine_mask_detach=exp_cfg.object_conditioning.refine_mask_detach,

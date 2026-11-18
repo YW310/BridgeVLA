@@ -214,6 +214,17 @@ def test_refine_profile_matches_existing_training_architecture_and_keeps_sam_fro
     assert not get_cfg_defaults().rvt.enable_slot_guided_sam3
 
 
+def test_relocalization_online_profile_matches_new_training_routing():
+    online = runtime.load_online_profile(runtime.PROFILE.with_name('rlbench_slot_guided_sam3_relocalize_online.yaml'))
+    train = get_cfg_defaults()
+    train.merge_from_file(str(runtime.PROFILE.with_name('rlbench_o2_role_relocalize.yaml')))
+    assert online.object_conditioning == train.object_conditioning
+    assert online.object_slots == train.object_slots
+    assert online.object_conditioning.refine_relocalize
+    assert online.rvt.object_prediction_confidence_threshold == train.rvt.object_prediction_confidence_threshold
+    assert runtime.resolve_runtime(online)['guidance_stage'] == 'refine'
+
+
 def test_launcher_forwards_refine_source_and_reports_it_in_config_check(monkeypatch, capsys):
     observed = []
     monkeypatch.setattr(runtime.runpy, 'run_path', lambda path, **kw: observed.append(list(sys.argv)))

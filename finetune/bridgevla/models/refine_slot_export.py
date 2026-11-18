@@ -76,7 +76,12 @@ def attach_refine_guidance(network, output, scene_cube, coarse_packet, *, min_pr
     scores = scores.permute(1, 0, 2, 3).flatten(1)
     # The readout may improve geometry, but cannot invent a semantic role or
     # undo the global NULL posterior. Both stages must retain the same identity.
-    semantic = slots['role_token_valid'] & _numpy(refine['object_slot_role_token_valid'][0])
+    refined_semantic = _numpy(refine['object_slot_role_token_valid'][0])
+    relocalized = bool(refine.get('object_slot_relocalized', False))
+    if relocalized and not bool(getattr(network, 'object_conditioning_refine_relocalize', False)):
+        raise ValueError('Refine relocalization output requires the matching trained model routing')
+    semantic = refined_semantic if relocalized else slots['role_token_valid'] & refined_semantic
+    selection['relocalized'] = relocalized
     local_valid = _numpy(refine['object_slot_valid'][0])
     count = slots['points'].shape[1]
     reverse_crop = np.eye(4)
@@ -85,7 +90,9 @@ def attach_refine_guidance(network, output, scene_cube, coarse_packet, *, min_pr
     selection.update(crop_center_coarse=_numpy(center[0]).tolist(), crop_scale=scale,
                      matrix_world_from_refine_cube=(np.asarray(packet['matrix_world_from_source']) @ reverse_crop).tolist())
     for index, role in enumerate(('target', 'reference')):
-        row = dict(selected_stage='coarse', failure_reason=None, supported_point_count=0)
+        coarse_semantic = bool(slots['role_token_valid'][index])
+        row = dict(selected_stage='coarse', failure_reason=None, supported_point_count=0,
+                   coarse_role_token_valid=coarse_semantic, refine_role_token_valid=bool(refined_semantic[index]))
         selection['roles'][role] = row
         if role == 'reference' and (bool(slots['reference_is_null']) or float(slots['reference_null_probability']) >= .75):
             row['failure_reason'] = 'REFERENCE_NULL'
@@ -121,9 +128,10 @@ def attach_refine_guidance(network, output, scene_cube, coarse_packet, *, min_pr
         slots['points'][index, :len(indices)] = _numpy(coarse_points)
         packet['point_valid'][index, :len(indices)] = True
         slots['valid'][index] = True
+        slots['role_token_valid'][index] = bool(refined_semantic[index])
         slots['confidence'][index] = float(scores[index, indices].max())
         row.update(selected_stage='refine', selected_point_count=len(indices),
-                   confidence=float(slots['confidence'][index]))
+                   confidence=float(slots['confidence'][index]), coarse_gate_recovered=not coarse_semantic)
     # Geometry[17] is inherited global context; do not mislabel it as the new
     # local centers/spreads. TASK does not use it to generate the actual points.
     slots['geometry'] = None

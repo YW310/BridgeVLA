@@ -6,7 +6,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
-from .object_conditioning import role_supervision_mask
+from .object_conditioning import role_supervision_mask, soft_role_geometry
 
 
 HEATMAP_FUSION_VERSION = 'spatial_tokens_v1'
@@ -106,7 +106,7 @@ class CoarseConditionedLocalQuery(nn.Module):
         pool = F.adaptive_max_pool2d if maximum else F.adaptive_avg_pool2d
         return pool(flat, size).reshape(batch, views, channels, *size)
 
-    def forward(self, tokens, memory, xyz, support, packet):
+    def forward(self, tokens, memory, xyz, support, packet, *, relocalize=False):
         batch, views, channels, mh, mw = memory.shape
         height, width = xyz.shape[-2:]
         expected = (batch, views, 2, height, width)
@@ -142,6 +142,15 @@ class CoarseConditionedLocalQuery(nn.Module):
         semantic = packet['role_token_valid'].bool()
         non_null = 1 - packet['reference_null_probability']
         semantic = torch.stack((semantic[:, 0], semantic[:, 1] & non_null.gt(1e-6)), dim=1)
+        if relocalize:
+            # Role-query indices define T/R identity. A low map peak is not
+            # semantic absence. Search every currently observed local surface;
+            # inherited position is bounded soft bias, never a search mask.
+            reference = ~packet['reference_is_null'].bool()
+            reference &= packet['reference_null_probability'].lt(.75)
+            semantic = torch.stack((torch.ones_like(reference), reference), dim=1)
+            evidence = support[:, :, None].expand(-1, -1, 2, -1, -1)
+            bias = bias.clamp(-2., 2.)
         evidence = evidence & support[:, :, None] & semantic[:, None, :, None, None]
         active = evidence.any(dim=(1, 3, 4))
         size = (mh, mw)
@@ -173,14 +182,25 @@ class RoleConditionedRefineMaskHead(nn.Module):
     The inherited packet supplies identity conditions and conservative local
     support. Optional local queries also consume geometric/spatial evidence,
     update the inherited tokens, and leave unsupported roles unchanged.
-    Global geometry/NULL are never reselected.
+    Default readout retains global geometry/NULL. Opt-in relocalization decodes
+    independent local maps, updates reliable geometry and keeps NULL/global
+    fallback context. Spatial hints never become identity/absence labels.
     """
 
     def __init__(self, feature_channels, role_token_dim, hidden_dim=32, *, local_query=False,
-                 heatmap_residual=False):
+                 heatmap_residual=False, relocalize=False, confidence_threshold=.25, hint_dropout=0.):
         super().__init__()
         if min(feature_channels, role_token_dim) <= 0 or hidden_dim < 2:
             raise ValueError('refine mask dimensions must be positive, hidden_dim >= 2')
+        if relocalize and (not local_query or heatmap_residual):
+            raise ValueError('refine relocalize requires local queries and independent maps (no heatmap residual)')
+        if not 0 <= confidence_threshold <= 1:
+            raise ValueError('refine confidence threshold must be in [0,1]')
+        if not 0 <= hint_dropout <= 1 or hint_dropout and not relocalize:
+            raise ValueError('refine hint dropout requires relocalize and a probability in [0,1]')
+        self.relocalize = bool(relocalize)
+        self.confidence_threshold = float(confidence_threshold)
+        self.hint_dropout = float(hint_dropout)
         self.semantic = nn.Conv2d(feature_channels, hidden_dim, 1)
         self.detail_half = nn.Sequential(nn.Conv2d(7, hidden_dim // 2, 3, 2, 1), nn.GELU())
         self.detail_quarter = nn.Sequential(
@@ -214,6 +234,8 @@ class RoleConditionedRefineMaskHead(nn.Module):
             raise ValueError('inherited role tokens must have shape [B,2,D]')
         support = torch.isfinite(xyz).all(dim=2)
         support &= ~(xyz.eq(0).all(dim=2) | xyz.eq(-1).all(dim=2))
+        if self.relocalize:
+            support &= xyz.abs().le(1. + 1e-5).all(dim=2)
         clean_xyz = torch.where(support[:, :, None], xyz, 0.)
         clean_rgb = torch.where(support[:, :, None],
                                 torch.nan_to_num(rgb, nan=0., posinf=0., neginf=0.), 0.)
@@ -235,9 +257,17 @@ class RoleConditionedRefineMaskHead(nn.Module):
         semantic = F.interpolate(semantic, size=quarter.shape[-2:], mode='bilinear', align_corners=False)
         dense = self.fuse(torch.cat((semantic, quarter), dim=1))
         query_state = None
+        hint_dropped = None
         if self.local_query is not None:
             memory = dense.reshape(batch, views, -1, *dense.shape[-2:])
-            query_state = self.local_query(tokens, memory, clean_xyz, support, packet)
+            query_packet = packet
+            if self.relocalize and self.training and self.hint_dropout:
+                hint_dropped = torch.rand(batch, 2, device=tokens.device).lt(self.hint_dropout)
+                keep = ~hint_dropped
+                geometry = packet['geometry']
+                geometry = torch.cat((geometry[:, :15], geometry[:, 15:17] * keep), dim=1)
+                query_packet = dict(packet, prior=packet['prior'] * keep[:, None, :, None, None], geometry=geometry)
+            query_state = self.local_query(tokens, memory, clean_xyz, support, query_packet, relocalize=self.relocalize)
             tokens = query_state[0]
         keys = F.interpolate(self.keys(dense), size=half.shape[-2:],
                              mode='bilinear', align_corners=False) + self.edge_keys(half)
@@ -260,7 +290,10 @@ class RoleConditionedRefineMaskHead(nn.Module):
         else:
             logits = logits + self.bias[None, None, :, None, None]
             if query_state is not None:
-                logits = logits + self.local_query.spatial_gain * query_state[1]
+                gain = self.local_query.spatial_gain
+                if self.relocalize:
+                    gain = gain.tanh()
+                logits = logits + gain * query_state[1]
         role_support = support[:, :, None].expand(-1, -1, 2, -1, -1)
         if query_state is not None and not self.heatmap_residual:
             # Use the same role/view-specific support as query attention.
@@ -298,11 +331,55 @@ class RoleConditionedRefineMaskHead(nn.Module):
         result.update(prior=prior, prior_logits=torch.logit(prior.clamp(1e-5, 1 - 1e-5)),
                       valid=valid, masks_refined=True, refine_mask_logits=logits,
                       refine_pixel_valid=support, refine_role_pixel_valid=role_support)
+        if self.relocalize:
+            # These probabilities were predicted from current local features,
+            # independent of the coarse peak/validity. NULL is still global.
+            confidence = prior.amax(dim=(1, 3, 4))
+            local_valid = valid & confidence.ge(self.confidence_threshold)
+            geometry, local_valid = soft_role_geometry(prior, clean_xyz, local_valid)
+            points = _local_role_points(prior, clean_xyz, local_valid, packet['points'].shape[2])
+            merged_geometry = _merge_role_geometry(packet['geometry'],
+                                                    geometry.detach() if detach_action else geometry, local_valid)
+            local_prior = prior * local_valid[:, None, :, None, None]
+            if detach_action:
+                local_prior = local_prior.detach()
+            result.update(prior=local_prior,
+                          prior_logits=torch.logit(local_prior.clamp(1e-5, 1 - 1e-5)), valid=local_valid,
+                          role_token_valid=packet['role_token_valid'].bool() | local_valid,
+                          confidence=torch.where(local_valid, confidence, packet['confidence']),
+                          geometry=merged_geometry,
+                          points=torch.where(local_valid[:, :, None, None], points, packet['points']),
+                          relocalized=True, refine_local_confidence=confidence,
+                          refine_rendered_xyz=clean_xyz.detach())
+            if hint_dropped is not None:
+                result['refine_hint_dropped'] = hint_dropped
         return result
 
 
+def _merge_role_geometry(inherited, local, valid):
+    """Replace reliable local roles, retaining crop-external global context."""
+    centers = torch.where(valid[..., None], local[:, :6].reshape(-1, 2, 3), inherited[:, :6].reshape(-1, 2, 3))
+    spreads = torch.where(valid[..., None], local[:, 6:12].reshape(-1, 2, 3), inherited[:, 6:12].reshape(-1, 2, 3))
+    available = valid | inherited[:, 15:17].bool()
+    displacement = (centers[:, 1] - centers[:, 0]) * available.all(-1, keepdim=True)
+    return torch.cat((centers.flatten(1), spreads.flatten(1), displacement, available.to(local.dtype)), dim=1)
+
+
+def _local_role_points(prior, xyz, valid, count):
+    batch = len(xyz)
+    flat = xyz.permute(0, 1, 3, 4, 2).reshape(batch, -1, 3)
+    observed = torch.isfinite(flat).all(-1) & ~flat.eq(0).all(-1) & ~flat.eq(-1).all(-1)
+    scores = prior.permute(0, 2, 1, 3, 4).reshape(batch, 2, -1).masked_fill(~observed[:, None], -1.)
+    size = min(count, flat.shape[1])
+    indices = scores.topk(size, dim=-1).indices
+    values = flat[:, None].expand(-1, 2, -1, -1).gather(2, indices[..., None].expand(-1, -1, -1, 3))
+    supported = observed[:, None].expand(-1, 2, -1).gather(2, indices) & valid[..., None]
+    values = torch.where(supported[..., None], values, 0.)
+    return F.pad(values, (0, 0, 0, count - size))
+
+
 def refine_role_mask_losses(logits, teacher, role_valid, pixel_valid,
-                            role_present=None, role_present_known=None):
+                            role_present=None, role_present_known=None, *, rendered_xyz=None, visible_support=None):
     """BCE/Dice on sparse teacher footprints, not fabricated dense background.
 
     Current replay teachers are Gaussian point projections. Pixels outside
@@ -325,7 +402,7 @@ def refine_role_mask_losses(logits, teacher, role_valid, pixel_valid,
     known &= torch.isfinite(teacher) & teacher.gt(0)
     zero = logits.sum() * 0.
     if not known.any():
-        return dict(mask=zero, bce=zero, dice=zero)
+        return dict(mask=zero, bce=zero, dice=zero, **({'center': zero} if rendered_xyz is not None else {}))
     targets = torch.nan_to_num(teacher).clamp(0, 1)
     bce = F.binary_cross_entropy_with_logits(logits[known], targets[known])
     weights = known.to(logits.dtype)
@@ -334,4 +411,35 @@ def refine_role_mask_losses(logits, teacher, role_valid, pixel_valid,
     dice = 1 - (2 * (prediction * targets).sum(dim=(-2, -1)) + 1) / (
         prediction.sum(dim=(-2, -1)) + targets.sum(dim=(-2, -1)) + 1)
     dice = dice[known.any(dim=(-2, -1))].mean()
-    return dict(mask=bce + dice, bce=bce, dice=dice)
+    result = dict(mask=bce + dice, bce=bce, dice=dice)
+    if rendered_xyz is not None:
+        result['center'] = _local_center_loss(logits, teacher, supervised, pixel_valid,
+                                             rendered_xyz, visible_support)
+    return result
+
+
+def _local_center_loss(logits, teacher, supervised, pixel_valid, xyz, visible_support):
+    """Local-cube centroid L1 against verified visible GT surface anchors.
+
+    No predicted validity/NULL gates this supervision. Unannotated pixels are
+    not labelled background; visibility-unverified teachers provide no center.
+    """
+    zero = logits.sum() * 0.
+    if visible_support is None:
+        return zero
+    if xyz.shape != (logits.shape[0], logits.shape[1], 3, *logits.shape[-2:]):
+        raise ValueError('local center XYZ must match its own refine logits')
+    if visible_support.shape != teacher.shape or visible_support.dtype != torch.bool:
+        raise ValueError('local center GT visibility must match the teacher')
+    xyz = xyz.detach().float()
+    support = pixel_valid & torch.isfinite(xyz).all(2) & ~xyz.eq(0).all(2) & ~xyz.eq(-1).all(2)
+    xyz = torch.where(support[:, :, None], xyz, 0.)
+    target = teacher.detach().float() * visible_support.detach() * supervised[..., None, None] * support[:, :, None]
+    target = torch.nan_to_num(target).clamp_min(0)
+    target_mass = target.sum(dim=(1, 3, 4))
+    views = target.sum(dim=(-2, -1)).gt(0)
+    weights = logits.float().sigmoid() * support[:, :, None] * views[..., None, None]
+    prediction = torch.einsum('bvrhw,bvchw->brc', weights, xyz) / weights.sum(dim=(1, 3, 4))[..., None].clamp_min(1e-6)
+    expected = torch.einsum('bvrhw,bvchw->brc', target, xyz) / target_mass[..., None].clamp_min(1e-6)
+    active = target_mass.gt(0)
+    return (prediction - expected).abs()[active].mean() if active.any() else zero

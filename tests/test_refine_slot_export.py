@@ -157,3 +157,27 @@ def test_refine_diagnostics_keep_original_coarse_support_and_points_for_comparis
     np.testing.assert_array_equal(refined['coarse_original_slot_output']['points'], original['slot_output']['points'])
     assert not np.array_equal(refined['slot_output']['points'], original['slot_output']['points'])
     assert refined['visualization']['refine']['masks_refined']
+
+
+def test_trained_relocalization_can_export_points_after_coarse_peak_gate_failure():
+    network, output, cube, reverse, world, _ = refine_sample()
+    network.object_conditioning_refine_relocalize = True
+    output['mvt2']['object_slot_relocalized'] = True
+    output['object_slot_role_token_valid'][0, 0] = False
+    output['object_slot_valid'][0, 0] = False
+    output['object_slot_confidence'] = torch.tensor([[.1, .8]])
+    output['object_slot_points'] = network.object_slot_predictor1._extract_points(
+        output['object_slot_prior'], output['mvt1_ori_img'][:, :, :3], output['object_slot_valid'])
+    refined = build_coarse_slot_packet(network, output, cube, reverse, world, guidance_stage='refine')
+    assert refined['slot_output']['role_token_valid'][0]
+    assert refined['slot_output']['valid'][0]
+    assert refined['point_valid'][0].sum() == 4
+    assert refined['guidance_selection']['roles']['target']['coarse_gate_recovered']
+    assert not refined['guidance_selection']['roles']['target']['coarse_role_token_valid']
+
+
+def test_relocalization_marker_without_matching_model_routing_is_rejected():
+    network, output, cube, reverse, world, _ = refine_sample()
+    output['mvt2']['object_slot_relocalized'] = True
+    with pytest.raises(ValueError, match='matching trained'):
+        build_coarse_slot_packet(network, output, cube, reverse, world, guidance_stage='refine')

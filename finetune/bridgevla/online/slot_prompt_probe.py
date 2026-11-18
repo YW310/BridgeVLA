@@ -64,7 +64,8 @@ def _stage_images(root, stage, value, arrays):
         y = max(height, 80)
         draw.text((3, y), f'{stage} virtual view {index}: RGB | Target | Reference | action (if available)', fill='white')
         draw.text((3, y + 14), 'Roles: absolute probability; action: relative spatial softmax. Not an instance mask.', fill='white')
-        draw.text((3, y + 28), f"inherited={value.get('roles_inherited', False)} masks_refined={value.get('masks_refined', False)}", fill='white')
+        draw.text((3, y + 28), f"inherited={value.get('roles_inherited', False)} masks_refined={value.get('masks_refined', False)} "
+                  f"relocalized={value.get('relocalized', False)}", fill='white')
         draw.text((3, y + 42), f"confidence={role_state.get('confidence')} geometry_valid={role_state.get('valid')} "
                   f"semantic_valid={role_state.get('role_token_valid')} ref_null={role_state.get('reference_null_probability')}", fill='white')
         filename = directory / f'view_{index:02d}.png'
@@ -72,7 +73,7 @@ def _stage_images(root, stage, value, arrays):
         paths.append(str(filename))
     return dict(images=paths, role_prior_shape=list(prior.shape), rendered_rgb_shape=list(rgb.shape), **role_state,
                 coordinate_frame=value['coordinate_frame'], roles_inherited=value.get('roles_inherited', False),
-                masks_refined=value.get('masks_refined', False))
+                masks_refined=value.get('masks_refined', False), relocalized=value.get('relocalized', False))
 
 
 class SlotPromptProbe(TaskPerception):
