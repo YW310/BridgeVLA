@@ -6,6 +6,7 @@ import io
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
+from finetune.bridgevla.utils.checkpoint_compat import remap_paligemma_state_dict
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -46,6 +47,7 @@ def _model(**flags):
 def _train_namespace(checkpoint):
     saved = []
     namespace = {
+        'remap_paligemma_state_dict': remap_paligemma_state_dict,
         'torch': SimpleNamespace(
             load=lambda *args, **kwargs: checkpoint,
             save=lambda value, path: saved.append((value, path)),

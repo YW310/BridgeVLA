@@ -33,6 +33,11 @@ def paligemma(layout):
         result.language_model = nn.Module()
         result.language_model.model = body
         result.language_model.lm_head = head
+    elif layout == 'direct':
+        result.vision_tower = vision
+        result.multi_modal_projector = projector
+        result.language_model = body
+        result.lm_head = head
     else:
         result.model = nn.Module()
         result.model.vision_tower = vision
@@ -60,6 +65,8 @@ def prediction(model, layout, stage):
     base = model.model if stage == 'single' else getattr(model, stage).model
     if layout == 'legacy':
         core, body, head = base, base.language_model.model, base.language_model.lm_head
+    elif layout == 'direct':
+        core, body, head = base, base.language_model, base.lm_head
     else:
         core, body, head = base.model, base.model.language_model, base.lm_head
     x = core.multi_modal_projector(core.vision_tower(torch.tensor([[.1, .2, .3]])))
@@ -68,7 +75,9 @@ def prediction(model, layout, stage):
             model.object_slot_predictor1(x))
 
 
-@pytest.mark.parametrize('source_layout,target_layout', [('legacy', 'current'), ('current', 'legacy')])
+@pytest.mark.parametrize('source_layout,target_layout', [
+    ('legacy', 'current'), ('current', 'legacy'), ('legacy', 'direct'),
+    ('direct', 'legacy'), ('current', 'direct'), ('direct', 'current')])
 @pytest.mark.parametrize('stage', ['mvt1', 'mvt2', 'single'])
 def test_strict_roundtrip_preserves_weights_and_predictions(source_layout, target_layout, stage):
     source, target = policy(source_layout, stage), policy(target_layout, stage)

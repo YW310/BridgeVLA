@@ -7,6 +7,8 @@ from pathlib import Path
 from types import SimpleNamespace
 import unittest
 
+from finetune.bridgevla.utils.checkpoint_compat import remap_paligemma_state_dict
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -48,6 +50,7 @@ def _train_functions(checkpoint):
         'os': SimpleNamespace(replace=lambda *args: None),
         'DDP': type('DDP', (), {}),
         'strip_deprecated_oracle_fusion_state': lambda state: (state, []),
+        'remap_paligemma_state_dict': remap_paligemma_state_dict,
         'validate_semantic_contract': lambda *args, **kwargs: None,
     }
     return _isolated_functions(

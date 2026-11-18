@@ -10,26 +10,25 @@ from __future__ import annotations
 
 
 _PALIGEMMA_ROOTS = ('mvt1.model.', 'mvt2.model.', 'model.')
-_LEGACY_TO_CURRENT = (
+_NAMESPACE_VARIANTS = (
     ('vision_tower.', 'model.vision_tower.'),
     ('multi_modal_projector.', 'model.multi_modal_projector.'),
-    ('language_model.model.', 'model.language_model.'),
     ('language_model.lm_head.', 'lm_head.'),
+    ('language_model.model.', 'model.language_model.', 'language_model.'),
 )
 
 
-def _alternate_key(key):
+def _alternate_keys(key):
     for root in _PALIGEMMA_ROOTS:
         if not key.startswith(root):
             continue
         suffix = key[len(root):]
-        for legacy, current in _LEGACY_TO_CURRENT:
-            if suffix.startswith(legacy):
-                return root + current + suffix[len(legacy):]
-            if suffix.startswith(current):
-                return root + legacy + suffix[len(current):]
+        for variants in _NAMESPACE_VARIANTS:
+            for prefix in variants:
+                if suffix.startswith(prefix):
+                    return [root + other + suffix[len(prefix):] for other in variants if other != prefix]
         break
-    return None
+    return []
 
 
 def remap_paligemma_state_dict(model_state, target_state):
@@ -38,16 +37,19 @@ def remap_paligemma_state_dict(model_state, target_state):
     Exact keys win. A rename requires an existing target key and identical
     tensor shape, and must not collide with another checkpoint entry. Unknown
     or genuinely missing parameters are left for the caller's strict loader.
-    This adapts inference weights only, not optimizer state or model behavior.
+    This adapts model weights only, not optimizer state or model behavior.
     """
     renamed = {}
     destinations = set()
     for key, value in model_state.items():
         if key in target_state:
             continue
-        alternate = _alternate_key(key)
-        if alternate is None or alternate not in target_state:
+        alternatives = [name for name in _alternate_keys(key) if name in target_state]
+        if not alternatives:
             continue
+        if len(alternatives) > 1:
+            raise RuntimeError(f'Ambiguous PaliGemma target modules for {key!r}: {alternatives}')
+        alternate = alternatives[0]
         if alternate in model_state or alternate in destinations:
             raise RuntimeError(
                 f'Ambiguous PaliGemma checkpoint keys: {key!r} maps to '

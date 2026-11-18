@@ -212,6 +212,11 @@ SAM3 在训练中关闭。现有 role-query checkpoint 可保留兼容权重并�
 不要用旧 optimizer resume，也不要直接加载旧残差头到独立头。
 checkpoint 记录新路由，评估会拒绝用未训练该模式的旧权重冒充新模型。
 
+若遇到 `AttributeError: 'GemmaModel' object has no attribute 'model'`，先更新代码再重跑原命令。
+[模型结构兼容工具](../finetune/bridgevla/utils/paligemma_compat.py)支持旧 causal-LM wrapper、直接 decoder
+及嵌套 PaliGemma core；冻结层、projector 和高效前向 norm hook 使用实际模块，分层学习率兼容两类名称。
+`--init_checkpoint` 仅在目标键名与形状匹配时转换权重名称，不恢复 optimizer，不忽略 backbone 缺失。
+
 回到仓库根目录，训练后先做提示诊断：
 
 ```bash

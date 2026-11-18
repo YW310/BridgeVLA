@@ -1075,6 +1075,8 @@ _FINETUNE_RUNTIME_FILES = (
     "bridgevla/libs/point-renderer/point_renderer/rvt_renderer.py",
     "bridgevla/mvt/utils.py",
     "bridgevla/utils/rvt_utils.py",
+    "bridgevla/utils/paligemma_compat.py",
+    "bridgevla/utils/checkpoint_compat.py",
     "bridgevla/libs/YARR/yarr/utils/rollout_generator.py",
 )
 

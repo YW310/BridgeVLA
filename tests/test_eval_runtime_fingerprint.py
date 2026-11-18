@@ -26,6 +26,7 @@ class EvalRuntimeFingerprintTest(unittest.TestCase):
         self.assertIn('utils/simulator_qt.py', _constant('_RLBENCH_RUNTIME_FILES'))
         listed = set(_constant('_FINETUNE_RUNTIME_FILES'))
         required = {'bridgevla/models/oracle_prior.py', 'bridgevla/models/slot_guided_geometry.py',
+                    'bridgevla/utils/paligemma_compat.py', 'bridgevla/utils/checkpoint_compat.py',
                     'bridgevla/models/coarse_slot_export.py',
                     'bridgevla/models/refine_slot_export.py',
                     'bridgevla/online/slot_sam3_runtime.py',

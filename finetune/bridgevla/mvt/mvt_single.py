@@ -457,6 +457,7 @@ class MVT(nn.Module):
 
     def _forward_efficient_paligemma(self, model_inputs):
         from .paligemma_inputs import merge_paligemma_images
+        from bridgevla.utils.paligemma_compat import gemma_decoder
         # Keep the conditional-generation/language-model path, but replace its
         # expanded [B,L,D] boolean gather with checked whole-token merging.
         merged_inputs = merge_paligemma_images(self.model, model_inputs)
@@ -465,7 +466,7 @@ class MVT(nn.Module):
         def capture_final_hidden_state(module, inputs, output):
             captured_hidden_states.append(output)
 
-        hook = self.model.language_model.model.norm.register_forward_hook(
+        hook = gemma_decoder(self.model).norm.register_forward_hook(
             capture_final_hidden_state
         )
         try:

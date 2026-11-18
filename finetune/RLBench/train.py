@@ -38,6 +38,7 @@ import bridgevla.mvt.config as mvt_cfg_mod
 
 from bridgevla.mvt.mvt import MVT
 from bridgevla.models.oracle_prior import resolve_object_prior_mode
+from bridgevla.utils.checkpoint_compat import remap_paligemma_state_dict
 from utils.get_dataset import get_dataset
 from bridgevla.utils.rvt_utils import (
     get_num_feat,
@@ -614,6 +615,10 @@ def load_initial_model_checkpoint(agent, path):
             'backbone/action weights.',
             flush=True,
         )
+    model_state, renamed_keys = remap_paligemma_state_dict(model_state, model.state_dict())
+    if renamed_keys:
+        print(f'PaliGemma initialization compatibility: remapped {len(renamed_keys)} parameter keys '
+              '(tensor values unchanged; optimizer not loaded).', flush=True)
     incompatible = model.load_state_dict(model_state, strict=False)
     unexpected = list(incompatible.unexpected_keys)
     disallowed_missing = [
@@ -755,6 +760,7 @@ def freeze_backbone_modules(
     backbone, freeze_vision_tower, freeze_language_model=False,
     freeze_gemma_prefix_layers=0, freeze_multimodal_projector=False,
 ):
+    from bridgevla.utils.paligemma_compat import gemma_decoder, paligemma_component
     freeze_names = ['lm_head', 'embed_tokens']
     if freeze_vision_tower:
         freeze_names.append('vision_tower')
@@ -768,7 +774,7 @@ def freeze_backbone_modules(
                 parameter.requires_grad = False
                 frozen += parameter.numel()
 
-    gemma_layers = backbone.mvt1.model.language_model.model.layers
+    gemma_layers = gemma_decoder(backbone.mvt1.model).layers
     prefix_layers = int(freeze_gemma_prefix_layers)
     if not 0 <= prefix_layers <= len(gemma_layers):
         raise ValueError(
@@ -781,7 +787,7 @@ def freeze_backbone_modules(
                 parameter.requires_grad = False
                 frozen += parameter.numel()
     if freeze_multimodal_projector:
-        for parameter in backbone.mvt1.model.multi_modal_projector.parameters():
+        for parameter in paligemma_component(backbone.mvt1.model, 'multi_modal_projector').parameters():
             if parameter.requires_grad:
                 parameter.requires_grad = False
                 frozen += parameter.numel()

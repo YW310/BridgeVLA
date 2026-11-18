@@ -56,6 +56,16 @@ class OptimizerUtilsTest(unittest.TestCase):
             8e-5,
         )
 
+    def test_direct_gemma_decoder_names_keep_layerwise_decay(self):
+        lr_for = optimizer_utils.parameter_learning_rate
+        kwargs = dict(base_lr=8e-5, gemma_lr=2e-5, gemma_layer_lr_decay=.9, num_gemma_layers=18)
+        for prefix in ('mvt1.model.language_model.', 'module.mvt1.model.model.language_model.'):
+            self.assertEqual(lr_for(prefix + 'layers.17.weight', **kwargs), 2e-5)
+            self.assertAlmostEqual(lr_for(prefix + 'layers.9.weight', **kwargs), 2e-5 * .9 ** 8)
+            self.assertEqual(lr_for(prefix + 'norm.weight', **kwargs), 2e-5)
+            with self.assertRaisesRegex(ValueError, 'outside'):
+                lr_for(prefix + 'layers.18.weight', **kwargs)
+
 
 if __name__ == '__main__':
     unittest.main()

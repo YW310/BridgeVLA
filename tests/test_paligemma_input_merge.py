@@ -137,4 +137,5 @@ def test_real_paligemma_hidden_states_and_gradients_match_original(image_id, che
             assert new.grad is None, name
         else:
             torch.testing.assert_close(new.grad, old.grad, rtol=1e-4, atol=1e-5, msg=name)
-    assert not other.language_model.model.norm._forward_hooks
+    from finetune.bridgevla.utils.paligemma_compat import gemma_decoder
+    assert not gemma_decoder(other).norm._forward_hooks

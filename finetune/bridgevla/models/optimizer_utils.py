@@ -24,7 +24,9 @@ def parameter_learning_rate(
 
     marker = 'language_model.model.layers.'
     if marker not in parameter_name:
-        return gemma_lr
+        marker = 'language_model.layers.'
+        if marker not in parameter_name:
+            return gemma_lr
 
     suffix = parameter_name.split(marker, 1)[1]
     layer_index = int(suffix.split('.', 1)[0])
