@@ -53,6 +53,7 @@ class IsaacLabBridge:
         self.last_stopped = False
         self._gripper_previous = self._gripper_state = None
         self.control_offset = np.eye(4)
+        self.velocity_controller = None
         mode = client.action_config['mode']
         if 'joint' in mode and joint_executor is None:
             raise ValueError('Joint modes require a joint-position executor')
@@ -71,6 +72,19 @@ class IsaacLabBridge:
             body_to_control = controller_offset(term.cfg, getattr(reference, 'quaternion_order', 'wxyz'))
             body_to_observation = transform_matrix(getattr(reference, 'body_to_observation', np.eye(4)))
             self.control_offset = np.linalg.inv(body_to_observation) @ body_to_control
+
+    def enable_velocity_feedforward(self):
+        """Install a BridgeVLA runtime adapter; do not edit the IsaacLab installation."""
+        from .velocity_tracking import VelocityTargetOSC
+        term = self.env.action_manager.get_term('arm_action')
+        controller = getattr(term, '_osc', None)
+        if (controller is None or type(controller).__name__ != 'OperationalSpaceController' or
+                type(controller).__module__ != 'isaaclab.controllers.operational_space'):
+            raise ValueError('Chunk velocity feedforward requires the native IsaacLab OperationalSpaceController')
+        if not getattr(self.robot, 'is_fixed_base', False):
+            raise ValueError('Chunk velocity feedforward currently requires a fixed robot base')
+        self.velocity_controller = VelocityTargetOSC(controller)
+        term._osc = self.velocity_controller
 
     def _numpy(self, value):
         return self.ref.tensor_to_numpy(value, np.float32)
@@ -168,7 +182,7 @@ class IsaacLabBridge:
             self.visualizer.update(self.measured_state(measured), self.last_target, self.client.action_config['mode'])
         return target
 
-    def step_target(self, target, gripper_open, after_step=None):
+    def step_target(self, target, gripper_open, after_step=None, *, target_twist_world=None):
         """Track an already resolved absolute target for exactly one control step."""
         app = getattr(self.ref, 'simulation_app', None)
         if app is not None and not app.is_running():
@@ -197,7 +211,21 @@ class IsaacLabBridge:
                 ordered[layout['gripper_action']] = command[-1]
             else:
                 ordered = command
-            result = self.env.step(self.ref.torch.as_tensor(ordered, device=self.env.device).reshape(1, 7))
+            adapter = self.velocity_controller
+            if target_twist_world is not None:
+                if adapter is None:
+                    raise ValueError('Velocity-target OSC adapter is not enabled')
+                from .velocity_tracking import control_twist_in_base
+                twist = control_twist_in_base(target_twist_world, target,
+                    np.linalg.inv(self.link_to_tcp) @ self.control_offset, self._base())
+                adapter.target_velocity_b = self.ref.torch.as_tensor(twist, device=self.env.device,
+                    dtype=self.ref.torch.float32).reshape(1, 6)
+            try:
+                result = self.env.step(self.ref.torch.as_tensor(ordered, device=self.env.device).reshape(1, 7))
+            finally:
+                # Never leak a moving target into reset, waiting or waypoint control.
+                if adapter is not None:
+                    adapter.target_velocity_b = None
             self.last_done = terminated(result)
             ordered = ordered.tolist()
         if self.visualizer is not None and self.visualizer.enabled:

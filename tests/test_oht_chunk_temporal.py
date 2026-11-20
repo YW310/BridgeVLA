@@ -51,7 +51,8 @@ def test_presets_keep_legacy_checkpoint_defaults_and_independent_experiments():
     assert scaled['chunk_policy']['action_position_scale'] == 'train_quantile'
     assert temporal['chunk_policy']['adaln'] and temporal['chunk_policy']['second_difference_weight'] > 0
     assert scaled['freeze_gemma_prefix_layers'] == temporal['freeze_gemma_prefix_layers'] == 16
-    assert scaled['epochs'] == temporal['epochs'] == 60
+    # Both experiments inherit the current full-training budget unchanged.
+    assert scaled['epochs'] == temporal['epochs'] == load('finetune/OHT/configs/oht_full_8x40.yaml')['epochs']
     assert scaled['exp_id'] != temporal['exp_id']
 
 

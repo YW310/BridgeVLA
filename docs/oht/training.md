@@ -8,6 +8,91 @@
 
 基于当前结果的后续研究动机、候选方向与实验门槛统一见[设计讨论](../design/role-relation-prior.md#研究动机与候选方向)；本页维护已实现模型与运行方法。
 
+## 2026-11-20 轨迹排查后的处理顺序
+
+当前应分别处理控制跟踪、派生数据标签和模型预测。客户端新增
+`--chunk-velocity-feedforward`：为原生固定基座 OSC 提供相邻预测目标的速度参考，
+不修改 checkpoint、IsaacLab 安装文件、控制增益或停止阈值。这项控制修正无需重训。
+GT 回放的复测结果和使用边界见 [runtime.md](runtime.md#移动目标-osc-跟踪)。
+它不能修正模型已经给错的目标，也不等于完整任务闭环通过。
+
+### 新数据：保留原始录制，重建派生 replay
+
+v423-seg 中的瞬态夹爪极值约 -0.095 被旧 metadata 标为全开，正常全开约 -0.04。
+采用正常物理端点 open=-0.04、close=-0.006 重建，不改原始视频、Parquet 或已有 run。
+这些端点针对本次 v423-seg；其他采集版本应先确认其正常开/关平台，不能照搬瞬态极值。
+
+```bash
+cd /media/34.49/common-data-4t/project/BridgeVLA
+conda activate bridgevla
+
+PYTHON_BIN=python bash finetune/OHT/prepare_seg_motion_replay.sh \
+  /media/34.49/common-data-4t/dataset/robot_data/oht_curobo_pd_v423-seg \
+  finetune/OHT/replays/seg-calibrated-v4-20261120
+```
+
+脚本依次审计原始 episode、从原始 RGB-D/Parquet 重建全部观测和标签、验证 replay。
+输出必须是不存在的新目录；失败后保留审计产物，重新运行时另选新目录。
+保持 K=16、动作 frame_stride=1、action_dt=1/60 s；观测 sample_stride=10，另保留夹爪关键帧。
+不会修改 TCP 轨迹或把动作降到 6 Hz。新的夹爪开度、二值状态、关键帧/key 标签、
+低维观测及 contract 一起重建，不能只改旧 replay 的 contract.json 或 server 端点。
+训练会重新拟合 train split 的动作/本体归一化，不能复制旧 run 的归一化 JSON。
+
+本次未发现必须重新采集全部原始轨迹的证据；GT 的高速跟踪偏差应单独用执行链处理。
+正常开/关平台校正也不保证消除碰撞瞬态产生的所有夹爪标签跳变，应在新 replay 中复查释放阶段。
+数据重建与完整训练耗时较长，这些命令是后续执行入口，不表示已经生成新 replay 或训练完模型。
+
+### 是否重训与推荐命令
+
+| 改动 | 是否需要重训 |
+| --- | --- |
+| OSC 目标速度前馈、诊断日志、GT chunk 回放 | 不需要；客户端可使用原 epoch-30 checkpoint |
+| 正常夹爪端点、观测/关键帧/action 标签修正 | 需要在新 replay 上启动新 run |
+| motion 候选的损失尺度/前 H 步权重 | 需要单独训练和消融，尚未验证收益 |
+
+先用仅改变数据标定的 `oht_chunk_v4_delta_state_tcp_guided_calibrated_8x40.yaml`，
+保留原模型结构和所有 loss。以下命令按 8 GPU 预算配置，应在相应训练机器运行；
+本次单卡 16 GB 仿真机器未验证该训练预算。
+
+```bash
+GPUS_PER_NODE=8 bash finetune/OHT/train_8x40.sh \
+  --config finetune/OHT/configs/oht_chunk_v4_delta_state_tcp_guided_calibrated_8x40.yaml \
+  --replay finetune/OHT/replays/seg-calibrated-v4-20261120/replay-source-v4 \
+  --init-checkpoint finetune/OHT/runs/oht_chunk_v4_delta_state_tcp_guided_8x40/model_epoch_30.pth \
+  --output finetune/OHT/runs/oht_tcp_guided_calibrated_v1
+```
+
+使用 `--init-checkpoint` 启动新实验，不使用 `--resume` 恢复旧数据的 optimizer/步数。
+新配置会拒绝端点不符的 replay。如果新归一化使 decoder 的参数语义变化，现有初始化逻辑
+会保留 encoder 并重新初始化 decoder，以启动日志为准；不能保证旧 decoder 全部复用。
+旧 run、旧 checkpoint、旧 replay 均保留用于对照。
+
+### motion 损失候选：独立消融
+
+`oht_chunk_v4_delta_state_tcp_guided_motion_8x40.yaml` 在上述 calibrated 基线之外调整
+四个训练量：位置损失尺度 5 mm、逐步位移尺度 1 mm、旋转矩阵差尺度 1°、前 H 步权重 4。
+旋转仍用平滑的 chordal MSE；1° 是旋转矩阵差的缩放参数，并非姿态误差上限。
+默认 `rotation_loss_scale=1` 和 `prefix_loss_weight=1` 保留旧训练目标。
+新参数不改变已有 checkpoint 的推理输出，当前没有证据证明它能修好早段模型轨迹偏离。
+
+如需比较，另开 run：
+
+```bash
+GPUS_PER_NODE=8 bash finetune/OHT/train_8x40.sh \
+  --config finetune/OHT/configs/oht_chunk_v4_delta_state_tcp_guided_motion_8x40.yaml \
+  --replay finetune/OHT/replays/seg-calibrated-v4-20261120/replay-source-v4 \
+  --init-checkpoint finetune/OHT/runs/oht_chunk_v4_delta_state_tcp_guided_8x40/model_epoch_30.pth \
+  --output finetune/OHT/runs/oht_tcp_guided_motion_v1
+```
+
+离线 chunk 报告新增 `prefix_motion`，分别汇总 1/H/K 步的米制/角度误差、
+保持实测位姿的基线，以及 `translation_m_skill_vs_stationary` / `rotation_degrees_skill_vs_stationary`。
+skill = 1 − 模型平均误差 / 静止基线平均误差；正值优于基线，负值更差，基线接近零时为 null。
+H 步误差按有效目标点逐点计算后平均，不是 H 步误差之和。
+不能只用毫米误差或完整 K 均值验收；还需覆盖完整 episode、移动/转向/释放阶段，
+完成 GT 控制回放、录制与实时观测对齐检查和真实闭环任务评分。
+`--limit` 仅取 split 前 N 个观测，不代表均匀覆盖全部轨迹。
+
 | 阅读目标 | 入口 |
 | --- | --- |
 | 已解决的配置、核心修改及排查经验 | [已确认基线与交接](#已确认基线与交接) |

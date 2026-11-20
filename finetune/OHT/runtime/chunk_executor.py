@@ -8,7 +8,8 @@ from ..data.geometry import rotation_error
 
 class ChunkExecutor:
     def __init__(self, bridge, spec, execute_horizon=None, max_translation_error=.10, max_rotation_error=.5,
-                 *, max_step_translation=.10, max_step_rotation=.5):
+                 *, max_step_translation=.10, max_step_rotation=.5, velocity_feedforward=False,
+                 max_feedforward_linear=1.5, max_feedforward_angular=3.):
         self.bridge, self.spec = bridge, validate_spec(spec)
         self.horizon = spec['execute_horizon'] if execute_horizon is None else execute_horizon
         if type(self.horizon) is not int or not 1 <= self.horizon <= spec['horizon']:
@@ -29,6 +30,12 @@ class ChunkExecutor:
         if not np.isfinite([max_step_translation, max_step_rotation]).all() or min(max_step_translation, max_step_rotation) <= 0:
             raise ValueError('Chunk per-target step limits must be finite and positive')
         self.max_step_translation, self.max_step_rotation = max_step_translation, max_step_rotation
+        if not np.isfinite([max_feedforward_linear, max_feedforward_angular]).all() or min(max_feedforward_linear, max_feedforward_angular) <= 0:
+            raise ValueError('Chunk feedforward speed limits must be finite and positive')
+        self.velocity_feedforward = bool(velocity_feedforward)
+        self.max_feedforward_linear, self.max_feedforward_angular = max_feedforward_linear, max_feedforward_angular
+        if self.velocity_feedforward:
+            bridge.enable_velocity_feedforward()
         self.last_result = None
 
     def _tracking_failed(self, errors):
@@ -48,9 +55,17 @@ class ChunkExecutor:
             previous = action[:7]
         return None
 
-    def execute(self, actions, measured, after_step=None):
+    def execute(self, actions, measured, after_step=None, *, execute_horizon=None):
         bridge = self.bridge
+        horizon = self.horizon if execute_horizon is None else execute_horizon
+        if type(horizon) is not int or not 1 <= horizon <= self.horizon:
+            raise ValueError('Valid chunk prefix must be within configured execute horizon')
         actions = validate_prediction(dict(actions=actions, key_action=actions[0]), self.spec)['actions']
+        twists, velocity_clipped = None, None
+        if self.velocity_feedforward:
+            from .velocity_tracking import chunk_target_twists
+            twists, velocity_clipped = chunk_target_twists(actions, self.spec['action_dt'],
+                self.max_feedforward_linear, self.max_feedforward_angular)
         start = np.asarray(bridge.measured_state(measured)['tcp_pose_xyzw'], dtype=float)
         _, opening = bridge.measured_gripper(measured)
         commands, consumed, tracking_samples = [], 0, []
@@ -58,11 +73,11 @@ class ChunkExecutor:
         status = 'completed'
         errors, check_phase = None, None
         bridge.last_done = bridge.last_stopped = False
-        step_violation = self._step_violation(start, actions[:self.horizon])
+        step_violation = self._step_violation(start, actions[:horizon])
         if step_violation is not None:
             # Refuse the whole prefix before any motion: the target jump is implausible.
             status = 'step_limit'
-        for tick, action in enumerate(actions[:self.horizon] if step_violation is None else ()):
+        for tick, action in enumerate(actions[:horizon] if step_violation is None else ()):
             rotations = Slerp([0., 1.], Rotation.from_quat(np.stack((start[3:7], action[3:7]))))
             for sub in range(1, self.substeps + 1):
                 fraction = sub / self.substeps
@@ -81,7 +96,11 @@ class ChunkExecutor:
                     status = 'tracking_error'
                     break
                 errors_before = dict(errors)
-                commands.extend(bridge.step_target(target, grip, after_step))
+                if twists is None:
+                    commands.extend(bridge.step_target(target, grip, after_step))
+                else:
+                    commands.extend(bridge.step_target(target, grip, after_step,
+                        target_twist_world=twists[tick]))
                 last_gripper = grip
                 if sub == self.substeps:
                     consumed = tick + 1
@@ -92,6 +111,9 @@ class ChunkExecutor:
                     measured_before_pose_xyzw=np.asarray(before['tcp_pose_xyzw']).tolist(),
                     measured_after_pose_xyzw=np.asarray(state['tcp_pose_xyzw']).tolist(),
                     errors_before=errors_before, errors_after=dict(errors)))
+                if twists is not None:
+                    tracking_samples[-1].update(target_twist_world=twists[tick].tolist(),
+                        feedforward_speed_clipped=bool(velocity_clipped[tick]))
                 if bridge.last_done or bridge.last_stopped:
                     status = 'environment_done' if bridge.last_done else 'task_stopped'
                     break
@@ -103,11 +125,12 @@ class ChunkExecutor:
             consumed = tick + 1
             start, opening = action[:7], int(action[-1])
         self.last_result = dict(status=status, completed=status in ('completed', 'environment_done', 'task_stopped'),
-                                steps=len(commands), consumed_actions=consumed, requested_actions=self.horizon,
+                                steps=len(commands), consumed_actions=consumed, requested_actions=horizon,
                                 action_dt=self.spec['action_dt'], control_substeps=self.substeps,
                                 errors=errors, tracking_check_phase=check_phase,
                                 last_commanded_gripper=last_gripper,
                                 step_violation=step_violation,
+                                velocity_feedforward=self.velocity_feedforward,
                                 tracking_samples=tracking_samples,
                                 tcp_motion=tcp_motion_report(tracking_samples),
                                 discarded_suffix=self.spec['horizon'] - consumed)

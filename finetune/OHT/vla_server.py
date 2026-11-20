@@ -68,7 +68,7 @@ def create_app(model_path, *, max_bytes=MAX_BYTES, **service_options):
     async def visualization_file(entry_id: str, filename: str):
         visualizer = runtime().visualizer
         allowed = {'prediction.json', 'mvt1.png', 'mvt2.png', 'mvt1.npz', 'mvt2.npz',
-                   'sensors.png', 'sensors.npz', 'scene.json'}
+                   'sensors.png', 'sensors.npz', 'scene.json', 'chunk.png', 'chunk.npz'}
         if visualizer is None or re.fullmatch(r'[0-9a-f]{32}', entry_id) is None or filename not in allowed:
             raise APIError(404, 'not_found', 'Visualization file is unavailable')
         root = Path(visualizer.root).resolve()

@@ -22,7 +22,7 @@
 | --- | --- | --- |
 | 原生 IsaacLab 在线推理 | `finetune.OHT.vla_server` + `tools/oht_bridgevla_client.py` | 单目标及 V4 EEF chunk |
 | 旧 adapter 闭环评估 | `finetune.OHT.server` + `finetune.OHT.eval closed-loop` | 四种单目标动作；不支持 chunk |
-| 原始 GT 回放 | `tools/oht_bridgevla_client.py --mode replay` | 无模型/HTTP；frame 或 keypoints |
+| 原始 GT 回放 | `tools/oht_bridgevla_client.py --mode replay` | 无模型/HTTP；frame、keypoints 或 chunk |
 
 新服务一个进程加载一个 checkpoint，四个任务通过 instruction/task/profile 选择；
 不按任务各加载一份模型。加载、预热、predict、reset 在一条工作线程串行执行，Uvicorn workers=1。
@@ -340,6 +340,8 @@ checkpoint 或重训。按观测的仿真 timestamp 对齐重叠未来点：例�
 | --chunk-execute-horizon | 默认用服务的 H；覆盖值须在 1..K 内 |
 | --chunk-max-tracking-translation | 0.10 m，跟踪误差上限 |
 | --chunk-max-tracking-rotation | 0.5 rad，姿态误差上限 |
+| --chunk-velocity-feedforward | 默认关闭；原生固定基座 OSC 的移动目标速度反馈，使用相邻 chunk 目标估计世界坐标 TCP 速度 |
+| --chunk-max-feedforward-linear / --chunk-max-feedforward-angular | 前馈速度模长上限，默认 1.5 m/s / 3 rad/s；不放宽目标跳变、跟踪误差或关节力矩限制 |
 | --chunk-max-step-translation | 0.10 m，相邻执行目标（含从实测 TCP 到第一项）的位置跳变上限；超过则在任何运动前拒绝整个前缀，`execution.status=step_limit` |
 | --chunk-max-step-rotation | 0.5 rad，相邻执行目标的姿态跳变上限，处理同上；违例详情在 `execution.step_violation` |
 | --chunk-temporal-ensemble | 默认关闭，启用同一未来时刻的跨 chunk 融合 |
@@ -500,14 +502,15 @@ python /home/yiwei/BridgeVLA/tools/oht_bridgevla_client.py \
 
 <a id="初始化与时间"></a>
 
-### frame 与 keypoints
+### frame、keypoints 与 chunk
 
 | 设置 | 行为 |
 | --- | --- |
 | replay-targets frame（默认） | i→i+1 的实测 TCP + 滤波夹爪，streaming 一次控制步；所选区间记录时间差须等于 env.step_dt，max-substeps 必须为 1 |
 | replay-targets keypoints | 提取 gripper/geometric/bridgevla 未来终点，以 waypoint 执行；源时间戳仅作来源，不约束跟踪时长 |
+| replay-targets chunk | 原始未来 K 帧实测 TCP 经同一个 ChunkExecutor 执行前 H 步；要求 V4 replay-contract，K/dt 读取 contract，H 默认 4，可用 chunk-execute-horizon 设置 |
 | replay-episode / replay-start-frame | 均默认 0；回放起点必须至少有一帧后续记录 |
-| episodes / max-steps | 默认回放一次直到结束；max-steps 限制 frame 转换数或 keypoint 数 |
+| episodes / max-steps | 默认回放一次直到结束；max-steps 限制 frame 转换数、keypoint 数或 chunk 请求数 |
 | replay-contract | 可替代 replay-data-config，接受完整 V3/V4 replay；只复用经校验的标定，动作仍来自原始 Parquet 实测 TCP |
 | replay-cameras | 默认关闭；开启后绑定/刷新数据配置全部实时相机，不解码原始视频 |
 | initialization | 默认 trajectory，也可 env-reset 或已配置 task；起始 TCP 均须对齐 |
@@ -519,6 +522,51 @@ GT keypoint 对照在上述命令增加 `--replay-targets keypoints` 并更换 o
 以使用实际训练关键点配置；GT 端不连接模型，不会检查其与 checkpoint SHA 一致。
 不插入原始密集路径或合成末尾目标；这不是 V4 chunk 的定时对照。
 逐帧 GT 正常但 keypoints 失败时检查终点执行/中间路径；keypoints 正常再比较同初态 policy 观测与预测。
+
+V4 chunk 控制对照使用 `--replay-targets chunk --chunk-execute-horizon 4`，并将
+`--replay-data-config` 换为 `--replay-contract /path/to/bound/replay-source-v4`。
+动作来自原始实测 TCP，前缀以真实 env.step 推进；不把模型预测的 TCP 回填为实测状态。
+尾部不足 H 帧时只执行剩余有效帧，固定 K 数组的补齐值不会产生额外物理步。
+日志标为 `action_source=gt_chunk`，保存 source_frame/target_frame、每 tick 目标和实测值。
+夹爪仍使用所选数据标定与滞回标签；物体恢复仍需显式 object-map，因此该对照首先检验轨迹跟踪，
+不能自动推导抓取成功、物体初态一致或模型闭环成功。
+可增加 `--replay-gripper-mode open`，保持所有 TCP 目标不变并始终发送张开指令，
+用于对照抓取接触对机械臂跟踪的影响；只支持 chunk replay，默认仍为 recorded。
+张开指令不保证没有其他机械臂/场景碰撞，该诊断也不评估抓取任务成功。
+
+### 移动目标 OSC 跟踪
+
+本机原生 OSC 的位置控制默认使用 `Kp * pose_error - Kd * measured_velocity`，
+即目标速度为零。高速 GT 轨迹由此会出现随速度增加的跟踪滞后。
+chunk 客户端可增加 `--chunk-velocity-feedforward`，通过 BridgeVLA 运行时适配器改为
+`Kp * pose_error + Kd * (target_velocity - measured_velocity)`。
+目标速度只读取相邻预测姿态与 action_dt，不用 GT 修正 policy 预测，也不修改 IsaacLab 安装文件。
+线速度使用世界坐标差分，角速度使用 `log(R_next R_current^-1) / dt`，
+再将 TCP 速度换算到 OSC 控制点和机器人根坐标系；四元数符号不影响角速度。
+该选项保持 K/H、原始位置/姿态目标、控制频率、增益和全部停止保护不变。
+速度参考只在一次 env.step 内生效，异常退出时也会清除，静止目标的速度参考为零。
+
+此功能限原生固定基座 OSC chunk 模式；旧 client、自定义控制器和 waypoint 不支持。
+`run.json.chunk_velocity_feedforward` 保存开关和速度上限；每 tick 的 tracking_samples
+记录 `target_twist_world` 与 `feedforward_speed_clipped`。它修正控制器的移动目标速度误差，
+不能修正模型给错的位置/姿态、碰撞路径或场景观测不匹配。
+
+2026-11-20 本机真实 headless GT 对照：v423-seg 的 `disassemble_left` episode 0，
+相同录制初始机械臂状态、K=16/H=4、60 Hz、相同 OSC 增益和默认保护阈值。
+
+| 设置 | 实际控制步 / 2028 | 结束原因 | 全程位置误差 mean / max | 全程姿态误差 mean / max |
+| --- | --- | --- | --- | --- |
+| 静止目标 OSC，旧夹爪标签 | 1564 | 26.07 s 后下一前缀触发 step_limit | 6.00 / 90.21 mm | 1.37 / 15.94° |
+| 目标速度前馈，旧夹爪标签 | 2028 | trajectory_end，33.8 s | 4.11 / 36.20 mm | 0.31 / 3.05° |
+| 目标速度前馈，始终张开 | 2028 | trajectory_end，33.8 s | 4.10 / 36.21 mm | 0.33 / 3.09° |
+
+统计区间不同，不能将以上全程均值直接作为同区间误差降幅。共同的 frame 1564 处，
+位置误差由 90.21 mm 降至约 25.31 mm；高速段仍有厘米级跟踪偏差，未达到全程 5 mm 精度。
+前馈两组均有 5 个 tick 触及速度参考上限。物体保持 env-reset、未绑定 policy 相机、
+未加载模型且 score=none；结果验证该次 GT 提前停止已消除，不代表模型闭环任务通过。
+本机完整日志为 `logs/oht-gt-chunk-ep0-velocity-recorded-20261120` 和
+`logs/oht-gt-chunk-ep0-velocity-20261120`；前者的 `velocity_fix_comparison.json/png`
+保存三组对照。这些日志属于本地产物，不随 Git 提交。
 
 默认每次恢复所选帧机械臂/夹爪，写仿真后核对关节和实际 TCP。SDK 有硬限位时据其检查，
 不将 soft limit 当物理边界；缺少硬限位信息时诊断为 null。
@@ -681,6 +729,31 @@ python tools/smoke_oht_vla_server.py \
 先用 dry-run 排查完整场景/TCP/夹爪，再核对实时 RGB-D 与训练点云；
 随后按相同初态对照 dense GT、单目标 GT keypoints 或 chunk 时序执行，最后检验 policy 与任务评分。
 CUDA 前向、传感器/接触和闭环成功率仍须真实服务器验证；CPU 替身不提供这些结论。
+
+### 记录观测与递归 TCP 的离线反馈诊断
+
+```bash
+python tools/eval_oht_recorded_feedback.py \
+  --checkpoint /path/to/model_epoch_30.pth \
+  --replay /path/to/bound/replay-source-v4 \
+  --raw-root /path/to/oht_curobo_pd_v423-seg \
+  --task disassemble_left --episode-index 31 \
+  --output logs/new-recorded-feedback-run
+```
+
+两条分支使用同一时刻的录制 RGB-D、相机位姿、关节角、夹爪和指令。
+`oracle` 每次输入录制 TCP；`feedback` 初始输入录制 TCP，随后输入上一次 chunk
+实际前缀末端的绝对 TCP 位姿（含旋转），不把绝对坐标重复当作增量相加。
+H 从 checkpoint 读取；H=4 时重读原始视频的第 0、4、8……帧，不能将第 4 步输出
+直接接到 stride=10 缓存的第 10 帧。末尾只比较剩余有效动作点。
+
+工具校验 replay contract 和原始 Parquet 校验和，并在三个公共时刻核对重建观测与缓存的一致性。
+输出 `steps.jsonl`、`result.json`、`trajectory.png` 和 `index.html`；统计每个未来原始动作点一次，
+不重复计入重叠 chunk。当前支持无跨调用隐状态的 regression chunk policy。
+
+这是 TCP 状态反馈敏感性实验：录制图像、腕部相机、关节角和夹爪不会随预测动作改变，
+因此递归 TCP 会与它们不一致。该不一致量也会写入逐步记录。结果不能用于报告真实动力学、
+控制跟踪、碰撞或闭环任务成功率；真正的闭环验收仍须让仿真状态和传感器随动作一起更新。
 
 ### 跟踪滞后与重新规划的机制验证
 

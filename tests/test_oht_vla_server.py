@@ -83,6 +83,22 @@ def envelope(info, episode="case-1", request_id="request-0"):
                 model_id=info["model_id"], contract_sha256=info["contract_sha256"])
 
 
+def test_chunk_visualization_files_are_served_but_unlisted_names_remain_blocked(fixture, tmp_path):
+    app = fixture.app(visualize_every=0)
+    with TestClient(app) as client:
+        root = tmp_path / 'visualizer'
+        entry = root / ('a' * 32)
+        entry.mkdir(parents=True)
+        app.state.service.visualizer = SimpleNamespace(root=root, close=lambda **kwargs: None)
+        for filename in ('chunk.png', 'chunk.npz'):
+            (entry / filename).write_bytes(b'generated visualization')
+            response = client.get(f'/visualization/files/{entry.name}/{filename}')
+            assert response.status_code == 200
+            assert response.content == b'generated visualization'
+        (entry / 'unlisted.txt').write_text('private')
+        assert client.get(f'/visualization/files/{entry.name}/unlisted.txt').status_code == 404
+
+
 def prediction(fixture, info, step=0, episode="case-1", request_id=None):
     return dict(**envelope(info, episode, request_id or f"{episode}-{step}"),
                 step=step, timestamp=step*.1, instruction=fixture.goal,

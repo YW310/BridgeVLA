@@ -16,7 +16,8 @@ DEFAULTS = dict(enabled=False, horizon=16, execute_horizon=4, hidden_dim=256,
                 proprio_center=None, proprio_scale=None, proprio_min_scale=.1,
                 key_condition_gate=False, key_condition_gate_init=.1, spatial_key_token=False,
                 prediction_representation='relative_pose',
-                local_context='key_refine', tcp_crop_size_m=.4)
+                local_context='key_refine', tcp_crop_size_m=.4,
+                rotation_loss_scale=1., prefix_loss_weight=1.)
 
 
 def chunk_scale(settings, name):
@@ -52,6 +53,10 @@ def chunk_settings(config, contract=None):
         raise ValueError('Chunk dropout must be <1 and position_scale >0')
     if result['displacement_scale'] <= 0:
         raise ValueError('chunk_policy.displacement_scale must be positive')
+    for name in ('rotation_loss_scale', 'prefix_loss_weight'):
+        value = result[name]
+        if type(value) not in (float, int) or not math.isfinite(value) or value <= 0:
+            raise ValueError(f'chunk_policy.{name} must be positive and finite')
     for name in ('action_position_scale', 'geometry_scale', 'position_loss_scale'):
         value = result[name]
         if value is None or (name == 'action_position_scale' and value == 'train_quantile'):
@@ -133,4 +138,18 @@ def chunk_settings(config, contract=None):
             raise ValueError('Chunk policy requires a V4 replay/checkpoint contract')
         if result['horizon'] > contract['chunk']['horizon']:
             raise ValueError('Model horizon exceeds V4 supervised horizon')
+    required = config.get('required_gripper_calibration')
+    if required is not None:
+        if (not isinstance(required, dict) or set(required) != {'open', 'close'} or
+                any(type(value) not in (int, float) or not math.isfinite(value) for value in required.values()) or
+                required['open'] == required['close']):
+            raise ValueError('required_gripper_calibration requires distinct finite open/close endpoints')
+        if contract is not None:
+            profiles = contract.get('source_data_configs', {})
+            data = {name: profile['data_config'] for name, profile in profiles.items()} or {'default': contract['data_config']}
+            for name, profile in data.items():
+                if any(not math.isclose(profile['gripper'][key], value, abs_tol=1e-8, rel_tol=0.)
+                       for key, value in required.items()):
+                    raise ValueError(f'Replay gripper calibration differs from required nominal endpoints: {name}; '
+                                     'rebuild raw V4 replay with --gripper-open/--gripper-close before training')
     return result

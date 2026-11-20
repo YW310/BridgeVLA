@@ -65,6 +65,8 @@ def main(argv=None):
     p.add_argument("--action-timestamp-rtol", type=float, help="V4 timestamp relative tolerance (default: 1e-4)")
     p.add_argument("--quiet", action="store_true", help="Hide V4 build progress on stderr")
     p.add_argument("--object-cloud-config", help="Optional build-time object-cloud YAML (source/default_size/objects)")
+    p.add_argument('--gripper-open', type=float, help='Explicit nominal physical open endpoint; requires --gripper-close')
+    p.add_argument('--gripper-close', type=float, help='Explicit nominal physical close endpoint; requires --gripper-open')
     _visualization_arguments(p)
     p = sub.add_parser("validate")
     p.add_argument("--replay", required=True)
@@ -123,17 +125,28 @@ def main(argv=None):
         print(json.dumps({k: result[k] for k in ("valid_episodes", "invalid_episodes", "split_counts", "missing_tasks")}))
         return 1 if result["invalid_episodes"] else 0
     if args.command == "build":
+        if (args.gripper_open is None) != (args.gripper_close is None):
+            parser.error('Specify --gripper-open and --gripper-close together')
+        if args.gripper_open is not None:
+            if not np.isfinite([args.gripper_open, args.gripper_close]).all() or args.gripper_open == args.gripper_close:
+                parser.error('Gripper endpoints must be distinct and finite')
         chunk_config = {key: value for key, value in (
             ('horizon', args.chunk_horizon), ('frame_stride', args.action_frame_stride),
             ('action_dt', args.action_dt), ('timestamp_atol', args.action_timestamp_atol),
             ('timestamp_rtol', args.action_timestamp_rtol)) if value is not None}
         if args.replay_version != 4 and chunk_config:
             parser.error('Chunk options require --replay-version 4')
+        data_config = read_config(args.config)
+        if args.gripper_open is not None:
+            # Bind this override into every resolved source profile and the new
+            # contract. Never edit raw metadata or an existing replay contract.
+            data_config['gripper'] = dict(data_config['gripper'], source='config',
+                open=args.gripper_open, close=args.gripper_close)
         builder, extra = build, {}
         if args.replay_version == 4:
             from .data.chunk_replay import build as build_chunk_replay
             builder, extra = build_chunk_replay, dict(chunk_config=chunk_config, progress=not args.quiet)
-        count = builder(args.root, args.manifest, read_config(args.config), args.output, args.sample_stride,
+        count = builder(args.root, args.manifest, data_config, args.output, args.sample_stride,
                       visualize_every=args.visualize_every, visualize_output_dir=args.visualize_output_dir,
                       object_cloud_config=read_config(args.object_cloud_config) if args.object_cloud_config else None,
                       **extra)

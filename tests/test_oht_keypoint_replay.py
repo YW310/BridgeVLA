@@ -1,5 +1,6 @@
 """GT training endpoints through the waypoint path, distinct from dense frame replay."""
 from copy import deepcopy
+import json
 from types import SimpleNamespace
 
 import numpy as np
@@ -92,14 +93,17 @@ def test_bridgevla_mode_keeps_its_actual_terminal_pruning(trajectory):
     assert source.metadata['keypoints']['method'] == 'bridgevla'
 
 
-def test_contract_keypoint_definition_wins_over_local_dataset_default(trajectory, monkeypatch):
+def test_contract_keypoint_definition_wins_over_local_dataset_default(trajectory, monkeypatch, tmp_path):
     from finetune.OHT.data import replay
     config = deepcopy(trajectory.config)
     config['keypoints'] = dict(method='geometric', max_translation=10., max_rotation_degrees=180., max_frames=100)
-    contract = dict(sha256='resolved-training-contract',
+    contract = dict(schema='oht_bridgevla_v3', sha256='resolved-training-contract',
                     source_data_configs={f'{trajectory.task}/lerobot_dataset': {'data_config': config}})
     monkeypatch.setattr(replay, 'load_contract', lambda path: contract)
-    source = KeypointReplay(source_args(trajectory, replay_contract='existing-buffer', replay_data_config=None))
+    folder = tmp_path / 'existing-buffer'
+    folder.mkdir()
+    (folder / 'contract.json').write_text(json.dumps(contract))
+    source = KeypointReplay(source_args(trajectory, replay_contract=str(folder), replay_data_config=None))
     assert source.keyframe_indices == [2, 3, 4, 5, 6]
     assert source.info['contract_sha256'] == 'resolved-training-contract'
     assert source.metadata['calibration']['sha256'] == 'resolved-training-contract'

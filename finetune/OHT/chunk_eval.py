@@ -10,6 +10,19 @@ from .runtime.chunk_protocol import chunk_spec, validate_prediction
 from .evaluation_statistics import episode_reports, select_indices, summarize_errors
 
 
+def summarize_motion(rows):
+    """Compare forecast errors to holding the measured pose, in physical units."""
+    result = summarize_errors(rows)
+    for name in ('translation_m', 'rotation_degrees'):
+        result.setdefault(name + '_mean', None)
+        if rows:
+            baseline = float(np.mean([row['stationary_' + name] for row in rows]))
+            result['stationary_' + name + '_mean'] = baseline
+            result[name + '_skill_vs_stationary'] = (
+                1 - result[name + '_mean'] / baseline if baseline > 1e-8 else None)
+    return result
+
+
 def open_loop_chunk(policy, replay, split='val', limit=None, *, progress=None, visualizer=None,
                     tasks=None, episode_indices=None):
     data = OHTChunkDataset(replay, split)
@@ -42,12 +55,16 @@ def open_loop_chunk(policy, replay, split='val', limit=None, *, progress=None, v
                                 translation_error_xyz_m=(actions[j, :3] - target[j, :3]).tolist(),
                                 translation_m=float(np.linalg.norm(actions[j, :3] - target[j, :3])),
                                 rotation_degrees=float(np.rad2deg(rotation_error(actions[j, 3:7], target[j, 3:7]))),
+                                stationary_translation_m=float(np.linalg.norm(sample['tcp_pose'][:3] - target[j, :3])),
+                                stationary_rotation_degrees=float(np.rad2deg(rotation_error(sample['tcp_pose'][3:7], target[j, 3:7]))),
                                 gripper_correct=bool(actions[j, 7] == target[j, 7])))
         key_metrics = None
         if sample['key_valid']:
             key, reference = prediction['key_action'], sample['key_action']
             key_metrics = dict(translation_m=float(np.linalg.norm(key[:3] - reference[:3])),
                 rotation_degrees=float(np.rad2deg(rotation_error(key[3:7], reference[3:7]))),
+                stationary_translation_m=float(np.linalg.norm(sample['tcp_pose'][:3] - reference[:3])),
+                stationary_rotation_degrees=float(np.rad2deg(rotation_error(sample['tcp_pose'][3:7], reference[3:7]))),
                 gripper_correct=bool(key[7] == reference[7]), target_frame=int(sample['key_frame']),
                 translation_error_xyz_m=(key[:3] - reference[:3]).tolist())
         rows.append(dict(id=meta['id'], task=meta['task'], episode_index=meta['episode_index'],
@@ -70,16 +87,15 @@ def open_loop_chunk(policy, replay, split='val', limit=None, *, progress=None, v
         if progress is not None:
             progress.update('chunk_sample_done', completed=index + 1, total=total, sample=meta['id'])
 
-    def summarize(values):
-        result = summarize_errors(values)
-        for name in ('translation_m', 'rotation_degrees'):
-            result.setdefault(name + '_mean', None)
-        return result
+    summarize = summarize_motion
     result = dict(kind='open_loop_chunk_errors', split=split, samples=total, chunk_spec=spec,
         chunk_policy=dict(policy.chunk_settings),
         contract_sha256=data.contract['sha256'], per_offset={str(j): summarize([
             item for row in rows for item in row['offsets'] if item['offset'] == j]) for j in range(1, spec['horizon'] + 1)},
         all_actions=summarize([item for row in rows for item in row['offsets']]),
+        prefix_motion={str(length): summarize([item for row in rows for item in row['offsets']
+                                               if item['offset'] <= length])
+                       for length in sorted({1, spec['execute_horizon'], spec['horizon']})},
         key_goals=summarize([row['key'] for row in rows if row['key'] is not None]),
         per_task={task: summarize([item for row in rows if row['task'] == task for item in row['offsets']])
                   for task in sorted({row['task'] for row in rows})},

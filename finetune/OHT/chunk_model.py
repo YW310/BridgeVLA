@@ -69,11 +69,23 @@ def chunk_loss(prediction, target, valid, settings, *, current_position=None):
         raise ValueError('Chunk supervision requires [B,K,8] and bool [B,K]')
     if not valid.any() or not torch.isfinite(target[valid]).all():
         raise ValueError('Chunk batch has no valid finite supervision')
+    # Weight the prefix that will actually be executed, without changing the
+    # action representation or allowing invalid/padded targets into any loss.
+    weights = position.new_ones(valid.shape)
+    weights[:, :settings['execute_horizon']] = settings.get('prefix_loss_weight', 1.)
+    def reduce_loss(values, mask, tick_weights=weights):
+        selected = tick_weights[mask]
+        per_tick = values.reshape(len(selected), -1).mean(-1)
+        return (per_tick * selected).sum() / selected.sum()
     position_scale = chunk_scale(settings, 'position_loss_scale')
-    p = F.smooth_l1_loss(position[valid] / position_scale,
-                         target[..., :3][valid] / position_scale)
-    r = F.mse_loss(rotation[valid], quaternion_matrix(target[..., 3:7][valid]))
-    g = F.binary_cross_entropy_with_logits(grip[valid], target[..., 7][valid])
+    p = reduce_loss(F.smooth_l1_loss(position[valid] / position_scale,
+                         target[..., :3][valid] / position_scale, reduction='none'), valid)
+    # A chordal SO(3) loss remains smooth at identity. Scaling by a declared
+    # angular tolerance prevents degree-sized errors disappearing next to the
+    # centimetre-normalized translation loss. Scale=1 preserves old objectives.
+    r = reduce_loss(((rotation[valid] - quaternion_matrix(target[..., 3:7][valid])) /
+                     settings.get('rotation_loss_scale', 1.)).square(), valid)
+    g = reduce_loss(F.binary_cross_entropy_with_logits(grip[valid], target[..., 7][valid], reduction='none'), valid)
     weighted_p = settings['position_weight'] * p
     displacement = position[valid].sum() * 0.
     second = displacement
@@ -95,7 +107,8 @@ def chunk_loss(prediction, target, valid, settings, *, current_position=None):
             predicted_delta = delta_predicted[paired]
             target_delta = delta_target[paired]
             scale = settings['displacement_scale']
-            displacement = F.smooth_l1_loss(predicted_delta / scale, target_delta / scale)
+            displacement = reduce_loss(F.smooth_l1_loss(predicted_delta / scale, target_delta / scale,
+                                                        reduction='none'), paired)
             with torch.no_grad():
                 displacement_error = torch.linalg.vector_norm(predicted_delta - target_delta, dim=-1).mean().item()
                 stationary_displacement_error = torch.linalg.vector_norm(target_delta, dim=-1).mean().item()
@@ -104,7 +117,8 @@ def chunk_loss(prediction, target, valid, settings, *, current_position=None):
             predicted_second = torch.diff(delta_predicted, dim=1)[triples]
             target_second = torch.diff(delta_target, dim=1)[triples]
             scale = settings.get('second_difference_scale', .001)
-            second = F.smooth_l1_loss(predicted_second / scale, target_second / scale)
+            second = reduce_loss(F.smooth_l1_loss(predicted_second / scale, target_second / scale,
+                                                 reduction='none'), triples, weights[:, 1:])
             second_error = torch.linalg.vector_norm(predicted_second - target_second, dim=-1).mean().detach().item()
     weighted_d = settings['displacement_weight'] * displacement
     weighted_second = settings.get('second_difference_weight', 0.) * second
@@ -472,7 +486,8 @@ def load_chunk_weights(agent, checkpoint, initialize=False):
             if changed <= {'stage', 'key_loss_weight', 'position_weight', 'rotation_weight', 'gripper_weight',
                            'displacement_weight', 'displacement_scale', 'goal_conditioning',
                            'flow_weight', 'flow_steps', 'flow_inference_seed', 'flow_time_sampling',
-                           'position_loss_scale', 'second_difference_weight', 'second_difference_scale',
+                           'position_loss_scale', 'rotation_loss_scale', 'prefix_loss_weight',
+                           'second_difference_weight', 'second_difference_scale',
                            'normalization_quantile', 'normalization_min_scale', 'normalization_max_samples',
                            'spatial_key_token', 'local_context', 'tcp_crop_size_m'}:
                 state = checkpoint['model_state']

@@ -207,6 +207,35 @@ def test_chunk_cli_options_cannot_silently_affect_legacy_build():
     assert error.value.code == 2
 
 
+@pytest.mark.parametrize('options', [['--gripper-open', '-.04'],
+    ['--gripper-open', '-.04', '--gripper-close', '-.04'],
+    ['--gripper-open', 'nan', '--gripper-close', '-.006']])
+def test_gripper_cli_rejects_partial_or_invalid_calibration_before_reading_files(options):
+    with pytest.raises(SystemExit) as error:
+        main(['build', '--root', 'missing', '--manifest', 'missing', '--config', 'missing',
+              '--output', 'missing', *options])
+    assert error.value.code == 2
+
+
+def test_build_cli_binds_explicit_gripper_override_to_all_profiles(replay_fixture, tmp_path):
+    import yaml
+    config = copy.deepcopy(replay_fixture.config)
+    config['gripper'] = dict(config['gripper'], source='metadata', open=None, close=None)
+    # No gripper metadata exists: the explicit CLI endpoints must take precedence.
+    path = tmp_path / 'dataset.yaml'
+    path.write_text(yaml.safe_dump(config))
+    output = tmp_path / 'calibrated'
+    assert main(['build', '--root', str(replay_fixture.root), '--manifest', str(replay_fixture.manifest),
+        '--config', str(path), '--output', str(output), '--replay-version', '4', '--quiet',
+        '--gripper-open', '-.006', '--gripper-close', '-.04']) == 0
+    contract = load_chunk_contract(output)
+    for profile in contract['source_data_configs'].values():
+        assert profile['data_config']['gripper']['open'] == -.006
+        assert profile['data_config']['gripper']['close'] == -.04
+        assert profile['data_config']['gripper']['source'] == 'config'
+    assert OHTChunkDataset(output).validate_all() > 0
+
+
 @pytest.mark.parametrize('corruption', ['nonunit_tcp', 'gripper_features', 'key_chunk_conflict'])
 def test_v4_semantic_checks_survive_rehashed_payloads(chunk_fixture, tmp_path, corruption):
     root = tmp_path / 'copy'

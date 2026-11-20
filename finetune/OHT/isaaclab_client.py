@@ -103,8 +103,10 @@ def main(argv=None):
     parser.add_argument('--replay-root', help='Original OHT root containing <task>/lerobot_dataset/data, not replay-source-v3')
     parser.add_argument('--replay-episode', type=int, default=0, help='Raw dataset episode ID; default: 0')
     parser.add_argument('--replay-start-frame', type=int, default=0)
-    parser.add_argument('--replay-targets', choices=('frame', 'keypoints'), default='frame',
-                        help='frame preserves dense GT timing; keypoints tests the trained future-waypoint contract')
+    parser.add_argument('--replay-targets', choices=('frame', 'keypoints', 'chunk'), default='frame',
+                        help='frame: dense GT; keypoints: future waypoints; chunk: GT prefixes through the policy chunk executor')
+    parser.add_argument('--replay-gripper-mode', choices=('recorded', 'open'), default='recorded',
+                        help='chunk replay only: open holds the fingers open to isolate arm tracking from grasp contacts')
     calibration = parser.add_mutually_exclusive_group()
     calibration.add_argument('--replay-data-config', help='OHT dataset YAML; default: repository configs/dataset.yaml')
     calibration.add_argument('--replay-contract', help='Optional existing replay buffer supplying the resolved training calibration')
@@ -161,6 +163,10 @@ def main(argv=None):
     parser.add_argument('--chunk-execute-horizon', type=int, help='Override advertised H; requests still return K actions')
     parser.add_argument('--chunk-max-tracking-translation', type=float, default=.10)
     parser.add_argument('--chunk-max-tracking-rotation', type=float, default=.5)
+    parser.add_argument('--chunk-velocity-feedforward', action='store_true',
+                        help='Track moving chunk targets with velocity feedback in native fixed-base OSC; opt-in')
+    parser.add_argument('--chunk-max-feedforward-linear', type=float, default=1.5, help='Reference TCP speed cap (m/s)')
+    parser.add_argument('--chunk-max-feedforward-angular', type=float, default=3., help='Reference angular speed cap (rad/s)')
     parser.add_argument('--chunk-max-step-translation', type=float, default=.10,
                         help='Reject a chunk prefix whose consecutive target positions jump farther than this (m)')
     parser.add_argument('--chunk-max-step-rotation', type=float, default=.5,
@@ -200,9 +206,12 @@ def main(argv=None):
         raise ValueError('initial-state options require --mode policy and --initial-state-root')
     args.execution_auto = args.execution_mode == 'auto'
     if args.execution_mode == 'auto':
-        args.execution_mode = 'streaming' if args.mode == 'replay' and args.replay_targets == 'frame' else 'waypoint'
-    if args.mode == 'replay' and args.execution_mode != ('waypoint' if args.replay_targets == 'keypoints' else 'streaming'):
-        raise ValueError('Dense frame replay requires streaming execution; GT keypoint replay requires waypoint execution')
+        args.execution_mode = ({'frame': 'streaming', 'keypoints': 'waypoint', 'chunk': 'chunk'}[args.replay_targets]
+                               if args.mode == 'replay' else 'waypoint')
+    if args.mode == 'replay' and args.execution_mode != {'frame': 'streaming', 'keypoints': 'waypoint', 'chunk': 'chunk'}[args.replay_targets]:
+        raise ValueError('Dense frame replay requires streaming execution; GT keypoint replay requires waypoint execution; GT chunk replay requires chunk execution')
+    if args.replay_gripper_mode != 'recorded' and args.replay_targets != 'chunk':
+        raise ValueError('replay-gripper-mode open requires GT chunk replay')
     args.runtime_args = reference_args
     if args.episodes is None:
         args.episodes = 1 if args.mode == 'replay' else 20
@@ -278,6 +287,9 @@ def _run(args, reference_args):
         if args.replay_targets == 'keypoints':
             from .runtime.keypoint_replay import KeypointReplay
             replay = KeypointReplay(args)
+        elif args.replay_targets == 'chunk':
+            from .runtime.chunk_replay import ChunkReplay
+            replay = ChunkReplay(args)
         else:
             replay = TrajectoryReplay(args)
         client = replay
@@ -390,12 +402,17 @@ def _run(args, reference_args):
         report_startup('executor')
         waypoint = WaypointExecutor(bridge, **waypoint_options) if args.execution_mode == 'waypoint' else None
         chunk_executor = None
+        if args.chunk_velocity_feedforward and args.execution_mode != 'chunk':
+            raise ValueError('chunk-velocity-feedforward requires chunk execution')
         if args.execution_mode == 'chunk':
             from .runtime.chunk_executor import ChunkExecutor
             chunk_executor = ChunkExecutor(bridge, client.chunk_spec, args.chunk_execute_horizon,
                                             args.chunk_max_tracking_translation, args.chunk_max_tracking_rotation,
                                             max_step_translation=args.chunk_max_step_translation,
-                                            max_step_rotation=args.chunk_max_step_rotation)
+                                            max_step_rotation=args.chunk_max_step_rotation,
+                                            velocity_feedforward=args.chunk_velocity_feedforward,
+                                            max_feedforward_linear=args.chunk_max_feedforward_linear,
+                                            max_feedforward_angular=args.chunk_max_feedforward_angular)
         if waypoint is not None and joint is not None and not callable(getattr(joint, 'step', None)):
             raise ValueError('Waypoint joint execution requires a single-step executor exposing step(target); '
                              'use the built-in JointPositionExecutor or select streaming explicitly')
@@ -414,6 +431,9 @@ def _run(args, reference_args):
                    action_spec=client.info['action_spec'], data_profile=profile, task_settings=settings,
                    chunk_spec=getattr(client, 'chunk_spec', None),
                    chunk_execute_horizon=chunk_executor.horizon if chunk_executor else None,
+                   chunk_velocity_feedforward=dict(enabled=args.chunk_velocity_feedforward,
+                       max_linear_m_s=args.chunk_max_feedforward_linear,
+                       max_angular_rad_s=args.chunk_max_feedforward_angular),
                    chunk_temporal_ensemble=ensemble.info if ensemble else None,
                    initialization=args.initialization, score=args.score, runtime_factory=runtime_factory,
                    policy_wait='background_http_render_only' if replay is None else None,
@@ -528,8 +548,12 @@ def _run(args, reference_args):
                     _append_episode_event(journal, 'prediction', step=step, timestamp=timestamp,
                                           action=action.tolist(), control_action=control_action.tolist(),
                                           measured_before=bridge.measured_state(measured), **source_details)
-                    commands = (executor.execute(control_action, measured, after_step) if executor is not None else
-                                bridge.execute(control_action, measured, after_step))
+                    if chunk_executor is not None and replay is not None:
+                        commands = chunk_executor.execute(control_action, measured, after_step,
+                            execute_horizon=source_details['valid_execute_horizon'])
+                    else:
+                        commands = (executor.execute(control_action, measured, after_step) if executor is not None else
+                                    bridge.execute(control_action, measured, after_step))
                     execution = executor.last_result if executor is not None else None
                     executed = perf_counter()
                     before = bridge.measured_state(measured)
@@ -547,7 +571,7 @@ def _run(args, reference_args):
                                                measured_before=before, measured_after=after,
                                                camera_observation=camera_observation,
                                                errors_before=errors_before, errors_after=errors_after,
-                                               action_source=('gt_keypoint' if args.replay_targets == 'keypoints' else 'gt_trajectory')
+                                               action_source=({'keypoints': 'gt_keypoint', 'chunk': 'gt_chunk', 'frame': 'gt_trajectory'}[args.replay_targets])
                                                if replay is not None else 'policy',
                                                **source_details,
                                                timing_ms=response['timing_ms'], client_timing_ms=client_timing,

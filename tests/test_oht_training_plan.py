@@ -1,4 +1,4 @@
-"""The OHT full profile executes RLBench budgets, epochs and freeze settings."""
+"""OHT budget arithmetic and the shared RLBench encoder/optimizer recipe."""
 import copy
 import inspect
 import json
@@ -26,16 +26,17 @@ def full_config():
     return load(ROOT / "finetune/OHT/configs/oht_full_8x40.yaml")
 
 
-def test_full_preset_matches_rlbench_recipe_and_mvt():
+def test_full_preset_keeps_oht_budget_and_shared_rlbench_recipe_and_mvt():
     config = full_config()
     reference = read_config(ROOT / "finetune/RLBench/configs/rlbench_full_8x40.yaml")
-    for key in ("epochs", "train_iter", "global_batch_size", "max_optimizer_steps",
+    # OHT has its own committed sample budget; RLBench's dataset budget differs.
+    assert (config['epochs'], config['train_iter'], config['global_batch_size'], config['batch_size']) == (50, 40000, 96, 12)
+    for key in ("max_optimizer_steps",
                 "num_workers", "seed", "sample_distribution_mode", "use_scheduler",
                 "checkpoint_every_epochs", "gradient_checkpointing", "efficient_paligemma_forward",
                 "gpu_paligemma_preprocessing", "flash_attention_2", "freeze_gemma_prefix_layers",
                 "freeze_multimodal_projector"):
         assert config[key] == reference[key], key
-    assert config["batch_size"] == reference["bs"]
     # YACS decodes the reference's scientific-notation YAML string as a float.
     assert config["learning_rate"] == float(reference["peract"]["lr"])
     for key in ("optimizer_type", "transform_augmentation_xyz", "transform_augmentation_rpy"):
@@ -46,15 +47,20 @@ def test_full_preset_matches_rlbench_recipe_and_mvt():
     assert config["agent"]["collision_loss_weight"] == 0
 
 
-@pytest.mark.parametrize("world,accumulation", [(1, 48), (2, 24), (4, 12), (8, 6), (16, 3)])
+@pytest.mark.parametrize("world,accumulation", [(1, 8), (2, 4), (4, 2), (8, 1)])
 def test_full_plan_preserves_global_batch_and_epoch_budget(world, accumulation):
     plan = resolve_training_plan(full_config(), 40634, world)
     assert plan["accumulation_steps"] == accumulation
-    assert plan["effective_batch"] == 192
-    assert plan["steps_per_epoch"] == 833
-    assert plan["optimizer_steps"] == 83300
-    assert plan["checkpoint_interval"] == 8330
-    assert plan["epochs"] == 100 and plan["training_samples"] == 40634
+    assert plan["effective_batch"] == 96
+    assert plan["steps_per_epoch"] == 416  # floor(40000 / 96)
+    assert plan["optimizer_steps"] == 20800
+    assert plan["checkpoint_interval"] == 4160
+    assert plan["epochs"] == 50 and plan["training_samples"] == 40634
+
+
+def test_full_plan_rejects_more_microbatch_samples_than_global_budget():
+    with pytest.raises(ValueError, match='smaller than bs'):
+        resolve_training_plan(full_config(), 40634, 16)
 
 
 def test_legacy_step_budget_is_unchanged():
@@ -71,19 +77,19 @@ def test_epoch_budget_can_use_replay_size_and_stop_mid_epoch():
     config = full_config()
     config.update(train_iter=None, max_optimizer_steps=500)
     plan = resolve_training_plan(config, 40634, 8)
-    assert plan["steps_per_epoch"] == 211
+    assert plan["steps_per_epoch"] == 423  # floor(40634 / 96)
     assert plan["optimizer_steps"] == 500
-    assert epoch_metrics(500, plan)["epoch"] == 3
-    assert epoch_metrics(500, plan)["epoch_step"] == 78
+    assert epoch_metrics(500, plan)["epoch"] == 2
+    assert epoch_metrics(500, plan)["epoch_step"] == 77
 
 
-@pytest.mark.parametrize("step,epoch,epoch_step", [(1, 1, 1), (833, 1, 833),
-                                                  (834, 2, 1), (83300, 100, 833)])
+@pytest.mark.parametrize("step,epoch,epoch_step", [(1, 1, 1), (416, 1, 416),
+                                                  (417, 2, 1), (20800, 50, 416)])
 def test_epoch_progress_boundaries(step, epoch, epoch_step):
     plan = resolve_training_plan(full_config(), 40634, 8)
     fields = epoch_metrics(step, plan)
     assert fields["epoch"] == epoch and fields["epoch_step"] == epoch_step
-    assert fields["epoch_progress"] == pytest.approx(step / 833)
+    assert fields["epoch_progress"] == pytest.approx(step / 416)
 
 
 @pytest.mark.parametrize("changes,world,error", [
@@ -93,7 +99,7 @@ def test_epoch_progress_boundaries(step, epoch, epoch_step):
     ({"accumulation_steps": 8}, 8, "conflicts"),
     ({"max_optimizer_steps": -1}, 8, "max_optimizer_steps"),
     ({"checkpoint_every_epochs": 0}, 8, "checkpoint_every_epochs"),
-    ({"train_iter": 100}, 8, "complete global batch"),
+    ({"train_iter": 95}, 8, "complete global batch"),
     ({"global_batch_size": 193}, 8, "divisible"),
     ({"sample_distribution_mode": "transition_uniform"}, 8, "task_uniform"),
     ({"use_scheduler": True}, 8, "constant learning rate"),
@@ -175,6 +181,11 @@ def test_ddp_accumulation_synchronizes_only_last_microbatch(replay_fixture, tmp_
     monkeypatch.setenv("WORLD_SIZE", "2")
     for name in ("init_process_group", "barrier", "destroy_process_group", "broadcast_object_list"):
         monkeypatch.setattr(dist, name, lambda *args, **kwargs: None)
+    # Checkpointing gathers per-rank RNG state; this test uses a fake process
+    # group and verifies no_sync arithmetic, not real collective communication.
+    def gather(objects, local):
+        objects[:] = [copy.deepcopy(local) for _ in objects]
+    monkeypatch.setattr(dist, 'all_gather_object', gather)
     config = load(ROOT / "finetune/OHT/configs/smoke.yaml")
     config.update(global_batch_size=4, accumulation_steps=None)
     path = tmp_path / "ddp.yaml"
