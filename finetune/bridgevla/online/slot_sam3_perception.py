@@ -86,6 +86,9 @@ class OnlineTaskPerception(TaskPerception):
             )
         if 'guidance_selection' in packet:
             transform['source'] += '; guidance_selection=' + json.dumps(packet['guidance_selection'], sort_keys=True)
+        if 'correlation_scale_to_cube' in packet:
+            transform['source'] += (f"; predictor={packet['predictor_type']}; "
+                                    f"correlation_scale_to_cube={packet['correlation_scale_to_cube']}")
         return {**{key: packet[key] for key in required}, "transform": transform,
                 **{key: packet[key] for key in ("reference_exists", "role_visibility") if key in packet}}
 

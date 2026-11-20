@@ -83,12 +83,12 @@ class OnlineSlotSam3Policy:
                 raise ValueError("point_count must be a positive integer")
             if fallback not in ("baseline", "fail"):
                 raise ValueError("fallback must be baseline or fail")
-            if stage not in ('action', 'prompts'):
-                raise ValueError('stage must be action or prompts')
+            if stage not in ('action', 'prompts', 'segmentation'):
+                raise ValueError('stage must be action, prompts or segmentation')
             if guidance_stage not in ('coarse', 'refine'):
                 raise ValueError('guidance_stage must be coarse or refine')
-            if stage == 'prompts' and diagnostics_dir is None:
-                raise ValueError('prompts stage requires a diagnostics directory')
+            if stage in ('prompts', 'segmentation') and diagnostics_dir is None:
+                raise ValueError('prompts/segmentation stage requires a diagnostics directory')
             self._validate_agent()
             expected = (expected_checkpoint_sha256 if expected_checkpoint_sha256 is not None
                         else getattr(agent, "slot_guided_sam3_checkpoint_sha256", None))
@@ -177,14 +177,16 @@ class OnlineSlotSam3Policy:
         self._frame_sequence += 1
         diagnostics['policy_call_index'] = self._frame_sequence
         callback = packets.append
-        if self.stage == 'prompts' or self.guidance_stage == 'refine':
+        if self.stage in ('prompts', 'segmentation') or self.guidance_stage == 'refine':
             def collect(packet):
                 packets.append(packet)
-            collect.include_visualization = self.stage == 'prompts'
+            collect.include_visualization = self.stage in ('prompts', 'segmentation')
             collect.guidance_stage = self.guidance_stage
             callback = collect
         if self.stage == 'prompts':
             diagnostics.update(stage='prompts', action_source='baseline_C', sam3_executed=False)
+        elif self.stage == 'segmentation':
+            diagnostics.update(stage='segmentation', action_source='baseline_C', sam3_executed=False)
         try:
             with torch.inference_mode():
                 self.agent.enable_slot_guided_sam3 = False
@@ -234,6 +236,9 @@ class OnlineSlotSam3Policy:
                 timings["perception"] = (time.perf_counter() - perceived_at) * 1000
                 diagnostics["perception_timings_ms"] = dict(result.timings_ms)
                 diagnostics["backend_kind"] = result.backend_kind
+                if self.stage == 'segmentation':
+                    diagnostics['sam3_executed'] = result.backend_kind == 'sam3'
+                    diagnostics['artifacts'] = getattr(result, 'diagnostics', None)
                 camera_results = getattr(result, "inference", {}).get("cameras", {})
                 camera_peaks = {name: row.get("peak_vram_bytes") for name, row in camera_results.items()}
                 measured_peaks = [value for value in camera_peaks.values() if type(value) is int and value >= 0]
@@ -279,6 +284,9 @@ class OnlineSlotSam3Policy:
                 if any(meta.get("source_checkpoint_sha256") != self.expected_checkpoint_sha256
                        for meta in geometry.provenance):
                     raise ValueError("Coarse checkpoint changed or differs from the loaded policy checkpoint")
+                if self.stage == 'segmentation':
+                    diagnostics['status'] = 'segmentation_only'
+                    return self._finish(original, diagnostics, started)
                 if (not bool(geometry.object_role_valid[0, 0])
                         or float(geometry.object_geometry_confidence[0, 0]) < .25):
                     raise ValueError("SAM3/fusion produced no reliable current Target geometry")

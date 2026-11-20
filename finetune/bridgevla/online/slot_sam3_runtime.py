@@ -27,12 +27,13 @@ def load_online_profile(path):
     cfg.merge_from_file(str(path))
     if not cfg.rvt.enable_slot_guided_sam3 or cfg.rvt.slot_guided_sam3_execution_mode != 'online_experiment':
         raise ValueError('the online launcher requires an enabled online_experiment profile')
-    if (not cfg.object_slots.enabled or cfg.object_slots.predictor_type != 'role_queries'
+    legacy = cfg.object_slots.predictor_type == 'slots'
+    if (not cfg.object_slots.enabled or cfg.object_slots.predictor_type not in ('slots', 'role_queries')
             or cfg.object_slots.num_slots != 2 or cfg.oracle_relation_anchor_rank <= 0
             or not cfg.oracle_relation_gated_adapter
-            or not cfg.object_conditioning.shared_action_features
-            or not cfg.object_conditioning.preserve_role_tokens):
-        raise ValueError('online Slot/SAM3 requires the existing two-role query / Anchor architecture')
+            or (not legacy and (not cfg.object_conditioning.shared_action_features
+                               or not cfg.object_conditioning.preserve_role_tokens))):
+        raise ValueError('online Slot/SAM3 requires two original slots or two role queries with an Anchor adapter')
     return cfg
 
 
@@ -45,8 +46,8 @@ def resolve_runtime(cfg, overrides=None, *, policy_device='cuda:0', validate_fil
             values[key] = value
     if values['prompt_mode'] not in ('box-only', 'point+box') or values['fallback'] not in ('baseline', 'fail'):
         raise ValueError('invalid online prompt or fallback mode')
-    if values['stage'] not in ('action', 'prompts'):
-        raise ValueError('online stage must be action or prompts')
+    if values['stage'] not in ('action', 'prompts', 'segmentation'):
+        raise ValueError('online stage must be action, prompts or segmentation')
     if values['guidance_stage'] not in ('coarse', 'refine'):
         raise ValueError('guidance_stage must be coarse or refine')
     for key in ('task_repo', 'sam3_checkpoint', 'diagnostics_dir'):
@@ -56,19 +57,22 @@ def resolve_runtime(cfg, overrides=None, *, policy_device='cuda:0', validate_fil
         path = Path(values[key]).expanduser()
         values[key] = str((ROOT / path).resolve() if not path.is_absolute() else path.resolve())
     values['sam3_device'] = values['sam3_device'] or policy_device
-    if values['stage'] == 'prompts' and values['diagnostics_dir'] is None:
-        raise ValueError('prompts stage requires --slot-sam3-diagnostics-dir')
+    if values['stage'] in ('prompts', 'segmentation') and values['diagnostics_dir'] is None:
+        raise ValueError('prompts/segmentation stage requires --slot-sam3-diagnostics-dir')
+    if cfg.object_slots.predictor_type == 'slots':
+        if values['guidance_stage'] != 'coarse':
+            raise ValueError('original slots require coarse guidance; independent Refine stays unchanged')
     if validate_files:
         repo = Path(values['task_repo'])
         for name in ('slot_guidance_producers.py', 'slot_guided_sam3.py', 'slot_geometry_fusion.py'):
             if not (repo / name).is_file():
                 raise FileNotFoundError(f'TASK checkout is missing {name}: {repo}')
-        if values['stage'] == 'action' and not Path(values['sam3_checkpoint']).is_file():
+        if values['stage'] != 'prompts' and not Path(values['sam3_checkpoint']).is_file():
             raise FileNotFoundError('set --slot-sam3-checkpoint to the actual local SAM3 weights')
         config = Path(values['perception_config'])
         if not (config if config.is_absolute() else repo / config).is_file():
             raise FileNotFoundError('online TASK perception config is missing')
-        if values['stage'] == 'action' and importlib.util.find_spec('sam3') is None:
+        if values['stage'] != 'prompts' and importlib.util.find_spec('sam3') is None:
             raise RuntimeError('install a SAM3 package supporting the TASK interactive API in the model environment')
     return values
 
@@ -94,6 +98,8 @@ def make_online_policy(agent, observer):
         diagnostics_dir = Path(diagnostics_dir) / ('run_' + uuid4().hex)
     if values['stage'] == 'prompts':
         print(f'[SlotPromptProbe] SAM3 not run; action=baseline_C; outputs={diagnostics_dir}', flush=True)
+    elif values['stage'] == 'segmentation':
+        print(f'[SlotSAM3] SAM3 segmentation; action=baseline_C; outputs={diagnostics_dir}', flush=True)
     return OnlineSlotSam3Policy(
         agent, perception, observer, agent.slot_guided_sam3_checkpoint_path,
         agent.slot_guided_sam3_git_sha, enabled=True,
@@ -114,11 +120,11 @@ def main(argv=None):
     for key, flag in CLI_FIELDS.items():
         choices = ('box-only', 'point+box') if key == 'prompt_mode' else (
             ('baseline', 'fail') if key == 'fallback' else (
-                ('action', 'prompts') if key == 'stage' else (
+                ('action', 'prompts', 'segmentation') if key == 'stage' else (
                     ('coarse', 'refine') if key == 'guidance_stage' else None)))
         parser.add_argument(flag, dest=key, default=None, choices=choices,
-                            help=('prompts: inspect Coarse/Refine Slot maps and camera prompts; '
-                                  'no SAM3 or conditioned action; diagnostics directory required')
+                            help=('prompts: inspect slots/prompts without SAM3; segmentation: run SAM3 '
+                                  'and retain baseline action; both require a diagnostics directory')
                             if key == 'stage' else None)
     args, evaluation_args = parser.parse_known_args(argv)
     try:

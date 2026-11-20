@@ -72,6 +72,8 @@ EOF
 
 ## Slot-guided SAM3 online inference
 
+[rlbench_slot_guided_sam3_internal_slots_online.yaml](rlbench_slot_guided_sam3_internal_slots_online.yaml) 基于原始 `rlbench_o2_internal_slots.yaml`，保留无序 slots、独立 Refine 和旧 Anchor，直接加载原版 checkpoint。仅启用冻结的 SAM3 推理及几何动作条件；[完整命令](../../../docs/slot_guided_sam3_online.md#original-slots-sam3)包含分割诊断模式。继续训练仍使用原始 YAML。
+
 [rlbench_slot_guided_sam3_online.yaml](rlbench_slot_guided_sam3_online.yaml) enables `online_experiment` in the normal RLBench evaluation loop. Run `slot_guided_sam3_online.py`; its [commands and runtime contract](../../../docs/slot_guided_sam3_online.md) describe the persistent model, current-observation provider and TASK SAM3 reuse. Runtime paths live in `slot_guided_sam3` and support `--slot-sam3-*` overrides. The default config remains disabled.
 
 ## Slot-guided SAM3 offline snapshots

@@ -14,7 +14,7 @@
 
 ## Slot-guided SAM3 online and offline experiments
 
-[Online commands and runtime contract](slot_guided_sam3_online.md) cover the enabled current-observation RLBench loop, persistent SAM3, dynamic camera calibration and current-frame fallback. [Offline commands and snapshot formats](slot_guided_sam3_offline.md) remain available for reproducible A/B/C comparisons. Both use the existing role-query Anchor architecture. The [geometry contract](slot_guided_sam3_action_draft.md) describes the separate reviewed-activation gate and legacy disabled profile.
+[Online commands and runtime contract](slot_guided_sam3_online.md) cover the current-observation loop, persistent SAM3 and current-frame fallback, including [原版 slots → SAM3 → 原版 Anchor](slot_guided_sam3_online.md#original-slots-sam3). [Offline commands and snapshot formats](slot_guided_sam3_offline.md) use the role-query Anchor for reproducible A/B/C comparisons. The [geometry contract](slot_guided_sam3_action_draft.md) describes the reviewed-activation gate and disabled profile.
 
 先检查角色图与提示位置，可运行[不加载 SAM3 的 Slot/Prompt 诊断](slot_guided_sam3_online.md#slot-prompt-probe)，分别查看 Coarse/Refine 及当前原相机提示。
 

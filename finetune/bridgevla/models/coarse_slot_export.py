@@ -92,8 +92,11 @@ def build_coarse_slot_packet(network, output, scene_cube, reverse_cube, scene_wo
         raise ValueError('coarse Slot export requires eval mode')
     if guidance_stage not in ('coarse', 'refine'):
         raise ValueError('guidance_stage must be coarse or refine')
-    if getattr(network, 'object_slot_predictor_type', None) != 'role_queries':
-        raise ValueError('coarse Slot export currently requires role_queries architecture')
+    predictor_type = getattr(network, 'object_slot_predictor_type', None)
+    if predictor_type not in ('slots', 'role_queries'):
+        raise ValueError('coarse Slot export requires slots or role_queries architecture')
+    if predictor_type == 'slots' and guidance_stage != 'coarse':
+        raise ValueError('original slots use coarse guidance; independent Refine remains a diagnostic')
     if len(scene_cube) != 1 or len(reverse_cube) != 1 or len(scene_world) != 1:
         raise ValueError('coarse Slot export currently supports a single current frame (B=1)')
     keys = ('points', 'confidence', 'valid', 'role_token_valid',
@@ -117,6 +120,15 @@ def build_coarse_slot_packet(network, output, scene_cube, reverse_cube, scene_wo
         output['object_slot_prior'], image[:, :, :3], output['object_slot_points'],
         output['object_slot_valid'], support_image[..., 0][None],
         network.object_slot_predictor1.point_samples)
+    # Original slots read correlation features pc/max(abs(pc)), not cube XYZ.
+    # Undo precisely the render-time scale on the detached export only. Never
+    # change the image/predictor/adapter tensors used by the original policy.
+    normalized_corr = (getattr(getattr(network, 'mvt1', None), 'norm_corr', False)
+                       and predictor_type == 'slots'
+                       and not getattr(network, 'object_conditioning_inherit_coarse_roles', False))
+    correlation_scale = points.abs().max() if normalized_corr else points.new_tensor(1.)
+    if not torch.isfinite(correlation_scale) or correlation_scale <= 0:
+        raise ValueError('invalid original Slot correlation normalization scale')
     slot_output = {}
     for key in keys:
         value = output['object_slot_' + key]
@@ -126,10 +138,13 @@ def build_coarse_slot_packet(network, output, scene_cube, reverse_cube, scene_wo
             if value.shape[0] != 1:
                 raise ValueError('coarse output batch is not B=1')
             slot_output[key] = _numpy(value[0])
+    slot_output['points'] *= float(correlation_scale)
     packet = dict(schema_version=1, artifact_type='bridgevla_coarse_slot_export',
                 source_frame='bridgevla_coarse', slot_output=slot_output,
                 point_valid=_numpy(point_valid[0]), support_pixel_indices=_numpy(indices[0]),
                 point_support_source='renderer_coverage_and_predictor_topk',
+                predictor_type=predictor_type,
+                correlation_scale_to_cube=float(correlation_scale),
                 **cube_inverse_metadata(reverse_cube[0], points, scene_world[0]))
     if include_visualization:
         if image.shape[2] < 6:

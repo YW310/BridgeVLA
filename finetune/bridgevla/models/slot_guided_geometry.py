@@ -445,7 +445,7 @@ def geometry_for_render(authorized, scene_points, *, norm_corr, clean_xyz):
     return authorized
 
 
-def adapter_geometry_kwargs(authorized, *, device, dtype):
+def adapter_geometry_kwargs(authorized, *, device, dtype, role_conditioning=True):
     """Override only separate geometry arguments; never modify role priors/tokens."""
     authorized.verify()
     geom = authorized.geometry.detached(device=device, dtype=dtype)
@@ -453,9 +453,23 @@ def adapter_geometry_kwargs(authorized, *, device, dtype):
     reliable = geom.object_role_valid & (geom.object_geometry_confidence >= .25)
     geom = replace(geom, object_role_valid=reliable,
                    object_point_valid=geom.object_point_valid & reliable[..., None])
+    descriptor = geom.descriptor()
+    if not role_conditioning:
+        # Legacy Anchor has no separate unknown-Reference token. Do not turn
+        # NOT_VISIBLE/LOW_CONFIDENCE or failed geometry into semantic NULL.
+        reference_null = torch.tensor([s[1] == 'NULL' for s in geom.statuses], device=device)
+        if not reliable[:, 0].all() or not (reliable[:, 1] | reference_null).all():
+            raise ValueError('original Anchor requires reliable Target and visible Reference or explicit NULL')
+        # Match its trained mean / (max-min) / displacement descriptor. The
+        # modern path uses stddev; padding must enter neither definition.
+        mask = geom.object_point_valid[..., None]
+        lower = geom.object_points.masked_fill(~mask, float('inf')).amin(2)
+        upper = geom.object_points.masked_fill(~mask, -float('inf')).amax(2)
+        extent = torch.where(reliable[..., None], upper - lower, 0.)
+        descriptor = torch.cat((descriptor[:, :6], extent.flatten(1), descriptor[:, 12:]), 1)
     return dict(instance_valid=reliable,
                 relation_points=geom.object_points,
-                geometry=geom.descriptor(),
+                geometry=descriptor,
                 reference_null_probability=geom.reference_null_probability,
                 reference_is_null=torch.tensor([s[1] == 'NULL' for s in geom.statuses],
                                                device=device, dtype=torch.bool))

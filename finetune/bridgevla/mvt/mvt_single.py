@@ -673,7 +673,9 @@ class MVT(nn.Module):
         if slot_guided_geometry is not None:
             if self.training or torch.is_grad_enabled() or not hasattr(oracle_feature_adapter, 'forward_with_anchor'):
                 raise ValueError('slot-guided geometry requires an eval-mode existing Anchor adapter')
-            if not getattr(oracle_feature_adapter, 'role_conditioning', False):
+            if (not getattr(oracle_feature_adapter, 'role_conditioning', False)
+                    and (object_slot_output is None
+                         or object_slot_output.get('predictor_type', 'slots') != 'slots')):
                 raise ValueError('slot-guided geometry requires role_conditioning=True')
         if oracle_feature_adapter is not None:
             if oracle_prior_heatmap is None or oracle_prior_valid is None:
@@ -691,7 +693,8 @@ class MVT(nn.Module):
                 if slot_guided_geometry is not None:
                     from bridgevla.models.slot_guided_geometry import adapter_geometry_kwargs
                     adapter_geometry.update(adapter_geometry_kwargs(
-                        slot_guided_geometry, device=x.device, dtype=x.dtype))
+                        slot_guided_geometry, device=x.device, dtype=x.dtype,
+                        role_conditioning=getattr(oracle_feature_adapter, 'role_conditioning', False)))
                 (
                     translation_features,
                     shared_features,

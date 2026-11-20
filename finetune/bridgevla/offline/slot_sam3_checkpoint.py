@@ -5,7 +5,7 @@ from pathlib import Path
 CONDITIONING_FLAGS = (
     'shared_action_features', 'use_context', 'inherit_coarse_roles',
     'preserve_role_tokens', 'refine_role_masks', 'refine_local_query',
-    'refine_heatmap_residual', 'soft_coarse_queries', 'soft_coarse_null_renorm',
+    'refine_heatmap_residual', 'refine_relocalize', 'soft_coarse_queries', 'soft_coarse_null_renorm',
 )
 
 
@@ -38,7 +38,7 @@ def load_saved_configs(checkpoint, profile, exp_cfg_path=None, mvt_cfg_path=None
     for section, keys in (
         ('object_slots', ('enabled', 'predictor_type', 'num_slots', 'slot_dim',
                           'decoder_layers', 'num_heads', 'point_samples')),
-        ('object_conditioning', CONDITIONING_FLAGS + ('refine_mask_detach',)),
+        ('object_conditioning', CONDITIONING_FLAGS + ('refine_mask_detach', 'refine_hint_dropout')),
     ):
         for key in keys:
             if getattr(getattr(exp, section), key) != getattr(getattr(profile, section), key):
@@ -78,7 +78,7 @@ def model_arguments(exp, mvt):
     for key in ('oracle_prior_adapter_rank', 'oracle_relation_gated_adapter',
                 'oracle_adapter_translation_only', 'oracle_relation_anchor_rank'):
         model_args[key] = getattr(exp, key)
-    for key in CONDITIONING_FLAGS + ('refine_mask_detach',):
+    for key in CONDITIONING_FLAGS + ('refine_mask_detach', 'refine_hint_dropout'):
         model_args['object_conditioning_' + key] = getattr(exp.object_conditioning, key)
     model_args['object_conditioning_supervise_mixed_role_maps'] = exp.object_conditioning.supervise_mixed_role_maps
     model_args['oracle_prior_relation'] = exp.rvt.oracle_prior_relation

@@ -670,7 +670,10 @@ class MVT(nn.Module):
             adapters = [self.oracle_prior_feature_adapter1]
             if self.stage_two:
                 adapters.append(self.oracle_prior_feature_adapter2)
-            if any(not getattr(adapter, 'role_conditioning', False) for adapter in adapters):
+            if any(not hasattr(adapter, 'forward_with_anchor') for adapter in adapters):
+                raise ValueError('slot-guided SAM3 requires an existing Anchor in every action stage')
+            if (self.object_slot_predictor_type != 'slots'
+                    and any(not getattr(adapter, 'role_conditioning', False) for adapter in adapters)):
                 raise ValueError('slot-guided SAM3 requires existing role_conditioning=True Anchor adapters')
             freeze_for_geometry_inference(self)
         if current_state is not None:

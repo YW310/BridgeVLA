@@ -548,6 +548,7 @@ def test_actual_mvt_rejects_training_grad_and_unreviewed_input():
 def test_enabled_route_rejects_anchors_without_existing_role_conditioning(software_authorization, stage):
     fn = source_method('finetune/bridgevla/mvt/mvt.py', 'MVT', 'forward')
     model = WrapperStub()
+    model.object_slot_predictor_type = 'role_queries'
     getattr(model, f'oracle_prior_feature_adapter{stage}').role_conditioning = False
     with torch.no_grad(), pytest.raises(ValueError, match='role_conditioning=True'):
         fn(model, [], [], slot_guided_geometry=software_authorization(packet()))

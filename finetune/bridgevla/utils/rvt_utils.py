@@ -269,8 +269,8 @@ def get_eval_parser():
     parser.add_argument('--slot-sam3-prompt-mode', choices=('box-only', 'point+box'), default=None)
     parser.add_argument('--slot-sam3-fallback', choices=('baseline', 'fail'), default=None)
     parser.add_argument('--slot-sam3-diagnostics-dir', default=None)
-    parser.add_argument('--slot-sam3-stage', choices=('action', 'prompts'), default=None,
-                        help='prompts: save Slot/Prompt diagnostics and use baseline action without SAM3')
+    parser.add_argument('--slot-sam3-stage', choices=('action', 'prompts', 'segmentation'), default=None,
+                        help='prompts: no SAM3; segmentation: SAM3 masks with baseline action; action: condition on geometry')
     parser.add_argument('--slot-sam3-guidance-stage', choices=('coarse', 'refine'), default=None,
                         help='refine: prefer supported mask-head points, with per-role Coarse fallback')
     return parser

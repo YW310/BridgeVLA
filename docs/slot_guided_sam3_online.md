@@ -1,5 +1,33 @@
 # Slot-guided SAM3 online RLBench inference
 
+<a id="original-slots-sam3"></a>
+
+## 原版 slots → SAM3 → 原版动作条件
+
+使用 [internal-slots online 配置](../finetune/RLBench/configs/rlbench_slot_guided_sam3_internal_slots_online.yaml)，
+直接加载原版 checkpoint，无需重训。
+Coarse T/R→原图 box/point→SAM3→融合点云→两个原版 Anchor；保留独立 Refine、角色图与 tokens。
+导出时还原 correlation 尺度；旧 Anchor 使用有效点的中心与 max−min 范围，不计 padding。
+Reference 不可见、低置信或几何失败则回退原动作；明确 NULL 支持 Target-only。
+
+替换原版 run 路径（含 `exp_cfg.yaml`、`mvt_cfg.yaml`），仓库根目录运行：
+
+```bash
+MODEL_FOLDER=/path/to/original_internal_slots_run
+python finetune/RLBench/slot_guided_sam3_online.py \
+  --config finetune/RLBench/configs/rlbench_slot_guided_sam3_internal_slots_online.yaml \
+  --model-folder "$MODEL_FOLDER" --model-name model_last.pth \
+  --eval-datafolder "$PWD/LPY/BridgeVLA_RLBench_EVAL_DATA" \
+  --tasks open_drawer --eval-episodes 25 --episode-length 25 --device 0 \
+  --slot-sam3-task-repo ../SAM31 \
+  --slot-sam3-checkpoint "$PWD/checkpoints/sam3/sam3.pt"
+```
+
+默认保存 mask、prompt 和融合诊断到 `outputs/slot_sam3_internal_slots/run_*`。
+同一命令加 `--slot-sam3-stage segmentation` 可先运行分割而保持原动作；
+加 `--slot-sam3-stage prompts` 则不加载 SAM3。当前原版仅使用 Coarse 提示，Refine 独立预测保留。
+新配置只用于冻结推理；继续训练仍使用原 YAML。真实分割和闭环性能尚待服务器验证。
+
 Use [rlbench_slot_guided_sam3_online.yaml](../finetune/RLBench/configs/rlbench_slot_guided_sam3_online.yaml)
 and `finetune/RLBench/slot_guided_sam3_online.py` for the current-observation
 control loop. Models are frozen and persistent. Each policy step runs Coarse
@@ -29,7 +57,7 @@ Online 不要求先运行 offline，也不表示在线学习或保证实时频�
 TASK 中复用的 `configs/slot_guided_offline.json` 只是提示、候选选择和融合参数；
 该文件名不改变在线执行方式。
 
-当前支持的训练与使用顺序：
+以下训练步骤针对 role-query 配置；原版 slots 使用上方命令和原训练配置。
 
 1. 准备带 T/R 角色监督的 Semantic-GT replay，以及 BridgeVLA 初始化 checkpoint。
    使用 `rlbench_o2_role_queries.yaml` 训练固定双角色 query、现有 Relation Anchor
@@ -46,7 +74,7 @@ TASK 中复用的 `configs/slot_guided_offline.json` 只是提示、候选选择
 
 ## Actual online path
 
-1. The existing evaluator strictly loads a matching role-query/Anchor checkpoint
+1. The existing evaluator strictly loads a matching slots/Anchor or role-query/Anchor checkpoint
    and freezes BridgeVLA. SAM3's runtime-checked TASK backend loads once, before the
    simulator launches. A package/API/weight loading failure stops startup.
 2. An opt-in `extract_obs` hook captures the actual current RGB, world point

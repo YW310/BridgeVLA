@@ -125,11 +125,11 @@ def test_wrong_inverse_or_non_isotropic_inverse_is_rejected():
         cube_inverse_metadata(lambda p: p * p.new_tensor([1., 2., 3.]), cube[0], world[0])
 
 
-@pytest.mark.parametrize('failure', ['legacy_slots', 'training', 'batch', 'background'])
+@pytest.mark.parametrize('failure', ['unknown_predictor', 'training', 'batch', 'background'])
 def test_unsupported_sources_fail_before_extra_render(failure):
     network, output, cube, reverse, world = sample()
-    if failure == 'legacy_slots':
-        network.object_slot_predictor_type = 'slots'
+    if failure == 'unknown_predictor':
+        network.object_slot_predictor_type = 'unknown'
     elif failure == 'training':
         network.training = True
     elif failure == 'background':

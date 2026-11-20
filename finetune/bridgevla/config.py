@@ -158,7 +158,7 @@ _C.slot_guided_sam3.sam3_device = ''
 _C.slot_guided_sam3.prompt_mode = 'point+box'
 _C.slot_guided_sam3.fallback = 'baseline'
 _C.slot_guided_sam3.diagnostics_dir = ''
-_C.slot_guided_sam3.stage = 'action'  # prompts: baseline action + Slot/Prompt diagnostics, no SAM3.
+_C.slot_guided_sam3.stage = 'action'  # prompts: no SAM3; segmentation: masks + baseline action.
 _C.slot_guided_sam3.guidance_stage = 'coarse'  # refine: prefer supported local mask-head points per role.
 
 # arguments present in peract official
