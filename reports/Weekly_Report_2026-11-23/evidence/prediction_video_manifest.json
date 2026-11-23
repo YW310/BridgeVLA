@@ -13,7 +13,6 @@
     "checkpoint_sha256": "274127ac0884ec9e647ed604e7248154334700e84c72b899e00bd5ff09457c6e",
     "contract_sha256": "6c7a14a417edfdca7c6e40f5a088124d91a086baf9cccc301384228acd9e8f1f",
     "report": "/media/34.49/common-data-4t/project/BridgeVLA/logs/oht-epoch30-full-episodes-17-31-20261120.json",
-    "mp4": "media/episode_31_full_prediction.mp4",
     "gif": "media/episode_31_full_prediction.gif",
     "reconstruction": "predicted XYZ = cached GT XYZ + saved signed model error; all NPZ checksums verified",
     "maximum_reconstructed_norm_discrepancy_m": 9.876169493328035e-09,
