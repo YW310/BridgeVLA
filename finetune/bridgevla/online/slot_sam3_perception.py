@@ -19,6 +19,8 @@ from typing import Any, Mapping
 import numpy as np
 
 from bridgevla.offline.slot_sam3_perception import TaskPerception
+from bridgevla.online.slot_sam3_diagnostics import (
+    UnavailableTargetError, camera_role_diagnostics, guidance_role_diagnostics)
 from bridgevla.utils.startup_progress import live_phase
 
 
@@ -104,13 +106,16 @@ class OnlineTaskPerception(TaskPerception):
     def perceive(self, snapshot: Any, coarse_packet: Mapping[str, Any] | None, *, instruction: str,
                  task_name: str, checkpoint_path: str | Path, bridge_git_sha: str,
                  point_count: int = 128, expected_snapshot_digest: str | None = None,
-                 diagnostics_dir: str | Path | None = None, oracle_labels=None) -> OnlinePerceptionResult:
+                 diagnostics_dir: str | Path | None = None, oracle_labels=None,
+                 skip_unusable_target: bool = False) -> OnlinePerceptionResult:
         """Compute fresh geometry directly from the current in-memory snapshot.
 
         Checkpoint paths identify actual loaded weights. TASK verifies SAM3's
         source API and hashes the local weights; fusion records the real Coarse
         checkpoint digest. Mock remains explicitly marked and is never an
         authorization. Optional diagnostic writes occur only after inference.
+        Action callers may skip fusion when no camera has an accepted Target;
+        that raises UnavailableTargetError with compact current-frame evidence.
         """
         api = self._load_api()
         receipt = self.snapshot_receipt(snapshot)
@@ -194,6 +199,26 @@ class OnlineTaskPerception(TaskPerception):
         }
         if coarse_packet is not None and 'guidance_selection' in coarse_packet:
             inference['guidance_selection'] = copy.deepcopy(coarse_packet['guidance_selection'])
+        # Fusion cannot invent candidates. In action mode this frame would
+        # necessarily return the current baseline, even if Reference is usable.
+        # Keep segmentation/standalone diagnostics on their full fusion path.
+        if skip_unusable_target and not any(
+                candidate.get('accepted') is True
+                for camera in cameras.values()
+                for candidate in camera.get('roles', {}).get('target', {}).get('candidates', [])):
+            artifacts = None
+            if diagnostic_path is not None:
+                api.slot_guided_io.save_inference_artifact(diagnostic_path / 'inference.json', inference, snapshot)
+                artifacts = dict(inference_path=str(diagnostic_path / 'inference.json'))
+            raise UnavailableTargetError(dict(
+                current_frame=copy.deepcopy(receipt), backend_kind=kind,
+                guidance_roles=guidance_role_diagnostics(guidance),
+                camera_roles=camera_role_diagnostics(cameras),
+                fusion_skipped=True, fusion_skip_reason='NO_ACCEPTED_TARGET_CANDIDATES',
+                artifacts=artifacts,
+                perception_timings_ms=dict(model_load=model_ms, guidance=(produced - started) * 1000,
+                                           segmentation=(segmented - produced) * 1000, fusion=0.,
+                                           frame_total=(time.perf_counter() - started) * 1000)))
         with live_phase(f'frame={index} geometry fusion', prefix='SlotSAM3'):
             fused = api.slot_geometry_fusion.fuse_geometry(snapshot, guidance, inference, config=self._config.fusion)
         fused_at = time.perf_counter()

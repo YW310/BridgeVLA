@@ -23,6 +23,7 @@ from bridgevla.models.slot_guided_geometry import (
 from bridgevla.online.slot_sam3_perception import OnlineTaskPerception
 from bridgevla.online.slot_sam3_policy import OnlineSlotSam3Policy
 from bridgevla.online import slot_sam3_runtime as runtime
+from bridgevla.utils.startup_progress import startup_phase
 from bridgevla.offline.slot_sam3_checkpoint import load_profile, load_saved_configs, model_arguments
 from yarr.agents.agent import ActResult
 
@@ -363,7 +364,7 @@ def test_eval_automatically_enables_current_gt_capture_with_default_role_yaml(mo
     code = compile(ast.Module(body=[block], type_ignores=[]), '<actual_oracle_observer_setup>', 'exec')
     scope = dict(online_slot_sam3=True, agent=SimpleNamespace(cameras=['front'],
         slot_guided_sam3_runtime=dict(guidance_source='oracle_gt', task_repo='TASK')),
-        oracle_role_config=None, online_env_kwargs={}, Path=Path,
+        oracle_role_config=None, online_env_kwargs={}, Path=Path, startup_phase=startup_phase,
         __file__=str(ROOT / 'finetune/RLBench/eval.py'))
     exec(code, scope)
     assert events[0]['oracle_role_config'] == ROOT / 'finetune/RLBench/configs/rlbench_o2_semantic_roles.yaml'

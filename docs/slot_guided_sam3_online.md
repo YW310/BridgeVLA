@@ -115,6 +115,25 @@ returned step prints reward, terminal and timeout without waiting for the end
 of the episode. Baseline evaluation without online Slot/SAM3 keeps its existing
 output behavior. No additional flags are required.
 
+On fallback, the runtime log also prints `TARGET` summaries: guidance status,
+confidence and supported point count, followed by each camera's prompt validity,
+candidate/accepted counts, and prompt/candidate rejection reasons. No diagnostic
+artifact directory is needed for these lines. In `action` mode, when no camera
+has an accepted Target candidate, the wrapper immediately returns its current
+baseline action (or raises with `--slot-sam3-fallback fail`). It skips fusion,
+including TASK's checkpoint digest I/O, because fusion cannot create a Target
+without an accepted candidate. Current-frame and candidate evidence remains in
+the step log; an explicitly requested diagnostic directory receives the inference
+artifact, with no fabricated geometry artifact. `segmentation` mode and standalone
+perception retain full fusion diagnostics. Accepted Target candidates still use
+the complete fusion, checkpoint provenance and action validation path.
+
+At startup, `Step diagnostics:` prints the absolute JSONL path. By default it is
+`<model-folder>/eval/slot_sam3_online/<run-id>/<model-name-without-extension>/slot_sam3_steps.jsonl`.
+`--visualize_root_dir` controls visualization output, and the shell's `tee`
+controls `runtime.log`; neither relocates the step JSONL. Optional per-frame
+mask/geometry files require `--slot-sam3-diagnostics-dir`.
+
 1. The existing evaluator strictly loads a matching slots/Anchor or role-query/Anchor checkpoint
    and freezes BridgeVLA. SAM3's runtime-checked TASK backend loads once, before the
    simulator launches. A package/API/weight loading failure stops startup.

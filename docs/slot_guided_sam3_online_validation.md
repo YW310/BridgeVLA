@@ -90,8 +90,10 @@ robot action has been executed by this validation. The command and controller
 wiring are implemented; robot/perception metrics, paired task success, actual
 latency and full-frame GPU peak remain unmeasured.
 
-Checkpoint SHA256 is currently recomputed by TASK fusion and Bridge action
-authorization on each step. That cost is included in online timing. SAM3's
-fingerprint is already cached. A future optimization must retain loaded-weight
-identity checks. Online resume and generic copied/multiprocess YARR worker
+Checkpoint SHA256 is recomputed by TASK fusion and Bridge action authorization
+on steps that reach those operations. Action mode now skips fusion entirely
+when no camera has an accepted Target candidate, preserving the existing
+current-baseline fallback and compact failure evidence. This avoids digest I/O
+on such frames; it does not cache or bypass checkpoint validation for conditioned
+actions. SAM3's fingerprint is already cached. Online resume and generic copied/multiprocess YARR worker
 integration are not enabled by this first direct-evaluator path.

@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT / "finetune"))
 sys.path.insert(0, str(ROOT / "finetune/bridgevla/libs/YARR"))
 from bridgevla.models.slot_guided_geometry import sample_geometry, sha256_file
 from bridgevla.online.slot_sam3_policy import OnlineSlotSam3Policy
+from bridgevla.online.slot_sam3_diagnostics import UnavailableTargetError
 from yarr.agents.agent import ActResult
 
 
@@ -273,7 +274,7 @@ def test_diagnostics_keep_capture_index_provenance_and_real_measurement_scope():
     assert all("mask" not in str(row) for row in diagnostics.values())
 
 
-def test_target_fallback_retains_prompt_candidate_and_fusion_reasons_without_mask_arrays():
+def test_target_fallback_retains_prompt_candidate_and_fusion_reasons_without_mask_arrays(capsys):
     import json
 
     policy, agent, perception, _ = policy_fixture()
@@ -301,8 +302,34 @@ def test_target_fallback_retains_prompt_candidate_and_fusion_reasons_without_mas
     assert diagnostics['roles']['target']['failure_reason'] == 'NO_GEOMETRIC_SUPPORT'
     assert diagnostics['roles']['reference']['status'] == 'NULL'
     json.dumps(diagnostics, allow_nan=False)  # Only compact diagnostics; no NumPy masks.
+    output = capsys.readouterr().out
+    assert 'camera=front; prompt_valid=True; candidates=1; accepted=0' in output
+    assert 'positive_prompt_miss' in output and 'OUTSIDE_IMAGE' in output
+    assert 'NO_GEOMETRIC_SUPPORT' in output
     policy.act(4, {'current_index': 1})
     assert policy.last_diagnostics['policy_call_index'] == 2
+
+
+@pytest.mark.parametrize('stage', ['action', 'segmentation'])
+def test_empty_target_short_circuit_keeps_current_baseline_and_failure_evidence(capsys, tmp_path, stage):
+    policy, agent, perception, _ = policy_fixture(stage=stage, diagnostics_dir=tmp_path)
+    evidence = dict(
+        camera_roles={'front': {'target': dict(prompt_valid=False, failure_reason='LOW_CONFIDENCE',
+                                               candidate_count=0, accepted_candidate_count=0)}},
+        guidance_roles={'target': dict(status='LOW_CONFIDENCE', confidence=.1, point_count=0)},
+        fusion_skipped=True, fusion_skip_reason='NO_ACCEPTED_TARGET_CANDIDATES',
+        perception_timings_ms=dict(frame_total=2., fusion=0.))
+    perception.error = UnavailableTargetError(evidence)
+    result = policy.act(5, {'current_index': 0})
+    assert result.action[0] == 5 and len(agent.calls) == 1
+    assert perception.calls[0][2]['skip_unusable_target'] is (stage == 'action')
+    diagnostics = result.info['slot_guided_sam3']
+    assert diagnostics['status'] == 'baseline_fallback'
+    assert diagnostics['fusion_skipped'] and diagnostics['camera_roles'] == evidence['camera_roles']
+    assert agent.enable_slot_guided_sam3 is True
+    output = capsys.readouterr().out
+    assert 'guidance_status=LOW_CONFIDENCE' in output and 'confidence=0.1' in output
+    assert 'fusion_skipped=True' in output
 
 
 @pytest.mark.parametrize("kind,empty,confidence", [("mock", False, .9), ("sam3", True, 0.), ("sam3", False, .1)])

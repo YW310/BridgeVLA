@@ -4,6 +4,7 @@ import copy
 from dataclasses import replace
 import hashlib
 import importlib
+import json
 import os
 from pathlib import Path
 import sys
@@ -14,6 +15,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "finetune"))
 from bridgevla.online.slot_sam3_perception import OnlineTaskPerception
+from bridgevla.online.slot_sam3_diagnostics import UnavailableTargetError
 
 
 @pytest.fixture
@@ -172,6 +174,41 @@ def test_reference_null_and_unavailable_target_remain_explicit(scene):
     result = _run(scene)
     assert result.geometry.statuses == (("LOW_CONFIDENCE", "NULL"),)
     assert not result.geometry.object_role_valid.any()
+
+
+@pytest.mark.parametrize('cause', ['low_confidence', 'no_predictions', 'rejected_candidates'])
+def test_action_skips_fusion_and_checkpoint_hash_when_target_has_no_accepted_candidates(scene, monkeypatch, tmp_path, cause):
+    if cause == 'low_confidence':
+        scene['packet']['slot_output']['confidence'][0] = .1
+    else:
+        for backend in scene['backends'].values():
+            masks = np.zeros((0 if cause == 'no_predictions' else 1, 32, 32), dtype=bool)
+            backend.candidates['target'] = (masks, np.ones(len(masks)))
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError('An action without any accepted Target must skip fusion and its checkpoint hash')
+
+    monkeypatch.setattr(scene['api'].slot_geometry_fusion, 'fuse_geometry', forbidden)
+    monkeypatch.setattr(scene['api'].slot_geometry_fusion, '_file_digest', forbidden)
+    directory = tmp_path / 'failed-frame'
+    with pytest.raises(UnavailableTargetError, match='fusion skipped') as caught:
+        _run(scene, skip_unusable_target=True, diagnostics_dir=directory)
+    diagnostics = caught.value.perception_diagnostics
+    assert diagnostics['fusion_skipped'] and diagnostics['fusion_skip_reason'] == 'NO_ACCEPTED_TARGET_CANDIDATES'
+    assert diagnostics['perception_timings_ms']['fusion'] == 0.
+    assert all(row['target']['accepted_candidate_count'] == 0 for row in diagnostics['camera_roles'].values())
+    assert diagnostics['current_frame']['source_frame_index'] == 150
+    assert Path(diagnostics['artifacts']['inference_path']).is_file()
+    assert not (directory / 'object_geometry.json').exists()  # no invented geometry artifact
+    json.dumps(diagnostics, allow_nan=False)  # masks and points stay out of step diagnostics
+    # Reference candidates can still be accepted; they cannot replace Target.
+    assert any(row['reference']['accepted_candidate_count'] > 0 for row in diagnostics['camera_roles'].values())
+
+
+def test_action_with_accepted_target_keeps_full_fusion_and_checkpoint_identity(scene):
+    result = _run(scene, skip_unusable_target=True)
+    assert result.geometry.object_role_valid[0, 0]
+    assert result.geometry.provenance[0]['source_checkpoint_sha256'] == hashlib.sha256(scene['checkpoint'].read_bytes()).hexdigest()
 
 
 def test_optional_diagnostics_are_write_only_and_separate_from_live_result(scene, tmp_path):

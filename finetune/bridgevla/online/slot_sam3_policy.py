@@ -14,6 +14,9 @@ import time
 from typing import Any, Mapping
 
 from bridgevla.utils.startup_progress import live_phase
+from bridgevla.online.slot_sam3_diagnostics import (
+    UnavailableTargetError, camera_role_diagnostics, guidance_role_diagnostics,
+    print_target_diagnostics)
 
 
 _RECEIPT_KEYS = (
@@ -164,6 +167,8 @@ class OnlineSlotSam3Policy:
               f'policy_total={diagnostics["timings_ms"]["policy_total"] / 1000:.1f}s'
               + (f'; reason={diagnostics["failure_reason"]}' if diagnostics.get('failure_reason') else ''),
               flush=True)
+        if diagnostics['status'] == 'baseline_fallback':
+            print_target_diagnostics(diagnostics, call=self._frame_sequence)
         return result
 
     def act(self, step: int, observation: dict, deterministic: bool = False, **kwargs: Any) -> Any:
@@ -261,6 +266,7 @@ class OnlineSlotSam3Policy:
                         bridge_git_sha=self.bridge_git_sha, point_count=self.point_count,
                         expected_snapshot_digest=receipt["snapshot_input_sha256"], diagnostics_dir=diagnostic_path,
                         **(dict(oracle_labels=capture.oracle_labels) if oracle else {}),
+                        skip_unusable_target=self.stage == 'action',
                     )
                 timings["perception"] = (time.perf_counter() - perceived_at) * 1000
                 diagnostics["perception_timings_ms"] = dict(result.timings_ms)
@@ -274,20 +280,9 @@ class OnlineSlotSam3Policy:
                 diagnostics["peak_gpu_memory_bytes"] = max(measured_peaks) if measured_peaks else None
                 diagnostics["peak_gpu_memory_scope"] = "maximum SAM3 per-camera torch allocator peak; policy forward excluded"
                 diagnostics["camera_peak_vram_bytes"] = camera_peaks
-                diagnostics['camera_roles'] = {
-                    name: {
-                        role: dict(prompt_valid=row.get('prompt', {}).get('prompt_valid'),
-                                   failure_reason=row.get('failure_reason'),
-                                   candidate_count=len(row.get('candidates', [])),
-                                   accepted_candidate_count=sum(candidate.get('accepted') is True
-                                                                for candidate in row.get('candidates', [])),
-                                   candidate_failure_reasons=sorted({
-                                       reason for candidate in row.get('candidates', [])
-                                       for reason in candidate.get('failure_reasons', [])}),
-                                   selected_index=row.get('selected_index'))
-                        for role, row in camera.get('roles', {}).items()
-                    } for name, camera in camera_results.items()
-                }
+                diagnostics['camera_roles'] = camera_role_diagnostics(camera_results)
+                if getattr(result, 'guidance', None) is not None:
+                    diagnostics['guidance_roles'] = guidance_role_diagnostics(result.guidance)
                 if result.backend_kind != "sam3":
                     raise ValueError("Mock perception cannot condition an online action")
                 returned_receipt = _receipt(result.receipt)
@@ -339,11 +334,15 @@ class OnlineSlotSam3Policy:
                 diagnostics["status"] = "conditioned"
                 return self._finish(conditioned, diagnostics, started)
         except Exception as error:
+            if isinstance(error, UnavailableTargetError):
+                diagnostics.update(error.perception_diagnostics)
+                timings['perception'] = error.perception_diagnostics['perception_timings_ms']['frame_total']
             diagnostics.update(status="baseline_fallback", failure_reason=f"{type(error).__name__}: {error}")
             if original is None or self.fallback == "fail":
                 diagnostics["status"] = "failed"
                 timings["policy_total"] = (time.perf_counter() - started) * 1000
                 self.last_diagnostics = diagnostics
+                print_target_diagnostics(diagnostics, call=self._frame_sequence)
                 raise
             return self._finish(original, diagnostics, started)
         finally:

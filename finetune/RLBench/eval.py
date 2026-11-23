@@ -575,6 +575,7 @@ def eval(
             online_step_log = Path(log_dir) / 'slot_sam3_steps.jsonl'
             online_step_log.parent.mkdir(parents=True, exist_ok=True)
             online_step_log.write_text('', encoding='utf-8')
+            print(f'[SlotSAM3] Step diagnostics: {online_step_log.resolve()}', flush=True)
 
     device = f"cuda:{device}"
 
@@ -1074,6 +1075,7 @@ _FINETUNE_RUNTIME_FILES = (
     "bridgevla/models/refine_slot_export.py",
     "bridgevla/online/slot_sam3_runtime.py",
     "bridgevla/online/slot_sam3_policy.py",
+    "bridgevla/online/slot_sam3_diagnostics.py",
     "bridgevla/online/slot_sam3_perception.py",
     "bridgevla/online/slot_prompt_probe.py",
     "bridgevla/offline/slot_sam3_perception.py",
