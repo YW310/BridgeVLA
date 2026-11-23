@@ -83,7 +83,7 @@ Target、Reference heatmap 和当前相机的 SAM3 分割，不增加网络推�
 首次排查建议 `--eval-episodes 1 --episode-length 3`。
 
 热图按各阶段自己的虚拟视图显示；Refine 使用局部 crop，不能直接把两阶段像素坐标对比。
-角色颜色使用绝对概率，绿色 action 图使用相对空间 softmax。`heatmaps/prompt_report.json`
+Coarse/Refine 热图的最大叠加权重为 **85%**：角色颜色按绝对概率加权，绿色 action 图按相对空间 softmax 加权。`heatmaps/prompt_report.json`
 记录角色状态、Reference NULL 概率、`guidance_selection` 及响应强度；原始数组在
 `heatmaps/slot_arrays.npz`。Target/Reference 的 soft overlap 只衡量两张预测图的重叠，
 不代表相对 GT 的精度。详细排查方法见[在线诊断](../../../docs/slot_guided_sam3_online.md#same-frame-heatmaps)。

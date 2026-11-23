@@ -49,13 +49,13 @@ def _stage_images(root, stage, value, arrays):
             probability = Image.fromarray(prior[index, role].astype(np.float32), mode='F').resize(
                 (width, height), Image.Resampling.BILINEAR)
             # Fixed absolute probability scale; never amplify a weak role map.
-            alpha = np.clip(np.asarray(probability), 0, 1)[..., None] * .65
+            alpha = np.clip(np.asarray(probability), 0, 1)[..., None] * .85
             panels.append(Image.fromarray(np.clip(pixels * (1 - alpha) + np.array(color) * alpha, 0, 255).astype(np.uint8)))
         if logits is not None:
             probability = np.exp(logits[index].astype(np.float64) - logits[index].max())
             probability /= probability.sum()
             relative = probability / probability.max()
-            alpha = relative[..., None] * .65
+            alpha = relative[..., None] * .85
             panels.append(Image.fromarray(np.clip(pixels * (1 - alpha) + np.array([50, 255, 80]) * alpha, 0, 255).astype(np.uint8)))
         canvas = Image.new('RGB', (len(panels) * width, max(height, 80) + 58), (25, 25, 25))
         for column, panel in enumerate(panels):
