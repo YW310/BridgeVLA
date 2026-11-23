@@ -72,6 +72,22 @@ EOF
 
 ## Slot-guided SAM3 online inference
 
+### Role relocalize：同帧角色 heatmap 与 SAM3 分割
+
+`rlbench_o2_role_relocalize.yaml` 训练的模型使用
+[relocalize online 配置](rlbench_slot_guided_sam3_relocalize_online.yaml)。保留
+`--slot-sam3-guidance-stage refine --slot-sam3-stage action`，并指定
+`--slot-sam3-diagnostics-dir "$RUN_DIR/sam3"`，会在每步保存首遍策略的 Coarse/Refine
+Target、Reference heatmap 和当前相机的 SAM3 分割，不增加网络推理次数。
+打开 `sam3/run_*/episode_*/frame_*/index.html`，可同时查看两者；日志也打印该路径。
+首次排查建议 `--eval-episodes 1 --episode-length 3`。
+
+热图按各阶段自己的虚拟视图显示；Refine 使用局部 crop，不能直接把两阶段像素坐标对比。
+角色颜色使用绝对概率，绿色 action 图使用相对空间 softmax。`heatmaps/prompt_report.json`
+记录角色状态、Reference NULL 概率、`guidance_selection` 及响应强度；原始数组在
+`heatmaps/slot_arrays.npz`。Target/Reference 的 soft overlap 只衡量两张预测图的重叠，
+不代表相对 GT 的精度。详细排查方法见[在线诊断](../../../docs/slot_guided_sam3_online.md#same-frame-heatmaps)。
+
 <a id="gt-sam3"></a>
 
 ### 已训练 Semantic-GT 模型：GT 提示 → SAM3 → BridgeVLA

@@ -64,6 +64,12 @@ def test_real_guidance_prompts_and_stage_images_without_sam_or_fusion(scene, tmp
     assert saved['stages']['refine']['roles_inherited'] is True
     assert saved['stages']['refine']['valid'] == [False, False]
     assert saved['stages']['refine']['role_token_valid'] == [True, True]
+    coarse_stats = saved['stages']['coarse']['role_map_statistics']
+    assert coarse_stats['target']['peak_probability'] == pytest.approx(.8)
+    assert coarse_stats['reference']['peak_probability'] == pytest.approx(.2)
+    assert coarse_stats['reference']['fraction_ge_025'] == 0.
+    assert coarse_stats['target_reference_soft_overlap'] == pytest.approx(.25)
+    assert saved['stages']['refine']['role_map_statistics']['target_reference_soft_overlap'] == 1.
     assert not (tmp_path / 'probe' / 'object_geometry.json').exists()
     for stage, original in (('coarse', 76), ('refine', 178)):
         image = np.array(Image.open(report['stages'][stage]['images'][0]))
@@ -87,6 +93,15 @@ def test_probe_keeps_reference_null_and_reports_invalid_prompts(scene, tmp_path)
     assert report['roles']['reference']['status'] == 'NULL'
     assert all(row['reference']['failure_reason'] == 'NULL' for row in report['prompts'].values())
     assert report['roles']['target']['status'] == 'VISIBLE'
+
+
+def test_zero_role_maps_have_no_defined_overlap(scene, tmp_path):
+    value = packet(scene)
+    value['visualization']['role_prior'][:] = 0
+    _, _, report = inspect(scene, tmp_path, value)
+    stats = report['stages']['coarse']['role_map_statistics']
+    assert stats['target']['peak_probability'] == 0.
+    assert stats['target_reference_soft_overlap'] is None
 
 
 def test_probe_refuses_stale_mutated_or_reused_artifacts(scene, tmp_path):

@@ -212,6 +212,52 @@ def test_action_with_accepted_target_keeps_full_fusion_and_checkpoint_identity(s
     assert result.geometry.provenance[0]['source_checkpoint_sha256'] == hashlib.sha256(scene['checkpoint'].read_bytes()).hexdigest()
 
 
+@pytest.mark.parametrize('unavailable_target', [False, True])
+def test_same_frame_heatmaps_and_sam_results_without_extra_inference(scene, tmp_path, unavailable_target):
+    from test_slot_prompt_probe import packet
+    scene['packet'] = packet(scene)
+    if unavailable_target:
+        scene['packet']['slot_output']['confidence'][0] = .1
+    directory = tmp_path / 'combined'
+    if unavailable_target:
+        with pytest.raises(UnavailableTargetError) as caught:
+            _run(scene, diagnostics_dir=directory, skip_unusable_target=True)
+        artifacts = caught.value.perception_diagnostics['artifacts']
+        assert not (directory / 'object_geometry.json').exists()
+    else:
+        result = _run(scene, diagnostics_dir=directory, skip_unusable_target=True)
+        artifacts = result.diagnostics
+        assert result.geometry.object_role_valid[0, 0]
+        scene['client'].reset()
+        plain = _run(scene)
+        np.testing.assert_array_equal(result.geometry.object_points, plain.geometry.object_points)
+    report = json.loads(Path(artifacts['heatmap_report_path']).read_text(encoding='utf-8'))
+    inference = json.loads(Path(artifacts['inference_path']).read_text(encoding='utf-8'))
+    assert report['source_frame_index'] == inference['source_frame_index'] == 150
+    gallery = Path(artifacts['heatmap_index_path']).read_text(encoding='utf-8')
+    assert 'heatmaps/coarse/view_00.png' in gallery and 'heatmaps/refine/view_00.png' in gallery
+    assert Path(artifacts['slot_arrays_path']).is_file()
+    for stage in ('coarse', 'refine'):
+        assert Path(report['stages'][stage]['images'][0]).is_file()
+    for name, backend in scene['backends'].items():
+        assert f'{name}.diagnostic.png' in gallery
+        assert (directory / f'{name}.diagnostic.png').is_file()
+        assert backend.set_image_calls == (1 if unavailable_target else 2)
+        assert len(backend.predict_calls) == (1 if unavailable_target else 4)
+
+
+def test_optional_heatmap_export_failure_keeps_current_geometry(scene, tmp_path, monkeypatch):
+    from test_slot_prompt_probe import packet
+    from bridgevla.online.slot_prompt_probe import SlotPromptProbe
+    scene['packet'] = packet(scene)
+    def fail(*args, **kwargs):
+        raise OSError('diagnostic export failed')
+    monkeypatch.setattr(SlotPromptProbe, 'inspect', fail)
+    result = _run(scene, diagnostics_dir=tmp_path / 'combined')
+    assert result.geometry.object_role_valid[0, 0]
+    assert result.diagnostics['heatmap_error'] == 'OSError: diagnostic export failed'
+
+
 def test_real_task_fusion_reuses_loaded_digest_without_mutating_task_or_caching_frames(scene, monkeypatch):
     strict = _run(scene)
     identity = checkpoint_identity.LoadedCheckpointIdentity(scene['checkpoint'])

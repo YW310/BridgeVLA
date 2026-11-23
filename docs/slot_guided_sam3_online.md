@@ -74,6 +74,47 @@ TASK 中复用的 `configs/slot_guided_offline.json` 只是提示、候选选择
    如需冻结 Slot/SAM3 后仅训练 Anchor / Action Head，仍需新增几何 replay、
    训练接口和梯度隔离，不能把 online/offline YAML 直接交给 `train.py` 实现。
 
+<a id="same-frame-heatmaps"></a>
+
+## 同帧角色 heatmap 和 SAM3 分割
+
+预测式在线推理在指定 `--slot-sam3-diagnostics-dir "$RUN_DIR/sam3"` 后，
+`action` / `segmentation` 阶段也导出首遍策略的 Coarse/Refine 角色热图。
+保留原来的 `--slot-sam3-stage action --slot-sam3-guidance-stage refine` 即可，
+无需切换为 prompts 模式。第一次排查可改为 `--eval-episodes 1 --episode-length 3`。
+
+每帧路径为 `$RUN_DIR/sam3/run_*/episode_*/frame_*`：
+
+| 文件 | 内容 |
+| --- | --- |
+| `index.html` | 同帧角色 heatmap、角色状态、提示选择和原相机 SAM3 结果 |
+| `heatmaps/coarse/view_*.png`、`heatmaps/refine/view_*.png` | RGB、Target、Reference 和 action 热图 |
+| `heatmaps/prompt_report.json` | 各阶段置信度、有效性、NULL 概率、响应峰值及提示来源 |
+| `heatmaps/slot_arrays.npz` | 未归一化增强的原始角色概率、动作 logits、支持点及坐标变换 |
+| `<camera>.diagnostic.png`、`inference.json` | 实际 SAM3 的分割、提示和候选接受/拒绝原因 |
+
+导出复用当前首遍策略的 detached 数据，不增加策略/SAM3 推理。
+即使 Target 无可接受候选而回退 baseline，也保留这些热图；此时不生成虚构的融合几何。
+`heatmaps/` 内的 prompt report 是不运行 SAM3 的提示检查报告，实际 SAM3 结果在其上一级。
+可视化会增加数组导出和写盘开销；不设置 diagnostics_dir 时不启用此导出。
+
+Target/Reference 用固定的绝对概率着色，弱响应不会被放大成高亮图。
+action 用相对空间 softmax，不能拿亮度与角色概率比较。Coarse 和 Refine 使用各自
+虚拟视图及 crop 坐标，也不是原相机 mask。日志中的 `T/R_overlap` 是预测间的 soft overlap，
+不是 GT IoU，不能单独证明定位正确或错误。
+
+| 观察 | 下一步检查 |
+| --- | --- |
+| Coarse 响应弱、角色无效 | 角色头输出的置信度、语义有效性及训练监督 |
+| Refine 未被选中 | `guidance_selection.roles.*.failure_reason`，尤其局部有效性和支持点数 |
+| Refine 图看似正确，但原图提示偏移 | crop 逆变换、点云支持、相机标定及深度 |
+| 原图提示正确，但 SAM3 选错实例 | `inference.json` 中候选分数、接受/拒绝原因及分割边界 |
+| 对错误对象有高置信响应 | 对照当前指令和真实角色标注，检查语义监督、训练收敛及阶段定义 |
+
+Reference 被全局判断为 NULL 时，局部 relocalize 不会将其重新激活。确认角色语义是否
+真的不存在，再判断 NULL 是否预测错误。具体精度和根因需结合实际场景、标注与输出，
+目录名和架构配置匹配不能证明训练已收敛。
+
 ## Actual online path
 
 ### Startup progress / apparent hangs

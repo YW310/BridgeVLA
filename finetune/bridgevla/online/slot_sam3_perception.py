@@ -9,6 +9,7 @@ it does not grant control authorization or claim manipulation acceptance.
 from __future__ import annotations
 
 import copy
+import html
 import json
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -70,6 +71,59 @@ class OnlineTaskPerception(TaskPerception):
     def reset(self) -> None:
         """Start fresh episode/frame bookkeeping while retaining model weights."""
         self._last_source_indices.clear()
+
+    def _save_policy_heatmaps(self, root, snapshot, packet, *, instruction, task_name,
+                              checkpoint, bridge_git_sha, receipt):
+        """Inspect the detached first-pass packet; never run another model pass."""
+        if packet is None or not isinstance(packet.get('visualization'), dict):
+            return {}
+        try:
+            # Import lazily: the prompt-only inspector also reuses _export above.
+            from bridgevla.online.slot_prompt_probe import SlotPromptProbe
+
+            with live_phase(f'frame={receipt["source_frame_index"]} heatmap export', prefix='SlotSAM3'):
+                probe = SlotPromptProbe(self.task_repo, config_path=self.config_path, mode=self.mode)
+                report = probe.inspect(snapshot, packet, instruction=instruction, task_name=task_name,
+                    checkpoint_path=checkpoint, bridge_git_sha=bridge_git_sha,
+                    diagnostics_dir=root / 'heatmaps', expected_snapshot_digest=receipt['snapshot_input_sha256'])
+                images = [Path(filename).relative_to(root).as_posix()
+                          for stage in report['stages'].values() for filename in stage['images']]
+                def panels(paths):
+                    return ''.join(
+                        f'<figure><figcaption>{html.escape(name)}</figcaption>'
+                        f'<img src="{html.escape(name, quote=True)}"></figure>' for name in paths)
+                summary = dict(source_frame_index=receipt['source_frame_index'], roles=report['roles'],
+                    reference_null_probability=report['reference_null_probability'],
+                    guidance_selection=report['guidance_selection'], stages=report['stages'])
+                (root / 'index.html').write_text(
+                    '<!doctype html><meta charset="utf-8"><title>Role heatmaps and SAM3</title>'
+                    '<style>body{background:#181818;color:#eee;font:16px sans-serif}'
+                    'img{max-width:100%}figure{margin:20px 0}pre{white-space:pre-wrap}</style>'
+                    '<h1>Role heatmaps and current SAM3 result</h1>'
+                    f'<p>{html.escape(instruction)}</p>'
+                    '<p>Heatmaps are from the first policy pass. Coarse and Refine use different virtual '
+                    'view/crop coordinates; these are role probabilities, not original-camera masks. '
+                    'Soft overlap compares Target with Reference, not against ground truth.</p>'
+                    '<p>Target: orange/red. Reference: blue. Action: green.</p>'
+                    '<h2>First-pass Coarse / Refine heatmaps</h2>' + panels(images)
+                    + '<h2>Current original-camera SAM3 results</h2>'
+                    + panels([f'{name}.diagnostic.png' for name in snapshot.cameras])
+                    + '<details><summary>Role state and guidance selection</summary><pre>'
+                    + html.escape(json.dumps(summary, indent=2)) + '</pre></details>', encoding='utf-8')
+                for stage, row in report['stages'].items():
+                    stats = row['role_map_statistics']
+                    print(f'[SlotHeatmaps] {stage}: target_peak={stats["target"]["peak_probability"]:.4f}; '
+                          f'reference_peak={stats["reference"]["peak_probability"]:.4f}; '
+                          f'T/R_overlap={stats["target_reference_soft_overlap"]}; '
+                          f'relocalized={row["relocalized"]}; masks_refined={row["masks_refined"]}', flush=True)
+                print(f'[SlotHeatmaps] frame={receipt["source_frame_index"]}; index={root / "index.html"}', flush=True)
+                return dict(heatmap_index_path=str(root / 'index.html'),
+                            heatmap_report_path=report['report_path'], slot_arrays_path=report['slot_arrays_path'])
+        except Exception as error:
+            # A display/write failure must not change the current policy action.
+            message = f'{type(error).__name__}: {error}'
+            print(f'[SlotHeatmaps] Export failed: {message}', flush=True)
+            return dict(heatmap_error=message)
 
     def prepare_model(self) -> float:
         """Load the real frozen backend once, before the simulator is launched."""
@@ -229,6 +283,9 @@ class OnlineTaskPerception(TaskPerception):
             if diagnostic_path is not None:
                 api.slot_guided_io.save_inference_artifact(diagnostic_path / 'inference.json', inference, snapshot)
                 artifacts = dict(inference_path=str(diagnostic_path / 'inference.json'))
+                artifacts.update(self._save_policy_heatmaps(diagnostic_path, snapshot, coarse_packet,
+                    instruction=instruction, task_name=task_name, checkpoint=checkpoint,
+                    bridge_git_sha=bridge_git_sha, receipt=receipt))
             raise UnavailableTargetError(dict(
                 current_frame=copy.deepcopy(receipt), backend_kind=kind,
                 guidance_roles=guidance_role_diagnostics(guidance),
@@ -267,6 +324,9 @@ class OnlineTaskPerception(TaskPerception):
             api.slot_geometry_fusion.save_geometry(diagnostic_path / "object_geometry.json", fused)
             diagnostics = {"inference_path": str(diagnostic_path / "inference.json"),
                            "object_geometry_path": str(diagnostic_path / "object_geometry.json")}
+            diagnostics.update(self._save_policy_heatmaps(diagnostic_path, snapshot, coarse_packet,
+                instruction=instruction, task_name=task_name, checkpoint=checkpoint,
+                bridge_git_sha=bridge_git_sha, receipt=receipt))
         return OnlinePerceptionResult(geometry, receipt, guidance, inference, fused, kind,
                                       "synthetic_mock" if kind == "mock" else "real_online_inference",
                                       timings, diagnostics)

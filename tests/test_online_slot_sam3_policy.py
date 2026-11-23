@@ -60,6 +60,7 @@ class PerceptionSeam:
         self.camera_peaks = {"front": None, "wrist": None}
         self.model_identity = object()
         self.camera_roles, self.fused_roles = {}, {}
+        self.diagnostics = None
 
     def perceive(self, snapshot, packet, **kwargs):
         self.calls.append((snapshot, packet, kwargs))
@@ -74,7 +75,7 @@ class PerceptionSeam:
                                inference={"cameras": {name: {"peak_vram_bytes": value,
                                                           "roles": self.camera_roles.get(name, {})}
                                                       for name, value in self.camera_peaks.items()}},
-                               fused_geometry={'roles': self.fused_roles})
+                               fused_geometry={'roles': self.fused_roles}, diagnostics=self.diagnostics)
 
     def reset(self):
         self.resets += 1
@@ -182,6 +183,7 @@ def test_current_C_then_fresh_geometry_then_conditioned_action_preserves_YARR_fi
     assert agent.enable_slot_guided_sam3 is True
     assert perception.calls[0][2]["expected_snapshot_digest"] == "b" * 64
     assert perception.calls[0][2]["diagnostics_dir"] is None
+    assert not getattr(agent.calls[0][4]['coarse_slot_callback'], 'include_visualization', False)
     assert perception.last_geometry.object_points.requires_grad
     assert agent.calls[1][4]["slot_guided_sam3"]["geometry"].object_points.data_ptr() != perception.last_geometry.object_points.data_ptr()
     output = capsys.readouterr().out
@@ -214,14 +216,16 @@ def test_prompts_only_uses_exact_baseline_action_with_no_geometry_or_second_forw
 def test_refine_guidance_is_requested_only_on_first_forward_and_selection_is_logged(stage, tmp_path):
     policy, agent, perception, _ = policy_fixture(stage=stage, guidance_stage='refine', diagnostics_dir=tmp_path)
     perception.inspect = lambda *a, **kw: dict(sam3_executed=False)
+    perception.diagnostics = {'heatmap_index_path': str(tmp_path / 'index.html')}
     result = policy.act(5, {'current_index': 0})
     callback = agent.calls[0][4]['coarse_slot_callback']
     assert callback.guidance_stage == 'refine'
-    assert callback.include_visualization == (stage == 'prompts')
+    assert callback.include_visualization is True
     assert result.info['slot_guided_sam3']['guidance_selection']['requested_stage'] == 'refine'
     assert result.info['slot_guided_sam3']['guidance_selection']['roles']['target']['failure_reason'] == 'REFINE_SELECTION_UNAVAILABLE'
     if stage == 'action':
         assert 'coarse_slot_callback' not in agent.calls[1][4]
+        assert result.info['slot_guided_sam3']['artifacts'] == perception.diagnostics
     else:
         assert len(agent.calls) == 1 and not perception.calls
 

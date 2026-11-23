@@ -201,10 +201,10 @@ class OnlineSlotSam3Policy:
         self._frame_sequence += 1
         diagnostics['policy_call_index'] = self._frame_sequence
         callback = packets.append
-        if self.stage in ('prompts', 'segmentation') or self.guidance_stage == 'refine':
+        if self.stage in ('prompts', 'segmentation') or self.guidance_stage == 'refine' or self.diagnostics_dir is not None:
             def collect(packet):
                 packets.append(packet)
-            collect.include_visualization = self.stage in ('prompts', 'segmentation')
+            collect.include_visualization = self.stage in ('prompts', 'segmentation') or self.diagnostics_dir is not None
             collect.guidance_stage = self.guidance_stage
             callback = collect
         if self.stage == 'prompts':
@@ -271,9 +271,10 @@ class OnlineSlotSam3Policy:
                 timings["perception"] = (time.perf_counter() - perceived_at) * 1000
                 diagnostics["perception_timings_ms"] = dict(result.timings_ms)
                 diagnostics["backend_kind"] = result.backend_kind
+                if getattr(result, 'diagnostics', None) is not None:
+                    diagnostics['artifacts'] = result.diagnostics
                 if self.stage == 'segmentation':
                     diagnostics['sam3_executed'] = result.backend_kind == 'sam3'
-                    diagnostics['artifacts'] = getattr(result, 'diagnostics', None)
                 camera_results = getattr(result, "inference", {}).get("cameras", {})
                 camera_peaks = {name: row.get("peak_vram_bytes") for name, row in camera_results.items()}
                 measured_peaks = [value for value in camera_peaks.values() if type(value) is int and value >= 0]

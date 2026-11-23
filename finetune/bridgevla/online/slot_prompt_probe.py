@@ -73,7 +73,23 @@ def _stage_images(root, stage, value, arrays):
         paths.append(str(filename))
     return dict(images=paths, role_prior_shape=list(prior.shape), rendered_rgb_shape=list(rgb.shape), **role_state,
                 coordinate_frame=value['coordinate_frame'], roles_inherited=value.get('roles_inherited', False),
-                masks_refined=value.get('masks_refined', False), relocalized=value.get('relocalized', False))
+                masks_refined=value.get('masks_refined', False), relocalized=value.get('relocalized', False),
+                role_map_statistics=_role_map_statistics(prior))
+
+
+def _role_map_statistics(prior):
+    """Describe response strength and T/R overlap, without claiming GT accuracy."""
+    result = {}
+    for index, role in enumerate(('target', 'reference')):
+        values = prior[:, index].astype(np.float64)
+        result[role] = dict(
+            peak_probability=float(values.max()), mean_probability=float(values.mean()),
+            fraction_ge_025=float((values >= .25).mean()),
+            peak_view_row_col=[int(x) for x in np.unravel_index(values.argmax(), values.shape)])
+    target, reference = prior[:, 0].astype(np.float64), prior[:, 1].astype(np.float64)
+    union = np.maximum(target, reference).sum()
+    result['target_reference_soft_overlap'] = float(np.minimum(target, reference).sum() / union) if union > 0 else None
+    return result
 
 
 class SlotPromptProbe(TaskPerception):
