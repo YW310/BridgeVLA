@@ -115,6 +115,22 @@ returned step prints reward, terminal and timeout without waiting for the end
 of the episode. Baseline evaluation without online Slot/SAM3 keeps its existing
 output behavior. No additional flags are required.
 
+`Timeout (0:01:00)!` is the diagnostic stack timer for one generator advance,
+not an exception or forced termination. Its elapsed time covers the whole step;
+the current `WAIT` line reports only the active phase's elapsed time.
+
+Online model loading hashes the BridgeVLA checkpoint once and pins its resolved
+path, device/inode, size, nanosecond mtime and ctime. After weight loading and
+before each conditioned action, a file metadata guard checks that identity and
+reuses the pinned SHA256. It does not reread all checkpoint bytes in the
+conditioned policy. A changed, replaced, missing or mismatched file is rejected
+and requires a model reload, even if a replacement has identical bytes. Keep the
+checkpoint immutable throughout evaluation; this optimization relies on normal
+filesystem metadata reporting. Per-frame provenance/RGB-D/source checks remain
+active. Standalone authorization without a loader identity retains full hashing;
+reviewed/offline authorization does not use the online optimization. TASK fusion
+still performs its own full checkpoint digest and may remain an I/O bottleneck.
+
 On fallback, the runtime log also prints `TARGET` summaries: guidance status,
 confidence and supported point count, followed by each camera's prompt validity,
 candidate/accepted counts, and prompt/candidate rejection reasons. No diagnostic
@@ -410,10 +426,13 @@ The segmentation-phase median was 0.121 s across ten attempts, including prompt
 failures/skips; it is not a per-image SAM3 speed benchmark. The maximum logged
 allocator peak was 13.14 GiB during per-camera segmentation measurement,
 including resident models, not SAM3-exclusive memory or a full-frame peak.
-Fusion and action authorization both currently compute full-file Coarse
-checkpoint SHA256 digests. These repeated reads are a suspected major contributor
-to the two roughly 21 s phases; their isolated cost has not been profiled here.
-Full-file integrity checks remain in place, and no latency improvement is claimed.
+At the time of that capture, fusion and action authorization both computed
+full-file Coarse checkpoint SHA256 digests. A later server stack during
+`conditioned policy` showed `authorize_online_geometry -> _geometry_sources ->
+sha256_file`; the phase completed in 32.6 s. Current online agents reuse a
+loader-pinned digest behind the file metadata guard described above, removing
+that repeated full read. TASK fusion retains its independent digest. The updated
+end-to-end server latency has not yet been measured.
 
 Step diagnostics now include an episode-local `policy_call_index`,
 `camera_roles.<camera>.<role>` prompt failure/candidate counts/rejection reasons,
@@ -704,10 +723,10 @@ the new flag is off.
 
 Online means a current-observation closed loop; it does not assert a hard
 real-time frequency. The policy uses two neural passes, segmentation per camera
-and geometric fusion. The present TASK and Bridge provenance checks also each
-hash the Bridge checkpoint per step, so timing includes that I/O. SAM3's weight
-fingerprint is cached. Optimize this only with a validated loaded-checkpoint
-identity guard, not by silently discarding source checks.
+and geometric fusion. TASK fusion still hashes the Bridge checkpoint on frames
+that reach fusion, so timing includes that I/O. Online action authorization uses
+the loader-pinned checkpoint digest with per-step file metadata checks. SAM3's
+weight fingerprint is cached. No end-to-end frequency improvement is claimed.
 
 Per-frame wall time includes current inference and enabled diagnostic writes;
 model loading happens before simulator launch. Reported peak memory is explicitly

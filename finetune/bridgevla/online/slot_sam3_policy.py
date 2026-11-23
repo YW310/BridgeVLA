@@ -306,9 +306,10 @@ class OnlineSlotSam3Policy:
                             role_confidence=row.get('role_confidence'),
                             support_cameras=row.get('support_cameras', []))
                 if oracle:
-                    from bridgevla.models.slot_guided_geometry import sha256_file
+                    from bridgevla.utils.checkpoint_identity import loaded_checkpoint_sha256
                     if (any(meta.get('guidance_source') != 'oracle_gt' for meta in geometry.provenance)
-                            or sha256_file(self.checkpoint_path) != self.expected_checkpoint_sha256):
+                            or loaded_checkpoint_sha256(self.checkpoint_path,
+                                getattr(self.agent, 'slot_guided_sam3_checkpoint_identity', None)) != self.expected_checkpoint_sha256):
                         raise ValueError('Oracle SAM3 source or loaded policy checkpoint mismatch')
                 elif any(meta.get("source_checkpoint_sha256") != self.expected_checkpoint_sha256
                          for meta in geometry.provenance):

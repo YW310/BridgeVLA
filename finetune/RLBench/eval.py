@@ -166,13 +166,16 @@ def load_agent(
             'this profile cannot launch an RLBench control rollout.')
     online_runtime = None
     online_checkpoint_sha = None
+    online_checkpoint_identity = None
     if (exp_cfg.rvt.enable_slot_guided_sam3
             and exp_cfg.rvt.slot_guided_sam3_execution_mode in ('online_experiment', 'oracle_online_experiment')):
         from bridgevla.online.slot_sam3_runtime import resolve_runtime
-        from bridgevla.models.slot_guided_geometry import sha256_file
+        from bridgevla.utils.checkpoint_identity import LoadedCheckpointIdentity
         online_runtime = resolve_runtime(exp_cfg, slot_sam3_options,
                                          policy_device=device, validate_files=True)
-        online_checkpoint_sha = sha256_file(model_path)
+        with startup_phase('BridgeVLA checkpoint SHA256'):
+            online_checkpoint_identity = LoadedCheckpointIdentity(model_path)
+        online_checkpoint_sha = online_checkpoint_identity.sha256
 
     # NOTE: to not use place_with_mean in evaluation
     # needed for rvt-1 but not rvt-2
@@ -314,11 +317,13 @@ def load_agent(
         checkpoint_validator=checkpoint_validator,
     )
     if online_runtime is not None:
-        if sha256_file(model_path) != online_checkpoint_sha:
-            raise ValueError('BridgeVLA checkpoint changed while loading the online policy')
+        online_checkpoint_identity.verify_file(model_path)
         agent.slot_guided_sam3_runtime = online_runtime
         agent.slot_guided_sam3_checkpoint_sha256 = online_checkpoint_sha
+        agent.slot_guided_sam3_checkpoint_identity = online_checkpoint_identity
         agent.slot_guided_sam3_checkpoint_path = str(Path(model_path).resolve())
+        print('[SlotSAM3] Loaded BridgeVLA checkpoint SHA256 pinned; '
+              'per-step file metadata guard enabled', flush=True)
         agent.slot_guided_sam3_git_sha = subprocess.check_output(
             ['git', '-C', str(Path(__file__).resolve().parents[2]), 'rev-parse', 'HEAD'],
             text=True).strip()
@@ -1076,6 +1081,7 @@ _FINETUNE_RUNTIME_FILES = (
     "bridgevla/online/slot_sam3_runtime.py",
     "bridgevla/online/slot_sam3_policy.py",
     "bridgevla/online/slot_sam3_diagnostics.py",
+    "bridgevla/utils/checkpoint_identity.py",
     "bridgevla/online/slot_sam3_perception.py",
     "bridgevla/online/slot_prompt_probe.py",
     "bridgevla/offline/slot_sam3_perception.py",

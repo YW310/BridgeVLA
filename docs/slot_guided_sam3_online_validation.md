@@ -90,10 +90,17 @@ robot action has been executed by this validation. The command and controller
 wiring are implemented; robot/perception metrics, paired task success, actual
 latency and full-frame GPU peak remain unmeasured.
 
-Checkpoint SHA256 is recomputed by TASK fusion and Bridge action authorization
-on steps that reach those operations. Action mode now skips fusion entirely
+TASK fusion recomputes checkpoint SHA256 on steps that reach it. Online Bridge
+action authorization now uses a loader-pinned digest with a per-step file
+metadata guard (resolved path, device/inode, size, mtime_ns and ctime_ns), avoiding
+the repeated full read observed in a server `conditioned policy` stack. A file
+change requires a model reload. The guard relies on normal filesystem metadata
+reporting and an immutable checkpoint during the run. Reviewed/offline and
+standalone authorization without a loader identity retain full hashing.
+Action mode skips fusion entirely
 when no camera has an accepted Target candidate, preserving the existing
 current-baseline fallback and compact failure evidence. This avoids digest I/O
-on such frames; it does not cache or bypass checkpoint validation for conditioned
-actions. SAM3's fingerprint is already cached. Online resume and generic copied/multiprocess YARR worker
+on such frames. Current-frame geometry and model-source matching checks remain
+active for conditioned actions. SAM3's fingerprint is already cached. Updated
+server timing has not yet been measured. Online resume and generic copied/multiprocess YARR worker
 integration are not enabled by this first direct-evaluator path.

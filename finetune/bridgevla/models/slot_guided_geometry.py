@@ -17,6 +17,8 @@ from typing import Mapping
 import numpy as np
 import torch
 
+from bridgevla.utils.checkpoint_identity import loaded_checkpoint_sha256, sha256_file
+
 
 ROLES = ('target', 'reference')
 STATUSES = ('VISIBLE', 'NULL', 'NOT_VISIBLE', 'LOW_CONFIDENCE')
@@ -24,14 +26,6 @@ REQUIRED_METRICS = ('role_accuracy', 'prompt_instance_hit_rate', 'mask_iou',
                     'multiview_consistency', 'center_error_m',
                     'action_translation_error_m', 'paired_task_success_rate',
                     'latency_ms', 'peak_gpu_memory_bytes')
-
-
-def sha256_file(path):
-    digest = hashlib.sha256()
-    with Path(path).open('rb') as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _digest(value, name):
@@ -292,10 +286,10 @@ def _validate_current_frames(geometry, current_frames, *, offline=False):
         _digest(source['calibration_sha256'], 'calibration_sha256')
 
 
-def _geometry_sources(geometry, bridge_checkpoint_path, bridge_git_sha):
+def _geometry_sources(geometry, bridge_checkpoint_path, bridge_git_sha, checkpoint_identity=None):
     first = geometry.provenance[0]
     sources = dict(bridge_git_sha=bridge_git_sha,
-                   bridge_checkpoint_sha256=sha256_file(bridge_checkpoint_path),
+                   bridge_checkpoint_sha256=loaded_checkpoint_sha256(bridge_checkpoint_path, checkpoint_identity),
                    guidance_git_sha=first.get('source_git_sha'),
                    guidance_checkpoint_sha256=first.get('source_checkpoint_sha256'),
                    sam3_checkpoint_sha256=first.get('sam3_checkpoint_sha256'))
@@ -400,12 +394,12 @@ class OnlineGeometry:
         return replace(self, geometry=self.geometry.transformed(function))
 
 
-def authorize_online_geometry(geometry, current_frames, bridge_checkpoint_path, bridge_git_sha):
+def authorize_online_geometry(geometry, current_frames, bridge_checkpoint_path, bridge_git_sha, *, checkpoint_identity=None):
     geometry = geometry.detached()
     frames = tuple(dict(current) for current in current_frames)
     _validate_current_frames(geometry, frames)
     return OnlineGeometry(geometry, frames,
-                          _geometry_sources(geometry, bridge_checkpoint_path, bridge_git_sha)).verify()
+                          _geometry_sources(geometry, bridge_checkpoint_path, bridge_git_sha, checkpoint_identity)).verify()
 
 
 @dataclass(frozen=True)
@@ -441,11 +435,11 @@ class OracleOnlineGeometry:
         return replace(self, geometry=self.geometry.transformed(function))
 
 
-def authorize_oracle_online_geometry(geometry, current_frames, bridge_checkpoint_path, bridge_git_sha):
+def authorize_oracle_online_geometry(geometry, current_frames, bridge_checkpoint_path, bridge_git_sha, *, checkpoint_identity=None):
     geometry = geometry.detached()
     frames = tuple(dict(current) for current in current_frames)
     return OracleOnlineGeometry(geometry, frames,
-        _geometry_sources(geometry, bridge_checkpoint_path, bridge_git_sha)).verify()
+        _geometry_sources(geometry, bridge_checkpoint_path, bridge_git_sha, checkpoint_identity)).verify()
 
 
 def oracle_sam3_prior_points(authorized):

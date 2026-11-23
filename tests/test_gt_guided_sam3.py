@@ -24,6 +24,7 @@ from bridgevla.online.slot_sam3_perception import OnlineTaskPerception
 from bridgevla.online.slot_sam3_policy import OnlineSlotSam3Policy
 from bridgevla.online import slot_sam3_runtime as runtime
 from bridgevla.utils.startup_progress import startup_phase
+from bridgevla.utils import checkpoint_identity
 from bridgevla.offline.slot_sam3_checkpoint import load_profile, load_saved_configs, model_arguments
 from yarr.agents.agent import ActResult
 
@@ -329,7 +330,7 @@ def test_eval_preserves_oracle_sam3_mode_before_generic_gt_prior_disable(capsys)
     assert 'no Slot prediction' in capsys.readouterr().out
 
 
-def test_real_agent_authorizes_oracle_scope_and_uses_original_world_to_cube_transform(tmp_path):
+def test_real_agent_authorizes_oracle_scope_and_uses_original_world_to_cube_transform(tmp_path, monkeypatch):
     from bridgevla.mvt import utils
     auth, checkpoint = authorized(tmp_path)
     fn = source_method('finetune/bridgevla/models/bridgevla_agent.py', 'RVTAgent',
@@ -338,6 +339,12 @@ def test_real_agent_authorizes_oracle_scope_and_uses_original_world_to_cube_tran
     agent = SimpleNamespace(enable_slot_guided_sam3=True, _training=False,
         slot_guided_sam3_execution_mode='oracle_online_experiment', _network=net,
         _place_with_mean=False, scene_bounds=[-.3, -.5, .6, .7, .5, 1.6])
+    agent.slot_guided_sam3_checkpoint_identity = checkpoint_identity.LoadedCheckpointIdentity(checkpoint)
+
+    def forbidden(*args):
+        raise AssertionError('Oracle conditioned policy must use its loaded checkpoint identity')
+
+    monkeypatch.setattr(checkpoint_identity, 'sha256_file', forbidden)
     payload = dict(execution_mode='oracle_online_experiment', geometry=auth.geometry,
         bridge_checkpoint_path=checkpoint, bridge_git_sha='b' * 40)
     observation = dict(slot_guided_current_frames=auth.current_frames)

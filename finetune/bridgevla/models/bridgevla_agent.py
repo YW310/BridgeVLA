@@ -714,14 +714,16 @@ class RVTAgent:
                 raise ValueError('online experiments do not consume or create acceptance reports')
             authorized = authorize_online_geometry(
                 payload['geometry'], observation['slot_guided_current_frames'],
-                payload['bridge_checkpoint_path'], payload['bridge_git_sha'])
+                payload['bridge_checkpoint_path'], payload['bridge_git_sha'],
+                checkpoint_identity=getattr(self, 'slot_guided_sam3_checkpoint_identity', None))
         elif mode == 'oracle_online_experiment':
             from bridgevla.models.slot_guided_geometry import authorize_oracle_online_geometry
             if 'acceptance_report' in payload:
                 raise ValueError('Oracle experiments do not consume reviewed activation reports')
             authorized = authorize_oracle_online_geometry(
                 payload['geometry'], observation['slot_guided_current_frames'],
-                payload['bridge_checkpoint_path'], payload['bridge_git_sha'])
+                payload['bridge_checkpoint_path'], payload['bridge_git_sha'],
+                checkpoint_identity=getattr(self, 'slot_guided_sam3_checkpoint_identity', None))
         else:
             authorized = authorize_geometry(
                 payload['geometry'], observation['slot_guided_current_frames'],

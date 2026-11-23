@@ -10,6 +10,7 @@ from bridgevla.models.slot_guided_geometry import (
     AuthorizedGeometry, OnlineGeometry, authorize_online_geometry, sha256_file,
 )
 from bridgevla.mvt import utils as mvt_utils
+from bridgevla.utils import checkpoint_identity
 
 
 @pytest.fixture
@@ -60,7 +61,7 @@ def test_online_action_rejects_privileged_mock_offline_or_future_sources(current
         authorize_online_geometry(geometry, receipt, checkpoint, sha)
 
 
-def test_real_agent_boundary_routes_online_and_current_scene_transform(current_geometry):
+def test_real_agent_boundary_routes_online_and_current_scene_transform(current_geometry, monkeypatch):
     geometry, receipt, checkpoint, sha = current_geometry
     fn = source_method('finetune/bridgevla/models/bridgevla_agent.py', 'RVTAgent',
                        '_slot_guided_geometry_inputs', {'mvt_utils': mvt_utils})
@@ -69,6 +70,12 @@ def test_real_agent_boundary_routes_online_and_current_scene_transform(current_g
                             slot_guided_sam3_execution_mode='online_experiment',
                             _network=network, _place_with_mean=False,
                             scene_bounds=[-.3, -.5, .6, .7, .5, 1.6])
+    agent.slot_guided_sam3_checkpoint_identity = checkpoint_identity.LoadedCheckpointIdentity(checkpoint)
+
+    def forbidden(*args):
+        raise AssertionError('conditioned policy must use its loaded checkpoint identity')
+
+    monkeypatch.setattr(checkpoint_identity, 'sha256_file', forbidden)
     payload = dict(execution_mode='online_experiment', geometry=geometry,
                    bridge_checkpoint_path=checkpoint, bridge_git_sha=sha)
     scene = [torch.tensor([[-.2, -.3, .7], [.6, .3, 1.5]])]
@@ -80,6 +87,9 @@ def test_real_agent_boundary_routes_online_and_current_scene_transform(current_g
     assert not network.training and not any(p.requires_grad for p in network.parameters())
     with pytest.raises(ValueError, match='acceptance'):
         fn(agent, {**payload, 'acceptance_report': {}}, {}, scene, False)
+    checkpoint.write_bytes(b'checkpoint replaced after loading')
+    with pytest.raises(ValueError, match='changed since'):
+        fn(agent, payload, {'slot_guided_current_frames': receipt}, scene, False)
 
 
 def test_actual_two_stage_mvt_accepts_online_scope_with_no_grad(current_geometry):
