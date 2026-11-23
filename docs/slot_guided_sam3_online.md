@@ -76,6 +76,23 @@ TASK 中复用的 `configs/slot_guided_offline.json` 只是提示、候选选择
 
 ## Actual online path
 
+### Startup progress / apparent hangs
+
+Online evaluation prints `[Startup] START` / `DONE` with elapsed seconds for
+`agent.eval()`, observation-provider setup, environment construction, SAM3
+preload, and CoppeliaSim launch. During preload, `[SlotSAM3]` also identifies
+TASK API import and the backend checkpoint/device. Backend loading includes
+model construction, device transfer and checkpoint SHA256 computation.
+
+If one of these startup phases takes more than 60 seconds, Python prints all
+thread stacks to stderr every 60 seconds until the phase finishes. This is a
+diagnostic timer, not a failure or process termination; it is cancelled when
+the phase exits. The existing `2>&1 | tee "$RUN_DIR/runtime.log"` captures both
+progress and stacks. Inspect the last `START` without a matching `DONE` and
+the stack to distinguish imports/model loading/file I/O from simulator launch.
+The earlier `Evaluation branch: internal Target/Reference slots` line only
+identifies the policy branch; it does not mean SAM3 or the simulator is ready.
+
 1. The existing evaluator strictly loads a matching slots/Anchor or role-query/Anchor checkpoint
    and freezes BridgeVLA. SAM3's runtime-checked TASK backend loads once, before the
    simulator launches. A package/API/weight loading failure stops startup.

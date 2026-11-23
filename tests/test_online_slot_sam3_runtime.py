@@ -1,6 +1,7 @@
 """Actual online config, launcher, factory and direct-eval wiring contracts."""
 import argparse
 import ast
+from contextlib import nullcontext
 import json
 from pathlib import Path
 import sys
@@ -12,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'finetune'))
 from bridgevla.config import get_cfg_defaults
 from bridgevla.online import slot_sam3_runtime as runtime
+from bridgevla.utils.startup_progress import startup_phase
 
 
 def test_enabled_online_profile_preserves_original_architecture_and_default_off():
@@ -178,7 +180,8 @@ def test_eval_injects_one_observer_into_the_environment_and_policy_before_launch
     scope = dict(online_slot_sam3=True, agent=agent, CustomMultiTaskRLBenchEnv=Environment,
         task_classes=[], obs_config=object(), action_mode=object(), eval_datafolder='data',
         episode_length=25, headless=True, eval_episodes=25, save_video=False,
-        oracle_provider=None, logging=False, log_dir=None)
+        oracle_provider=None, logging=False, log_dir=None,
+        startup_phase=startup_phase, nullcontext=nullcontext)
     exec(code, scope)
     assert events[0][0] == 'env' and events[0][1]['slot_sam3_observation_provider'] is provider
     assert events[1] == ('wrap', agent, provider)

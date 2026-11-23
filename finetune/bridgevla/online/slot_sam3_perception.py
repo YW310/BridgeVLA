@@ -59,10 +59,15 @@ class OnlineTaskPerception(TaskPerception):
         """Load the real frozen backend once, before the simulator is launched."""
         started = time.perf_counter()
         if self._backend is None:
+            print(f'[SlotSAM3] Importing TASK API from {self.task_repo}', flush=True)
             api = self._load_api()
+            print(f'[SlotSAM3] TASK API ready in {time.perf_counter() - started:.1f}s', flush=True)
             if self.sam3_checkpoint is None:
                 raise ValueError('an actual local SAM3 checkpoint is required')
+            print(f'[SlotSAM3] Loading backend: checkpoint={self.sam3_checkpoint}; '
+                  f'device={self.device} (model build, device transfer and checkpoint SHA256)', flush=True)
             self._backend = api.slot_guided_sam3.Sam3Backend(self.sam3_checkpoint, device=self.device)
+            print(f'[SlotSAM3] Backend ready in {time.perf_counter() - started:.1f}s total', flush=True)
         return (time.perf_counter() - started) * 1000
 
     @staticmethod

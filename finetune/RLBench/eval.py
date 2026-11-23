@@ -21,6 +21,7 @@ import yaml
 import csv
 import json
 import subprocess
+from contextlib import nullcontext
 from pathlib import Path
 import torch
 import cv2
@@ -76,6 +77,7 @@ from bridgevla.utils.rvt_utils import (
     RLBENCH_TASKS,
 )
 from bridgevla.utils.rvt_utils import load_agent as load_agent_state
+from bridgevla.utils.startup_progress import startup_phase
 from utils.semantic_contract import (
     build_semantic_contract,
     validate_semantic_contract,
@@ -448,7 +450,8 @@ def eval(
     else:
         if agent is None:
             raise ValueError("model evaluation requires an agent")
-        agent.eval()
+        with startup_phase('BridgeVLA agent.eval()') if online_slot_sam3 else nullcontext():
+            agent.eval()
         agent.heatmap_action_anchor = bool(
             heatmap_action_anchor or bridgevla_aligned_objects)
         agent.bridgevla_aligned_objects = bool(bridgevla_aligned_objects)
@@ -540,31 +543,34 @@ def eval(
             if not role_path.is_file():
                 raise FileNotFoundError(f'Oracle SAM3 semantic role config is missing: {role_path}')
             oracle_prompt_kwargs['oracle_role_config'] = role_path.resolve()
-        online_observer = SlotSam3ObservationProvider(
-            agent.slot_guided_sam3_runtime['task_repo'], agent.cameras,
-            **oracle_prompt_kwargs)
+        with startup_phase('current-observation provider'):
+            online_observer = SlotSam3ObservationProvider(
+                agent.slot_guided_sam3_runtime['task_repo'], agent.cameras,
+                **oracle_prompt_kwargs)
         online_env_kwargs['slot_sam3_observation_provider'] = online_observer
-    eval_env = CustomMultiTaskRLBenchEnv(
-        task_classes=task_classes,
-        observation_config=obs_config,
-        action_mode=action_mode,
-        dataset_root=eval_datafolder,
-        episode_length=episode_length,
-        headless=headless,
-        swap_task_every=eval_episodes,
-        include_lang_goal_in_obs=True,
-        time_in_state=True,
-        record_every_n=1 if save_video else -1,
-        oracle_provider=oracle_provider,
-        **online_env_kwargs,
-    )
+    with startup_phase('RLBench environment construction') if online_slot_sam3 else nullcontext():
+        eval_env = CustomMultiTaskRLBenchEnv(
+            task_classes=task_classes,
+            observation_config=obs_config,
+            action_mode=action_mode,
+            dataset_root=eval_datafolder,
+            episode_length=episode_length,
+            headless=headless,
+            swap_task_every=eval_episodes,
+            include_lang_goal_in_obs=True,
+            time_in_state=True,
+            record_every_n=1 if save_video else -1,
+            oracle_provider=oracle_provider,
+            **online_env_kwargs,
+        )
 
     eval_env.eval = True
 
     online_step_log = None
     if online_slot_sam3:
-        from bridgevla.online.slot_sam3_runtime import make_online_policy
-        agent = make_online_policy(agent, online_observer)
+        with startup_phase('online policy / SAM3 preload'):
+            from bridgevla.online.slot_sam3_runtime import make_online_policy
+            agent = make_online_policy(agent, online_observer)
         if logging and log_dir is not None:
             online_step_log = Path(log_dir) / 'slot_sam3_steps.jsonl'
             online_step_log.parent.mkdir(parents=True, exist_ok=True)
@@ -617,7 +623,8 @@ def eval(
         qt_changes = prepare_coppeliasim_qt_environment()
         if qt_changes:
             print(f"[CoppeliaSim][Qt] Environment repair: {qt_changes}", flush=True)
-        eval_env.launch()
+        with startup_phase('CoppeliaSim launch') if online_slot_sam3 else nullcontext():
+            eval_env.launch()
     else:
         print(
             "[Manifest][RESUME] All requested episodes are complete; "
