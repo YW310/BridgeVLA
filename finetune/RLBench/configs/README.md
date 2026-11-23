@@ -88,6 +88,23 @@ Target、Reference heatmap 和当前相机的 SAM3 分割，不增加网络推�
 `heatmaps/slot_arrays.npz`。Target/Reference 的 soft overlap 只衡量两张预测图的重叠，
 不代表相对 GT 的精度。详细排查方法见[在线诊断](../../../docs/slot_guided_sam3_online.md#same-frame-heatmaps)。
 
+### bbox 太大与分割叠加
+
+原 bbox 在投影点包围框每侧增加 `4px + 10%` 的 padding。框过大时，可在已有命令中加：
+
+```bash
+--slot-sam3-perception-config "$PWD/finetune/RLBench/configs/slot_sam3_tight_bbox.json"
+```
+
+该配置只将 padding 改为每侧 `1px + 3%`，保留点过滤、分割选择和融合阈值。
+它同时支持 internal_slots 与 role_relocalize；不会改变模型权重。如果预测点本身跨越多个
+物体，缩 padding 不能纠正角色预测；框变紧也可能截掉完整物体，需要对照分割结果确认。
+
+在线诊断 `<camera>.diagnostic.png` 的 SAM3 mask 叠加权重提高至 **75%**，原 RGB 占 25%。
+旁边显示提示框和选中 mask 的宽高；`bbox_diagnostics.json` 记录各相机的数值。
+提示框尺寸是坐标跨度，mask 尺寸是占据的像素范围，两者可以相差一个边界像素。
+这些显示修改不改变 SAM3 输入、mask 或动作。
+
 <a id="gt-sam3"></a>
 
 ### 已训练 Semantic-GT 模型：GT 提示 → SAM3 → BridgeVLA

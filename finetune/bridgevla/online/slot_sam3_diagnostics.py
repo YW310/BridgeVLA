@@ -1,5 +1,73 @@
-"""Compact current-frame perception diagnostics, without masks or point arrays."""
+"""Compact perception summaries and write-only current-frame visualizations."""
 from __future__ import annotations
+
+
+def save_segmentation_overlays(root, inference, snapshot, *, alpha=.75):
+    """Redraw selected masks from current RGB, with stronger tint and box sizes.
+
+    This is write-only visualization. TASK's inference, masks and pixel prompts
+    remain unchanged; its saved legend is retained beside the original image.
+    """
+    import json
+    from pathlib import Path
+    import numpy as np
+    from PIL import Image, ImageDraw
+
+    root = Path(root)
+    sizes = {}
+    def dimensions(value):
+        return 'none' if value is None else f'{value[0]:.1f} x {value[1]:.1f}'
+
+    for name, camera in inference['cameras'].items():
+        rgb = snapshot.cameras[name].rgb
+        height, width = rgb.shape[:2]
+        tint = rgb.astype(np.float64).copy()
+        sizes[name] = {}
+        for role, color in (('target', (255, 80, 40)), ('reference', (40, 150, 255))):
+            row = camera['roles'][role]
+            box = row['prompt'].get('bbox_xyxy')
+            selected = row.get('selected_index')
+            item = dict(prompt_bbox_xyxy=box,
+                        prompt_span_px=None if box is None else [box[2] - box[0], box[3] - box[1]],
+                        selected_mask_bbox_xyxy=None, selected_mask_extent_px=None)
+            if selected is not None:
+                mask = np.asarray(row['candidates'][selected]['mask'])
+                if mask.dtype != bool or mask.shape != (height, width):
+                    raise ValueError('selected mask must match current original-camera RGB')
+                tint[mask] = tint[mask] * (1 - alpha) + np.asarray(color) * alpha
+                y, x = np.nonzero(mask)
+                if len(x):
+                    # Mask extents use exclusive upper pixel edges.
+                    bounds = [int(x.min()), int(y.min()), int(x.max()) + 1, int(y.max()) + 1]
+                    item.update(selected_mask_bbox_xyxy=bounds,
+                                selected_mask_extent_px=[bounds[2] - bounds[0], bounds[3] - bounds[1]])
+            sizes[name][role] = item
+        image = Image.fromarray(np.clip(tint, 0, 255).astype(np.uint8))
+        draw = ImageDraw.Draw(image)
+        for role, color in (('target', (255, 80, 40)), ('reference', (40, 150, 255))):
+            prompt = camera['roles'][role]['prompt']
+            if prompt.get('bbox_xyxy') is not None:
+                draw.rectangle(prompt['bbox_xyxy'], outline=color, width=1)
+            for x, y in prompt.get('positive_points_xy', []):
+                draw.ellipse([x - 2, y - 2, x + 2, y + 2], fill=color)
+            for x, y in prompt.get('negative_points_xy', []):
+                draw.line([x - 2, y - 2, x + 2, y + 2], fill='white')
+        filename = root / f'{name}.diagnostic.png'
+        with Image.open(filename) as original:
+            canvas = Image.new('RGB', (max(original.width, width + 360), max(original.height, 172)), (25, 25, 25))
+            canvas.paste(original, (0, 0))
+        canvas.paste(image, (0, 0))
+        draw = ImageDraw.Draw(canvas)
+        draw.text((width + 8, 110), f'Selected mask opacity: {alpha:.0%}', fill='white')
+        for index, role in enumerate(('target', 'reference')):
+            item = sizes[name][role]
+            draw.text((width + 8, 128 + 18 * index),
+                      f'{role}: box {dimensions(item["prompt_span_px"])}; '
+                      f'mask {dimensions(item["selected_mask_extent_px"])} px', fill='white')
+        canvas.save(filename)
+    report = root / 'bbox_diagnostics.json'
+    report.write_text(json.dumps(dict(mask_overlay_alpha=alpha, cameras=sizes), indent=2), encoding='utf-8')
+    return str(report)
 
 
 def camera_role_diagnostics(cameras):

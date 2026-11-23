@@ -21,7 +21,7 @@ import numpy as np
 
 from bridgevla.offline.slot_sam3_perception import TaskPerception
 from bridgevla.online.slot_sam3_diagnostics import (
-    UnavailableTargetError, camera_role_diagnostics, guidance_role_diagnostics)
+    UnavailableTargetError, camera_role_diagnostics, guidance_role_diagnostics, save_segmentation_overlays)
 from bridgevla.utils.startup_progress import live_phase
 from bridgevla.utils.checkpoint_identity import LoadedCheckpointIdentity, bind_task_fusion_checkpoint
 
@@ -71,6 +71,18 @@ class OnlineTaskPerception(TaskPerception):
     def reset(self) -> None:
         """Start fresh episode/frame bookkeeping while retaining model weights."""
         self._last_source_indices.clear()
+
+    @staticmethod
+    def _save_inference_diagnostics(api, root, inference, snapshot):
+        api.slot_guided_io.save_inference_artifact(root / 'inference.json', inference, snapshot)
+        artifacts = dict(inference_path=str(root / 'inference.json'))
+        try:
+            artifacts['bbox_diagnostics_path'] = save_segmentation_overlays(root, inference, snapshot)
+        except Exception as error:
+            # Optional display changes must not affect the geometry/action path.
+            artifacts['overlay_error'] = f'{type(error).__name__}: {error}'
+            print(f'[SlotSAM3] Overlay export failed: {artifacts["overlay_error"]}', flush=True)
+        return artifacts
 
     def _save_policy_heatmaps(self, root, snapshot, packet, *, instruction, task_name,
                               checkpoint, bridge_git_sha, receipt):
@@ -281,8 +293,7 @@ class OnlineTaskPerception(TaskPerception):
                 for candidate in camera.get('roles', {}).get('target', {}).get('candidates', [])):
             artifacts = None
             if diagnostic_path is not None:
-                api.slot_guided_io.save_inference_artifact(diagnostic_path / 'inference.json', inference, snapshot)
-                artifacts = dict(inference_path=str(diagnostic_path / 'inference.json'))
+                artifacts = self._save_inference_diagnostics(api, diagnostic_path, inference, snapshot)
                 artifacts.update(self._save_policy_heatmaps(diagnostic_path, snapshot, coarse_packet,
                     instruction=instruction, task_name=task_name, checkpoint=checkpoint,
                     bridge_git_sha=bridge_git_sha, receipt=receipt))
@@ -320,10 +331,9 @@ class OnlineTaskPerception(TaskPerception):
                    "frame_total": (time.perf_counter() - started) * 1000}
         diagnostics = None
         if diagnostic_path is not None:
-            api.slot_guided_io.save_inference_artifact(diagnostic_path / "inference.json", inference, snapshot)
+            diagnostics = self._save_inference_diagnostics(api, diagnostic_path, inference, snapshot)
             api.slot_geometry_fusion.save_geometry(diagnostic_path / "object_geometry.json", fused)
-            diagnostics = {"inference_path": str(diagnostic_path / "inference.json"),
-                           "object_geometry_path": str(diagnostic_path / "object_geometry.json")}
+            diagnostics['object_geometry_path'] = str(diagnostic_path / 'object_geometry.json')
             diagnostics.update(self._save_policy_heatmaps(diagnostic_path, snapshot, coarse_packet,
                 instruction=instruction, task_name=task_name, checkpoint=checkpoint,
                 bridge_git_sha=bridge_git_sha, receipt=receipt))

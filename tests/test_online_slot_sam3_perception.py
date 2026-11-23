@@ -295,6 +295,64 @@ def test_optional_diagnostics_are_write_only_and_separate_from_live_result(scene
     assert all("mask" in row for camera in result.inference["cameras"].values()
                for role in camera["roles"].values() for row in role["candidates"])
     assert list(directory.glob("*.diagnostic.png"))
+    sizes = json.loads(Path(result.diagnostics['bbox_diagnostics_path']).read_text(encoding='utf-8'))
+    assert sizes['mask_overlay_alpha'] == .75
+    assert sizes['cameras']['front']['target']['selected_mask_extent_px'] == [6, 6]
+
+
+def test_overlay_uses_current_rgb_and_only_selected_masks_without_mutation(tmp_path):
+    from types import SimpleNamespace
+    from PIL import Image
+    from bridgevla.online.slot_sam3_diagnostics import save_segmentation_overlays
+    rgb = np.full((24, 24, 3), [12, 64, 201], dtype=np.uint8)
+    selected = np.zeros((24, 24), dtype=bool)
+    selected[2:18, 2:18] = True
+    rejected = np.zeros_like(selected)
+    rejected[20:, 20:] = True
+    prompt = dict(bbox_xyxy=[0., 0., 19., 19.], positive_points_xy=[[4, 4]])
+    inference = {'cameras': {'front': {'roles': {
+        'target': dict(prompt=prompt, candidates=[dict(mask=rejected), dict(mask=selected)], selected_index=1),
+        'reference': dict(prompt={}, candidates=[], selected_index=None)}}}}
+    # Simulate TASK's existing diagnostic output; redraw from current raw RGB.
+    Image.new('RGB', (304, 110), (99, 99, 99)).save(tmp_path / 'front.diagnostic.png')
+    snapshot = SimpleNamespace(cameras={'front': SimpleNamespace(rgb=rgb)})
+    before = copy.deepcopy(inference)
+    report_path = save_segmentation_overlays(tmp_path, inference, snapshot)
+    with Image.open(tmp_path / 'front.diagnostic.png') as image:
+        pixels = np.array(image)
+    expected = (rgb[10, 10] * .25 + np.array([255, 80, 40]) * .75).astype(np.uint8)
+    np.testing.assert_array_equal(pixels[10, 10], expected)
+    np.testing.assert_array_equal(pixels[22, 22], rgb[22, 22])
+    np.testing.assert_array_equal(pixels[0, 25], [99, 99, 99])  # retained TASK legend
+    np.testing.assert_array_equal(inference['cameras']['front']['roles']['target']['candidates'][1]['mask'],
+                                  before['cameras']['front']['roles']['target']['candidates'][1]['mask'])
+    np.testing.assert_array_equal(snapshot.cameras['front'].rgb, rgb)
+    sizes = json.loads(Path(report_path).read_text(encoding='utf-8'))['cameras']['front']
+    assert sizes['target']['prompt_span_px'] == [19., 19.]
+    assert sizes['target']['selected_mask_extent_px'] == [16, 16]
+    assert sizes['reference']['selected_mask_extent_px'] is None
+
+
+def test_tight_bbox_preset_shrinks_padding_around_the_same_measured_points(scene):
+    default = _run(scene)
+    preset = ROOT / 'finetune/RLBench/configs/slot_sam3_tight_bbox.json'
+    scene['client'] = OnlineTaskPerception(scene['repo'], config_path=preset, backend=scene['backends'])
+    tight = _run(scene)
+    for name in scene['snapshot'].cameras:
+        for role in ('target', 'reference'):
+            old = default.inference['cameras'][name]['roles'][role]
+            new = tight.inference['cameras'][name]['roles'][role]
+            box_old = np.asarray(old['prompt']['bbox_xyxy'])
+            box_new = np.asarray(new['prompt']['bbox_xyxy'])
+            assert np.all(box_new[:2] >= box_old[:2])
+            assert np.all(box_new[2:] <= box_old[2:])
+            width, height = scene['snapshot'].cameras[name].camera.image_size
+            if np.all(box_old[:2] > 0) and np.all(box_old[2:] < [width - 1, height - 1]):
+                np.testing.assert_allclose(box_old[:2] + box_old[2:], box_new[:2] + box_new[2:])
+            assert np.all(box_new[2:] - box_new[:2] < box_old[2:] - box_old[:2])
+            assert new['prompt']['positive_points_xy'] == old['prompt']['positive_points_xy']
+            assert new['selected_index'] == old['selected_index'] == 1
+    np.testing.assert_array_equal(tight.geometry.object_points, default.geometry.object_points)
 
 
 def test_model_backend_constructed_once_and_frames_encode_fresh(scene, monkeypatch):
