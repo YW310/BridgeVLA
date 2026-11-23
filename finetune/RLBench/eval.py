@@ -77,7 +77,7 @@ from bridgevla.utils.rvt_utils import (
     RLBENCH_TASKS,
 )
 from bridgevla.utils.rvt_utils import load_agent as load_agent_state
-from bridgevla.utils.startup_progress import startup_phase
+from bridgevla.utils.startup_progress import rollout_progress, startup_phase
 from utils.semantic_contract import (
     build_semantic_contract,
     validate_semantic_contract,
@@ -760,6 +760,9 @@ def eval(
                         ground_truth_attempt=attempt,
                         manifest_phase_source=manifest_phase_source,
                     )
+                if online_slot_sam3:
+                    generator = rollout_progress(
+                        generator, f'task={tasks[task_id]}, episode={ep}, attempt={attempt}')
                 try:
                     for replay_transition in generator:
                         episode_rollout.append(replay_transition)

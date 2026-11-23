@@ -93,6 +93,15 @@ the stack to distinguish imports/model loading/file I/O from simulator launch.
 The earlier `Evaluation branch: internal Target/Reference slots` line only
 identifies the policy branch; it does not mean SAM3 or the simulator is ready.
 
+After simulator startup, `[Rollout]` reports each advance of the episode
+generator with task, zero-based episode, attempt and step. The first advance
+includes demo loading, live scene reset, observation preparation, policy/SAM3
+inference and action execution. Later advances run the following step or finish
+the episode. Each advance has its own 60-second repeating stack diagnostic,
+cancelled before the transition is handed back to the evaluator. This also
+covers `--visualize`. A completed CoppeliaSim launch only confirms simulator
+startup; the original evaluator otherwise prints results at episode completion.
+
 1. The existing evaluator strictly loads a matching slots/Anchor or role-query/Anchor checkpoint
    and freezes BridgeVLA. SAM3's runtime-checked TASK backend loads once, before the
    simulator launches. A package/API/weight loading failure stops startup.
