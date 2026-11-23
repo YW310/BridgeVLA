@@ -84,3 +84,28 @@ def test_no_loaded_identity_keeps_full_content_hashing(tmp_path, monkeypatch):
     assert len(calls) == 2
     with pytest.raises(ValueError, match='model loader'):
         module.loaded_checkpoint_sha256(checkpoint, {'sha256': first})
+
+
+def test_task_digest_binding_is_local_and_rejects_unknown_paths(tmp_path):
+    checkpoint = tmp_path / 'model.pth'
+    checkpoint.write_bytes(b'loaded model')
+    identity = module.LoadedCheckpointIdentity(checkpoint)
+    namespace = {'_file_digest': lambda path: 'original strict dependency'}
+    exec('def fuse_geometry(path):\n    return _file_digest(path)\n', namespace)
+    original = namespace['fuse_geometry']
+    bound = module.bind_task_fusion_checkpoint(original, identity)
+    assert bound(checkpoint) == identity.sha256
+    assert original(checkpoint) == 'original strict dependency'
+    assert original.__globals__['_file_digest'] is namespace['_file_digest']
+    other = tmp_path / 'other.pth'
+    other.write_bytes(b'loaded model')
+    with pytest.raises(ValueError, match='changed since'):
+        bound(other)
+
+
+def test_unsupported_task_digest_dependency_fails_explicitly(tmp_path):
+    checkpoint = tmp_path / 'model.pth'
+    checkpoint.write_bytes(b'loaded model')
+    identity = module.LoadedCheckpointIdentity(checkpoint)
+    with pytest.raises(RuntimeError, match='no supported checkpoint digest dependency'):
+        module.bind_task_fusion_checkpoint(lambda *args: None, identity)

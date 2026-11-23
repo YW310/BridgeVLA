@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT / 'finetune'))
 from bridgevla.config import get_cfg_defaults
 from bridgevla.online import slot_sam3_runtime as runtime
 from bridgevla.utils.startup_progress import startup_phase
+from bridgevla.utils.checkpoint_identity import LoadedCheckpointIdentity
 
 
 def test_enabled_online_profile_preserves_original_architecture_and_default_off():
@@ -118,12 +119,13 @@ def test_evaluation_failures_preserve_traceback_chain_and_restore_argv(monkeypat
     assert 'expected scalar type Float but found BFloat16' in rendered
 
 
-def test_factory_preloads_one_backend_and_uses_same_observer(monkeypatch):
+@pytest.mark.parametrize('with_identity', [False, True])
+def test_factory_preloads_one_backend_and_uses_same_observer(monkeypatch, tmp_path, with_identity):
     import bridgevla.online.slot_sam3_perception as perception_module
     events = []
     class PreparedPerception:
-        def __init__(self, *args):
-            events.append(('init', args))
+        def __init__(self, *args, **kwargs):
+            events.append(('init', args, kwargs))
         def prepare_model(self):
             events.append(('prepare',))
             return 3.0
@@ -132,11 +134,17 @@ def test_factory_preloads_one_backend_and_uses_same_observer(monkeypatch):
         slot_guided_sam3_runtime=runtime.resolve_runtime(runtime.load_online_profile(runtime.PROFILE)),
         slot_guided_sam3_checkpoint_path='actual-model.pth', slot_guided_sam3_git_sha='b' * 40,
         slot_guided_sam3_checkpoint_sha256='c' * 64, slot_guided_sam3_point_count=128)
+    if with_identity:
+        checkpoint = tmp_path / 'loaded-model.pth'
+        checkpoint.write_bytes(b'loaded checkpoint')
+        agent.slot_guided_sam3_checkpoint_identity = LoadedCheckpointIdentity(checkpoint)
+        agent.slot_guided_sam3_checkpoint_sha256 = agent.slot_guided_sam3_checkpoint_identity.sha256
     observer = object()
     wrapper = runtime.make_online_policy(agent, observer)
     assert wrapper.agent is agent and wrapper.snapshot_provider is observer
     assert len([e for e in events if e[0] == 'prepare']) == 1
-    assert wrapper.expected_checkpoint_sha256 == 'c' * 64
+    assert wrapper.expected_checkpoint_sha256 == agent.slot_guided_sam3_checkpoint_sha256
+    assert events[0][2].get('checkpoint_identity') is getattr(agent, 'slot_guided_sam3_checkpoint_identity', None)
     assert agent.slot_guided_sam3_model_load_ms == 3.0
 
 

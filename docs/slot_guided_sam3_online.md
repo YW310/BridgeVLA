@@ -129,7 +129,10 @@ checkpoint immutable throughout evaluation; this optimization relies on normal
 filesystem metadata reporting. Per-frame provenance/RGB-D/source checks remain
 active. Standalone authorization without a loader identity retains full hashing;
 reviewed/offline authorization does not use the online optimization. TASK fusion
-still performs its own full checkpoint digest and may remain an I/O bottleneck.
+also receives the same loaded identity through an instance-local digest binding,
+so neither online fusion nor conditioned policy rereads the Bridge checkpoint.
+The installed TASK function/module globals and geometry validation remain intact;
+an unsupported digest dependency fails the startup compatibility check explicitly.
 
 On fallback, the runtime log also prints `TARGET` summaries: guidance status,
 confidence and supported point count, followed by each camera's prompt validity,
@@ -137,7 +140,7 @@ candidate/accepted counts, and prompt/candidate rejection reasons. No diagnostic
 artifact directory is needed for these lines. In `action` mode, when no camera
 has an accepted Target candidate, the wrapper immediately returns its current
 baseline action (or raises with `--slot-sam3-fallback fail`). It skips fusion,
-including TASK's checkpoint digest I/O, because fusion cannot create a Target
+because fusion cannot create a Target
 without an accepted candidate. Current-frame and candidate evidence remains in
 the step log; an explicitly requested diagnostic directory receives the inference
 artifact, with no fabricated geometry artifact. `segmentation` mode and standalone
@@ -431,7 +434,7 @@ full-file Coarse checkpoint SHA256 digests. A later server stack during
 `conditioned policy` showed `authorize_online_geometry -> _geometry_sources ->
 sha256_file`; the phase completed in 32.6 s. Current online agents reuse a
 loader-pinned digest behind the file metadata guard described above, removing
-that repeated full read. TASK fusion retains its independent digest. The updated
+that repeated full read in both TASK fusion and action authorization. The updated
 end-to-end server latency has not yet been measured.
 
 Step diagnostics now include an episode-local `policy_call_index`,
@@ -723,9 +726,8 @@ the new flag is off.
 
 Online means a current-observation closed loop; it does not assert a hard
 real-time frequency. The policy uses two neural passes, segmentation per camera
-and geometric fusion. TASK fusion still hashes the Bridge checkpoint on frames
-that reach fusion, so timing includes that I/O. Online action authorization uses
-the loader-pinned checkpoint digest with per-step file metadata checks. SAM3's
+and geometric fusion. Online TASK fusion and action authorization both use the
+loader-pinned checkpoint digest with per-step file metadata checks. SAM3's
 weight fingerprint is cached. No end-to-end frequency improvement is claimed.
 
 Per-frame wall time includes current inference and enabled diagnostic writes;

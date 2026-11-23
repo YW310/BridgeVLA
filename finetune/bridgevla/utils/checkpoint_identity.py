@@ -3,6 +3,7 @@ from dataclasses import dataclass
 import hashlib
 from pathlib import Path
 import stat
+from types import FunctionType
 
 
 def sha256_file(path):
@@ -58,3 +59,24 @@ def loaded_checkpoint_sha256(path, identity=None):
     if not isinstance(identity, LoadedCheckpointIdentity):
         raise ValueError('online checkpoint identity must come from the model loader')
     return identity.verify_file(path)
+
+
+def bind_task_fusion_checkpoint(fusion, identity):
+    """Bind TASK's digest dependency locally, without changing its module globals.
+
+    Older TASK releases have no public digest-injection argument. Run their
+    exact fusion code with an instance-local namespace whose _file_digest uses
+    the loader identity. All geometry/binding validation functions stay intact.
+    Fail explicitly if that dependency is absent, rather than silently reread a
+    large checkpoint or accept an unrelated digest.
+    """
+    if not isinstance(identity, LoadedCheckpointIdentity):
+        raise ValueError('TASK fusion needs the loaded model checkpoint identity')
+    if (not isinstance(fusion, FunctionType) or '_file_digest' not in fusion.__code__.co_names
+            or not callable(fusion.__globals__.get('_file_digest'))):
+        raise RuntimeError('TASK fuse_geometry has no supported checkpoint digest dependency')
+    namespace = dict(fusion.__globals__)
+    namespace['_file_digest'] = identity.verify_file
+    bound = FunctionType(fusion.__code__, namespace, fusion.__name__, fusion.__defaults__, fusion.__closure__)
+    bound.__kwdefaults__ = fusion.__kwdefaults__
+    return bound

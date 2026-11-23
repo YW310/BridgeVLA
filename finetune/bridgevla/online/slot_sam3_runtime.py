@@ -111,10 +111,12 @@ def make_online_policy(agent, observer):
         perception = SlotPromptProbe(values['task_repo'], config_path=values['perception_config'], mode=values['prompt_mode'])
         agent.slot_guided_sam3_model_load_ms = 0.
     else:
+        checkpoint_identity = getattr(agent, 'slot_guided_sam3_checkpoint_identity', None)
         perception = OnlineTaskPerception(
             values['task_repo'], values['perception_config'], values['sam3_checkpoint'],
             values['sam3_device'], values['prompt_mode'],
-            **(dict(guidance_source='oracle_gt') if values['guidance_source'] == 'oracle_gt' else {}))
+            **(dict(guidance_source='oracle_gt') if values['guidance_source'] == 'oracle_gt' else {}),
+            **(dict(checkpoint_identity=checkpoint_identity) if checkpoint_identity is not None else {}))
         # Startup fails before env.launch() if SAM3's runtime API/weights cannot load.
         agent.slot_guided_sam3_model_load_ms = perception.prepare_model()
     diagnostics_dir = values['diagnostics_dir']

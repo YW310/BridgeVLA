@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "finetune"))
 from bridgevla.online.slot_sam3_perception import OnlineTaskPerception
 from bridgevla.online.slot_sam3_diagnostics import UnavailableTargetError
+from bridgevla.utils import checkpoint_identity
 
 
 @pytest.fixture
@@ -209,6 +210,35 @@ def test_action_with_accepted_target_keeps_full_fusion_and_checkpoint_identity(s
     result = _run(scene, skip_unusable_target=True)
     assert result.geometry.object_role_valid[0, 0]
     assert result.geometry.provenance[0]['source_checkpoint_sha256'] == hashlib.sha256(scene['checkpoint'].read_bytes()).hexdigest()
+
+
+def test_real_task_fusion_reuses_loaded_digest_without_mutating_task_or_caching_frames(scene, monkeypatch):
+    strict = _run(scene)
+    identity = checkpoint_identity.LoadedCheckpointIdentity(scene['checkpoint'])
+    scene['client'] = OnlineTaskPerception(scene['repo'], 'configs/slot_guided_offline.json',
+                                          backend=scene['backends'], checkpoint_identity=identity)
+    task = scene['api'].slot_geometry_fusion
+    original_fusion = task.fuse_geometry
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError('online fusion must not reread the loaded Bridge checkpoint')
+
+    monkeypatch.setattr(task, '_file_digest', forbidden)
+    monkeypatch.setattr(checkpoint_identity, 'sha256_file', forbidden)
+    result = _run(scene)
+    assert task.fuse_geometry is original_fusion and task._file_digest is forbidden
+    assert result.geometry.provenance[0]['source_checkpoint_sha256'] == identity.sha256
+    np.testing.assert_array_equal(result.geometry.object_points, strict.geometry.object_points)
+    assert result.fused_geometry['roles'] == strict.fused_geometry['roles']
+    scene['snapshot'] = _next_frame(scene['snapshot'], 151)
+    next_result = _run(scene)
+    assert next_result.geometry is not result.geometry
+    assert next_result.receipt['source_frame_index'] == 151
+    assert all(backend.set_image_calls == 3 for backend in scene['backends'].values())
+    scene['checkpoint'].write_bytes(b'changed after the model was loaded')
+    scene['snapshot'] = _next_frame(scene['snapshot'], 152)
+    with pytest.raises(ValueError, match='changed since'):
+        _run(scene)
 
 
 def test_optional_diagnostics_are_write_only_and_separate_from_live_result(scene, tmp_path):

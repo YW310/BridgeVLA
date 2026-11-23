@@ -90,17 +90,23 @@ robot action has been executed by this validation. The command and controller
 wiring are implemented; robot/perception metrics, paired task success, actual
 latency and full-frame GPU peak remain unmeasured.
 
-TASK fusion recomputes checkpoint SHA256 on steps that reach it. Online Bridge
-action authorization now uses a loader-pinned digest with a per-step file
+Online TASK fusion and Bridge action authorization now share a loader-pinned
+digest with a per-step file
 metadata guard (resolved path, device/inode, size, mtime_ns and ctime_ns), avoiding
 the repeated full read observed in a server `conditioned policy` stack. A file
 change requires a model reload. The guard relies on normal filesystem metadata
 reporting and an immutable checkpoint during the run. Reviewed/offline and
 standalone authorization without a loader identity retain full hashing.
+The TASK adapter executes its installed fusion code with an instance-local digest
+dependency, preserving module globals and geometry/binding validators. A real
+TASK/Mock regression compares fused points and role diagnostics with the strict
+path, forbids checkpoint digest reads, then verifies fresh per-frame processing
+and rejection after checkpoint replacement. Unsupported dependency shapes fail
+the startup compatibility check explicitly.
 Action mode skips fusion entirely
 when no camera has an accepted Target candidate, preserving the existing
-current-baseline fallback and compact failure evidence. This avoids digest I/O
-on such frames. Current-frame geometry and model-source matching checks remain
+current-baseline fallback and compact failure evidence. This avoids unnecessary
+geometry computation on such frames. Current-frame geometry and model-source matching checks remain
 active for conditioned actions. SAM3's fingerprint is already cached. Updated
 server timing has not yet been measured. Online resume and generic copied/multiprocess YARR worker
 integration are not enabled by this first direct-evaluator path.

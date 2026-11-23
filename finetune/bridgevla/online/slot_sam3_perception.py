@@ -22,6 +22,7 @@ from bridgevla.offline.slot_sam3_perception import TaskPerception
 from bridgevla.online.slot_sam3_diagnostics import (
     UnavailableTargetError, camera_role_diagnostics, guidance_role_diagnostics)
 from bridgevla.utils.startup_progress import live_phase
+from bridgevla.utils.checkpoint_identity import LoadedCheckpointIdentity, bind_task_fusion_checkpoint
 
 
 @dataclass(frozen=True)
@@ -47,12 +48,24 @@ class OnlineTaskPerception(TaskPerception):
     segmentation/fusion failure; the controller must fall back for that frame.
     """
 
-    def __init__(self, *args, guidance_source='predicted_coarse_slot', **kwargs):
+    def __init__(self, *args, guidance_source='predicted_coarse_slot', checkpoint_identity=None, **kwargs):
         super().__init__(*args, **kwargs)
         if guidance_source not in ('predicted_coarse_slot', 'oracle_gt'):
             raise ValueError('invalid online guidance source')
         self.guidance_source = guidance_source
+        if checkpoint_identity is not None and not isinstance(checkpoint_identity, LoadedCheckpointIdentity):
+            raise ValueError('online perception needs the loaded model checkpoint identity')
+        self._checkpoint_identity = checkpoint_identity
+        self._fusion = None
         self._last_source_indices: dict[str, int] = {}
+
+    def _fusion_function(self, api):
+        if self._checkpoint_identity is None:
+            return api.slot_geometry_fusion.fuse_geometry
+        if self._fusion is None:
+            self._fusion = bind_task_fusion_checkpoint(
+                api.slot_geometry_fusion.fuse_geometry, self._checkpoint_identity)
+        return self._fusion
 
     def reset(self) -> None:
         """Start fresh episode/frame bookkeeping while retaining model weights."""
@@ -64,6 +77,10 @@ class OnlineTaskPerception(TaskPerception):
         if self._backend is None:
             print(f'[SlotSAM3] Importing TASK API from {self.task_repo}', flush=True)
             api = self._load_api()
+            self._fusion_function(api)  # Check compatibility before launching the simulator.
+            if self._checkpoint_identity is not None:
+                print('[SlotSAM3] TASK fusion uses loaded checkpoint identity; '
+                      'no per-frame checkpoint reads', flush=True)
             print(f'[SlotSAM3] TASK API ready in {time.perf_counter() - started:.1f}s', flush=True)
             if self.sam3_checkpoint is None:
                 raise ValueError('an actual local SAM3 checkpoint is required')
@@ -127,6 +144,8 @@ class OnlineTaskPerception(TaskPerception):
         checkpoint = Path(checkpoint_path).expanduser().resolve()
         if not checkpoint.is_file():
             raise FileNotFoundError("Actual loaded Coarse checkpoint is required")
+        if self._checkpoint_identity is not None:
+            self._checkpoint_identity.verify_file(checkpoint)
         if isinstance(point_count, bool) or not isinstance(point_count, int) or point_count < 1:
             raise ValueError("point_count must be a positive integer")
         diagnostic_path = Path(diagnostics_dir).resolve() if diagnostics_dir is not None else None
@@ -220,7 +239,7 @@ class OnlineTaskPerception(TaskPerception):
                                            segmentation=(segmented - produced) * 1000, fusion=0.,
                                            frame_total=(time.perf_counter() - started) * 1000)))
         with live_phase(f'frame={index} geometry fusion', prefix='SlotSAM3'):
-            fused = api.slot_geometry_fusion.fuse_geometry(snapshot, guidance, inference, config=self._config.fusion)
+            fused = self._fusion_function(api)(snapshot, guidance, inference, config=self._config.fusion)
         fused_at = time.perf_counter()
         # The sampler is the existing BridgeVLA fixed geometry interface. No
         # serialized PR3 geometry is read back into the action path.
