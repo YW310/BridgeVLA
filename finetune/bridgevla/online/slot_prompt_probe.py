@@ -10,6 +10,7 @@ import numpy as np
 
 from bridgevla.offline.slot_sam3_perception import TaskPerception
 from bridgevla.online.slot_sam3_perception import OnlineTaskPerception
+from bridgevla.online.slot_sam3_diagnostics import save_prompt_overlays
 
 
 def _stage_images(root, stage, value, arrays):
@@ -181,6 +182,7 @@ class SlotPromptProbe(TaskPerception):
                       reference_null_probability=guidance.metadata['reference_null_probability'])
         report['guidance_selection'] = coarse_packet.get('guidance_selection', dict(requested_stage='coarse'))
         api.slot_guided_io.save_inference_artifact(root / 'prompt_report.json', report, snapshot)
+        save_prompt_overlays(root, cameras, snapshot)
         # A static contact sheet is convenient over VS Code Remote; it runs no
         # server, browser commands or simulator control code.
         images = [Path(filename).relative_to(root).as_posix()

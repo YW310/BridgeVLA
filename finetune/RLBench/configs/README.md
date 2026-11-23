@@ -104,6 +104,7 @@ Coarse/Refine 热图的最大叠加权重为 **85%**：角色颜色按绝对概�
 旁边显示提示框和选中 mask 的宽高；`bbox_diagnostics.json` 记录各相机的数值。
 提示框尺寸是坐标跨度，mask 尺寸是占据的像素范围，两者可以相差一个边界像素。
 这些显示修改不改变 SAM3 输入、mask 或动作。
+正提示点（condition 点）在 action、segmentation 和 prompts 诊断中统一显示为 5 像素、1 像素线宽的小十字 `+`，颜色沿用 Target 橙红、Reference 蓝色。
 
 <a id="gt-sam3"></a>
 

@@ -2,6 +2,33 @@
 from __future__ import annotations
 
 
+def _draw_prompt_markers(draw, prompt, color):
+    if prompt.get('bbox_xyxy') is not None:
+        draw.rectangle(prompt['bbox_xyxy'], outline=color, width=1)
+    for x, y in prompt.get('positive_points_xy', []):
+        draw.line([x - 2, y, x + 2, y], fill=color, width=1)
+        draw.line([x, y - 2, x, y + 2], fill=color, width=1)
+    for x, y in prompt.get('negative_points_xy', []):
+        draw.line([x - 2, y - 2, x + 2, y + 2], fill='white')
+
+
+def save_prompt_overlays(root, cameras, snapshot):
+    """Use the same small positive cross in prompt-only camera diagnostics."""
+    from pathlib import Path
+    from PIL import Image, ImageDraw
+
+    for name, camera in cameras.items():
+        image = Image.fromarray(snapshot.cameras[name].rgb)
+        draw = ImageDraw.Draw(image)
+        for role, color in (('target', (255, 80, 40)), ('reference', (40, 150, 255))):
+            _draw_prompt_markers(draw, camera['roles'][role]['prompt'], color)
+        filename = Path(root) / f'{name}.diagnostic.png'
+        with Image.open(filename) as original:
+            canvas = original.convert('RGB')
+        canvas.paste(image, (0, 0))
+        canvas.save(filename)
+
+
 def save_segmentation_overlays(root, inference, snapshot, *, alpha=.75):
     """Redraw selected masks from current RGB, with stronger tint and box sizes.
 
@@ -45,13 +72,7 @@ def save_segmentation_overlays(root, inference, snapshot, *, alpha=.75):
         image = Image.fromarray(np.clip(tint, 0, 255).astype(np.uint8))
         draw = ImageDraw.Draw(image)
         for role, color in (('target', (255, 80, 40)), ('reference', (40, 150, 255))):
-            prompt = camera['roles'][role]['prompt']
-            if prompt.get('bbox_xyxy') is not None:
-                draw.rectangle(prompt['bbox_xyxy'], outline=color, width=1)
-            for x, y in prompt.get('positive_points_xy', []):
-                draw.ellipse([x - 2, y - 2, x + 2, y + 2], fill=color)
-            for x, y in prompt.get('negative_points_xy', []):
-                draw.line([x - 2, y - 2, x + 2, y + 2], fill='white')
+            _draw_prompt_markers(draw, camera['roles'][role]['prompt'], color)
         filename = root / f'{name}.diagnostic.png'
         with Image.open(filename) as original:
             canvas = Image.new('RGB', (max(original.width, width + 360), max(original.height, 172)), (25, 25, 25))
