@@ -1,7 +1,7 @@
 """Persistent, current-frame in-memory Slot/SAM3 perception.
 
-No frame JSON/NPZ, episode pickle, ground-truth role mask or expert action is
-read. TASK owns prompt construction, segmentation and instance fusion. This
+No frame JSON/NPZ, episode pickle or expert action is read. The separate Oracle
+experiment accepts current GT masks only as prompts. TASK owns segmentation and fusion. This
 module supplies their in-memory contract and samples detached policy geometry;
 it does not grant control authorization or claim manipulation acceptance.
 """
@@ -44,8 +44,11 @@ class OnlineTaskPerception(TaskPerception):
     segmentation/fusion failure; the controller must fall back for that frame.
     """
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, guidance_source='predicted_coarse_slot', **kwargs):
         super().__init__(*args, **kwargs)
+        if guidance_source not in ('predicted_coarse_slot', 'oracle_gt'):
+            raise ValueError('invalid online guidance source')
+        self.guidance_source = guidance_source
         self._last_source_indices: dict[str, int] = {}
 
     def reset(self) -> None:
@@ -92,10 +95,10 @@ class OnlineTaskPerception(TaskPerception):
         return {**{key: packet[key] for key in required}, "transform": transform,
                 **{key: packet[key] for key in ("reference_exists", "role_visibility") if key in packet}}
 
-    def perceive(self, snapshot: Any, coarse_packet: Mapping[str, Any], *, instruction: str,
+    def perceive(self, snapshot: Any, coarse_packet: Mapping[str, Any] | None, *, instruction: str,
                  task_name: str, checkpoint_path: str | Path, bridge_git_sha: str,
                  point_count: int = 128, expected_snapshot_digest: str | None = None,
-                 diagnostics_dir: str | Path | None = None) -> OnlinePerceptionResult:
+                 diagnostics_dir: str | Path | None = None, oracle_labels=None) -> OnlinePerceptionResult:
         """Compute fresh geometry directly from the current in-memory snapshot.
 
         Checkpoint paths identify actual loaded weights. TASK verifies SAM3's
@@ -118,21 +121,38 @@ class OnlineTaskPerception(TaskPerception):
         diagnostic_path = Path(diagnostics_dir).resolve() if diagnostics_dir is not None else None
         if diagnostic_path is not None and diagnostic_path.exists() and (not diagnostic_path.is_dir() or any(diagnostic_path.iterdir())):
             raise FileExistsError("Use a new empty diagnostics directory for this observation")
-        export = self._export(coarse_packet, snapshot)
+        oracle = self.guidance_source == 'oracle_gt'
+        if oracle and (coarse_packet is not None or oracle_labels is None):
+            raise ValueError('Oracle SAM3 needs current GT prompt labels, no Slot packet')
+        if oracle and any(type(oracle_labels.get(key)) is not type(receipt[key])
+                          or oracle_labels.get(key) != receipt[key]
+                          for key in ('episode_id', 'frame_id', 'source_frame_index', 'observed_at')):
+            raise ValueError('Oracle prompt labels do not match the current RGB-D frame')
+        if not oracle and oracle_labels is not None:
+            raise ValueError('predicted SAM3 cannot consume GT prompt labels')
+        export = None if oracle else self._export(coarse_packet, snapshot)
         # Model load can be moved out of frame timing by calling prepare_backend.
         model_started = time.perf_counter()
         backend, kind = self._active_backend(snapshot)
         model_ms = (time.perf_counter() - model_started) * 1000
         self._last_source_indices[episode] = index
         started = time.perf_counter()
-        guidance = api.slot_guidance_producers.coarse_slot_guidance(
-            snapshot, export["slot_output"], point_valid=export["point_valid"],
-            transform=export["transform"], instruction=instruction, task_name=task_name,
-            source_checkpoint=str(checkpoint), source_git_sha=bridge_git_sha,
-            created_at=datetime.now(timezone.utc).isoformat(),
-            point_support_source=export["point_support_source"],
-            **{key: export[key] for key in ("reference_exists", "role_visibility") if key in export},
-        )
+        if oracle:
+            guidance = api.slot_guidance_producers.oracle_guidance(
+                snapshot, oracle_labels['oracle_role_masks'],
+                reference_is_null=oracle_labels['reference_is_null'],
+                role_instance_ids=oracle_labels.get('oracle_instance_ids'),
+                instruction=instruction, task_name=task_name, source_git_sha=bridge_git_sha,
+                created_at=datetime.now(timezone.utc).isoformat())
+        else:
+            guidance = api.slot_guidance_producers.coarse_slot_guidance(
+                snapshot, export["slot_output"], point_valid=export["point_valid"],
+                transform=export["transform"], instruction=instruction, task_name=task_name,
+                source_checkpoint=str(checkpoint), source_git_sha=bridge_git_sha,
+                created_at=datetime.now(timezone.utc).isoformat(),
+                point_support_source=export["point_support_source"],
+                **{key: export[key] for key in ("reference_exists", "role_visibility") if key in export},
+            )
         produced = time.perf_counter()
         fingerprints = {name: (backend[name] if isinstance(backend, Mapping) else backend).fingerprint()
                         for name in snapshot.cameras}
@@ -165,7 +185,7 @@ class OnlineTaskPerception(TaskPerception):
             "guidance_input_sha256": api.slot_guided_io.guidance_input_digest(guidance),
             "effective_config": {"adapter": asdict(self._config.adapter), "selection": asdict(self._config.selection)},
         }
-        if 'guidance_selection' in coarse_packet:
+        if coarse_packet is not None and 'guidance_selection' in coarse_packet:
             inference['guidance_selection'] = copy.deepcopy(coarse_packet['guidance_selection'])
         fused = api.slot_geometry_fusion.fuse_geometry(snapshot, guidance, inference, config=self._config.fusion)
         fused_at = time.perf_counter()
@@ -175,8 +195,9 @@ class OnlineTaskPerception(TaskPerception):
 
         provenance = {key: copy.deepcopy(value) for key, value in fused.items() if key != "points"}
         provenance.update(snapshot_input_sha256=receipt["snapshot_input_sha256"],
-                          max_source_frame_index_read=index, execution_mode="online_experiment")
-        if 'guidance_selection' in coarse_packet:
+                          max_source_frame_index_read=index,
+                          execution_mode='oracle_online_experiment' if oracle else 'online_experiment')
+        if coarse_packet is not None and 'guidance_selection' in coarse_packet:
             provenance['guidance_selection'] = copy.deepcopy(coarse_packet['guidance_selection'])
         geometry = sample_geometry(
             [[fused["points"][f"{role}_points_world"] for role in ("target", "reference")]],

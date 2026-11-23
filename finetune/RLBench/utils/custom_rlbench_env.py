@@ -67,13 +67,15 @@ class CustomMultiTaskRLBenchEnv2(CustomMultiTaskRLBenchEnv):
         self._oracle_provider_ready = True
 
     def extract_obs(self, obs, *args, **kwargs):
-        if self._oracle_provider is None:
+        provider = getattr(self, '_slot_sam3_observation_provider', None)
+        prompt_only_oracle = bool(getattr(provider, 'requires_oracle_task', False))
+        if self._oracle_provider is None and not prompt_only_oracle:
             extracted = super().extract_obs(obs, *args, **kwargs)
         else:
-            if not self._oracle_provider_ready:
+            if self._oracle_provider is not None and not self._oracle_provider_ready:
                 self._reset_oracle_provider()
             mask_values = {}
-            for camera in self._oracle_provider.cameras:
+            for camera in (provider.cameras if prompt_only_oracle else self._oracle_provider.cameras):
                 key = f'{camera}_mask'
                 mask_values[key] = getattr(obs, key, None)
                 setattr(obs, key, None)
@@ -82,12 +84,15 @@ class CustomMultiTaskRLBenchEnv2(CustomMultiTaskRLBenchEnv):
             finally:
                 for key, value in mask_values.items():
                     setattr(obs, key, value)
-            extracted = self._oracle_provider.enrich(obs, extracted)
+            if self._oracle_provider is not None:
+                extracted = self._oracle_provider.enrich(obs, extracted)
         provider = getattr(self, '_slot_sam3_observation_provider', None)
         if provider is not None:
             try:
                 provider.capture_raw(obs, extracted, task_name=self._oracle_task_name(),
-                                     instruction=self._lang_goal)
+                                     instruction=self._lang_goal,
+                                     **(dict(task_environment=self._task, variation=self._oracle_variation(),
+                                             episode_index=int(self._oracle_episode_token)) if prompt_only_oracle else {}))
             except Exception as error:
                 # Preserve the baseline observation; the online wrapper consumes
                 # this explicit capture failure and applies its configured fallback.

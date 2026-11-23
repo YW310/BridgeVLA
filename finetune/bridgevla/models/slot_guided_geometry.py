@@ -408,6 +408,70 @@ def authorize_online_geometry(geometry, current_frames, bridge_checkpoint_path, 
                           _geometry_sources(geometry, bridge_checkpoint_path, bridge_git_sha)).verify()
 
 
+@dataclass(frozen=True)
+class OracleOnlineGeometry:
+    """Current GT-prompted SAM3 result; privileged experiment, never predicted evaluation."""
+    geometry: ObjectGeometry
+    current_frames: tuple[Mapping, ...]
+    sources: Mapping
+    scope: str = 'oracle_online_experiment'
+
+    def verify(self):
+        if self.scope != 'oracle_online_experiment':
+            raise ValueError('Oracle online geometry requires its separate experiment scope')
+        _validate_current_frames(self.geometry, self.current_frames, offline=True)
+        _validate_sources(self.sources, allow_uncheckpointed_guidance=True)
+        if self.sources['guidance_checkpoint_sha256'] is not None:
+            raise ValueError('GT prompts must not claim a Slot checkpoint')
+        for meta, current in zip(self.geometry.provenance, self.current_frames):
+            if meta.get('guidance_source') != 'oracle_gt' or meta.get('execution_mode') != self.scope:
+                raise ValueError('Oracle online action requires explicit oracle_gt SAM3 provenance')
+            if _digest(meta.get('snapshot_input_sha256'), 'snapshot_input_sha256') != current.get('snapshot_input_sha256'):
+                raise ValueError('Oracle online current RGB-D content mismatch')
+            if type(meta.get('max_source_frame_index_read')) is not int or meta['max_source_frame_index_read'] != current['source_frame_index']:
+                raise ValueError('Oracle online geometry contains stale/future read receipt')
+            for field, key in (('source_git_sha', 'guidance_git_sha'),
+                               ('source_checkpoint_sha256', 'guidance_checkpoint_sha256'),
+                               ('sam3_checkpoint_sha256', 'sam3_checkpoint_sha256')):
+                if meta.get(field) != self.sources[key]:
+                    raise ValueError('Oracle online source/checkpoint mismatch')
+        return self
+
+    def transformed(self, function):
+        return replace(self, geometry=self.geometry.transformed(function))
+
+
+def authorize_oracle_online_geometry(geometry, current_frames, bridge_checkpoint_path, bridge_git_sha):
+    geometry = geometry.detached()
+    frames = tuple(dict(current) for current in current_frames)
+    return OracleOnlineGeometry(geometry, frames,
+        _geometry_sources(geometry, bridge_checkpoint_path, bridge_git_sha)).verify()
+
+
+def oracle_sam3_prior_points(authorized):
+    """Prepare only segmented surface points for the existing role projection.
+
+    Projection takes a fixed point count. Repeat observed surface points for padding;
+    zero padding must never generate a false Gaussian at the cube origin.
+    """
+    authorized.verify()
+    geom = authorized.geometry
+    if any(meta.get('guidance_source') != 'oracle_gt' for meta in geom.provenance):
+        raise ValueError('Slot-free object guidance requires oracle_gt SAM3 geometry')
+    points = geom.object_points.clone()
+    valid = geom.object_role_valid & geom.object_geometry_confidence.ge(.25)
+    for batch in range(len(points)):
+        for role in range(2):
+            mask = geom.object_point_valid[batch, role]
+            if bool(valid[batch, role]) and mask.any():
+                cloud = points[batch, role, mask]
+                points[batch, role] = cloud[torch.arange(points.shape[2], device=points.device) % len(cloud)]
+            else:
+                points[batch, role] = 0.
+                valid[batch, role] = False
+    return points.detach(), valid
+
+
 def freeze_for_geometry_inference(network):
     network.eval()
     for parameter in network.parameters():

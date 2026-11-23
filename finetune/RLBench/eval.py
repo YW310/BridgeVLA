@@ -165,7 +165,7 @@ def load_agent(
     online_runtime = None
     online_checkpoint_sha = None
     if (exp_cfg.rvt.enable_slot_guided_sam3
-            and exp_cfg.rvt.slot_guided_sam3_execution_mode == 'online_experiment'):
+            and exp_cfg.rvt.slot_guided_sam3_execution_mode in ('online_experiment', 'oracle_online_experiment')):
         from bridgevla.online.slot_sam3_runtime import resolve_runtime
         from bridgevla.models.slot_guided_geometry import sha256_file
         online_runtime = resolve_runtime(exp_cfg, slot_sam3_options,
@@ -320,7 +320,8 @@ def load_agent(
         agent.slot_guided_sam3_git_sha = subprocess.check_output(
             ['git', '-C', str(Path(__file__).resolve().parents[2]), 'rev-parse', 'HEAD'],
             text=True).strip()
-        agent.slot_guided_sam3_point_count = int(exp_cfg.object_slots.point_samples)
+        agent.slot_guided_sam3_point_count = int(exp_cfg.predicted_object_num_points
+            if exp_cfg.slot_guided_sam3.guidance_source == 'oracle_gt' else exp_cfg.object_slots.point_samples)
     agent.semantic_training_phase_source = semantic_training_phase_source
     agent.semantic_contract_status = semantic_contract_status['value']
     agent.eval()
@@ -370,7 +371,7 @@ def eval(
 ):
     online_slot_sam3 = bool(
         agent is not None and getattr(agent, 'enable_slot_guided_sam3', False)
-        and getattr(agent, 'slot_guided_sam3_execution_mode', None) == 'online_experiment')
+        and getattr(agent, 'slot_guided_sam3_execution_mode', None) in ('online_experiment', 'oracle_online_experiment'))
     if online_slot_sam3 and (replay_ground_truth or oracle_provider_name != 'none'
                              or heatmap_action_anchor or bridgevla_aligned_objects
                              or bridgevla_aligned_reference):
@@ -461,7 +462,8 @@ def eval(
         CAMERAS,
         camera_resolution,
         method_name="",
-        include_masks=use_rlbench_gt,
+        include_masks=(use_rlbench_gt or (online_slot_sam3
+            and agent.slot_guided_sam3_runtime.get('guidance_source') == 'oracle_gt')),
     )
     oracle_provider = None
     if use_rlbench_gt:
@@ -531,8 +533,16 @@ def eval(
     online_env_kwargs = {}
     if online_slot_sam3:
         from utils.slot_sam3_observation import SlotSam3ObservationProvider
+        oracle_prompt_kwargs = {}
+        if agent.slot_guided_sam3_runtime.get('guidance_source') == 'oracle_gt':
+            role_path = Path(oracle_role_config) if oracle_role_config else (
+                Path(__file__).resolve().parent / 'configs/rlbench_o2_semantic_roles.yaml')
+            if not role_path.is_file():
+                raise FileNotFoundError(f'Oracle SAM3 semantic role config is missing: {role_path}')
+            oracle_prompt_kwargs['oracle_role_config'] = role_path.resolve()
         online_observer = SlotSam3ObservationProvider(
-            agent.slot_guided_sam3_runtime['task_repo'], agent.cameras)
+            agent.slot_guided_sam3_runtime['task_repo'], agent.cameras,
+            **oracle_prompt_kwargs)
         online_env_kwargs['slot_sam3_observation_provider'] = online_observer
     eval_env = CustomMultiTaskRLBenchEnv(
         task_classes=task_classes,
@@ -1196,7 +1206,7 @@ def _eval(args):
                         ('perception_config', 'perception_config'), ('sam3_device', 'device'),
                         ('prompt_mode', 'prompt_mode'), ('fallback', 'fallback'),
                         ('diagnostics_dir', 'diagnostics_dir'), ('stage', 'stage'),
-                        ('guidance_stage', 'guidance_stage'))
+                        ('guidance_stage', 'guidance_stage'), ('guidance_source', 'guidance_source'))
                 },
             )
         if args.oracle_provider == "rlbench_gt":
@@ -1252,6 +1262,12 @@ def _eval(args):
                         + "This "
                         "is predicted conditioning, not Oracle Target GT."
                     )
+        elif (agent is not None and getattr(agent, 'enable_slot_guided_sam3', False)
+              and getattr(agent, 'slot_guided_sam3_execution_mode', None) == 'oracle_online_experiment'):
+            print(
+                'Evaluation branch: current GT prompts -> SAM3 -> trained GT Relation adapter '
+                '(Oracle experiment; no Slot prediction; fallback=unconditioned policy)'
+            )
         elif agent is not None and agent.oracle_prior_enabled:
             agent.oracle_prior_mode = "none"
             print(

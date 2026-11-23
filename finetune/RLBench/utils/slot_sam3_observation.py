@@ -39,6 +39,7 @@ class CurrentFramePacket:
     receipt: dict
     task_name: str
     instruction: str
+    oracle_labels: Any = None
 
 
 def simulation_clock():
@@ -105,7 +106,7 @@ class SlotSam3ObservationProvider:
     Calling the wrapper's reset must not clear this cache: YARR resets the env
     and captures its observation *before* resetting the agent.
     """
-    def __init__(self, task_repo, cameras, *, time_source=None):
+    def __init__(self, task_repo, cameras, *, time_source=None, oracle_role_config=None):
         if isinstance(cameras, (str, bytes)) or not cameras or len(set(cameras)) != len(cameras):
             raise ValueError('cameras must be an explicit nonempty unique camera sequence')
         if any(not isinstance(name, str) or not name.strip() for name in cameras):
@@ -116,6 +117,9 @@ class SlotSam3ObservationProvider:
         self._runtime_id = uuid4().hex
         self._generation = -1
         self._api = None
+        self.requires_oracle_task = oracle_role_config is not None
+        self._prompt_oracle = None
+        self._oracle_role_config = oracle_role_config
         self.begin_episode()
 
     def _load_api(self):
@@ -134,6 +138,7 @@ class SlotSam3ObservationProvider:
         self._packet = None
         self._binding = {}
         self._failure = 'no current observation has been captured'
+        self._prompt_oracle_ready = False
 
     def invalidate(self, error):
         self._packet = None
@@ -147,7 +152,8 @@ class SlotSam3ObservationProvider:
             raise ValueError('simulation clock requires nonnegative seconds and a positive timestep')
         return float(seconds), float(step)
 
-    def capture_raw(self, obs, extracted, *, task_name, instruction, episode_id=None):
+    def capture_raw(self, obs, extracted, *, task_name, instruction, episode_id=None,
+                    task_environment=None, variation=0, episode_index=0):
         """Capture only arrays from this raw Observation and its extracted dict.
 
         Errors invalidate the previous cache. The env hook records the failure
@@ -248,12 +254,28 @@ class SlotSam3ObservationProvider:
                    'depth_source': 'current_observation_world_point_cloud_to_camera_z',
                    'depth_units': 'm', 'raw_camera_from_optical': bases,
                    'camera_calibration_checks': calibration_checks}
+        oracle_labels = None
+        if self.requires_oracle_task:
+            if task_environment is None:
+                raise ValueError('Oracle SAM3 capture needs the current live task environment')
+            if self._prompt_oracle is None:
+                from .o2_oracle_provider import RLBenchGTOracleProvider
+                self._prompt_oracle = RLBenchGTOracleProvider(
+                    Path(self._oracle_role_config), cameras=self.cameras, strict=True, handle_alignment='identity')
+            if not self._prompt_oracle_ready:
+                self._prompt_oracle.reset(task_environment, task_name, variation, episode_index)
+                self._prompt_oracle_ready = True
+            oracle_labels = self._prompt_oracle.sam3_prompt_annotations(obs)
+            oracle_labels.update(identity)
+            for roles in oracle_labels['oracle_role_masks'].values():
+                for name, mask in roles.items():
+                    roles[name] = _readonly(mask, dtype=bool)
         after, after_step = self._clock()
         if after != seconds or after_step != step:
             raise ValueError('simulation advanced during current observation capture')
         self._last_time = seconds
         self._binding = binding
-        self._packet = CurrentFramePacket(snapshot, receipt, task_name, instruction)
+        self._packet = CurrentFramePacket(snapshot, receipt, task_name, instruction, oracle_labels)
         self._failure = None
 
     def capture(self, prepped_observation):

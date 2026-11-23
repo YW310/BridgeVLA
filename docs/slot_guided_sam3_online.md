@@ -1,5 +1,13 @@
 # Slot-guided SAM3 online RLBench inference
 
+## GT 提示引导已训练策略
+
+已训练的 `rlbench_o2_semantic_gt.yaml` 模型可直接运行
+[GT → SAM3 → 原 Relation adapter：完整命令、诊断与限制](../finetune/RLBench/configs/README.md#gt-sam3)。
+使用 `gt_guided_sam3_online.py`，无需重训：当前 GT 只生成提示，SAM3 mask/RGB-D 生成动作条件，
+不预测 Slot。新 `oracle_online_experiment` 与下文预测式 `online_experiment` 分开记录；
+训练仍使用原配置，SAM3 不参与训练。
+
 <a id="original-slots-sam3"></a>
 
 ## 原版 slots → SAM3 → 原版动作条件
@@ -28,17 +36,11 @@ python finetune/RLBench/slot_guided_sam3_online.py \
 加 `--slot-sam3-stage prompts` 则不加载 SAM3。当前原版仅使用 Coarse 提示，Refine 独立预测保留。
 新配置只用于冻结推理；继续训练仍使用原 YAML。真实分割和闭环性能尚待服务器验证。
 
-Use [rlbench_slot_guided_sam3_online.yaml](../finetune/RLBench/configs/rlbench_slot_guided_sam3_online.yaml)
-and `finetune/RLBench/slot_guided_sam3_online.py` for the current-observation
-control loop. Models are frozen and persistent. Each policy step runs Coarse
-Guidance → original-camera prompts → SAM3 → RGB-D object geometry → the existing
-Relation Anchor → action, then the normal RLBench environment executes that
-action. There is no prerequisite to export a frame JSON/NPZ or run the offline
-command before each step.
-
-The [offline entrypoint](slot_guided_sam3_offline.md) remains available for
-reproducible A/B/C and box-only versus point+box experiments. The legacy draft
-profile stays disabled for old commands. Global defaults remain disabled.
+The [role-query online profile](../finetune/RLBench/configs/rlbench_slot_guided_sam3_online.yaml)
+uses `slot_guided_sam3_online.py`: current Coarse Guidance → original-camera prompts
+→ persistent frozen SAM3 → RGB-D geometry → existing Relation Anchor → action.
+No frame export is required. The [offline runner](slot_guided_sam3_offline.md)
+supports A/B/C and prompt ablations. Global defaults and the legacy draft stay disabled.
 
 <a id="offline-online-training"></a>
 
@@ -88,11 +90,9 @@ TASK 中复用的 `configs/slot_guided_offline.json` 只是提示、候选选择
    intrinsics, extrinsics, low-dimensional state and instruction against that
    captured observation.
 4. `OnlineTaskPerception` directly reuses the TASK checkout's
-   `coarse_slot_guidance`, `run_camera` and `fuse_geometry`. SAM3 encodes each
-   original RGB image once, sharing its state across Target/Reference. Candidate
-   identity uses prompts and geometry, including cross-view consistency. The
-   same frozen backend persists; image features, masks and object geometry are
-   freshly computed for each source observation.
+   `coarse_slot_guidance`, `run_camera` and `fuse_geometry`. Each RGB is encoded
+   once for both roles. Prompts, depth and cross-view consistency select instances;
+   masks and geometry are recomputed for each current observation.
 5. The in-memory result supplies fixed `[1,2,N,3]` object points, masks,
    confidence and Reference NULL state. An explicit `OnlineGeometry` validates
    the current RGB-D content, calibration, source index and actual loaded model

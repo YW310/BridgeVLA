@@ -16,6 +16,13 @@ def load_profile(path):
     if (not cfg.rvt.enable_slot_guided_sam3
             or cfg.rvt.slot_guided_sam3_execution_mode != 'offline_experiment'):
         raise ValueError('use the enabled offline_experiment profile, not the disabled legacy draft')
+    oracle = cfg.slot_guided_sam3.guidance_source == 'oracle_gt'
+    if oracle:
+        if (cfg.object_slots.enabled or cfg.oracle_prior_adapter_rank <= 0 or not cfg.oracle_relation_gated_adapter
+                or cfg.rvt.oracle_prior_mode != 'o2_gt_instance' or not cfg.rvt.oracle_prior_relation
+                or any(bool(value) for value in cfg.object_conditioning.values())):
+            raise ValueError('Oracle SAM3 requires a Slot-free GT Relation/Anchor config')
+        return cfg
     if (not cfg.object_slots.enabled or cfg.object_slots.predictor_type != 'role_queries'
             or cfg.oracle_relation_anchor_rank <= 0 or not cfg.oracle_relation_gated_adapter
             or not cfg.object_conditioning.shared_action_features
@@ -47,7 +54,11 @@ def load_saved_configs(checkpoint, profile, exp_cfg_path=None, mvt_cfg_path=None
                 'oracle_relation_anchor_rank', 'oracle_adapter_translation_only'):
         if getattr(exp, key) != getattr(profile, key):
             raise ValueError(f'saved checkpoint configuration differs from profile: {key}')
-    if exp.rvt.object_prior_mode != 'o2_internal_slots' or not exp.rvt.oracle_prior_relation:
+    oracle = profile.slot_guided_sam3.guidance_source == 'oracle_gt'
+    if oracle and (exp.object_slots.enabled or exp.rvt.oracle_prior_mode != 'o2_gt_instance'
+                   or not exp.rvt.oracle_prior_relation):
+        raise ValueError('Oracle SAM3 needs a checkpoint trained with the Slot-free GT Relation/Anchor config')
+    if not oracle and (exp.rvt.object_prior_mode != 'o2_internal_slots' or not exp.rvt.oracle_prior_relation):
         raise ValueError('saved checkpoint must use the internal relation Slot path')
     exp.rvt.enable_slot_guided_sam3 = True
     exp.rvt.slot_guided_sam3_execution_mode = 'offline_experiment'

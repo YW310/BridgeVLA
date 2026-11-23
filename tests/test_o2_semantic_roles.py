@@ -334,9 +334,10 @@ def test_close_jar_merges_lid_children_and_selects_variation_jar(tmp_path):
 def test_debug_interval_one_writes_each_step_and_role_overlay_keeps_rgb(tmp_path):
     lid = FakeObject("jar_lid0", 11)
     jar = FakeObject("jar0", 21)
-    task = FakeTask([lid, jar])
+    other_jar = FakeObject("jar1", 22)
+    task = FakeTask([lid, jar, other_jar])
     task.lid = lid
-    task.jars = [jar]
+    task.jars = [jar, other_jar]
     value = provider("close_jar", task, tmp_path)
 
     obs = observation([[11, 0], [21, 0]])

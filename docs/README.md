@@ -4,7 +4,7 @@
 
 命名约定：**对象条件策略（Object-conditioned BridgeVLA）** 替代历史代号 O2；现有 `rlbench_o2_*` 配置名、模式值和兼容链接不变。
 
-完整阅读入口：[图解完整手册（单页 HTML）](handbook.html)。它将 docs 全部 Markdown、项目首页和 OHT README 整理为连贯主题章节，包含八张理解图、完整算法交互、正文、命令、表格及论文链接。合并重复导航、收起长示例，手机端宽表转为逐项阅读；固定浅色，可离线阅读和打印。原 Markdown 继续作为维护源，入口说明与历史内容分区保留。
+完整阅读入口：[图解完整手册（单页 HTML）](handbook.html)。汇总 docs、项目首页和 OHT README，含算法交互、命令、表格及论文链接；固定浅色，可离线阅读和打印。Markdown 为维护源。
 
 更新完整手册：先 `python -m pip install -r tools/requirements-docs.txt`，再运行 `python tools/build_docs_handbook.py`；加 `--check` 检查是否同步。生成器自动发现 docs 新增的 Markdown，并将文档互链转换为页内跳转；本地图像内嵌，代码/配置链接仍指向仓库文件，论文外链仍需联网。
 
@@ -13,6 +13,8 @@
 可编辑源文件为 `assets/algorithm-overview.fragment.html`；修改后在仓库根目录运行 `python tools/render_algorithm_overview.py`，用 `--check` 检查生成页面是否同步。
 
 ## Slot-guided SAM3 online and offline experiments
+
+已有 Semantic-GT 权重可直接使用 [GT 提示 → SAM3 → BridgeVLA](../finetune/RLBench/configs/README.md#gt-sam3)，无需 Slot 预测或重训。
 
 [Online commands and runtime contract](slot_guided_sam3_online.md) cover the current-observation loop, persistent SAM3 and current-frame fallback, including [原版 slots → SAM3 → 原版 Anchor](slot_guided_sam3_online.md#original-slots-sam3). [Offline commands and snapshot formats](slot_guided_sam3_offline.md) use the role-query Anchor for reproducible A/B/C comparisons. The [geometry contract](slot_guided_sam3_action_draft.md) describes the reviewed-activation gate and disabled profile.
 

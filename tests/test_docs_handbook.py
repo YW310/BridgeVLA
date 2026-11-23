@@ -79,7 +79,10 @@ class HandbookRenderingTest(unittest.TestCase):
         self.assertTrue(parsed.images)
         self.assertTrue(all(src.startswith("data:image/") for src in parsed.images))
         self.assertIn(handbook.ALGORITHM.read_text(encoding="utf-8"), self.document)
-        self.assertLess(len(self.document.encode("utf-8")), 2 * 1024 * 1024)
+        # Current OHT replay/controller instructions and GT SAM3 entrypoints
+        # bring the complete handbook just above 2 MiB. Retain a bounded budget
+        # while preserving all source commands and the embedded diagrams.
+        self.assertLess(len(self.document.encode("utf-8")), 2304 * 1024)
 
     def test_source_provenance_is_complete_and_correct(self):
         opening = '<script type="application/json" id="book-source-manifest">'

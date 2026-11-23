@@ -1621,6 +1621,34 @@ class RLBenchGTOracleProvider:
             self._live_initial_views = self._alignment_views(obs)
         return self._enrich(obs, obs_dict)
 
+    def sam3_prompt_annotations(self, obs):
+        """Live GT masks for prompting only; no Oracle tensors enter the policy.
+
+        Reuse live semantic phase resolution, never stored demo events/handles.
+        Nonvisual sites have no object instance boundary and are unsupported.
+        """
+        if self.handle_alignment != 'identity' or self.raw_data_root is not None:
+            raise ValueError('SAM3 Oracle prompts require live identity handles, no stored episode reads')
+        self.enrich(obs, {})  # Advance only from current live success conditions.
+        entry = self._entries[-1]
+        entities = {'target': entry['target'], 'reference': entry['reference']}
+        masks, ids = {}, {}
+        for role, entity in entities.items():
+            if entity is not None:
+                if entity['kind'] == 'site' or not entity['handles']:
+                    raise ValueError(f'SAM3 GT prompt role {role} is a nonvisual site, not an object instance')
+                ids[role] = 'live-handles:' + ','.join(map(str, sorted(entity['handles'])))
+        for camera in self.cameras:
+            raw = getattr(obs, f'{camera}_mask', None)
+            if raw is None:
+                raise ValueError(f'{camera}: current GT handle mask is required for Oracle SAM3 prompts')
+            handles = decode_handle_mask(raw)
+            masks[camera] = {role: np.isin(handles, entity['handles']).astype(bool)
+                             for role, entity in entities.items() if entity is not None}
+        return dict(oracle_role_masks=masks, reference_is_null=entities['reference'] is None,
+                    oracle_instance_ids=ids, phase_source='live_success_conditions', phase_id=entry['phase_id'],
+                    role_config_sha256=self.role_config_sha256)
+
     def prepare_sim_replay_manifest(self, stored_initial_obs) -> None:
         """Certify live handles and retain a stored-only manifest mapping.
 

@@ -10,7 +10,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[3]
 PROFILE = ROOT / 'finetune/RLBench/configs/rlbench_slot_guided_sam3_online.yaml'
 FIELDS = ('task_repo', 'sam3_checkpoint', 'perception_config', 'sam3_device',
-          'prompt_mode', 'fallback', 'diagnostics_dir', 'stage', 'guidance_stage')
+          'prompt_mode', 'fallback', 'diagnostics_dir', 'stage', 'guidance_stage', 'guidance_source')
 CLI_FIELDS = {
     'task_repo': '--slot-sam3-task-repo', 'sam3_checkpoint': '--slot-sam3-checkpoint',
     'perception_config': '--slot-sam3-perception-config', 'sam3_device': '--slot-sam3-device',
@@ -18,6 +18,7 @@ CLI_FIELDS = {
     'diagnostics_dir': '--slot-sam3-diagnostics-dir',
     'stage': '--slot-sam3-stage',
     'guidance_stage': '--slot-sam3-guidance-stage',
+    'guidance_source': '--slot-sam3-guidance-source',
 }
 
 
@@ -25,8 +26,17 @@ def load_online_profile(path):
     from bridgevla.config import get_cfg_defaults
     cfg = get_cfg_defaults()
     cfg.merge_from_file(str(path))
-    if not cfg.rvt.enable_slot_guided_sam3 or cfg.rvt.slot_guided_sam3_execution_mode != 'online_experiment':
+    oracle = cfg.slot_guided_sam3.guidance_source == 'oracle_gt'
+    expected_mode = 'oracle_online_experiment' if oracle else 'online_experiment'
+    if not cfg.rvt.enable_slot_guided_sam3 or cfg.rvt.slot_guided_sam3_execution_mode != expected_mode:
         raise ValueError('the online launcher requires an enabled online_experiment profile')
+    if oracle:
+        if (cfg.object_slots.enabled or cfg.oracle_prior_adapter_rank <= 0 or not cfg.oracle_relation_gated_adapter
+                or not cfg.rvt.oracle_prior_relation
+                or cfg.rvt.oracle_prior_mode != 'o2_gt_instance'
+                or any(bool(value) for value in cfg.object_conditioning.values())):
+            raise ValueError('GT SAM3 requires the Slot-free legacy GT Relation/Anchor architecture')
+        return cfg
     legacy = cfg.object_slots.predictor_type == 'slots'
     if (not cfg.object_slots.enabled or cfg.object_slots.predictor_type not in ('slots', 'role_queries')
             or cfg.object_slots.num_slots != 2 or cfg.oracle_relation_anchor_rank <= 0
@@ -38,12 +48,26 @@ def load_online_profile(path):
 
 
 def resolve_runtime(cfg, overrides=None, *, policy_device='cuda:0', validate_files=False):
+    if cfg.slot_guided_sam3.guidance_source == 'oracle_gt':
+        if (cfg.rvt.slot_guided_sam3_execution_mode != 'oracle_online_experiment'
+                or cfg.object_slots.enabled or cfg.oracle_prior_adapter_rank <= 0 or not cfg.oracle_relation_gated_adapter
+                or not cfg.rvt.oracle_prior_relation or cfg.rvt.oracle_prior_mode != 'o2_gt_instance'
+                or any(bool(value) for value in cfg.object_conditioning.values())):
+            raise ValueError('oracle_gt requires the separate Slot-free Oracle online profile')
     values = {key: getattr(cfg.slot_guided_sam3, key) for key in FIELDS}
     for key, value in (overrides or {}).items():
         if key not in FIELDS:
             raise ValueError(f'unknown online SAM3 setting: {key}')
         if value is not None:
             values[key] = value
+    if values['guidance_source'] != cfg.slot_guided_sam3.guidance_source:
+        raise ValueError('select guidance_source through a matching experiment config')
+    if values['guidance_source'] not in ('predicted_coarse_slot', 'oracle_gt'):
+        raise ValueError('unknown SAM3 guidance_source')
+    if values['guidance_source'] == 'oracle_gt' and values['stage'] == 'prompts':
+        raise ValueError('GT SAM3 uses segmentation/action stages; no Slot maps are predicted')
+    if values['guidance_source'] == 'oracle_gt' and values['guidance_stage'] != 'coarse':
+        raise ValueError('GT SAM3 has no Slot guidance stage; keep guidance_stage=coarse')
     if values['prompt_mode'] not in ('box-only', 'point+box') or values['fallback'] not in ('baseline', 'fail'):
         raise ValueError('invalid online prompt or fallback mode')
     if values['stage'] not in ('action', 'prompts', 'segmentation'):
@@ -59,7 +83,7 @@ def resolve_runtime(cfg, overrides=None, *, policy_device='cuda:0', validate_fil
     values['sam3_device'] = values['sam3_device'] or policy_device
     if values['stage'] in ('prompts', 'segmentation') and values['diagnostics_dir'] is None:
         raise ValueError('prompts/segmentation stage requires --slot-sam3-diagnostics-dir')
-    if cfg.object_slots.predictor_type == 'slots':
+    if cfg.object_slots.enabled and cfg.object_slots.predictor_type == 'slots':
         if values['guidance_stage'] != 'coarse':
             raise ValueError('original slots require coarse guidance; independent Refine stays unchanged')
     if validate_files:
@@ -89,7 +113,8 @@ def make_online_policy(agent, observer):
     else:
         perception = OnlineTaskPerception(
             values['task_repo'], values['perception_config'], values['sam3_checkpoint'],
-            values['sam3_device'], values['prompt_mode'])
+            values['sam3_device'], values['prompt_mode'],
+            **(dict(guidance_source='oracle_gt') if values['guidance_source'] == 'oracle_gt' else {}))
         # Startup fails before env.launch() if SAM3's runtime API/weights cannot load.
         agent.slot_guided_sam3_model_load_ms = perception.prepare_model()
     diagnostics_dir = values['diagnostics_dir']
@@ -106,22 +131,23 @@ def make_online_policy(agent, observer):
         point_count=agent.slot_guided_sam3_point_count,
         expected_checkpoint_sha256=agent.slot_guided_sam3_checkpoint_sha256,
         diagnostics_dir=diagnostics_dir, fallback=values['fallback'], stage=values['stage'],
-        guidance_stage=values['guidance_stage'])
+        guidance_stage=values['guidance_stage'], guidance_source=values['guidance_source'])
 
 
-def main(argv=None):
+def main(argv=None, *, default_profile=PROFILE):
     import json
     parser = argparse.ArgumentParser(description=(
-        'Live RLBench Coarse Slot -> persistent SAM3 -> geometry -> action loop. '
+        'Live RLBench Slot or GT prompts -> persistent SAM3 -> geometry -> action loop. '
         'Other options are forwarded to eval.py, including --model-folder, '
         '--model-name, --eval-datafolder, --tasks and --device.'))
-    parser.add_argument('--config', type=Path, default=PROFILE)
+    parser.add_argument('--config', type=Path, default=default_profile)
     parser.add_argument('--check-config', action='store_true')
     for key, flag in CLI_FIELDS.items():
         choices = ('box-only', 'point+box') if key == 'prompt_mode' else (
             ('baseline', 'fail') if key == 'fallback' else (
                 ('action', 'prompts', 'segmentation') if key == 'stage' else (
-                    ('coarse', 'refine') if key == 'guidance_stage' else None)))
+                    ('coarse', 'refine') if key == 'guidance_stage' else (
+                        ('predicted_coarse_slot', 'oracle_gt') if key == 'guidance_source' else None))))
         parser.add_argument(flag, dest=key, default=None, choices=choices,
                             help=('prompts: inspect slots/prompts without SAM3; segmentation: run SAM3 '
                                   'and retain baseline action; both require a diagnostics directory')
@@ -132,7 +158,7 @@ def main(argv=None):
         overrides = {key: getattr(args, key) for key in FIELDS}
         settings = resolve_runtime(cfg, overrides)
         if args.check_config:
-            print(json.dumps(dict(enabled=True, execution_mode='online_experiment',
+            print(json.dumps(dict(enabled=True, execution_mode=cfg.rvt.slot_guided_sam3_execution_mode,
                                   config=str(args.config.resolve()), settings=settings)))
             return 0
         if any(arg == '--exp_cfg_path' or arg.startswith('--exp_cfg_path=') for arg in evaluation_args):

@@ -160,6 +160,7 @@ _C.slot_guided_sam3.fallback = 'baseline'
 _C.slot_guided_sam3.diagnostics_dir = ''
 _C.slot_guided_sam3.stage = 'action'  # prompts: no SAM3; segmentation: masks + baseline action.
 _C.slot_guided_sam3.guidance_stage = 'coarse'  # refine: prefer supported local mask-head points per role.
+_C.slot_guided_sam3.guidance_source = 'predicted_coarse_slot'  # oracle_gt: explicit Slot-free Oracle experiment.
 
 # arguments present in peract official
 _C.peract_official = CN()

@@ -658,21 +658,29 @@ class MVT(nn.Module):
         """
         if slot_guided_geometry is not None:
             from bridgevla.models.slot_guided_geometry import (
-                AuthorizedGeometry, OfflineGeometry, OnlineGeometry, freeze_for_geometry_inference, geometry_for_render,
+                AuthorizedGeometry, OfflineGeometry, OnlineGeometry, OracleOnlineGeometry,
+                freeze_for_geometry_inference, geometry_for_render, oracle_sam3_prior_points,
             )
             if self.training or img_aug != 0 or torch.is_grad_enabled():
                 raise ValueError('slot-guided SAM3 requires eval with no augmentation')
-            if not isinstance(slot_guided_geometry, (AuthorizedGeometry, OfflineGeometry, OnlineGeometry)):
+            if not isinstance(slot_guided_geometry, (AuthorizedGeometry, OfflineGeometry, OnlineGeometry, OracleOnlineGeometry)):
                 raise ValueError('slot-guided SAM3 requires authorized geometry')
             slot_guided_geometry.verify()
-            if not self.object_slots_enabled or not hasattr(self.oracle_prior_feature_adapter1, 'forward_with_anchor'):
-                raise ValueError('slot-guided SAM3 requires the existing Slot/Relation Anchor path')
+            oracle_only = not self.object_slots_enabled
+            if (not hasattr(self.oracle_prior_feature_adapter1, 'forward_with_anchor')
+                    and not (oracle_only and hasattr(self.oracle_prior_feature_adapter1, '_relation_components'))):
+                raise ValueError('SAM3 geometry requires an existing Relation/Anchor adapter')
+            if not self.object_slots_enabled:
+                if oracle_prior_points is not None:
+                    raise ValueError('GT prompts cannot enter the Slot-free action branch as raw Oracle points')
+                oracle_prior_points, oracle_prior_valid = oracle_sam3_prior_points(slot_guided_geometry)
             adapters = [self.oracle_prior_feature_adapter1]
             if self.stage_two:
                 adapters.append(self.oracle_prior_feature_adapter2)
-            if any(not hasattr(adapter, 'forward_with_anchor') for adapter in adapters):
-                raise ValueError('slot-guided SAM3 requires an existing Anchor in every action stage')
-            if (self.object_slot_predictor_type != 'slots'
+            if any(not hasattr(adapter, 'forward_with_anchor')
+                   and not (oracle_only and hasattr(adapter, '_relation_components')) for adapter in adapters):
+                raise ValueError('SAM3 geometry requires an existing Relation/Anchor in every action stage')
+            if (self.object_slots_enabled and self.object_slot_predictor_type != 'slots'
                     and any(not getattr(adapter, 'role_conditioning', False) for adapter in adapters)):
                 raise ValueError('slot-guided SAM3 requires existing role_conditioning=True Anchor adapters')
             freeze_for_geometry_inference(self)
@@ -726,10 +734,10 @@ class MVT(nn.Module):
             oracle_relation_state=oracle_relation_state,
             **({'slot_guided_geometry': geometry_for_render(
                 slot_guided_geometry, pc, norm_corr=self.mvt1.norm_corr,
-                clean_xyz=(self.object_conditioning_inherit_coarse_roles
+                clean_xyz=(not self.object_slots_enabled or self.object_conditioning_inherit_coarse_roles
                            or self.object_slot_predictor_type == 'role_queries'))}
                if slot_guided_geometry is not None else {}),
-            object_slot_predictor=self.object_slot_predictor1,
+            object_slot_predictor=(self.object_slot_predictor1 if self.object_slots_enabled else None),
             object_conditioning_shared_action_features=self.object_conditioning_shared_action_features,
             object_conditioning_use_context=self.object_conditioning_use_context,
             object_slot_target_heatmap=(
@@ -899,13 +907,14 @@ class MVT(nn.Module):
                     None if self.object_slots_enabled else oracle_relation_points2
                 ),
                 oracle_relation_state=oracle_relation_state,
-                object_slot_predictor=(None if inherited_roles is not None else self.object_slot_predictor2),
+                object_slot_predictor=(None if inherited_roles is not None or not self.object_slots_enabled
+                                       else self.object_slot_predictor2),
                 inherited_object_roles=inherited_roles,
                 **({'slot_guided_geometry': geometry_for_render(
                     slot_guided_geometry.transformed(
                         lambda p: self.st_sca * (p - wpt_local_stage_one_noisy[:, None, None])),
                     pc, norm_corr=self.mvt1.norm_corr,
-                    clean_xyz=(self.object_conditioning_inherit_coarse_roles
+                    clean_xyz=(not self.object_slots_enabled or self.object_conditioning_inherit_coarse_roles
                                or self.object_slot_predictor_type == 'role_queries'))}
                    if slot_guided_geometry is not None else {}),
                 coarse_query_context=(

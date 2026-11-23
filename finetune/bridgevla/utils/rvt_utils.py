@@ -273,6 +273,7 @@ def get_eval_parser():
                         help='prompts: no SAM3; segmentation: SAM3 masks with baseline action; action: condition on geometry')
     parser.add_argument('--slot-sam3-guidance-stage', choices=('coarse', 'refine'), default=None,
                         help='refine: prefer supported mask-head points, with per-role Coarse fallback')
+    parser.add_argument('--slot-sam3-guidance-source', choices=('predicted_coarse_slot', 'oracle_gt'), default=None)
     return parser
 
 

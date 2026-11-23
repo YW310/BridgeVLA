@@ -72,6 +72,84 @@ EOF
 
 ## Slot-guided SAM3 online inference
 
+<a id="gt-sam3"></a>
+
+### 已训练 Semantic-GT 模型：GT 提示 → SAM3 → BridgeVLA
+
+已有 `rlbench_o2_semantic_gt.yaml` 训练结果可以直接使用：
+新 [online 配置](rlbench_gt_guided_sam3_online.yaml) 保留原 Relation adapter、
+Coarse/Refine 动作网络和点云池化方式，Slot 关闭、Anchor rank 为 0，不增加参数。
+训练配置与训练流程不变，训练时仍不需要 SAM3 对象几何。
+`semantic_gt_joint`、Slot 和 role-query checkpoint 使用不同结构，不适用这份配置。
+
+当前实时相机 GT handle mask + live semantic phase → Target/Reference GT 点集 →
+原相机 box/point → 冻结 SAM3 → mask + 当前 RGB-D → world 对象表面点 →
+原场景归一化及 Refine crop → 原两阶段 Relation adapter / Action Head。
+GT 只提供提示和角色身份；动作输入的对象点与投影 prior 均来自 SAM3 分割。
+GT mask/点不进入策略 observation，不调用 Slot、不读取未来 observation 或 expert action。
+这属于使用特权 GT 的 Oracle 实验，不能当作自主角色识别结果。
+
+在服务器仓库根目录运行，`MODEL_FOLDER` 改为**已经训练完成的 semantic_gt run**，
+目录需包含 `model_last.pth`、`exp_cfg.yaml` 和 `mvt_cfg.yaml`。
+`SAM31` 是 TASK 工程目录，必须含 `slot_guidance_producers.py` 等接口；SAM3 Python 包另行安装。
+
+```bash
+conda activate bridgevla
+MODEL_FOLDER=/path/to/trained_semantic_gt_run
+python finetune/RLBench/gt_guided_sam3_online.py \
+  --model-folder "$MODEL_FOLDER" --model-name model_last.pth \
+  --eval-datafolder "$PWD/LPY/BridgeVLA_RLBench_EVAL_DATA" \
+  --tasks open_drawer --eval-episodes 1 --episode-length 25 --device 0 \
+  --oracle-role-config "$PWD/finetune/RLBench/configs/rlbench_o2_semantic_roles.yaml" \
+  --slot-sam3-task-repo /data/project/SAM31 \
+  --slot-sam3-checkpoint "$PWD/checkpoints/sam3/sam3.pt" \
+  --slot-sam3-prompt-mode point+box \
+  --slot-sam3-diagnostics-dir "$PWD/outputs/gt_sam3"
+```
+
+默认是 `oracle_online_experiment` / `stage=action`。不要加 `--oracle-provider rlbench_gt`：
+这会选择直接 GT 动作条件接口；本入口自动采集仅供 SAM3 提示的 GT side channel。
+增加 `--slot-sam3-stage segmentation` 可先观察分割并执行当前无对象条件动作；
+`--slot-sam3-prompt-mode box-only` 做提示消融。GT 路径不使用 Slot `prompts` 诊断模式。
+无需加载权重的配置检查：
+
+```bash
+python finetune/RLBench/gt_guided_sam3_online.py --check-config
+python finetune/RLBench/slot_guided_sam3_offline.py \
+  --config finetune/RLBench/configs/rlbench_gt_guided_sam3_offline.yaml --check-config
+```
+
+启动应显示 `current GT prompts -> SAM3 -> trained GT Relation adapter`、`no Slot prediction`。
+诊断图、原图提示、mask 与融合结果位于 `outputs/gt_sam3/run_*/episode_*/frame_*`；
+评测目录下 `slot_sam3_steps.jsonl` 记录 `guidance_source=oracle_gt`、
+`slot_prediction_used=false`、`status`、失败原因、当前源帧索引、延迟及 SAM3 显存峰值。
+`conditioned` 才表示该步实际使用了 SAM3 对象条件；`baseline_fallback` 使用同一模型、
+同一当前观测的**无对象条件动作**，不会改用 GT 几何或 Slot。
+想让感知失败立即报错可加 `--slot-sam3-fallback fail`。
+
+Reference 的 `NULL` 表示语义不存在；存在但当前 mask 为空是 `NOT_VISIBLE`；
+几何/分割不可靠为 `LOW_CONFIDENCE`，不会因空 mask 自动判 NULL。
+接触点、成功区域等非可视 `site` 没有可分割实例边界，当前明确报错并按 fallback 处理；
+因此不能假定所有任务和阶段都适用。运动 wrist 使用当前观测的外参和模拟器 microstep。
+
+离线单帧使用同一已训练模型和 [offline 配置](rlbench_gt_guided_sam3_offline.yaml)：
+
+```bash
+python finetune/RLBench/slot_guided_sam3_offline.py \
+  --config finetune/RLBench/configs/rlbench_gt_guided_sam3_offline.yaml \
+  --checkpoint "$MODEL_FOLDER/model_last.pth" \
+  --task-repo /data/project/SAM31 \
+  --frame /path/to/frame.json --state /path/to/state.json \
+  --oracle-labels /path/to/oracle_labels.json \
+  --sam3-checkpoint "$PWD/checkpoints/sam3/sam3.pt" \
+  --device cuda:0 --mode point+box --output-dir outputs/gt_sam3_snapshot
+```
+
+快照/状态/逐相机 GT mask NPY 格式见 [offline 输入契约](../../../docs/slot_guided_sam3_offline.md)。
+使用新的空输出目录。输出 `action_report.json` 中动作差值不是对 GT 的动作误差或成功率。
+本机软件/Mock 测试只能验证接口、坐标变换、数据隔离和回退；真实 SAM3 mask IoU、
+对象中心误差及 paired RLBench 成功率仍需在有权重/GPU/模拟器的服务器测量。
+
 [rlbench_slot_guided_sam3_internal_slots_online.yaml](rlbench_slot_guided_sam3_internal_slots_online.yaml) 基于原始 `rlbench_o2_internal_slots.yaml`，保留无序 slots、独立 Refine 和旧 Anchor，直接加载原版 checkpoint。仅启用冻结的 SAM3 推理及几何动作条件；[完整命令](../../../docs/slot_guided_sam3_online.md#original-slots-sam3)包含分割诊断模式。继续训练仍使用原始 YAML。
 
 [rlbench_slot_guided_sam3_online.yaml](rlbench_slot_guided_sam3_online.yaml) enables `online_experiment` in the normal RLBench evaluation loop. Run `slot_guided_sam3_online.py`; its [commands and runtime contract](../../../docs/slot_guided_sam3_online.md) describe the persistent model, current-observation provider and TASK SAM3 reuse. Runtime paths live in `slot_guided_sam3` and support `--slot-sam3-*` overrides. The default config remains disabled.

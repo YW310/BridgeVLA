@@ -671,12 +671,20 @@ class MVT(nn.Module):
                     bs, self.num_img, h, w,
                 )
         if slot_guided_geometry is not None:
-            if self.training or torch.is_grad_enabled() or not hasattr(oracle_feature_adapter, 'forward_with_anchor'):
-                raise ValueError('slot-guided geometry requires an eval-mode existing Anchor adapter')
-            if (not getattr(oracle_feature_adapter, 'role_conditioning', False)
-                    and (object_slot_output is None
-                         or object_slot_output.get('predictor_type', 'slots') != 'slots')):
-                raise ValueError('slot-guided geometry requires role_conditioning=True')
+            oracle_only = (object_slot_output is None
+                           and all(meta.get('guidance_source') == 'oracle_gt'
+                                   for meta in slot_guided_geometry.geometry.provenance))
+            if (self.training or torch.is_grad_enabled()
+                    or (not hasattr(oracle_feature_adapter, 'forward_with_anchor')
+                        and not (oracle_only and hasattr(oracle_feature_adapter, '_relation_components')))):
+                raise ValueError('SAM3 geometry requires an eval-mode existing Relation/Anchor adapter')
+            if not getattr(oracle_feature_adapter, 'role_conditioning', False):
+                if object_slot_output is None:
+                    if any(meta.get('guidance_source') != 'oracle_gt'
+                           for meta in slot_guided_geometry.geometry.provenance):
+                        raise ValueError('Slot-free Anchor requires explicit oracle_gt SAM3 geometry')
+                elif object_slot_output.get('predictor_type', 'slots') != 'slots':
+                    raise ValueError('slot-guided geometry requires role_conditioning=True')
         if oracle_feature_adapter is not None:
             if oracle_prior_heatmap is None or oracle_prior_valid is None:
                 raise ValueError('Oracle feature adapter requires prior and valid')
@@ -713,6 +721,9 @@ class MVT(nn.Module):
                 if not oracle_adapter_translation_only:
                     x = shared_features
             else:
+                if slot_guided_geometry is not None:
+                    from bridgevla.models.slot_guided_geometry import oracle_sam3_prior_points
+                    oracle_relation_points, oracle_prior_valid = oracle_sam3_prior_points(slot_guided_geometry)
                 translation_features = oracle_feature_adapter(
                     x, oracle_prior_heatmap, oracle_prior_valid,
                     oracle_relation_points,

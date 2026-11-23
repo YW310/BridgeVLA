@@ -172,6 +172,9 @@ def run_single_frame(*, agent, perception, frame_path, state_path, checkpoint_pa
                   peak_gpu_memory_bytes=None,
                   gpu_memory_scope={'policy_device': device, 'sam3_device': getattr(perception, 'device', device),
                                     'allocator': 'torch policy-device peak; separate SAM3 device excluded'})
+    if guidance_source == 'oracle_gt':
+        report.update(oracle_conditioned=True,
+                      slot_prediction_used=getattr(getattr(agent, '_net_mod', None), 'object_slots_enabled', None))
     def synchronize():
         if cuda:
             torch.cuda.synchronize(device)
@@ -253,7 +256,7 @@ def parser():
     result.add_argument('--device', default='cuda:0')
     result.add_argument('--sam3-device', default=None)
     result.add_argument('--mode', choices=('box-only', 'point+box'), default='point+box')
-    result.add_argument('--guidance-source', choices=('predicted_coarse_slot', 'oracle_gt'), default='predicted_coarse_slot')
+    result.add_argument('--guidance-source', choices=('predicted_coarse_slot', 'oracle_gt'), default=None)
     result.add_argument('--fallback', choices=('baseline', 'fail'), default='baseline')
     return result
 
@@ -264,6 +267,9 @@ def main(argv=None):
     args = parser().parse_args(argv)
     try:
         profile = load_profile(args.config)
+        args.guidance_source = args.guidance_source or profile.slot_guided_sam3.guidance_source
+        if profile.slot_guided_sam3.guidance_source == 'oracle_gt' and args.guidance_source != 'oracle_gt':
+            raise ValueError('Slot-free GT SAM3 profile requires oracle_gt prompts')
         if args.check_config:
             print(json.dumps({'config': str(args.config), 'enabled': True,
                               'execution_mode': profile.rvt.slot_guided_sam3_execution_mode}))
@@ -313,7 +319,8 @@ def main(argv=None):
         report = run_single_frame(agent=agent, perception=perception, frame_path=args.frame,
             state_path=args.state, checkpoint_path=args.checkpoint, bridge_git_sha=source_sha,
             output_dir=args.output_dir, device=args.device, guidance_source=args.guidance_source,
-            oracle_labels=args.oracle_labels, point_count=profile.object_slots.point_samples,
+            oracle_labels=args.oracle_labels, point_count=(profile.predicted_object_num_points
+                if profile.slot_guided_sam3.guidance_source == 'oracle_gt' else profile.object_slots.point_samples),
             fallback=args.fallback, model_config=configs)
         print(json.dumps({'status': report['status'], 'report': str(args.output_dir / 'action_report.json')}))
         return 0 if report['status'] == 'completed' else 2
