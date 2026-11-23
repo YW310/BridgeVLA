@@ -100,7 +100,20 @@ inference and action execution. Later advances run the following step or finish
 the episode. Each advance has its own 60-second repeating stack diagnostic,
 cancelled before the transition is handed back to the evaluator. This also
 covers `--visualize`. A completed CoppeliaSim launch only confirms simulator
-startup; the original evaluator otherwise prints results at episode completion.
+startup.
+
+Progress is flushed immediately through the existing `tee` command. Each active
+phase prints `START` / `DONE` and elapsed seconds. While it is still running,
+`WAIT ... elapsed=...s` appears every 5 seconds, using the deepest active phase:
+demo loading, scene reset, initial observation capture, baseline policy, current
+frame validation, individual SAM3 camera segmentation, geometry fusion,
+conditioned policy, or action execution / observation capture. Nested phases
+share one logging thread; that thread does not call Torch or the simulator.
+The 60-second thread-stack diagnostic remains active during generator advances.
+Each policy result prints its status and fallback reason if present; each
+returned step prints reward, terminal and timeout without waiting for the end
+of the episode. Baseline evaluation without online Slot/SAM3 keeps its existing
+output behavior. No additional flags are required.
 
 1. The existing evaluator strictly loads a matching slots/Anchor or role-query/Anchor checkpoint
    and freezes BridgeVLA. SAM3's runtime-checked TASK backend loads once, before the

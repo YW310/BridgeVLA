@@ -19,6 +19,7 @@ from typing import Any, Mapping
 import numpy as np
 
 from bridgevla.offline.slot_sam3_perception import TaskPerception
+from bridgevla.utils.startup_progress import live_phase
 
 
 @dataclass(frozen=True)
@@ -168,11 +169,12 @@ class OnlineTaskPerception(TaskPerception):
         cameras = {}
         for name, frame in snapshot.cameras.items():
             active = backend[name] if isinstance(backend, Mapping) else backend
-            cameras[name] = api.slot_guided_sam3.run_camera(
-                guidance, frame.camera, frame.rgb, frame.depth_m, active,
-                mode=self.mode, adapter_config=self._config.adapter,
-                selection_config=self._config.selection,
-            )
+            with live_phase(f'frame={index} camera={name} segmentation', prefix='SlotSAM3'):
+                cameras[name] = api.slot_guided_sam3.run_camera(
+                    guidance, frame.camera, frame.rgb, frame.depth_m, active,
+                    mode=self.mode, adapter_config=self._config.adapter,
+                    selection_config=self._config.selection,
+                )
         segmented = time.perf_counter()
         if api.slot_guided_io.snapshot_input_digest(snapshot) != receipt["snapshot_input_sha256"]:
             raise ValueError("Current RGB-D snapshot was mutated during perception")
@@ -192,7 +194,8 @@ class OnlineTaskPerception(TaskPerception):
         }
         if coarse_packet is not None and 'guidance_selection' in coarse_packet:
             inference['guidance_selection'] = copy.deepcopy(coarse_packet['guidance_selection'])
-        fused = api.slot_geometry_fusion.fuse_geometry(snapshot, guidance, inference, config=self._config.fusion)
+        with live_phase(f'frame={index} geometry fusion', prefix='SlotSAM3'):
+            fused = api.slot_geometry_fusion.fuse_geometry(snapshot, guidance, inference, config=self._config.fusion)
         fused_at = time.perf_counter()
         # The sampler is the existing BridgeVLA fixed geometry interface. No
         # serialized PR3 geometry is read back into the action path.

@@ -24,6 +24,13 @@ class CustomMultiTaskRLBenchEnv2(CustomMultiTaskRLBenchEnv):
     def slot_sam3_observation_provider(self):
         return self._slot_sam3_observation_provider
 
+    def _online_progress(self, label):
+        from contextlib import nullcontext
+        if self._slot_sam3_observation_provider is None:
+            return nullcontext()
+        from bridgevla.utils.startup_progress import live_phase
+        return live_phase(label, prefix='RLBench')
+
     @property
     def observation_elements(self):
         # Masks are captured only for the provider and are not policy inputs.
@@ -134,13 +141,15 @@ class CustomMultiTaskRLBenchEnv2(CustomMultiTaskRLBenchEnv):
 
         self._i = 0
         self._task.set_variation(-1)
-        d = self._task.get_demos(
-            1, live_demos=False, image_paths=False,
-            random_selection=False, from_episode_number=i
-        )[0]
+        with self._online_progress(f'episode={i} demo loading'):
+            d = self._task.get_demos(
+                1, live_demos=False, image_paths=False,
+                random_selection=False, from_episode_number=i
+            )[0]
 
         self._task.set_variation(d.variation_number)
-        desc, obs = self._task.reset_to_demo(d)
+        with self._online_progress(f'episode={i} scene reset'):
+            desc, obs = self._task.reset_to_demo(d)
         self._lang_goal = desc[0]
         self._oracle_demo = d
         self._oracle_demo_index = int(i)
@@ -155,7 +164,8 @@ class CustomMultiTaskRLBenchEnv2(CustomMultiTaskRLBenchEnv):
         )
         if self._oracle_provider is not None:
             self._oracle_provider.set_sample_frame(0)
-        self._previous_obs_dict = self.extract_obs(obs)
+        with self._online_progress(f'episode={i} initial observation capture'):
+            self._previous_obs_dict = self.extract_obs(obs)
         self._record_current_episode = (
             self.eval
             and self._record_every_n > 0
@@ -230,4 +240,5 @@ class CustomMultiTaskRLBenchEnv2(CustomMultiTaskRLBenchEnv):
             ):
                 sample_frame = self._oracle_ground_truth_frames[self._i]
             self._oracle_provider.set_sample_frame(sample_frame)
-        return super().step(act_result)
+        with self._online_progress(f'episode={self._oracle_demo_index} action execution / observation capture'):
+            return super().step(act_result)

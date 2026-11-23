@@ -235,6 +235,49 @@ def test_env_begins_episode_before_capturing_reset_observation():
     assert events == ['begin', 'capture']
 
 
+@pytest.mark.parametrize('online', [False, True])
+def test_demo_reset_and_action_progress_is_immediate_and_online_only(capsys, online):
+    expected = object()
+    events = []
+
+    def assert_started(label):
+        output = capsys.readouterr().out
+        if online:
+            assert f'[RLBench] START episode=3 {label}' in output
+        else:
+            assert output == ''
+        events.append(label)
+
+    def get_demos(*args, **kwargs):
+        assert_started('demo loading')
+        assert kwargs['from_episode_number'] == 3
+        return [SimpleNamespace(variation_number=2)]
+
+    def reset_to_demo(demo):
+        assert_started('scene reset')
+        return ['current instruction'], object()
+
+    class ResetBase(BaseEnv):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._episodes_this_task, self._swap_task_every = 0, 25
+            self._recorded_images = []
+            self._task.get_demos = get_demos
+            self._task.reset_to_demo = reset_to_demo
+            self._task.set_variation = lambda variation: None
+
+        def step(self, act_result):
+            assert_started('action execution / observation capture')
+            return expected
+
+    provider = SimpleNamespace(begin_episode=lambda: None, capture_raw=lambda *a, **kw: None)
+    env = isolated_env(ResetBase)(slot_sam3_observation_provider=provider if online else None)
+    assert env.reset_to_demo(3) is env.output
+    assert env._oracle_demo_index == 3 and env._episode_index == 1
+    assert env.step(object()) is expected
+    assert events == ['demo loading', 'scene reset', 'action execution / observation capture']
+
+
 def test_float32_general_camera_rotations_keep_world_projection():
     # Actual PyRep returns rounded C float matrices, not ideal float64 rotations.
     rng = np.random.default_rng(17)

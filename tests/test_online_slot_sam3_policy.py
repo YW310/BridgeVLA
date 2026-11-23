@@ -165,7 +165,7 @@ def test_default_disabled_is_exact_delegate_without_observer_or_perception_acces
     assert calls[-1] == "reset" and policy.last_diagnostics is None
 
 
-def test_current_C_then_fresh_geometry_then_conditioned_action_preserves_YARR_fields():
+def test_current_C_then_fresh_geometry_then_conditioned_action_preserves_YARR_fields(capsys):
     policy, agent, perception, provider = policy_fixture()
     observation = {"current_index": 0, "untouched": object()}
     result = policy.act(10, observation, deterministic=True, visualize=True)
@@ -183,6 +183,11 @@ def test_current_C_then_fresh_geometry_then_conditioned_action_preserves_YARR_fi
     assert perception.calls[0][2]["diagnostics_dir"] is None
     assert perception.last_geometry.object_points.requires_grad
     assert agent.calls[1][4]["slot_guided_sam3"]["geometry"].object_points.data_ptr() != perception.last_geometry.object_points.data_ptr()
+    output = capsys.readouterr().out
+    stages = ['baseline policy', 'current-frame validation', 'SAM3 perception', 'conditioned policy']
+    positions = [output.index(f'[SlotSAM3] START call=1 {stage}') for stage in stages]
+    assert positions == sorted(positions)
+    assert '[SlotSAM3] RESULT call=1; status=conditioned;' in output
 
 
 def test_prompts_only_uses_exact_baseline_action_with_no_geometry_or_second_forward(tmp_path):
@@ -329,11 +334,14 @@ def test_future_or_unbound_capture_receipt_does_not_reach_perception(update):
     assert len(agent.calls) == 1 and not perception.calls
 
 
-def test_capture_validation_error_returns_current_C_without_SAM():
+def test_capture_validation_error_returns_current_C_without_SAM(capsys):
     policy, agent, perception, provider = policy_fixture()
     provider.error = ValueError("policy RGB differs from raw capture")
     result = policy.act(5, {"current_index": 0})
     assert result.action[0] == 5 and len(agent.calls) == 1 and not perception.calls
+    output = capsys.readouterr().out
+    assert 'status=baseline_fallback' in output
+    assert 'reason=ValueError: policy RGB differs from raw capture' in output
 
 
 def test_export_failure_recomputes_current_C_without_export_before_fallback():

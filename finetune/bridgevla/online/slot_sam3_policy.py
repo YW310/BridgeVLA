@@ -13,6 +13,8 @@ from pathlib import Path
 import time
 from typing import Any, Mapping
 
+from bridgevla.utils.startup_progress import live_phase
+
 
 _RECEIPT_KEYS = (
     "episode_id", "frame_id", "source_frame_index", "observed_at",
@@ -158,6 +160,10 @@ class OnlineSlotSam3Policy:
         )
         result.info = dict(getattr(result, "info", {}) or {})
         result.info["slot_guided_sam3"] = diagnostics
+        print(f'[SlotSAM3] RESULT call={self._frame_sequence}; status={diagnostics["status"]}; '
+              f'policy_total={diagnostics["timings_ms"]["policy_total"] / 1000:.1f}s'
+              + (f'; reason={diagnostics["failure_reason"]}' if diagnostics.get('failure_reason') else ''),
+              flush=True)
         return result
 
     def act(self, step: int, observation: dict, deterministic: bool = False, **kwargs: Any) -> Any:
@@ -206,14 +212,16 @@ class OnlineSlotSam3Policy:
                 self.agent.enable_slot_guided_sam3 = False
                 coarse_started = time.perf_counter()
                 try:
-                    original = _policy_result(self.agent.act(step, observation, deterministic=deterministic,
-                        **({} if oracle else dict(coarse_slot_callback=callback)), **coarse_kwargs))
+                    with live_phase(f'call={self._frame_sequence} baseline policy', prefix='SlotSAM3'):
+                        original = _policy_result(self.agent.act(step, observation, deterministic=deterministic,
+                            **({} if oracle else dict(coarse_slot_callback=callback)), **coarse_kwargs))
                 except Exception:
                     # Export can fail after the original network forward. A
                     # fresh original call without export is the current C action;
                     # a previous-frame action or geometry is never substituted.
-                    original = _policy_result(self.agent.act(
-                        step, observation, deterministic=deterministic, **coarse_kwargs))
+                    with live_phase(f'call={self._frame_sequence} baseline retry without export', prefix='SlotSAM3'):
+                        original = _policy_result(self.agent.act(
+                            step, observation, deterministic=deterministic, **coarse_kwargs))
                     raise
                 timings["baseline_C"] = (time.perf_counter() - coarse_started) * 1000
                 if not oracle and len(packets) != 1:
@@ -222,8 +230,9 @@ class OnlineSlotSam3Policy:
                     dict(requested_stage=self.guidance_stage, roles={role: dict(selected_stage='coarse',
                         failure_reason='REFINE_SELECTION_UNAVAILABLE' if self.guidance_stage == 'refine' else None)
                                                         for role in ('target', 'reference')})))
-                capture = self.snapshot_provider.capture(observation)
-                receipt = _receipt(capture.receipt)
+                with live_phase(f'call={self._frame_sequence} current-frame validation', prefix='SlotSAM3'):
+                    capture = self.snapshot_provider.capture(observation)
+                    receipt = _receipt(capture.receipt)
                 # Preserve live simulator index/optical-conversion provenance;
                 # only the canonical fields above bind the action boundary.
                 diagnostics["current_frame"] = copy.deepcopy(dict(capture.receipt))
@@ -236,21 +245,23 @@ class OnlineSlotSam3Policy:
                     diagnostic_path = Path(self.diagnostics_dir) / f"episode_{self._episode_number:05d}" / f"frame_{self._frame_sequence:06d}"
                 perceived_at = time.perf_counter()
                 if self.stage == 'prompts':
-                    report = self.perception.inspect(
-                        capture.snapshot, packets[0], instruction=capture.instruction,
-                        task_name=capture.task_name, checkpoint_path=self.checkpoint_path,
-                        bridge_git_sha=self.bridge_git_sha, diagnostics_dir=diagnostic_path,
-                        expected_snapshot_digest=receipt['snapshot_input_sha256'])
+                    with live_phase(f'call={self._frame_sequence} prompt inspection', prefix='SlotSAM3'):
+                        report = self.perception.inspect(
+                            capture.snapshot, packets[0], instruction=capture.instruction,
+                            task_name=capture.task_name, checkpoint_path=self.checkpoint_path,
+                            bridge_git_sha=self.bridge_git_sha, diagnostics_dir=diagnostic_path,
+                            expected_snapshot_digest=receipt['snapshot_input_sha256'])
                     diagnostics.update(status='prompts_only', probe=report)
                     timings['prompt_probe'] = (time.perf_counter() - perceived_at) * 1000
                     return self._finish(original, diagnostics, started)
-                result = self.perception.perceive(
-                    capture.snapshot, None if oracle else packets[0], instruction=capture.instruction,
-                    task_name=capture.task_name, checkpoint_path=self.checkpoint_path,
-                    bridge_git_sha=self.bridge_git_sha, point_count=self.point_count,
-                    expected_snapshot_digest=receipt["snapshot_input_sha256"], diagnostics_dir=diagnostic_path,
-                    **(dict(oracle_labels=capture.oracle_labels) if oracle else {}),
-                )
+                with live_phase(f'call={self._frame_sequence} SAM3 perception', prefix='SlotSAM3'):
+                    result = self.perception.perceive(
+                        capture.snapshot, None if oracle else packets[0], instruction=capture.instruction,
+                        task_name=capture.task_name, checkpoint_path=self.checkpoint_path,
+                        bridge_git_sha=self.bridge_git_sha, point_count=self.point_count,
+                        expected_snapshot_digest=receipt["snapshot_input_sha256"], diagnostics_dir=diagnostic_path,
+                        **(dict(oracle_labels=capture.oracle_labels) if oracle else {}),
+                    )
                 timings["perception"] = (time.perf_counter() - perceived_at) * 1000
                 diagnostics["perception_timings_ms"] = dict(result.timings_ms)
                 diagnostics["backend_kind"] = result.backend_kind
@@ -317,12 +328,13 @@ class OnlineSlotSam3Policy:
                 conditioned_observation["slot_guided_current_frames"] = [receipt]
                 self.agent.enable_slot_guided_sam3 = True
                 action_started = time.perf_counter()
-                conditioned = _policy_result(self.agent.act(
-                    step, conditioned_observation, deterministic=deterministic,
-                    slot_guided_sam3=dict(execution_mode=self.execution_mode, geometry=geometry,
-                                          bridge_checkpoint_path=str(self.checkpoint_path),
-                                          bridge_git_sha=self.bridge_git_sha), **kwargs,
-                ))
+                with live_phase(f'call={self._frame_sequence} conditioned policy', prefix='SlotSAM3'):
+                    conditioned = _policy_result(self.agent.act(
+                        step, conditioned_observation, deterministic=deterministic,
+                        slot_guided_sam3=dict(execution_mode=self.execution_mode, geometry=geometry,
+                                              bridge_checkpoint_path=str(self.checkpoint_path),
+                                              bridge_git_sha=self.bridge_git_sha), **kwargs,
+                    ))
                 timings["conditioned_action"] = (time.perf_counter() - action_started) * 1000
                 diagnostics["status"] = "conditioned"
                 return self._finish(conditioned, diagnostics, started)
