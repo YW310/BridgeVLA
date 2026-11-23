@@ -1,0 +1,102 @@
+{
+  "kind": "recorded_observation_recursive_tcp_diagnostic",
+  "complete": true,
+  "stop": null,
+  "observations": 476,
+  "evaluated_future_ticks": 1902,
+  "execute_horizon": 4,
+  "results": {
+    "oracle": {
+      "position_m": {
+        "count": 1902,
+        "mean": 0.0016690157881537966,
+        "p95": 0.008173017483204599,
+        "max": 0.04708320274949074,
+        "final": 0.005389169789850712
+      },
+      "rotation_degrees": {
+        "count": 1902,
+        "mean": 0.3826586474057342,
+        "p95": 1.4649346769105955,
+        "max": 6.620344659498991,
+        "final": 1.2561451362571263
+      }
+    },
+    "feedback": {
+      "position_m": {
+        "count": 1902,
+        "mean": 0.11393605047966597,
+        "p95": 0.3155480742454527,
+        "max": 0.4817149341106415,
+        "final": 0.4817149341106415
+      },
+      "rotation_degrees": {
+        "count": 1902,
+        "mean": 41.20383185251316,
+        "p95": 100.86778898602802,
+        "max": 106.95887747207604,
+        "final": 104.87153250744416
+      }
+    }
+  },
+  "first_endpoint_over_threshold": {
+    "0.01": {
+      "frame": 116,
+      "timestamp": 1.9333333333333333,
+      "position_error_m": 0.010010483674705029
+    },
+    "0.05": {
+      "frame": 608,
+      "timestamp": 10.133333333333333,
+      "position_error_m": 0.05000071972608566
+    },
+    "0.1": {
+      "frame": 864,
+      "timestamp": 14.4,
+      "position_error_m": 0.10024913400411606
+    },
+    "0.25": {
+      "frame": 1556,
+      "timestamp": 25.933333333333334,
+      "position_error_m": 0.2652133107185364
+    }
+  },
+  "checkpoint": "/media/34.49/common-data-4t/project/BridgeVLA/finetune/OHT/runs/oht_chunk_v4_delta_state_tcp_guided_8x40/model_epoch_30.pth",
+  "contract_sha256": "6c7a14a417edfdca7c6e40f5a088124d91a086baf9cccc301384228acd9e8f1f",
+  "replay": "/media/34.49/common-data-4t/dataset/robot_data/oht_curobo_pd_v423-seg/bridgevla-seg-v4-roi-20261103-150956/replay-source-v4",
+  "raw_root": "/media/34.49/common-data-4t/dataset/robot_data/oht_curobo_pd_v423-seg",
+  "raw_parquet_sha256": "0c6a03ff3b92f037485c27e60cc8f99a8a264bf7e9729bc5e379f951cb938b8d",
+  "episode_index": 31,
+  "task": "disassemble_left",
+  "split": "val",
+  "source_episode_frames": 1903,
+  "action_dt": 0.01666666666666572,
+  "horizon": 16,
+  "seed": 0,
+  "raw_cached_parity_checked_frames": [
+    0,
+    960,
+    1900
+  ],
+  "feedback_fields": [
+    "tcp_pose"
+  ],
+  "recorded_fields": [
+    "RGB",
+    "depth",
+    "point_cloud",
+    "camera_intrinsics",
+    "camera_extrinsics",
+    "joint_positions",
+    "gripper_open01",
+    "low_dim_state"
+  ],
+  "limitations": [
+    "Recorded observations are unaffected by predictions.",
+    "Recursive TCP becomes inconsistent with recorded robot joints, wrist-camera pose, RGB-D and gripper.",
+    "No kinematics, dynamics, contacts, execution lag or task success is evaluated.",
+    "Each branch advances H=4 raw frames, including observations absent from the stride-10 training cache.",
+    "Reported future action errors use each target raw tick once, not overlapping forecasts."
+  ],
+  "checkpoint_sha256": "274127ac0884ec9e647ed604e7248154334700e84c72b899e00bd5ff09457c6e"
+}

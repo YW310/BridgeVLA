@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Weekly Report: SAM3 Object Geometry and OHT Trajectory Tracking</title>
+<style>
+body { max-width: 900px; margin: 40px auto; padding: 0 24px 40px; font-family: Arial, sans-serif; font-size: 16px; line-height: 1.6; color: #202733; }
+h2 { margin-top: 30px; font-size: 24px; color: #16354b; }
+h3 { margin-top: 30px; font-size: 22px; color: #16354b; }
+h4 { margin-top: 22px; font-size: 18px; }
+li { margin: 7px 0; }
+ul { padding-left: 24px; }
+@media print { body { margin: 0; max-width: none; font-size: 11pt; } h2, h3, h4 { break-after: avoid; } li { break-inside: avoid; } }
+
+table { width: 100%; border-collapse: collapse; margin: 16px 0 20px; font-size: 15px; }
+th, td { padding: 10px 12px; text-align: left; border: 1px solid #d9e1e7; vertical-align: top; }
+th { background: #edf3f7; color: #16354b; font-weight: 600; }
+tbody tr:nth-child(even) { background: #fafcfd; }
+.metrics th:not(:first-child), .metrics td:not(:first-child) { text-align: right; white-space: nowrap; }
+figure { margin: 20px 0 28px; }
+figure img, video { display: block; width: 100%; height: auto; border: 1px solid #d9e1e7; border-radius: 4px; box-sizing: border-box; }
+video { background: #111827; aspect-ratio: 16 / 11; }
+figcaption { color: #52616c; font-size: 14px; margin-top: 8px; line-height: 1.5; }
+a { color: #175f8a; text-underline-offset: 2px; }
+.note { background: #f2f6f9; border-left: 3px solid #91adbf; padding: 10px 14px; font-size: 14px; color: #425361; }
+.media-heading { margin: 25px 0 8px; font-size: 16px; color: #16354b; }
+.media-links { margin: 8px 0 12px; font-size: 14px; }
+details { margin: 12px 0 22px; }
+summary { cursor: pointer; color: #175f8a; font-size: 14px; }
+details figure { margin-top: 12px; }
+.evidence { font-size: 13px; color: #52616c; }
+@media (max-width: 600px) { body { margin-top: 24px; padding: 0 16px 28px; } th, td { padding: 8px; font-size: 13px; } }
+@media print { table, figure { break-inside: avoid; } video, .media-links, details { display: none; } .print-poster { display: block !important; } a { color: inherit; } }
+
+</style>
+</head>
+<body>
+<h2 id="bkmrk-background-motivation">Background &amp; Motivation</h2>
+<p>Building on previous object conditioning and OHT action-chunk prediction, this week's work focused on two needs:</p>
+<ul>
+<li><strong>Object geometry:</strong> Obtain task-relevant 3D object surfaces from original camera observations to support relation and anchor reasoning.</li>
+<li><strong>Motion diagnosis:</strong> Separate model prediction errors, accumulated feedback drift, and controller tracking lag during continuous chunk execution.</li>
+</ul>
+<h2 id="bkmrk-summary">Summary</h2>
+<ul>
+<li><strong>Integrated SAM3 object geometry:</strong> Converted predicted T/R regions into segmentation prompts, fused RGB-D object surfaces, and connected them to Relation/Anchor. Preserved Internal Slots and added Semantic-GT Oracle, same-frame visualization, and fallback diagnostics.</li>
+<li><strong>Evaluated OHT prediction and tracking:</strong> Completed full-episode prediction evaluation on 405 cached observations and produced complete prediction visualizations. Velocity feedforward improved GT trajectory tracking; local prediction peaks and feedback drift remain priorities.</li>
+</ul>
+<h3 id="bkmrk-results">Results</h3>
+<h4 id="bkmrk-sam3-results">1. Integrated SAM3 Object Geometry into Action Prediction</h4>
+<ul>
+<li><strong>Guided segmentation:</strong> Mapped coarse/refine Target/Reference regions to original camera views and generated point and box prompts for SAM3.</li>
+<li><strong>Geometry integration:</strong> Extracted 3D object surface points from current RGB-D, completed multi-view fusion and coordinate transforms, and connected the geometry to the existing Relation/Anchor modules.</li>
+<li><strong>Comparison modes:</strong> Preserved the original Internal Slots model and added a GT-prompt-driven Semantic-GT Oracle to analyze role-localization and segmentation-geometry effects.</li>
+<li><strong>Inspection and fallback:</strong> Added same-frame comparisons of role heatmaps, prompt points, boxes, and segmentation masks, with fallback handling and reason logs when geometry is unavailable.</li>
+</ul>
+<h4 id="bkmrk-oht-results">2. Evaluated OHT Prediction Accuracy and Trajectory Tracking</h4>
+<p><strong>Model prediction accuracy:</strong> Evaluated <code>model_epoch_30.pth</code> across two complete validation episodes, covering all <strong>405 cached observations</strong>. Position errors over the first four predicted steps were:</p>
+<table class="metrics" aria-label="Model position prediction errors over the first four future steps">
+<thead><tr><th scope="col">Episode</th><th scope="col">Mean Error</th><th scope="col">P95 Error</th><th scope="col">Maximum Error</th></tr></thead>
+<tbody><tr><th scope="row">17</th><td>0.91 mm</td><td>2.57 mm</td><td>24.25 mm</td></tr>
+<tr><th scope="row">31</th><td>1.58 mm</td><td>7.42 mm</td><td>44.66 mm</td></tr></tbody>
+</table>
+<p>Most predictions were accurate under recorded inputs, with larger deviations concentrated in late trajectory segments. The evaluated model outperformed a stationary baseline on both episodes, while local peaks remained significant.</p>
+<table aria-label="OHT tracking and feedback findings">
+<thead><tr><th scope="col">Experiment</th><th scope="col">Key Result</th><th scope="col">Implication</th></tr></thead>
+<tbody><tr><th scope="row">GT replay with velocity feedforward</th><td>Completed the tested trajectory and reduced tracking errors; fast-motion deviations remained.</td><td>Demonstrated improved controller tracking on the tested trajectory.</td></tr>
+<tr><th scope="row">Recursive TCP feedback</th><td>Prediction errors accumulated into substantial drift when predicted TCP states were fed back.</td><td>Revealed feedback sensitivity requiring validation with consistent live observations.</td></tr></tbody>
+</table>
+<p class="note"><strong>Evaluation scope:</strong> The prediction table uses independent recorded-input forecasts, without accumulated prediction feedback. Coverage includes every cached observation in the two selected episodes, primarily sampled every 10 raw frames. It does not establish closed-loop task success. The recursive TCP diagnostic keeps images and other robot states recorded, so it is also distinct from a simulator rollout.</p>
+
+<p class="media-heading"><strong>Representative prediction analysis — Episode 31</strong></p>
+<p>The table above summarizes both evaluated episodes. The figure and video below use Episode 31 as one representative example.</p>
+<figure>
+<img src="media/episode_31_prediction_errors.png" alt="Episode 31 recorded-input model prediction trajectories and position errors over the full evaluated episode" loading="lazy" width="1950" height="1650">
+<figcaption>Figure 1. Episode 31: local prediction-error peaks remain despite a low overall mean.</figcaption>
+</figure>
+<p class="note"><strong>Reading the curves:</strong> The XYZ panels show the fourth predicted step in meters; the lower panel shows mean position errors over steps 1, 1–4, and 1–16 in millimeters. The table above reports statistics across individual points in the first four steps. Longer-horizon error peaks therefore need not match the fourth-step XYZ curves or the table maximum.</p>
+
+<p class="media-heading"><strong>Full model-prediction visualization — Episode 31</strong></p>
+<p>Orange shows the model forecast; green shows the recorded future GT. Thick lines highlight the first four predicted steps, and squares mark step 4. Local XY/XZ panels enlarge the displacement, while the blue cursor tracks episode time on the error chart.</p>
+<p class="note">This animation visualizes saved <code>model_epoch_30.pth</code> predictions over recorded camera images. Each observation produces a separate forecast; predicted motion is not executed. It is neither a GT replay recording nor a learned-policy closed-loop execution video.</p>
+
+<figure id="episode-31-video">
+<video controls playsinline preload="metadata" poster="media/episode_31_prediction_poster.jpg" aria-label="Episode 31 complete model prediction visualization">
+<source src="media/episode_31_full_prediction.mp4" type="video/mp4">
+Your browser does not support this video. Use the MP4 or GIF links below.
+</video>
+<img class="print-poster" style="display:none" src="media/episode_31_prediction_poster.jpg" alt="Episode 31 prediction visualization at its principal error peak">
+<figcaption>Video 1. Episode 31: approximately 31.7 seconds, covering all 191 cached observations.</figcaption>
+<p class="media-links"><a href="media/episode_31_full_prediction.mp4" download="Episode_31_Full_Model_Prediction.mp4">Download MP4</a> · <a href="media/episode_31_full_prediction.gif" target="_blank" rel="noopener">Open full GIF animation</a></p>
+<details><summary>Show GIF preview if video playback is unavailable</summary>
+<img src="media/episode_31_full_prediction.gif" alt="Full Episode 31 model prediction animation with GT overlays and local displacement panels" loading="lazy" width="640" height="440">
+</details>
+</figure>
+
+<p class="evidence">Evidence: <a href="evidence/prediction_analysis.json" download>prediction evaluation</a> · <a href="evidence/gt_tracking_comparison.json" download>GT tracking comparison</a> · <a href="evidence/recorded_tcp_feedback.json" download>TCP feedback diagnostic</a> · <a href="evidence/prediction_video_manifest.json" download>video coverage and provenance</a>.</p>
+
+<h3 id="bkmrk-method">Method</h3>
+<h4 id="bkmrk-method-sam3">1. Prompt-Guided Object Geometry</h4>
+<p>Use predicted T/R regions to prompt SAM3 in original camera views, then lift masked RGB-D into 3D, fuse views, and transform the points for Relation/Anchor. Compare Internal Slots, prediction-guided SAM3, and Semantic-GT Oracle. The Oracle uses GT-driven prompts; its geometry still comes from SAM3 segmentation and current RGB-D.</p>
+<h4 id="bkmrk-method-oht">2. Separate Prediction and Tracking Diagnosis</h4>
+<p>Use GT-chunk replay to isolate controller tracking and compare velocity feedforward under the same trajectory and execution settings. Evaluate model predictions independently against future GT, both per step and over the executed prefix <em>H</em>, with a stationary baseline for comparison. Separately test feedback sensitivity by feeding predicted TCP endpoints into subsequent queries while retaining recorded images and other states. Visualize saved predictions against future GT in camera views and local displacement panels.</p>
+<h3 id="bkmrk-next-plan">Next Plan</h3>
+<ul>
+<li><strong>SAM3:</strong> Run controlled comparisons of Internal Slots, prediction-guided SAM3, and Semantic-GT Oracle. Evaluate object geometry, fallback frequency, and closed-loop task success.</li>
+<li><strong>OHT:</strong> Extend paired tracking comparisons to more episodes and fast-motion phases. Investigate late-trajectory prediction peaks and feedback drift, then evaluate model rollouts with synchronized live observations and explicit task-success scoring.</li>
+</ul>
+</body>
+</html>

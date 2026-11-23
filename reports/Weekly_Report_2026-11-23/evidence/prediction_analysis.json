@@ -1,0 +1,549 @@
+{
+  "source": "/media/34.49/common-data-4t/project/BridgeVLA/logs/oht-epoch30-full-episodes-17-31-20261120.json",
+  "checkpoint_sha256": "274127ac0884ec9e647ed604e7248154334700e84c72b899e00bd5ff09457c6e",
+  "coverage": {
+    "selected_episodes": 2,
+    "evaluated_episodes": 2,
+    "complete_episodes": 2,
+    "expected_samples": 405,
+    "evaluated_samples": 405,
+    "all_selected_episodes_complete": true,
+    "definition": "Complete means all indexed replay observations in the selected split; not all raw sensor frames or an executed open-loop rollout."
+  },
+  "episodes": {
+    "disassemble_left/000017": {
+      "complete": true,
+      "samples": 214,
+      "source_frames": 2129,
+      "first_observation_frame": 0,
+      "last_observation_frame": 2120,
+      "h4_prefix_position_mm": {
+        "mean": 0.9080969488312353,
+        "median": 0.39968558121472597,
+        "p95": 2.5693330680951476,
+        "max": 24.25157278776169,
+        "count": 856
+      },
+      "h4_prefix_rotation_degrees": {
+        "mean": 0.30434060172387783,
+        "median": 0.16974633383898508,
+        "p95": 0.9056270102610715,
+        "max": 5.906499590638525,
+        "count": 856
+      },
+      "h4_stationary_position_mm": {
+        "mean": 3.7334048059527114,
+        "median": 1.375483931042254,
+        "p95": 15.04442491568625,
+        "max": 45.57755962014198,
+        "count": 856
+      },
+      "h4_position_over_10mm_fraction": 0.015186915887850467,
+      "h4_position_over_20mm_fraction": 0.002336448598130841,
+      "worst_observations": [
+        {
+          "id": "disassemble_left/000017/001780",
+          "frame": 1780,
+          "time_s": 29.666666666666668,
+          "h4_prefix_position_mm": 15.379357850179076,
+          "h4_prefix_rotation_degrees": 3.7090590921083746
+        },
+        {
+          "id": "disassemble_left/000017/001740",
+          "frame": 1740,
+          "time_s": 29.0,
+          "h4_prefix_position_mm": 12.679805280640721,
+          "h4_prefix_rotation_degrees": 1.899316223911298
+        },
+        {
+          "id": "disassemble_left/000017/001770",
+          "frame": 1770,
+          "time_s": 29.5,
+          "h4_prefix_position_mm": 11.912749148905277,
+          "h4_prefix_rotation_degrees": 3.066357161119238
+        },
+        {
+          "id": "disassemble_left/000017/001760",
+          "frame": 1760,
+          "time_s": 29.333333333333332,
+          "h4_prefix_position_mm": 9.834066033363342,
+          "h4_prefix_rotation_degrees": 2.065583679035465
+        },
+        {
+          "id": "disassemble_left/000017/001810",
+          "frame": 1810,
+          "time_s": 30.166666666666668,
+          "h4_prefix_position_mm": 9.044276841450483,
+          "h4_prefix_rotation_degrees": 3.2938221246268427
+        },
+        {
+          "id": "disassemble_left/000017/001800",
+          "frame": 1800,
+          "time_s": 30.0,
+          "h4_prefix_position_mm": 6.096564757172018,
+          "h4_prefix_rotation_degrees": 2.5380141614463354
+        },
+        {
+          "id": "disassemble_left/000017/001790",
+          "frame": 1790,
+          "time_s": 29.833333333333332,
+          "h4_prefix_position_mm": 5.305388011038303,
+          "h4_prefix_rotation_degrees": 2.5158187030310706
+        },
+        {
+          "id": "disassemble_left/000017/001730",
+          "frame": 1730,
+          "time_s": 28.833333333333332,
+          "h4_prefix_position_mm": 5.188470706343651,
+          "h4_prefix_rotation_degrees": 1.125098779288146
+        },
+        {
+          "id": "disassemble_left/000017/001750",
+          "frame": 1750,
+          "time_s": 29.166666666666668,
+          "h4_prefix_position_mm": 4.69174372847192,
+          "h4_prefix_rotation_degrees": 1.5527357082018076
+        },
+        {
+          "id": "disassemble_left/000017/001830",
+          "frame": 1830,
+          "time_s": 30.5,
+          "h4_prefix_position_mm": 4.139573313295841,
+          "h4_prefix_rotation_degrees": 1.2248394843113202
+        }
+      ],
+      "offset4_active_targets": 203,
+      "offset4_direction_valid": 203,
+      "offset4_opposite_direction": 0,
+      "plot": "/media/34.49/common-data-4t/project/BridgeVLA/logs/oht-epoch30-full-episodes-17-31-20261120-ep000017.png",
+      "per_5second_window": [
+        {
+          "start_s": 0.0,
+          "end_s": 5.0,
+          "observations": 30,
+          "position_mm": {
+            "mean": 0.21148603958257203,
+            "median": 0.1684705712250434,
+            "p95": 0.5058741575339809,
+            "max": 0.98393764346838,
+            "count": 120
+          },
+          "stationary_position_mm_mean": 1.1216638384818602,
+          "rotation_degrees": {
+            "mean": 0.16065580497579368,
+            "median": 0.1568755869131074,
+            "p95": 0.34064299340041926,
+            "max": 0.5392134475497691,
+            "count": 120
+          }
+        },
+        {
+          "start_s": 5.0,
+          "end_s": 10.0,
+          "observations": 30,
+          "position_mm": {
+            "mean": 0.2547809334525179,
+            "median": 0.21947557979729027,
+            "p95": 0.5335346766514703,
+            "max": 1.1605044128373265,
+            "count": 120
+          },
+          "stationary_position_mm_mean": 1.102535194271089,
+          "rotation_degrees": {
+            "mean": 0.11399946084529008,
+            "median": 0.09928760878811771,
+            "p95": 0.25150618179987044,
+            "max": 0.377425831989094,
+            "count": 120
+          }
+        },
+        {
+          "start_s": 10.0,
+          "end_s": 15.0,
+          "observations": 31,
+          "position_mm": {
+            "mean": 0.2815474693512266,
+            "median": 0.257521154708229,
+            "p95": 0.5228070018347353,
+            "max": 1.5529871452599764,
+            "count": 124
+          },
+          "stationary_position_mm_mean": 1.0149142251878533,
+          "rotation_degrees": {
+            "mean": 0.17142217222981868,
+            "median": 0.1462643664906945,
+            "p95": 0.3552788304779511,
+            "max": 0.4430461357122054,
+            "count": 124
+          }
+        },
+        {
+          "start_s": 15.0,
+          "end_s": 20.0,
+          "observations": 30,
+          "position_mm": {
+            "mean": 0.6234319133606429,
+            "median": 0.6095669523347169,
+            "p95": 1.06984973535873,
+            "max": 1.3750809011980891,
+            "count": 120
+          },
+          "stationary_position_mm_mean": 0.8621500901426771,
+          "rotation_degrees": {
+            "mean": 0.18214772598548828,
+            "median": 0.16736681917697638,
+            "p95": 0.3143301604207068,
+            "max": 0.4055229726324929,
+            "count": 120
+          }
+        },
+        {
+          "start_s": 20.0,
+          "end_s": 25.0,
+          "observations": 30,
+          "position_mm": {
+            "mean": 0.6890925661233874,
+            "median": 0.6584649090655148,
+            "p95": 1.1826321890112013,
+            "max": 2.4349100422114134,
+            "count": 120
+          },
+          "stationary_position_mm_mean": 0.8766942938867336,
+          "rotation_degrees": {
+            "mean": 0.21270261394150233,
+            "median": 0.17957196508238976,
+            "p95": 0.421703314026048,
+            "max": 0.8496352080969176,
+            "count": 120
+          }
+        },
+        {
+          "start_s": 25.0,
+          "end_s": 30.0,
+          "observations": 30,
+          "position_mm": {
+            "mean": 2.694526436183272,
+            "median": 0.7858581666368991,
+            "p95": 14.366251789033411,
+            "max": 24.25157278776169,
+            "count": 120
+          },
+          "stationary_position_mm_mean": 11.600105323827847,
+          "rotation_degrees": {
+            "mean": 0.7297588664962187,
+            "median": 0.276101805955531,
+            "p95": 3.0504223614457744,
+            "max": 5.906499590638525,
+            "count": 120
+          }
+        },
+        {
+          "start_s": 30.0,
+          "end_s": 35.0,
+          "observations": 30,
+          "position_mm": {
+            "mean": 1.5758332610857906,
+            "median": 0.942473707254976,
+            "p95": 5.052511510439213,
+            "max": 14.420542865991592,
+            "count": 120
+          },
+          "stationary_position_mm_mean": 8.48006218438968,
+          "rotation_degrees": {
+            "mean": 0.5647721918632423,
+            "median": 0.26389105784981004,
+            "p95": 1.9308494832133867,
+            "max": 5.336702794764159,
+            "count": 120
+          }
+        },
+        {
+          "start_s": 35.0,
+          "end_s": 40.0,
+          "observations": 3,
+          "position_mm": {
+            "mean": 1.3767470021169477,
+            "median": 0.8185814076568931,
+            "p95": 4.062927409540861,
+            "max": 4.735113587230444,
+            "count": 12
+          },
+          "stationary_position_mm_mean": 15.396653247686723,
+          "rotation_degrees": {
+            "mean": 0.29790050218646996,
+            "median": 0.27129618586865895,
+            "p95": 0.5514421404294787,
+            "max": 0.6491303182702305,
+            "count": 12
+          }
+        }
+      ]
+    },
+    "disassemble_left/000031": {
+      "complete": true,
+      "samples": 191,
+      "source_frames": 1903,
+      "first_observation_frame": 0,
+      "last_observation_frame": 1900,
+      "h4_prefix_position_mm": {
+        "mean": 1.5764614993610975,
+        "median": 0.3309212625026703,
+        "p95": 7.418828131631012,
+        "max": 44.65997591614723,
+        "count": 762
+      },
+      "h4_prefix_rotation_degrees": {
+        "mean": 0.37244438018843784,
+        "median": 0.17723840879720557,
+        "p95": 1.254559469845598,
+        "max": 6.620344659498991,
+        "count": 762
+      },
+      "h4_stationary_position_mm": {
+        "mean": 3.8632710135691473,
+        "median": 1.4755954616703093,
+        "p95": 17.07320101559161,
+        "max": 45.15407606959343,
+        "count": 762
+      },
+      "h4_position_over_10mm_fraction": 0.031496062992125984,
+      "h4_position_over_20mm_fraction": 0.014435695538057743,
+      "worst_observations": [
+        {
+          "id": "disassemble_left/000031/001820",
+          "frame": 1820,
+          "time_s": 30.333333333333332,
+          "h4_prefix_position_mm": 27.692482341080904,
+          "h4_prefix_rotation_degrees": 3.046455054700598
+        },
+        {
+          "id": "disassemble_left/000031/001830",
+          "frame": 1830,
+          "time_s": 30.5,
+          "h4_prefix_position_mm": 24.3324541952461,
+          "h4_prefix_rotation_degrees": 2.8561183364527998
+        },
+        {
+          "id": "disassemble_left/000031/001840",
+          "frame": 1840,
+          "time_s": 30.666666666666668,
+          "h4_prefix_position_mm": 20.491936476901174,
+          "h4_prefix_rotation_degrees": 4.045039666436955
+        },
+        {
+          "id": "disassemble_left/000031/001630",
+          "frame": 1630,
+          "time_s": 27.166666666666668,
+          "h4_prefix_position_mm": 17.447627848014235,
+          "h4_prefix_rotation_degrees": 3.428182182450862
+        },
+        {
+          "id": "disassemble_left/000031/001620",
+          "frame": 1620,
+          "time_s": 27.0,
+          "h4_prefix_position_mm": 15.656840521842241,
+          "h4_prefix_rotation_degrees": 2.4361823830912734
+        },
+        {
+          "id": "disassemble_left/000031/001640",
+          "frame": 1640,
+          "time_s": 27.333333333333332,
+          "h4_prefix_position_mm": 11.470364523120224,
+          "h4_prefix_rotation_degrees": 4.133563261703669
+        },
+        {
+          "id": "disassemble_left/000031/001850",
+          "frame": 1850,
+          "time_s": 30.833333333333332,
+          "h4_prefix_position_mm": 11.14981877617538,
+          "h4_prefix_rotation_degrees": 1.215557810552173
+        },
+        {
+          "id": "disassemble_left/000031/001580",
+          "frame": 1580,
+          "time_s": 26.333333333333332,
+          "h4_prefix_position_mm": 9.031646244693547,
+          "h4_prefix_rotation_degrees": 0.435479223291537
+        },
+        {
+          "id": "disassemble_left/000031/001610",
+          "frame": 1610,
+          "time_s": 26.833333333333332,
+          "h4_prefix_position_mm": 7.016071176622063,
+          "h4_prefix_rotation_degrees": 1.1343884020367154
+        },
+        {
+          "id": "disassemble_left/000031/001650",
+          "frame": 1650,
+          "time_s": 27.5,
+          "h4_prefix_position_mm": 6.166280945762992,
+          "h4_prefix_rotation_degrees": 1.8592581550875191
+        }
+      ],
+      "offset4_active_targets": 181,
+      "offset4_direction_valid": 181,
+      "offset4_opposite_direction": 2,
+      "plot": "/media/34.49/common-data-4t/project/BridgeVLA/logs/oht-epoch30-full-episodes-17-31-20261120-ep000031.png",
+      "per_5second_window": [
+        {
+          "start_s": 0.0,
+          "end_s": 5.0,
+          "observations": 30,
+          "position_mm": {
+            "mean": 0.204182788502294,
+            "median": 0.16605501878075302,
+            "p95": 0.551840430125594,
+            "max": 1.0898265754804015,
+            "count": 120
+          },
+          "stationary_position_mm_mean": 1.0895750257986947,
+          "rotation_degrees": {
+            "mean": 0.17503450492069772,
+            "median": 0.1649078255671308,
+            "p95": 0.35195397495007563,
+            "max": 0.46272461058235714,
+            "count": 120
+          }
+        },
+        {
+          "start_s": 5.0,
+          "end_s": 10.0,
+          "observations": 30,
+          "position_mm": {
+            "mean": 0.2666116161284056,
+            "median": 0.23258373403223231,
+            "p95": 0.6638086400926112,
+            "max": 0.9434662060812116,
+            "count": 120
+          },
+          "stationary_position_mm_mean": 1.0957023599379074,
+          "rotation_degrees": {
+            "mean": 0.12714879506183777,
+            "median": 0.11501772808493471,
+            "p95": 0.23771256821166248,
+            "max": 0.4878240653820827,
+            "count": 120
+          }
+        },
+        {
+          "start_s": 10.0,
+          "end_s": 15.0,
+          "observations": 30,
+          "position_mm": {
+            "mean": 0.3149160906104953,
+            "median": 0.28637975628953427,
+            "p95": 0.6277593085542321,
+            "max": 1.0790742235258222,
+            "count": 120
+          },
+          "stationary_position_mm_mean": 1.1406472682018887,
+          "rotation_degrees": {
+            "mean": 0.15799093881545917,
+            "median": 0.13783239167594974,
+            "p95": 0.33213051575516084,
+            "max": 0.40171826308567005,
+            "count": 120
+          }
+        },
+        {
+          "start_s": 15.0,
+          "end_s": 20.0,
+          "observations": 30,
+          "position_mm": {
+            "mean": 0.3095320817010361,
+            "median": 0.2921137638622895,
+            "p95": 0.5772495467681437,
+            "max": 1.1442404938861728,
+            "count": 120
+          },
+          "stationary_position_mm_mean": 1.1852388108309242,
+          "rotation_degrees": {
+            "mean": 0.17060320149320696,
+            "median": 0.15499765935698215,
+            "p95": 0.3101963085454709,
+            "max": 0.3600818412714965,
+            "count": 120
+          }
+        },
+        {
+          "start_s": 20.0,
+          "end_s": 25.0,
+          "observations": 30,
+          "position_mm": {
+            "mean": 0.5700345491277403,
+            "median": 0.44603284914046526,
+            "p95": 1.397822081344202,
+            "max": 2.1724319085478783,
+            "count": 120
+          },
+          "stationary_position_mm_mean": 5.535632084259609,
+          "rotation_degrees": {
+            "mean": 0.23682348810451928,
+            "median": 0.20411838819330325,
+            "p95": 0.48956223439672375,
+            "max": 0.9115857906376268,
+            "count": 120
+          }
+        },
+        {
+          "start_s": 25.0,
+          "end_s": 30.0,
+          "observations": 30,
+          "position_mm": {
+            "mean": 4.518318862998664,
+            "median": 2.9743335908278823,
+            "p95": 14.473129808902739,
+            "max": 26.06966532766819,
+            "count": 120
+          },
+          "stationary_position_mm_mean": 8.524798242012821,
+          "rotation_degrees": {
+            "mean": 0.9336482621047625,
+            "median": 0.5712525126643887,
+            "p95": 3.3017367711927457,
+            "max": 6.620344659498991,
+            "count": 120
+          }
+        },
+        {
+          "start_s": 30.0,
+          "end_s": 35.0,
+          "observations": 11,
+          "position_mm": {
+            "mean": 10.934098662498096,
+            "median": 6.411982700228691,
+            "p95": 33.25033709406853,
+            "max": 44.65997591614723,
+            "count": 42
+          },
+          "stationary_position_mm_mean": 17.029077557492116,
+          "rotation_degrees": {
+            "mean": 1.6107789248459918,
+            "median": 1.1194788969533394,
+            "p95": 4.827869659842401,
+            "max": 6.486939222543347,
+            "count": 42
+          }
+        }
+      ]
+    }
+  },
+  "limitations": [
+    "All indexed observations, stride=10; not every raw 60 Hz frame.",
+    "Each forecast receives recorded current observations; predictions are never fed back.",
+    "Gripper agreement is with cached labels, which have a known calibration issue.",
+    "Errors relative to one recorded future do not determine closed-loop success or unique failure cause."
+  ],
+  "checkpoint": "/media/34.49/common-data-4t/project/BridgeVLA/finetune/OHT/runs/oht_chunk_v4_delta_state_tcp_guided_8x40/model_epoch_30.pth",
+  "selection": {
+    "split": "val",
+    "task": "disassemble_left",
+    "episode_indices": [
+      17,
+      31
+    ],
+    "limit": null,
+    "sample_stride": 10
+  },
+  "evaluation_code": "finetune.OHT.eval open-loop; finetune.OHT.chunk_eval.open_loop_chunk"
+}

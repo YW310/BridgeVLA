@@ -1,0 +1,770 @@
+{
+  "kind": "real_IsaacLab_GT_velocity_tracking_comparison",
+  "episode": 0,
+  "K": 16,
+  "H": 4,
+  "action_dt": 0.016666666666666666,
+  "guards": {
+    "tracking_translation_m": 0.1,
+    "tracking_rotation_rad": 0.5,
+    "step_translation_m": 0.1,
+    "step_rotation_rad": 0.5
+  },
+  "runs": [
+    {
+      "kind": "real_IsaacLab_GT_chunk_tracking",
+      "task": "disassemble_left",
+      "source": {
+        "source": "observed_future_tcp_chunk",
+        "root": "/media/34.49/common-data-4t/dataset/robot_data/oht_curobo_pd_v423-seg",
+        "parquet": "disassemble_left-seg/lerobot_dataset/data/chunk-000/episode_000000.parquet",
+        "parquet_sha256": "a12341f1eee4552500e4b05ef62acbebf08521befb601eec6d0376955a2ba99c",
+        "episode_index": 0,
+        "start_frame": 0,
+        "available_actions": 507,
+        "calibration": {
+          "replay_contract": "/media/34.49/common-data-4t/dataset/robot_data/oht_curobo_pd_v423-seg/bridgevla-seg-v4-roi-20261103-150956/replay-source-v4",
+          "sha256": "6c7a14a417edfdca7c6e40f5a088124d91a086baf9cccc301384228acd9e8f1f"
+        },
+        "action_config": {
+          "mode": "eef",
+          "translation_frame": "world",
+          "rotation_frame": "body",
+          "world_from_base": null,
+          "joint_names": null,
+          "joint_wrap": [],
+          "joint_limits": null,
+          "hidden_dim": 256,
+          "translation_scale": 1.0,
+          "rotation_scale": 1.0,
+          "joint_scale": 1.0,
+          "auxiliary_translation_weight": 1.0
+        },
+        "data_config_sha256": "449c895bc228d71167c7d88352813e160c94fdeb2f3a84990b4c973037eec8d3",
+        "object_map": null,
+        "gripper_joint_names": null,
+        "server_queries": false,
+        "raw_transitions": 2028,
+        "chunk_spec": {
+          "schema": "bridgevla_oht_eef_chunk_v1",
+          "horizon": 16,
+          "execute_horizon": 4,
+          "action_dt": 0.01666666666666572,
+          "frame": "world",
+          "quaternion_order": "xyzw",
+          "reference_point": "tcp",
+          "gripper": "1=open,0=close",
+          "action_size": 8
+        },
+        "gripper_source": "recorded measured state with bound training calibration/hysteresis",
+        "tail": "Repeat last pose only for fixed K shape; execute valid raw ticks only"
+      },
+      "episode_index": 0,
+      "stop_reason": "chunk_step_limit",
+      "chunk_requests": 392,
+      "control_ticks": 1564,
+      "expected_raw_transitions": 2028,
+      "complete": false,
+      "simulated_seconds": 26.066666666666663,
+      "K": 16,
+      "H": 4,
+      "position_mm": {
+        "count": 1564,
+        "mean": 6.003418757501503,
+        "median": 3.5719967176538137,
+        "p95": 26.06307488713674,
+        "max": 90.21015388831023,
+        "last": 90.21015388831023
+      },
+      "rotation_degrees": {
+        "count": 1564,
+        "mean": 1.3671661475170858,
+        "median": 1.0259954669838294,
+        "p95": 6.053183890857349,
+        "max": 15.943489265596773,
+        "last": 15.943489265596773
+      },
+      "initial_alignment": {
+        "translation_m": 4.2146848510894035e-08,
+        "rotation_rad": 1.1149080564930714e-07
+      },
+      "initialization": {
+        "source_frame": 0,
+        "arm_joint_ids": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "gripper_joint_ids": [
+          6,
+          7
+        ],
+        "joint_limit_source": "joint_pos_limits",
+        "objects_restored": [],
+        "object_state": "environment_reset",
+        "velocities": "zero"
+      },
+      "frame_coverage_contiguous": true,
+      "per_5second_window": [
+        {
+          "start_s": 0,
+          "end_s": 5,
+          "position_mm": {
+            "count": 300,
+            "mean": 1.6716917615170348,
+            "median": 1.6839308141921596,
+            "p95": 1.9336808699032488,
+            "max": 1.959930860859176,
+            "last": 1.959930860859176
+          },
+          "rotation_degrees": {
+            "count": 300,
+            "mean": 1.0297356184249948,
+            "median": 1.0677699734957073,
+            "p95": 1.073400682207482,
+            "max": 1.0747707296496505,
+            "last": 1.0669389587502507
+          }
+        },
+        {
+          "start_s": 5,
+          "end_s": 10,
+          "position_mm": {
+            "count": 300,
+            "mean": 2.2690217822193115,
+            "median": 2.278082586755656,
+            "p95": 2.4946190100876646,
+            "max": 2.5322899301374036,
+            "last": 2.4198549652597614
+          },
+          "rotation_degrees": {
+            "count": 300,
+            "mean": 1.041211478952061,
+            "median": 1.0401495588039023,
+            "p95": 1.065380504731731,
+            "max": 1.0676616140933075,
+            "last": 0.9700617410109056
+          }
+        },
+        {
+          "start_s": 10,
+          "end_s": 15,
+          "position_mm": {
+            "count": 300,
+            "mean": 3.6163388470113325,
+            "median": 4.213917771961121,
+            "p95": 4.336687525501645,
+            "max": 4.356612712493241,
+            "last": 4.251706237962031
+          },
+          "rotation_degrees": {
+            "count": 300,
+            "mean": 0.309362671744157,
+            "median": 0.0844298136063977,
+            "p95": 0.9256715857143645,
+            "max": 0.9640761913219545,
+            "last": 0.08252885675597986
+          }
+        },
+        {
+          "start_s": 15,
+          "end_s": 20,
+          "position_mm": {
+            "count": 300,
+            "mean": 3.7728506264691926,
+            "median": 4.326606662188261,
+            "p95": 4.405334654427543,
+            "max": 4.448864757884223,
+            "last": 4.172056170718035
+          },
+          "rotation_degrees": {
+            "count": 300,
+            "mean": 0.08651470904549649,
+            "median": 0.08705628689844294,
+            "p95": 0.11391821702751675,
+            "max": 0.17078190453739495,
+            "last": 0.10520041801498306
+          }
+        },
+        {
+          "start_s": 20,
+          "end_s": 25,
+          "position_mm": {
+            "count": 300,
+            "mean": 15.815843969278495,
+            "median": 16.79672931751054,
+            "p95": 29.65921862388575,
+            "max": 30.876009304241094,
+            "last": 25.43137784918674
+          },
+          "rotation_degrees": {
+            "count": 300,
+            "mean": 3.700566553013817,
+            "median": 5.8899710701150045,
+            "p95": 6.176294783661497,
+            "max": 6.4194885568852555,
+            "last": 6.4194885568852555
+          }
+        },
+        {
+          "start_s": 25,
+          "end_s": 30,
+          "position_mm": {
+            "count": 64,
+            "mean": 19.462856887245948,
+            "median": 13.83169861440711,
+            "p95": 70.91324822646581,
+            "max": 90.21015388831023,
+            "last": 90.21015388831023
+          },
+          "rotation_degrees": {
+            "count": 64,
+            "mean": 4.50047727129007,
+            "median": 3.990228968565658,
+            "p95": 13.53288780457437,
+            "max": 15.943489265596773,
+            "last": 15.943489265596773
+          }
+        }
+      ],
+      "limitations": [
+        "One recorded TCP path in the current simulator; not all policy-visited states.",
+        "No policy model or live policy cameras; this isolates the shared chunk executor and OSC tracking.",
+        "Legacy bound gripper labels; recorded objects are not restored.",
+        "Task success is not evaluated."
+      ],
+      "label": "Stationary-target OSC",
+      "folder": "/media/34.49/common-data-4t/project/BridgeVLA/logs/oht-gt-chunk-ep0-20261120",
+      "position_at_frame1564_mm": 90.21015388831023,
+      "rotation_at_frame1564_degrees": 15.943489265596773,
+      "feedforward_speed_clipped_ticks": 0,
+      "parquet_sha256": "a12341f1eee4552500e4b05ef62acbebf08521befb601eec6d0376955a2ba99c"
+    },
+    {
+      "kind": "real_IsaacLab_GT_chunk_tracking",
+      "task": "disassemble_left",
+      "source": {
+        "source": "observed_future_tcp_chunk",
+        "root": "/media/34.49/common-data-4t/dataset/robot_data/oht_curobo_pd_v423-seg",
+        "parquet": "disassemble_left-seg/lerobot_dataset/data/chunk-000/episode_000000.parquet",
+        "parquet_sha256": "a12341f1eee4552500e4b05ef62acbebf08521befb601eec6d0376955a2ba99c",
+        "episode_index": 0,
+        "start_frame": 0,
+        "available_actions": 507,
+        "calibration": {
+          "replay_contract": "/media/34.49/common-data-4t/dataset/robot_data/oht_curobo_pd_v423-seg/bridgevla-seg-v4-roi-20261103-150956/replay-source-v4",
+          "sha256": "6c7a14a417edfdca7c6e40f5a088124d91a086baf9cccc301384228acd9e8f1f"
+        },
+        "action_config": {
+          "mode": "eef",
+          "translation_frame": "world",
+          "rotation_frame": "body",
+          "world_from_base": null,
+          "joint_names": null,
+          "joint_wrap": [],
+          "joint_limits": null,
+          "hidden_dim": 256,
+          "translation_scale": 1.0,
+          "rotation_scale": 1.0,
+          "joint_scale": 1.0,
+          "auxiliary_translation_weight": 1.0
+        },
+        "data_config_sha256": "449c895bc228d71167c7d88352813e160c94fdeb2f3a84990b4c973037eec8d3",
+        "object_map": null,
+        "gripper_joint_names": null,
+        "server_queries": false,
+        "raw_transitions": 2028,
+        "chunk_spec": {
+          "schema": "bridgevla_oht_eef_chunk_v1",
+          "horizon": 16,
+          "execute_horizon": 4,
+          "action_dt": 0.01666666666666572,
+          "frame": "world",
+          "quaternion_order": "xyzw",
+          "reference_point": "tcp",
+          "gripper": "1=open,0=close",
+          "action_size": 8
+        },
+        "gripper_mode": "recorded",
+        "gripper_source": "recorded measured state with bound training calibration/hysteresis",
+        "tail": "Repeat last pose only for fixed K shape; execute valid raw ticks only"
+      },
+      "episode_index": 0,
+      "stop_reason": "trajectory_end",
+      "velocity_feedforward": {
+        "enabled": true,
+        "max_linear_m_s": 1.5,
+        "max_angular_rad_s": 3.0
+      },
+      "chunk_requests": 507,
+      "control_ticks": 2028,
+      "expected_raw_transitions": 2028,
+      "complete": true,
+      "simulated_seconds": 33.8,
+      "K": 16,
+      "H": 4,
+      "position_mm": {
+        "count": 2028,
+        "mean": 4.110023071873476,
+        "median": 1.0419405545391172,
+        "p95": 17.123241859424645,
+        "max": 36.19924359854196,
+        "last": 16.2619598228788
+      },
+      "rotation_degrees": {
+        "count": 2028,
+        "mean": 0.3136063411673253,
+        "median": 0.09085233621542302,
+        "p95": 0.9276124365697284,
+        "max": 3.0495512055322447,
+        "last": 0.7114229100498516
+      },
+      "initial_alignment": {
+        "translation_m": 4.2146848510894035e-08,
+        "rotation_rad": 1.1149080564930714e-07
+      },
+      "initialization": {
+        "source_frame": 0,
+        "arm_joint_ids": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "gripper_joint_ids": [
+          6,
+          7
+        ],
+        "joint_limit_source": "joint_pos_limits",
+        "objects_restored": [],
+        "object_state": "environment_reset",
+        "velocities": "zero"
+      },
+      "frame_coverage_contiguous": true,
+      "per_5second_window": [
+        {
+          "start_s": 0,
+          "end_s": 5,
+          "position_mm": {
+            "count": 300,
+            "mean": 1.0969035224427226,
+            "median": 1.143287829348377,
+            "p95": 1.242249267409115,
+            "max": 1.2497582981533997,
+            "last": 0.9317084833739828
+          },
+          "rotation_degrees": {
+            "count": 300,
+            "mean": 0.06118236956574198,
+            "median": 0.06878330093257357,
+            "p95": 0.09132479346536124,
+            "max": 0.09252071401758222,
+            "last": 0.014188275095597452
+          }
+        },
+        {
+          "start_s": 5,
+          "end_s": 10,
+          "position_mm": {
+            "count": 300,
+            "mean": 0.8180305839615902,
+            "median": 0.8033631312556553,
+            "p95": 0.924639502449964,
+            "max": 1.1729688615989684,
+            "last": 1.1729688615989684
+          },
+          "rotation_degrees": {
+            "count": 300,
+            "mean": 0.05803886364456858,
+            "median": 0.06290006060964118,
+            "p95": 0.07562487428775463,
+            "max": 0.1498774083196791,
+            "last": 0.1498774083196791
+          }
+        },
+        {
+          "start_s": 10,
+          "end_s": 15,
+          "position_mm": {
+            "count": 300,
+            "mean": 0.7041855197976287,
+            "median": 0.573777035190201,
+            "p95": 1.1902398838785195,
+            "max": 1.2079617277051826,
+            "last": 0.5654530349803742
+          },
+          "rotation_degrees": {
+            "count": 300,
+            "mean": 0.10767755926853831,
+            "median": 0.08770280721505988,
+            "p95": 0.17506715342298126,
+            "max": 0.178850120042557,
+            "last": 0.08694873295289017
+          }
+        },
+        {
+          "start_s": 15,
+          "end_s": 20,
+          "position_mm": {
+            "count": 300,
+            "mean": 0.5002433515998654,
+            "median": 0.5420017809508766,
+            "p95": 0.5975269551268061,
+            "max": 0.743758317221975,
+            "last": 0.5784060528424367
+          },
+          "rotation_degrees": {
+            "count": 300,
+            "mean": 0.0838509701595586,
+            "median": 0.08783692060967342,
+            "p95": 0.09598082972549218,
+            "max": 0.1371898062788254,
+            "last": 0.09288863417155507
+          }
+        },
+        {
+          "start_s": 20,
+          "end_s": 25,
+          "position_mm": {
+            "count": 300,
+            "mean": 3.821986790564156,
+            "median": 4.600081149792327,
+            "p95": 7.310729122161716,
+            "max": 7.713977143303809,
+            "last": 7.713977143303809
+          },
+          "rotation_degrees": {
+            "count": 300,
+            "mean": 0.39395057021467084,
+            "median": 0.48528131562863297,
+            "p95": 0.693826269740074,
+            "max": 0.6996040969910867,
+            "last": 0.5756006858357835
+          }
+        },
+        {
+          "start_s": 25,
+          "end_s": 30,
+          "position_mm": {
+            "count": 300,
+            "mean": 12.041038344759752,
+            "median": 11.120568997838262,
+            "p95": 30.414013529524027,
+            "max": 36.19924359854196,
+            "last": 11.802387606528868
+          },
+          "rotation_degrees": {
+            "count": 300,
+            "mean": 0.9132948398998042,
+            "median": 0.7183593093515381,
+            "p95": 1.9874665718428084,
+            "max": 3.0495512055322447,
+            "last": 0.6645614478269751
+          }
+        },
+        {
+          "start_s": 30,
+          "end_s": 35,
+          "position_mm": {
+            "count": 228,
+            "mean": 11.580747174656564,
+            "median": 10.252140801090224,
+            "p95": 18.433391043535174,
+            "max": 18.566086749192223,
+            "last": 16.2619598228788
+          },
+          "rotation_degrees": {
+            "count": 228,
+            "mean": 0.660504859918732,
+            "median": 0.5941741066003798,
+            "p95": 0.8645829466894452,
+            "max": 0.9166777608739302,
+            "last": 0.7114229100498516
+          }
+        }
+      ],
+      "limitations": [
+        "One recorded TCP path in the current simulator; not all policy-visited states.",
+        "No policy model or live policy cameras; this isolates the shared chunk executor and OSC tracking.",
+        "Legacy bound gripper labels; recorded objects are not restored.",
+        "Task success is not evaluated."
+      ],
+      "label": "Velocity reference, recorded gripper",
+      "folder": "/media/34.49/common-data-4t/project/BridgeVLA/logs/oht-gt-chunk-ep0-velocity-recorded-20261120",
+      "position_at_frame1564_mm": 25.305574527688137,
+      "rotation_at_frame1564_degrees": 1.605108649207371,
+      "feedforward_speed_clipped_ticks": 5,
+      "parquet_sha256": "a12341f1eee4552500e4b05ef62acbebf08521befb601eec6d0376955a2ba99c"
+    },
+    {
+      "kind": "real_IsaacLab_GT_chunk_tracking",
+      "task": "disassemble_left",
+      "source": {
+        "source": "observed_future_tcp_chunk",
+        "root": "/media/34.49/common-data-4t/dataset/robot_data/oht_curobo_pd_v423-seg",
+        "parquet": "disassemble_left-seg/lerobot_dataset/data/chunk-000/episode_000000.parquet",
+        "parquet_sha256": "a12341f1eee4552500e4b05ef62acbebf08521befb601eec6d0376955a2ba99c",
+        "episode_index": 0,
+        "start_frame": 0,
+        "available_actions": 507,
+        "calibration": {
+          "replay_contract": "/media/34.49/common-data-4t/dataset/robot_data/oht_curobo_pd_v423-seg/bridgevla-seg-v4-roi-20261103-150956/replay-source-v4",
+          "sha256": "6c7a14a417edfdca7c6e40f5a088124d91a086baf9cccc301384228acd9e8f1f"
+        },
+        "action_config": {
+          "mode": "eef",
+          "translation_frame": "world",
+          "rotation_frame": "body",
+          "world_from_base": null,
+          "joint_names": null,
+          "joint_wrap": [],
+          "joint_limits": null,
+          "hidden_dim": 256,
+          "translation_scale": 1.0,
+          "rotation_scale": 1.0,
+          "joint_scale": 1.0,
+          "auxiliary_translation_weight": 1.0
+        },
+        "data_config_sha256": "449c895bc228d71167c7d88352813e160c94fdeb2f3a84990b4c973037eec8d3",
+        "object_map": null,
+        "gripper_joint_names": null,
+        "server_queries": false,
+        "raw_transitions": 2028,
+        "chunk_spec": {
+          "schema": "bridgevla_oht_eef_chunk_v1",
+          "horizon": 16,
+          "execute_horizon": 4,
+          "action_dt": 0.01666666666666572,
+          "frame": "world",
+          "quaternion_order": "xyzw",
+          "reference_point": "tcp",
+          "gripper": "1=open,0=close",
+          "action_size": 8
+        },
+        "gripper_mode": "open",
+        "gripper_source": "forced open, arm-tracking diagnostic only",
+        "tail": "Repeat last pose only for fixed K shape; execute valid raw ticks only"
+      },
+      "episode_index": 0,
+      "stop_reason": "trajectory_end",
+      "velocity_feedforward": {
+        "enabled": true,
+        "max_linear_m_s": 1.5,
+        "max_angular_rad_s": 3.0
+      },
+      "chunk_requests": 507,
+      "control_ticks": 2028,
+      "expected_raw_transitions": 2028,
+      "complete": true,
+      "simulated_seconds": 33.8,
+      "K": 16,
+      "H": 4,
+      "position_mm": {
+        "count": 2028,
+        "mean": 4.097865877154742,
+        "median": 1.0441814172756076,
+        "p95": 16.289552545797765,
+        "max": 36.208006870056415,
+        "last": 13.218404594000376
+      },
+      "rotation_degrees": {
+        "count": 2028,
+        "mean": 0.33365839678102643,
+        "median": 0.09028064242515804,
+        "p95": 1.202476704276384,
+        "max": 3.0943983869326455,
+        "last": 1.0164492174706399
+      },
+      "initial_alignment": {
+        "translation_m": 4.2146848510894035e-08,
+        "rotation_rad": 1.1149080564930714e-07
+      },
+      "initialization": {
+        "source_frame": 0,
+        "arm_joint_ids": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "gripper_joint_ids": [
+          6,
+          7
+        ],
+        "joint_limit_source": "joint_pos_limits",
+        "objects_restored": [],
+        "object_state": "environment_reset",
+        "velocities": "zero"
+      },
+      "frame_coverage_contiguous": true,
+      "per_5second_window": [
+        {
+          "start_s": 0,
+          "end_s": 5,
+          "position_mm": {
+            "count": 300,
+            "mean": 1.0969035224427226,
+            "median": 1.143287829348377,
+            "p95": 1.242249267409115,
+            "max": 1.2497582981533997,
+            "last": 0.9317084833739828
+          },
+          "rotation_degrees": {
+            "count": 300,
+            "mean": 0.06118236956574198,
+            "median": 0.06878330093257357,
+            "p95": 0.09132479346536124,
+            "max": 0.09252071401758222,
+            "last": 0.014188275095597452
+          }
+        },
+        {
+          "start_s": 5,
+          "end_s": 10,
+          "position_mm": {
+            "count": 300,
+            "mean": 0.8180305839615902,
+            "median": 0.8033631312556553,
+            "p95": 0.924639502449964,
+            "max": 1.1729688615989684,
+            "last": 1.1729688615989684
+          },
+          "rotation_degrees": {
+            "count": 300,
+            "mean": 0.05803886364456858,
+            "median": 0.06290006060964118,
+            "p95": 0.07562487428775463,
+            "max": 0.1498774083196791,
+            "last": 0.1498774083196791
+          }
+        },
+        {
+          "start_s": 10,
+          "end_s": 15,
+          "position_mm": {
+            "count": 300,
+            "mean": 0.7041855197976287,
+            "median": 0.573777035190201,
+            "p95": 1.1902398838785195,
+            "max": 1.2079617277051826,
+            "last": 0.5654530349803742
+          },
+          "rotation_degrees": {
+            "count": 300,
+            "mean": 0.10767755926853831,
+            "median": 0.08770280721505988,
+            "p95": 0.17506715342298126,
+            "max": 0.178850120042557,
+            "last": 0.08694873295289017
+          }
+        },
+        {
+          "start_s": 15,
+          "end_s": 20,
+          "position_mm": {
+            "count": 300,
+            "mean": 0.5057667849097001,
+            "median": 0.5423080163724918,
+            "p95": 0.5922775983058826,
+            "max": 0.5973586005995892,
+            "last": 0.5699936210644274
+          },
+          "rotation_degrees": {
+            "count": 300,
+            "mean": 0.08357690588552737,
+            "median": 0.08706312780432515,
+            "p95": 0.0916746922574718,
+            "max": 0.09376598724748349,
+            "last": 0.09180048303969426
+          }
+        },
+        {
+          "start_s": 20,
+          "end_s": 25,
+          "position_mm": {
+            "count": 300,
+            "mean": 3.819450188617142,
+            "median": 4.600302060553743,
+            "p95": 7.312728302580495,
+            "max": 7.712323974235869,
+            "last": 7.712323974235869
+          },
+          "rotation_degrees": {
+            "count": 300,
+            "mean": 0.39366007198354036,
+            "median": 0.4853452028690234,
+            "p95": 0.6938041800283179,
+            "max": 0.6985436419073455,
+            "last": 0.5756458346725233
+          }
+        },
+        {
+          "start_s": 25,
+          "end_s": 30,
+          "position_mm": {
+            "count": 300,
+            "mean": 12.000903071350832,
+            "median": 11.125070195825565,
+            "p95": 30.422922211202373,
+            "max": 36.208006870056415,
+            "last": 11.557788446883892
+          },
+          "rotation_degrees": {
+            "count": 300,
+            "mean": 1.000879854719,
+            "median": 0.781546243812307,
+            "p95": 2.265827044458468,
+            "max": 3.0943983869326455,
+            "last": 0.6710460031244188
+          }
+        },
+        {
+          "start_s": 30,
+          "end_s": 35,
+          "position_mm": {
+            "count": 228,
+            "mean": 11.521491655903215,
+            "median": 10.370426941827741,
+            "p95": 17.658920397691716,
+            "max": 17.83066851260326,
+            "last": 13.218404594000376
+          },
+          "rotation_degrees": {
+            "count": 228,
+            "mean": 0.7243620225958182,
+            "median": 0.6354021213656253,
+            "p95": 1.0535181307643862,
+            "max": 1.2091068088868975,
+            "last": 1.0164492174706399
+          }
+        }
+      ],
+      "limitations": [
+        "One recorded TCP path in the current simulator; not all policy-visited states.",
+        "No policy model or live policy cameras; this isolates the shared chunk executor and OSC tracking.",
+        "Forced-open gripper commands; recorded objects are not restored.",
+        "Task success is not evaluated."
+      ],
+      "label": "Velocity reference, always open",
+      "folder": "/media/34.49/common-data-4t/project/BridgeVLA/logs/oht-gt-chunk-ep0-velocity-20261120",
+      "position_at_frame1564_mm": 25.30029823377783,
+      "rotation_at_frame1564_degrees": 1.6046062455920236,
+      "feedforward_speed_clipped_ticks": 5,
+      "parquet_sha256": "a12341f1eee4552500e4b05ef62acbebf08521befb601eec6d0376955a2ba99c"
+    }
+  ],
+  "limitations": [
+    "Recorded object poses were not restored; no task success score.",
+    "No model or policy cameras in these GT runs.",
+    "This is not verification of learned-policy predictions or all episodes.",
+    "Velocity-only reference leaves acceleration/dynamic tracking error; centimetre-scale peaks remain."
+  ],
+  "same_raw_parquet": true
+}
