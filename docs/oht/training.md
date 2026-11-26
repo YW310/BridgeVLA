@@ -8,6 +8,178 @@
 
 基于当前结果的后续研究动机、候选方向与实验门槛统一见[设计讨论](../design/role-relation-prior.md#研究动机与候选方向)；本页维护已实现模型与运行方法。
 
+## 2026-11-25：周期关节编码与训练入口修复
+
+### 新实验使用连续的周期关节特征
+
+新增 `chunk_policy.joint_encoding: sin_cos`。六个实测关节角直接按弧度计算
+`sin(q)`、`cos(q)`，不先换到离训练中心最近的 `2π` 分支，因此没有该标量分支的切口。
+训练、离线评估和 server 共用 `SpatialChunkDecoder` 的同一个状态编码函数，
+编码方式保存到 checkpoint 配置，并由 server 的 `/model_info.chunk_policy.joint_encoding` 公布。
+
+HTTP/replay 仍传原始 `TCP7 + q6 + gripper1` 共 14 个状态量；decoder 的状态投影输入改为
+`identity_TCP7 + sin(q6)6 + cos(q6)6 + normalized_gripper1`，共 20 维。
+`identity_TCP7` 是局部状态 token 的固定原点/单位姿态；实测 TCP 仍参与局部几何和动作还原。
+周期特征不使用关节分位数的 center/scale，夹爪仍按已保存的夹爪统计归一化。
+该编码把 `q` 与 `q + 2π` 视为同一周期位置，不表达机械臂绕圈次数；原始关节角仍用于
+FK、控制和硬/软限位检查，模型不会改写这些实测值。
+
+未声明 `joint_encoding` 的旧 checkpoint 默认 `scalar`，完整保留原有标量归一化和分支对齐语义。
+新配置只适用于 spatial chunk。编码变化会改变输入含义和投影维度，不能用旧 run 的 `--resume`；
+`--init-checkpoint` 只保留 encoder，整个 decoder 重新初始化，并在启动日志中打印原因。
+这不是将旧 decoder 权重静默套进新输入，也不会让旧 epoch-30 checkpoint 自动获得修复。
+
+新增 `oht_chunk_v4_delta_state_tcp_guided_periodic_8x40.yaml` 继承 calibrated 配置，
+只增加周期编码，保留原 loss/LR，作为编码修复的独立对照。
+`oht_chunk_v4_delta_state_tcp_guided_repair_8x40.yaml` 也启用周期编码，并保留下面的
+motion loss、学习率和梯度裁剪候选。关节编码修正不要求重采全部原始轨迹；此前夹爪标定修正
+仍须使用新建、全量校验通过的完整 replay。本次没有重建 replay，也没有启动训练。
+
+这修复了已确认的输入切口，不等于已经解决早期渐进偏离或完成完整任务。
+本次没有新增恢复示范、视觉增强或控制器改动，这些仍须分别验证。
+验证结果：周期编码专项 36 项通过，完整 OHT 回归 1658 项通过、10 项跳过。
+真实保存状态的边界特征变化从约 2.453 降至 0.000200；旧 epoch-30 的 decoder 输出保持兼容。
+这些是编码与接口正确性检查，没有训练新的周期编码策略，也不代表新策略闭环任务通过。
+
+2026-11-26 后续分析将默认训练入口收敛为 **periodic-only**：同一标定数据上只改变已确认
+有缺陷的关节编码，保留原 loss/LR；组合 repair 通过 `CONFIG=...repair_8x40.yaml` 显式选择。
+在 frame80/120 的偏离态中，仅由当前姿态变化运输原局部运动造成的 H4 位置差为
+0.230/0.464 mm，模型局部增量改变项为 1.606/2.051 mm。两组真实短闭环的全部关节均未发生
+换圈，说明早期预测恢复不足仍独立存在，不能认为修完周期编码就已解决。该分解是算术归因，
+不是正确恢复动作的 oracle；不能据此认定某个 loss 是唯一原因。
+
+### 先前诊断与训练候选
+
+后续恢复诊断进一步缩小了问题范围。原 epoch-30 在四组一秒真实反馈对照中，
+从示教 frame80/120 启动的最近路径误差约 1.5/2.8 mm；恢复原闭环偏离状态后，
+误差由约 16.6/32.3 mm 增至 43.6/76.7 mm。两组偏离初态的前 16 个控制 tick
+均未使用惯性正则化、平均对模型目标的跟踪误差仅 0.217/0.207 mm，但路径偏差已经增加。
+这证明在这组初态下，预测目标与反馈恢复存在问题，不能归咎于单纯跟踪失败；
+它没有证明某个 loss 是唯一根因。后半段仍有惯性正则化与非零跟踪误差，控制耦合尚在。
+episode 0 属于训练集，四个短时 trial 不是 held-out 泛化或完整任务成功率。
+
+训练修复还须检验对偏离状态的恢复监督与视觉稳定性。仅调 loss、学习率或裁剪梯度，
+不保证学到未覆盖的恢复行为。恢复数据应包含同步的实际 RGB-D、关节/TCP 与可执行的
+纠正轨迹，标签仍遵循实测后续 TCP 语义，不能用不一致的观测或未经执行验证的动作充当恢复样本。
+目前没有生成恢复训练集，也没有启动新训练。
+
+继续使用 K=16、H=4 的 delta-pose chunk；执行时只用模型输出，不改成关键目标规划器。
+新的 `oht_chunk_v4_delta_state_tcp_guided_repair_8x40.yaml` 继承 calibrated + motion 配置，
+使用上述 20 维周期状态投影，保持 TCP crop、真实 60 Hz 动作标签和联合 key/chunk 训练，另外把学习率降到
+2e-5，并在完整梯度累积、DDP 同步后以 `max_grad_norm=1` 裁剪。非有限梯度会在 optimizer
+更新前报错，日志 `chunk_grad_norm_before_clip` 记录裁剪前范数。旧配置默认不裁剪，旧模型推理不变。
+这些是待训练、待验证的修复候选，不能据此宣称新策略已经正常完成任务。
+
+旧目标的姿态 chordal MSE 未按角度尺度归一化；1° 的单轴误差约为 6.77e-5，
+motion 配置按 1° 缩放后约为 0.222。尺度变化约 3283 倍，因此单独提供更保守的优化器配置。
+这说明旧目标对小角度误差的惩罚弱，不能单凭损失公式认定它是闭环失败的唯一原因。
+旧 replay 的训练锚点中，H=4 末点位移 ≥1 mm 的比例约 94.67%，同时位移 <1 mm 且
+姿态变化 <1° 的比例约 5.33%；目前没有证据把失败归因于“大部分样本静止”，本次不加静止/运动重采样。
+
+本次实际对照：稳定 OSC 的 GT 回放完成 2028 个控制 tick（33.8 s），平均位置跟踪误差
+4.00 mm、平均姿态误差 0.291°；原 epoch-30 模型实时闭环 H=4 在约 17.9 s 阻塞，
+H=16 在 4.45 s 因跟踪误差停止（末次请求时刻为 4.27 s）。这次单集 H=16 对照未改善轨迹，
+不能据此推广到所有执行频率。GT 跟踪通过也不等于全部控制问题已解决或模型任务通过。
+原测试约 2 s 时 TCP 已偏离整条示教空间路径 32.32 mm，当前前缀对模型目标的末点跟踪误差
+仅 0.142 mm；首次请求力矩超限在 2.45 s。已发现的控制异常不能单独解释最初的偏离。
+起始偏离的原因仍未隔离，loss、学习率和梯度裁剪均是未验证候选；单元测试通过不能证明其任务收益。
+完整原始审计为 100 个有效 episode；按用户要求已停止新 replay 构建，没有启动训练。
+`logs/oht-calibrated-replay-20261125/replay-source-v4` 是未完成产物，禁止用于训练。
+
+后续执行时，先用上面的重建脚本生成一个**新的**完整 replay，再运行以下入口。
+8×40 GB 是训练预算；当前单张 16 GB 仿真卡未验证能运行联合训练。
+
+```bash
+conda activate bridgevla
+# 换成下一次重建成功、存在 complete.json 的目录；不要填写 raw 根目录。
+REPLAY=finetune/OHT/replays/seg-calibrated-v4-20261125/replay-source-v4
+INIT=finetune/OHT/runs/oht_chunk_v4_delta_state_tcp_guided_8x40/model_epoch_30.pth
+NEW_RUN=finetune/OHT/runs/oht_tcp_guided_periodic_v1
+
+# 仅展示命令，不读取 replay、不训练。
+bash finetune/OHT/train_chunk_repair.sh "$REPLAY" "$NEW_RUN" "$INIT" --dry-run
+# CPU：验证所有 split、完整性、端点、配置、训练归一化；不构建模型、不训练。
+bash finetune/OHT/train_chunk_repair.sh "$REPLAY" "$NEW_RUN" "$INIT" --check-only
+# 在相应训练机执行：重复检查通过后才启动新训练。
+GPUS_PER_NODE=8 bash finetune/OHT/train_chunk_repair.sh "$REPLAY" "$NEW_RUN" "$INIT"
+```
+
+入口使用 `PYTHON_BIN` 对应环境里的 `torch.distributed.run`，避免误用其他 conda 环境的
+`torchrun`。默认 periodic 配置只改变关节编码。组合 loss/LR/梯度裁剪实验须使用独立的新 run：
+
+```bash
+CONFIG=finetune/OHT/configs/oht_chunk_v4_delta_state_tcp_guided_repair_8x40.yaml \
+  bash finetune/OHT/train_chunk_repair.sh "$REPLAY" \
+  finetune/OHT/runs/oht_tcp_guided_repair_periodic_v1 "$INIT" --check-only
+
+# 后续在相应训练机执行；本次未执行训练。
+CONFIG=finetune/OHT/configs/oht_chunk_v4_delta_state_tcp_guided_repair_8x40.yaml \
+  GPUS_PER_NODE=8 bash finetune/OHT/train_chunk_repair.sh "$REPLAY" \
+  finetune/OHT/runs/oht_tcp_guided_repair_periodic_v1 "$INIT"
+```
+
+仍可用 `CONFIG=...calibrated_8x40.yaml` 跑仅修数据的旧标量编码对照，
+或 `CONFIG=...motion_8x40.yaml` 跑旧标量编码的 motion 对照。`--check-only` 不加载大 checkpoint，
+权重兼容性仍在实际初始化时检查。新的归一化若改变 decoder 输入/输出语义，现有逻辑会重建 decoder，
+保留 encoder，并输出初始化原因；编码切换同样重建整个 decoder，不强行复制旧归一化或伪装成恢复训练。
+
+验收顺序：新 replay 全量校验 → 完整 held-out episode 的 H=1/4/16 位置/姿态与静止基线对照
+→ 同一 native 环境的 GT 回放 → 实时五相机闭环。真实闭环须检查轮子是否脱轴、搬运并释放到盘上，
+同时保留阻塞/跟踪失败和关节力矩日志；仅没有异常或提前停止不算任务通过。
+
+### 与旧单关键点模型的同观测对照
+
+`baseline-eef-8gpu-s0/model_last.pth` 是下一夹爪事件的绝对 EEF 关键目标模型，
+实际完成 100 epoch / 20,800 optimizer steps。用户反馈是轨迹更稳，但未完整完成任务。
+本次把它用于相同 62 份新采集的五相机 RGB-D/物理状态；两模型分别按自身 contract
+重算夹爪输入并保留各自点云 ROI。比较对象为旧单目标与 epoch-30 的 `key_action`，
+不把关键目标和 H=4 连续动作误差混算，也没有运行旧模型完整真实闭环。
+
+48 个关节 ±0.01 rad 扰动样本的关键目标位置变化均值为旧模型 1.66 mm、chunk 关键点头
+1.27 mm，最大值为 3.87/3.16 mm；两者姿态及夹爪输出均未改变。同姿态单次重复渲染本身
+也产生最高 3.16/2.23 mm 的关键点变化，因此不能据此声称统计显著优势。
+这组早期观测未显示 chunk 关键目标头明显退化；已有真实反馈失败仍发生于连续 chunk
+动作/执行反馈路径，不足以独立区分 decoder、输入分布、监督覆盖和控制耦合的贡献。
+
+旧模型默认 waypoint 保持目标直到抵达后才更新，chunk 每四个控制 tick 重预测；
+执行方式可能影响轨迹观感。旧模型还使用另一批 v423 原数据、四任务、空间增强、冻结 Gemma
+前 6 层，chunk 则使用 v423-seg 单任务、关闭空间增强、冻结前 16 层。没有完成统一控制器的
+任务对照和训练消融前，不能将差异唯一归因于 chunk 结构或某个 loss。新训练配置仍是候选。
+原始推理、配对指标和可视化保存在
+`logs/oht-epoch30-closedloop-20261125/baseline_comparison/`。
+
+### 后续机理核查：关节分支切口与执行速度
+
+已确认一个具体的输入编码问题。`spatial_chunk.py` 将关节角对齐到离训练中心最近的
+2π 分支；q6 中心约 -2.58965 rad，切口在 +0.551943 rad。原真实闭环在
+3.8667 s 首次跨过该切口，4.0 s 又切回；它不能解释切口前两秒的渐进偏离。
+训练数据也有少量跨切口状态，15222 个训练锚点中仅 9 个进入换圈分支；这并非纯部署时新增的编码。
+
+实际重渲染的两份状态中，q6 仅相差 0.0002 rad，TCP 差 0.033 mm / 0.011°，
+关键目标完全相同，H=4 输出却相差 14.24 mm / 3.02°。固定全部视觉和其他状态、
+只换 q6 数值，H=4 仍跳 13.84 mm / 3.09°，16 步夹爪均从开变关。
+仅在 CPU 机理消融中令该处 q6 特征局部连续，H=4 跳变降到 0.0022 mm / 0.00063°，
+夹爪翻转消失。因此这个切口能直接造成输出不连续；对整段闭环失败的贡献仍须修复后配对实测。
+局部消融 hook 破坏全局 2π 编码约定，**没有部署，也不能直接作为在线修复**。
+
+上述诊断阶段没有更改生产编码或训练新模型。随后已加入本节开头的 `sin_cos` 正式实现与
+训练配置，训练和 server 使用同一输入契约，旧 checkpoint 继续按 `scalar` 处理。
+不能把临时 hook 当作修复，也不能只改旧 checkpoint 的在线归一化；新编码尚未通过新模型训练
+和真实闭环任务验收，早期偏离的唯一训练原因仍未确认。
+
+另外已完成四组关闭速度前馈的一秒真实反馈对照，模型、初始 q/TCP/夹爪和稳定 OSC 均相同。
+两个偏离初态的路径距离仍由 16.58/32.32 mm 增至 21.98/37.12 mm；FF-on 对应为
+43.56/76.69 mm。FF-off 的实际路径速度降至 6.25/32.38 mm/s，FF-on 为 55.30/116.19 mm/s，
+目标跟踪滞后变大。较小最终偏差包含低速与滞后影响，不能称恢复修复或直接据此关闭前馈。
+首次预测仍有 0.053–0.402 mm 的 H4 差异，来自少量渲染变化；这不是逐像素相同输入的重复试验。
+
+连续支路训练使用 prediction/eval 路径，配置中的 `img_aug_2` 只在独立 key-loss 支路开启；
+replay/sampler 没有专门构建模型偏离后的恢复样本。新损失配置没有自动补足这些覆盖。
+本次未发现 delta encode/decode、未来帧偏移或 regression 训练/部署路由硬错误；
+现有逐帧 oracle 的各相位误差接近，也不支持仅将 sample_stride=10 视为根因。
+机理消融、FF 实测与训练分布审计统一保存在
+`logs/oht-epoch30-closedloop-20261125/decoder_audit/index.html`。
+
 ## 2026-11-20 轨迹排查后的处理顺序
 
 当前应分别处理控制跟踪、派生数据标签和模型预测。客户端新增
@@ -48,6 +220,7 @@ PYTHON_BIN=python bash finetune/OHT/prepare_seg_motion_replay.sh \
 | --- | --- |
 | OSC 目标速度前馈、诊断日志、GT chunk 回放 | 不需要；客户端可使用原 epoch-30 checkpoint |
 | 正常夹爪端点、观测/关键帧/action 标签修正 | 需要在新 replay 上启动新 run |
+| `joint_encoding: sin_cos` 连续周期编码 | 需要新 run；旧 chunk 初始化仅保留 encoder，整个 decoder 重置 |
 | motion 候选的损失尺度/前 H 步权重 | 需要单独训练和消融，尚未验证收益 |
 
 先用仅改变数据标定的 `oht_chunk_v4_delta_state_tcp_guided_calibrated_8x40.yaml`，
@@ -154,7 +327,7 @@ H 步误差按有效目标点逐点计算后平均，不是 H 步误差之和。
 
 1. 当前多视角 RGB-D/指令经 BridgeVLA，预测关键目标并产生 coarse 全局与 refine 局部特征；refine 围绕预测 key 裁剪。
 2. 将视觉 patch 对应的可见表面 XYZ、有效性、view/scale 标识送入 decoder。
-3. 当前 TCP 定义局部坐标，归一化 q6/夹爪与门控 key 注入动作 block。
+3. 当前 TCP 定义局部坐标，按 checkpoint 的 `joint_encoding` 编码 q6，归一化夹爪并与门控 key 注入动作 block。
 4. 预测 K 个未来动作并还原 world EEF；客户端按实际 dt 消费前 H 项，执行规则见 [runtime.md](runtime.md)。
 
 key 只是方向条件，可以位于 K 步窗口之外，不要求 chunk 末点到达它。第一点监督真实 `t+dt`，不强制等于当前 TCP。V4 标签、padding、缺帧及 no-key 尾段契约见 [data.md](data.md)。
@@ -195,7 +368,11 @@ coarse/fine 特征 + 实测状态 token ────────────┤
 窗口终点到达约束，因此允许示范中的绕行。预测离散 key/crop 仍 detach，新增条件不把 chunk
 梯度反传到离散关键目标坐标。该实验需要新 run 训练，现有 V4 replay 可直接复用，无需重建数据。
 
-q6 使用 train 1%/99% 分位数的中点/半区间归一化，scale 下限 0.1 rad；实测夹爪固定 center=0.5、scale=0.5。不裁剪分位区间外值；scale<π 的关节仅在模型特征中对齐到最接近训练中心的 2π 分支，原始测量和物理控制不变。原始 TCP 状态保留用于坐标恢复。
+旧 `joint_encoding: scalar` 使用 train 1%/99% 分位数的中点/半区间归一化 q6，scale 下限
+0.1 rad；不裁剪分位区间外值，scale<π 的关节在模型特征中对齐到最接近训练中心的 2π 分支。
+新 `sin_cos` 使用原始弧度的正弦和余弦，不做这项分支对齐或关节分位数缩放。
+两者的实测夹爪均采用保存的 center=0.5、scale=0.5；原始测量和物理控制不变，
+原始 TCP 状态保留用于坐标恢复。周期编码的新配置与兼容边界见[本次修复](#新实验使用连续的周期关节特征)。
 
 ### 几何与空间 attention
 
@@ -276,7 +453,7 @@ rank 0 按 train 样本索引等间隔选最多 4096 个样本，广播统计或
 | attention 的 scene/key/query 坐标 | `geometry_scale: 0.25` |
 | 世界位置 loss 容差 | `position_loss_scale: 0.01` |
 | 动作统计 | `chunk_normalization.json`、`config.chunk_normalization` |
-| q6/夹爪统计 | `proprio_normalization.json`、`config.chunk_proprio_normalization`，同时为 decoder buffer |
+| q6/夹爪统计 | `proprio_normalization.json`、`config.chunk_proprio_normalization`，同时为 decoder buffer；`sin_cos` 的周期关节特征不使用关节分位数缩放 |
 
 delta 也统计完整未来位移，不改成单步 delta 尺度。动作统计读小型 targets NPZ 与哈希绑定 current_tcp；本体统计只解压 q6/开度，但 checksum 仍读完整文件，启动打印进度。数值存入 checkpoint，部署无需 replay 或重新拟合。旧配置未分离尺度时回退 `position_scale=0.25`。
 
@@ -430,7 +607,7 @@ server 只按 checkpoint 保存的配置建模；核对 `/model_info.chunk_polic
 | 新实验初始化 | `--init-checkpoint /path/to/model_last.pth` | 兼容权重，optimizer/采样重新开始 |
 | 原实验续训 | `--resume /path/to/model_last.pth` | 模型、optimizer、已完成采样位置 |
 
-结构、状态/本体归一化或动作尺度变化时 init 新 run，保留 encoder、重建 decoder；允许的 loss/采样设置变化可保留 decoder。`spatial_key_token` 只改变路由，可在 init 新 run 时保留兼容 decoder，首次启用时重置共享 key gate；边界由 `load_chunk_weights()` 检查。单关键点 checkpoint 只初始化匹配 data profiles/标定的 encoder，不能 resume 为 chunk。frozen_key 必须加载已训练网络。
+结构、`joint_encoding`、状态/本体归一化或动作尺度变化时 init 新 run，保留 encoder、重建整个 decoder；允许的 loss/采样设置变化可保留 decoder。`spatial_key_token` 只改变路由，可在 init 新 run 时保留兼容 decoder，首次启用时重置共享 key gate；边界由 `load_chunk_weights()` 检查。单关键点 checkpoint 只初始化匹配 data profiles/标定的 encoder，不能 resume 为 chunk。frozen_key 必须加载已训练网络。
 
 ```bash
 RUN=/path/to/actual/run

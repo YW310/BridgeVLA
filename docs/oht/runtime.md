@@ -44,15 +44,35 @@ GPU_ID=1 bash finetune/OHT/vla_server.sh \
 `GPU_ID=1` 选物理卡 1，进程内仍用 cuda:0。`serve.sh` 是同一服务的兼容启动入口。
 模型结构、数据契约、动作、相机和渲染配置从 checkpoint 读取，不另传一份训练 YAML。
 
-使用 `train_quantile` 本体状态归一化的 spatial chunk 模型，会在模型输入侧对齐实测关节角的
-`2π` 分支：当该关节的训练统计区间跨度小于一整圈时，选择最接近训练 `center` 的等价角。
+spatial chunk 的关节输入编码从 checkpoint 的 `chunk_policy.joint_encoding` 读取，
+训练、离线评估和在线推理共用同一状态编码函数；server 不提供单独覆盖此配置的开关。
+在 `/model_info.chunk_policy.joint_encoding` 核对实际加载的方式：
+
+| 编码 | 模型状态投影 | 兼容与语义 |
+| --- | --- | --- |
+| `scalar`（旧文件未声明时的默认值） | 14 维：局部 TCP7 + 归一化 q6 + 夹爪1 | 保留旧权重的换圈/归一化语义，存在已确认的分支切口 |
+| `sin_cos` | 20 维：局部 TCP7 + sin(q6)6 + cos(q6)6 + 归一化夹爪1 | 直接计算原始弧度的周期特征，无标量换圈切口；需要使用此配置训练的新模型 |
+
+两种方式的 HTTP/replay 状态仍是原始 TCP7、六个关节角和夹爪开度，共 14 个数值；
+20 维只是 decoder 内部的状态投影。局部 TCP7 使用固定原点/单位姿态，实测 TCP 继续用于
+局部几何、相对关键目标和输出动作还原。`sin_cos` 的六组周期特征不使用 q 的分位数 center/scale。
+该编码将 `q` 和 `q+2π` 视为等价，不编码绕圈次数；实测关节仍保留给 FK、控制器和限位检查。
+
+旧 `scalar` 配合 `train_quantile` 时，会在模型输入侧对齐实测关节角的 `2π` 分支：
+当该关节的训练统计区间跨度小于一整圈时，选择最接近训练 `center` 的等价角。
 例如训练 elbow 约为 `+1.68 rad`，IsaacLab 上报 `−4.60 rad`，会先对齐再归一化。
 `center ± scale` 是分位数统计区间，不是硬限位，不能用来开关分支对齐。
 越出统计区间时仍保留对齐，归一化值允许超出 `[-1, 1]`，不会截断或突然切回原始角度。
 这不是把所有关节包装到 `[-π, π]`；多圈统计区间不自动选择分支。
-同一路径用于训练、离线评估和在线推理，原始观测、TCP、夹爪开度及控制器关节角保持原值。
-推理首次发生调整时，server 输出 `Chunk joint input aligned to training branch`，记录原始角度、
-对齐角度和归一化值。已有 checkpoint 可直接使用，无需重建数据或重新训练；更新代码后重启 server。
+这项历史兼容行为保留原始观测、TCP、夹爪开度及控制器关节角的数值。
+`scalar` 推理首次发生调整时，server 输出 `Chunk joint input aligned to training branch`，
+记录原始角度、对齐角度和归一化值；`sin_cos` 不做此分支对齐。
+当前 q6 统计对应的分支切口约为 `0.551943 rad`，已验证它能触发旧模型动作突变。
+因此旧文件保持兼容不等于该问题被即时修好，不能通过在线覆盖配置将旧权重改成周期编码。
+切换编码必须启动新的训练 run；旧 chunk 仅支持 `--init-checkpoint` 保留 encoder、重置整个 decoder，
+不能 `--resume`。新周期配置、数据准备和训练命令见[训练说明](training.md#新实验使用连续的周期关节特征)。
+此编码修正无需重新采集全部原始轨迹；此前夹爪标定仍需重建完整派生 replay。
+当前没有训练完成的新周期 checkpoint，也没有新模型完整任务成功的验证结果。
 
 | 可选项 | 配置 |
 | --- | --- |
@@ -341,6 +361,9 @@ checkpoint 或重训。按观测的仿真 timestamp 对齐重叠未来点：例�
 | --chunk-max-tracking-translation | 0.10 m，跟踪误差上限 |
 | --chunk-max-tracking-rotation | 0.5 rad，姿态误差上限 |
 | --chunk-velocity-feedforward | 默认关闭；原生固定基座 OSC 的移动目标速度反馈，使用相邻 chunk 目标估计世界坐标 TCP 速度 |
+| --chunk-stable-osc / --no-chunk-stable-osc | chunk 客户端默认开启原生 OSC 正则化与物理力矩约束；关闭仅用于受控对照或自定义控制器 |
+| --chunk-max-inertia-condition | 1e4，任务逆惯性矩阵正则化后的条件数上限 |
+| --chunk-stall-timeout | 0.5 s，请求前缀位移至少 1 mm、实测路径长度不足 0.1 mm 持续达到此时长后停止；0 关闭该检查 |
 | --chunk-max-feedforward-linear / --chunk-max-feedforward-angular | 前馈速度模长上限，默认 1.5 m/s / 3 rad/s；不放宽目标跳变、跟踪误差或关节力矩限制 |
 | --chunk-max-step-translation | 0.10 m，相邻执行目标（含从实测 TCP 到第一项）的位置跳变上限；超过则在任何运动前拒绝整个前缀，`execution.status=step_limit` |
 | --chunk-max-step-rotation | 0.5 rad，相邻执行目标的姿态跳变上限，处理同上；违例详情在 `execution.step_violation` |
@@ -536,6 +559,17 @@ V4 chunk 控制对照使用 `--replay-targets chunk --chunk-execute-horizon 4`�
 
 ### 移动目标 OSC 跟踪
 
+chunk 客户端默认启用 BridgeVLA 的 `StableOSC` 适配器。它在 float64 中求解
+`J M^-1 J^T`，按特征值自适应增加对角正则项，避免奇异位形附近直接求逆产生巨大力矩。
+运动力矩按各关节物理 effort limit 的剩余空间统一缩放，保留重力补偿；不提高仿真力矩上限。
+仅支持原生固定基座、完整 `pose_rel` 惯性解耦、无力控制和无 null-space 控制的 OSC。
+设置保存在 `run.json.chunk_stable_osc`，每个实际 tick 的 `tracking_samples.osc` 保存
+雅可比条件数、正则项、力矩缩放系数、请求/发送力矩与物理上限。
+
+持续请求平移但实际无响应会产生 `chunk_blocked`，并锁存到下一 episode 的显式 reset。
+该检查按实测路径长度判断，静止目标不累计受阻时间。此适配器不进行碰撞规划，
+也不把保护停止算作任务通过；运行验收仍要求正常 GT 执行和真实模型闭环推进任务。
+
 本机原生 OSC 的位置控制默认使用 `Kp * pose_error - Kd * measured_velocity`，
 即目标速度为零。高速 GT 轨迹由此会出现随速度增加的跟踪滞后。
 chunk 客户端可增加 `--chunk-velocity-feedforward`，通过 BridgeVLA 运行时适配器改为
@@ -550,6 +584,15 @@ chunk 客户端可增加 `--chunk-velocity-feedforward`，通过 BridgeVLA 运�
 `run.json.chunk_velocity_feedforward` 保存开关和速度上限；每 tick 的 tracking_samples
 记录 `target_twist_world` 与 `feedforward_speed_clipped`。它修正控制器的移动目标速度误差，
 不能修正模型给错的位置/姿态、碰撞路径或场景观测不匹配。
+
+2026-11-26 的参考时序审计发现另一项待验证因素：当前在控制步开始时发送未来步末位姿，
+并由前向相邻姿态计算速度参考。V4 每个 60 Hz 控制步内有两次 120 Hz physics 更新，
+位姿目标保持不变。按实际增益的 CPU 双积分器对照，恒速 30 mm/s 时该方式存在约
+0.374 mm 的稳态超前；改用区间起点又有约 0.126 mm 滞后，不能简单称为整一控制 tick 偏移。
+这只验证了时序效应，尚未在 native 引擎中验证新参考轨迹，也不足以解释真实策略的早期法向错误。
+本次未改变前馈默认行为。若后续调整，必须分别记录控制器参考位姿与计划的步末目标，
+保持保护与误差统计仍按正确的未来时刻评估，不能通过更换统计参考让误差看起来变小。
+可复跑模型与推导见 `logs/oht-epoch30-closedloop-20261125/velocity_phase_audit.py/.json`。
 
 2026-11-20 本机真实 headless GT 对照：v423-seg 的 `disassemble_left` episode 0，
 相同录制初始机械臂状态、K=16/H=4、60 Hz、相同 OSC 增益和默认保护阈值。

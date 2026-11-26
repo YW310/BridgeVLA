@@ -9,7 +9,9 @@ from ..data.geometry import rotation_error
 class ChunkExecutor:
     def __init__(self, bridge, spec, execute_horizon=None, max_translation_error=.10, max_rotation_error=.5,
                  *, max_step_translation=.10, max_step_rotation=.5, velocity_feedforward=False,
-                 max_feedforward_linear=1.5, max_feedforward_angular=3.):
+                 max_feedforward_linear=1.5, max_feedforward_angular=3., stable_osc=False,
+                 max_inertia_condition=1e4, stall_timeout=.5,
+                 stall_requested_translation=.001, stall_measured_translation=.0001):
         self.bridge, self.spec = bridge, validate_spec(spec)
         self.horizon = spec['execute_horizon'] if execute_horizon is None else execute_horizon
         if type(self.horizon) is not int or not 1 <= self.horizon <= spec['horizon']:
@@ -34,9 +36,26 @@ class ChunkExecutor:
             raise ValueError('Chunk feedforward speed limits must be finite and positive')
         self.velocity_feedforward = bool(velocity_feedforward)
         self.max_feedforward_linear, self.max_feedforward_angular = max_feedforward_linear, max_feedforward_angular
+        self.stable_osc = bool(stable_osc)
+        values = np.asarray([stall_timeout, stall_requested_translation, stall_measured_translation], float)
+        if (not np.isfinite(values).all() or stall_timeout < 0 or
+                min(stall_requested_translation, stall_measured_translation) <= 0 or
+                stall_measured_translation >= stall_requested_translation):
+            raise ValueError('Invalid chunk stall duration or motion thresholds')
+        self.stall_timeout = float(stall_timeout)
+        self.stall_requested_translation = float(stall_requested_translation)
+        self.stall_measured_translation = float(stall_measured_translation)
+        if self.stable_osc:
+            bridge.enable_stable_osc(max_inertia_condition)
         if self.velocity_feedforward:
             bridge.enable_velocity_feedforward()
+        self.reset()
+
+    def reset(self):
+        """Clear episode-local weak-response time and the latched blocked state."""
         self.last_result = None
+        self._weak_response_seconds = 0.
+        self._blocked = False
 
     def _tracking_failed(self, errors):
         return (errors['translation_m'] > self.max_translation_error or
@@ -74,10 +93,12 @@ class ChunkExecutor:
         errors, check_phase = None, None
         bridge.last_done = bridge.last_stopped = False
         step_violation = self._step_violation(start, actions[:horizon])
-        if step_violation is not None:
+        if self._blocked:
+            status = 'blocked'
+        elif step_violation is not None:
             # Refuse the whole prefix before any motion: the target jump is implausible.
             status = 'step_limit'
-        for tick, action in enumerate(actions[:horizon] if step_violation is None else ()):
+        for tick, action in enumerate(actions[:horizon] if status == 'completed' else ()):
             rotations = Slerp([0., 1.], Rotation.from_quat(np.stack((start[3:7], action[3:7]))))
             for sub in range(1, self.substeps + 1):
                 fraction = sub / self.substeps
@@ -114,6 +135,9 @@ class ChunkExecutor:
                 if twists is not None:
                     tracking_samples[-1].update(target_twist_world=twists[tick].tolist(),
                         feedforward_speed_clipped=bool(velocity_clipped[tick]))
+                diagnostic = getattr(bridge, 'osc_diagnostics', lambda: None)()
+                if diagnostic is not None:
+                    tracking_samples[-1]['osc'] = diagnostic
                 if bridge.last_done or bridge.last_stopped:
                     status = 'environment_done' if bridge.last_done else 'task_stopped'
                     break
@@ -124,6 +148,17 @@ class ChunkExecutor:
                 break
             consumed = tick + 1
             start, opening = action[:7], int(action[-1])
+        motion = tcp_motion_report(tracking_samples)
+        if status == 'completed' and self.stall_timeout > 0 and tracking_samples:
+            path = np.array([tracking_samples[0]['measured_before_pose_xyzw'][:3]] +
+                            [sample['measured_after_pose_xyzw'][:3] for sample in tracking_samples])
+            measured_path = float(np.linalg.norm(np.diff(path, axis=0), axis=1).sum())
+            weak = (motion['target_displacement_m'] >= self.stall_requested_translation
+                    and measured_path < self.stall_measured_translation)
+            self._weak_response_seconds = (self._weak_response_seconds + len(tracking_samples) * float(bridge.env.step_dt)
+                                           if weak else 0.)
+            if self._weak_response_seconds + 1e-9 >= self.stall_timeout:
+                status, self._blocked = 'blocked', True
         self.last_result = dict(status=status, completed=status in ('completed', 'environment_done', 'task_stopped'),
                                 steps=len(commands), consumed_actions=consumed, requested_actions=horizon,
                                 action_dt=self.spec['action_dt'], control_substeps=self.substeps,
@@ -131,7 +166,12 @@ class ChunkExecutor:
                                 last_commanded_gripper=last_gripper,
                                 step_violation=step_violation,
                                 velocity_feedforward=self.velocity_feedforward,
+                                stable_osc=self.stable_osc,
+                                stall=dict(timeout_s=self.stall_timeout, weak_response_s=self._weak_response_seconds,
+                                           requested_translation_m=self.stall_requested_translation,
+                                           measured_path_threshold_m=self.stall_measured_translation,
+                                           latched=self._blocked),
                                 tracking_samples=tracking_samples,
-                                tcp_motion=tcp_motion_report(tracking_samples),
+                                tcp_motion=motion,
                                 discarded_suffix=self.spec['horizon'] - consumed)
         return commands

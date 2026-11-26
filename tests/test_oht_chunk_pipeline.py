@@ -209,17 +209,19 @@ def test_open_loop_chunk_exports_current_scene_without_changing_predictions(chun
             np.testing.assert_array_equal(saved[key], value)
 
 
-@pytest.mark.parametrize('goal_conditioning,representation,spatial_key_token', [
-    ('absolute', None, False), ('relative_tcp', None, False),
-    ('relative_tcp', 'delta_pose', False), ('relative_tcp', 'delta_pose', True)])
+@pytest.mark.parametrize('goal_conditioning,representation,spatial_key_token,joint_encoding', [
+    ('absolute', None, False, 'scalar'), ('relative_tcp', None, False, 'scalar'),
+    ('relative_tcp', 'delta_pose', False, 'scalar'), ('relative_tcp', 'delta_pose', True, 'scalar'),
+    ('relative_tcp', 'delta_pose', True, 'sin_cos')])
 def test_chunk_prepared_http_and_native_client_negotiate_explicit_actions(
-        chunk_fixture, tmp_path, goal_conditioning, representation, spatial_key_token):
+        chunk_fixture, tmp_path, goal_conditioning, representation, spatial_key_token, joint_encoding):
     from scipy.spatial.transform import Rotation
     if representation == 'delta_pose':
         from tests.test_oht_chunk_state import state_config
         from tests.test_oht_chunk_temporal import temporal_agent
         config = state_config(representation=representation)
         config['chunk_policy']['spatial_key_token'] = spatial_key_token
+        config['chunk_policy']['joint_encoding'] = joint_encoding
         agent, data, config = temporal_agent(chunk_fixture.root, config=config)
         agent._net_mod.eval()
     else:
@@ -268,6 +270,7 @@ def test_chunk_prepared_http_and_native_client_negotiate_explicit_actions(
             assert info['chunk_policy']['prediction_representation'] == 'delta_pose'
             assert info['chunk_policy']['decoder_type'] == 'regression'
             assert info['chunk_policy']['spatial_key_token'] is spatial_key_token
+            assert info['chunk_policy']['joint_encoding'] == joint_encoding
             np.testing.assert_allclose(result['actions'], expected, atol=3e-7)
         assert client.post('/predict', json=body).status_code == 409
 

@@ -12,12 +12,12 @@ DEFAULTS = dict(enabled=False, horizon=16, execute_horizon=4, hidden_dim=256,
                 normalization_quantile=.99, normalization_min_scale=.01, normalization_max_samples=4096,
                 flow_time_sampling='uniform', adaln=False, temporal_kernel_size=1,
                 second_difference_weight=0., second_difference_scale=.001,
-                state_conditioning=False, proprio_normalization='none',
+                state_conditioning=False, proprio_normalization='none', joint_encoding='scalar',
                 proprio_center=None, proprio_scale=None, proprio_min_scale=.1,
                 key_condition_gate=False, key_condition_gate_init=.1, spatial_key_token=False,
                 prediction_representation='relative_pose',
                 local_context='key_refine', tcp_crop_size_m=.4,
-                rotation_loss_scale=1., prefix_loss_weight=1.)
+                rotation_loss_scale=1., prefix_loss_weight=1., max_grad_norm=None)
 
 
 def chunk_scale(settings, name):
@@ -57,6 +57,9 @@ def chunk_settings(config, contract=None):
         value = result[name]
         if type(value) not in (float, int) or not math.isfinite(value) or value <= 0:
             raise ValueError(f'chunk_policy.{name} must be positive and finite')
+    maximum = result['max_grad_norm']
+    if maximum is not None and (type(maximum) not in (float, int) or not math.isfinite(maximum) or maximum <= 0):
+        raise ValueError('chunk_policy.max_grad_norm must be positive and finite or null')
     for name in ('action_position_scale', 'geometry_scale', 'position_loss_scale'):
         value = result[name]
         if value is None or (name == 'action_position_scale' and value == 'train_quantile'):
@@ -102,6 +105,10 @@ def chunk_settings(config, contract=None):
         raise ValueError('Invalid proprio normalization method or minimum scale')
     if result['proprio_normalization'] != 'none' and not result['spatial_conditioning']:
         raise ValueError('Proprio normalization requires spatial_conditioning=true')
+    if result['joint_encoding'] not in ('scalar', 'sin_cos'):
+        raise ValueError('chunk_policy.joint_encoding must be scalar or sin_cos')
+    if result['joint_encoding'] != 'scalar' and not result['spatial_conditioning']:
+        raise ValueError('Periodic joint encoding requires spatial_conditioning=true')
     if result['proprio_normalization'] == 'train_quantile' and result['normalization_quantile'] <= .5:
         raise ValueError('Proprio normalization requires normalization_quantile >0.5')
     center, scale = result['proprio_center'], result['proprio_scale']

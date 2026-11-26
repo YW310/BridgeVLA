@@ -165,6 +165,11 @@ def main(argv=None):
     parser.add_argument('--chunk-max-tracking-rotation', type=float, default=.5)
     parser.add_argument('--chunk-velocity-feedforward', action='store_true',
                         help='Track moving chunk targets with velocity feedback in native fixed-base OSC; opt-in')
+    parser.add_argument('--chunk-stable-osc', action=argparse.BooleanOptionalAction, default=True,
+                        help='Regularize native OSC and bound torque to physical limits for chunks (default: enabled)')
+    parser.add_argument('--chunk-max-inertia-condition', type=float, default=1e4)
+    parser.add_argument('--chunk-stall-timeout', type=float, default=.5,
+                        help='Stop after this many simulated seconds of requested motion without response; 0 disables')
     parser.add_argument('--chunk-max-feedforward-linear', type=float, default=1.5, help='Reference TCP speed cap (m/s)')
     parser.add_argument('--chunk-max-feedforward-angular', type=float, default=3., help='Reference angular speed cap (rad/s)')
     parser.add_argument('--chunk-max-step-translation', type=float, default=.10,
@@ -357,7 +362,8 @@ def _run(args, reference_args):
         if args.execution_mode == 'chunk':
             print(f'[BridgeVLA] chunk timing: action_dt={client.chunk_spec["action_dt"]} '
                   f'env_step_dt={startup_state["env_step_dt"]} '
-                  f'K={client.chunk_spec["horizon"]} H={client.chunk_spec["execute_horizon"]}', flush=True)
+                  f'K={client.chunk_spec["horizon"]} '
+                  f'H={client.chunk_spec["execute_horizon"] if args.chunk_execute_horizon is None else args.chunk_execute_horizon}', flush=True)
         robot = env.scene['robot']
         env.reset()
         if args.initialization == 'collection' and not callable(getattr(reference, 'randomize_robot_initial_pose_like_collection', None)):
@@ -412,7 +418,10 @@ def _run(args, reference_args):
                                             max_step_rotation=args.chunk_max_step_rotation,
                                             velocity_feedforward=args.chunk_velocity_feedforward,
                                             max_feedforward_linear=args.chunk_max_feedforward_linear,
-                                            max_feedforward_angular=args.chunk_max_feedforward_angular)
+                                            max_feedforward_angular=args.chunk_max_feedforward_angular,
+                                            stable_osc=args.chunk_stable_osc,
+                                            max_inertia_condition=args.chunk_max_inertia_condition,
+                                            stall_timeout=args.chunk_stall_timeout)
         if waypoint is not None and joint is not None and not callable(getattr(joint, 'step', None)):
             raise ValueError('Waypoint joint execution requires a single-step executor exposing step(target); '
                              'use the built-in JointPositionExecutor or select streaming explicitly')
@@ -434,6 +443,9 @@ def _run(args, reference_args):
                    chunk_velocity_feedforward=dict(enabled=args.chunk_velocity_feedforward,
                        max_linear_m_s=args.chunk_max_feedforward_linear,
                        max_angular_rad_s=args.chunk_max_feedforward_angular),
+                   chunk_stable_osc=dict(enabled=args.chunk_stable_osc if chunk_executor else False,
+                       max_inertia_condition=args.chunk_max_inertia_condition,
+                       stall_timeout_s=args.chunk_stall_timeout),
                    chunk_temporal_ensemble=ensemble.info if ensemble else None,
                    initialization=args.initialization, score=args.score, runtime_factory=runtime_factory,
                    policy_wait='background_http_render_only' if replay is None else None,
@@ -485,6 +497,8 @@ def _run(args, reference_args):
                                       model_id=client.info['model_id'], contract_sha256=client.info['contract_sha256'])
                 markers.reset()
                 bridge.reset_execution_state()
+                if chunk_executor is not None:
+                    chunk_executor.reset()
                 if ensemble is not None:
                     ensemble.reset()
                 env.reset()

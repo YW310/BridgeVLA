@@ -414,6 +414,14 @@ class ChunkAgent:
             raise ValueError('Nonfinite chunk loss; refusing optimizer update')
         (loss * loss_scale).backward()
         if step_optimizer:
+            if self.settings.get('max_grad_norm') is not None:
+                # Clip the complete accumulated (and DDP-reduced) gradient,
+                # once per optimizer step. Refuse nonfinite gradients before
+                # the optimizer can corrupt model/Adam state.
+                norm = torch.nn.utils.clip_grad_norm_(
+                    (p for p in self._net_mod.parameters() if p.requires_grad),
+                    self.settings['max_grad_norm'], error_if_nonfinite=True)
+                metrics['chunk_grad_norm_before_clip'] = norm.detach().item()
             self._optimizer.step()
         reported_loss = metrics['chunk_total_loss'] + self.settings['key_loss_weight'] * key_metrics.get('key_total_loss', 0.)
         result = dict(total_loss=reported_loss, **metrics)
@@ -483,10 +491,11 @@ def load_chunk_weights(agent, checkpoint, initialize=False):
             if not initialize:
                 raise ValueError('Chunk checkpoint architecture/configuration mismatch')
             changed = {name for name in saved if saved[name] != agent.settings[name]}
+            print('Chunk initialization: changed settings=' + ','.join(sorted(changed)), flush=True)
             if changed <= {'stage', 'key_loss_weight', 'position_weight', 'rotation_weight', 'gripper_weight',
                            'displacement_weight', 'displacement_scale', 'goal_conditioning',
                            'flow_weight', 'flow_steps', 'flow_inference_seed', 'flow_time_sampling',
-                           'position_loss_scale', 'rotation_loss_scale', 'prefix_loss_weight',
+                           'position_loss_scale', 'rotation_loss_scale', 'prefix_loss_weight', 'max_grad_norm',
                            'second_difference_weight', 'second_difference_scale',
                            'normalization_quantile', 'normalization_min_scale', 'normalization_max_samples',
                            'spatial_key_token', 'local_context', 'tcp_crop_size_m'}:
@@ -511,6 +520,10 @@ def load_chunk_weights(agent, checkpoint, initialize=False):
                            if key.startswith('encoder.')}
                 agent._net_mod.encoder.load_state_dict(encoder, strict=True)
                 print('Chunk initialization: encoder preserved; decoder reinitialized for architecture change', flush=True)
+                if 'joint_encoding' in changed:
+                    print('Chunk initialization: joint encoding changed from '
+                          f"{saved['joint_encoding']} to {agent.settings['joint_encoding']}; "
+                          'state projection and trajectory decoder require new training', flush=True)
         else:
             agent._net_mod.load_state_dict(checkpoint['model_state'], strict=True)
     return checkpoint

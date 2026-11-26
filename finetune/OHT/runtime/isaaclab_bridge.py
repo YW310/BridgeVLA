@@ -54,6 +54,7 @@ class IsaacLabBridge:
         self._gripper_previous = self._gripper_state = None
         self.control_offset = np.eye(4)
         self.velocity_controller = None
+        self.stable_controller = None
         mode = client.action_config['mode']
         if 'joint' in mode and joint_executor is None:
             raise ValueError('Joint modes require a joint-position executor')
@@ -78,13 +79,42 @@ class IsaacLabBridge:
         from .velocity_tracking import VelocityTargetOSC
         term = self.env.action_manager.get_term('arm_action')
         controller = getattr(term, '_osc', None)
-        if (controller is None or type(controller).__name__ != 'OperationalSpaceController' or
-                type(controller).__module__ != 'isaaclab.controllers.operational_space'):
+        if controller is self.velocity_controller and controller is not None:
+            return
+        native = self.stable_controller.controller if controller is self.stable_controller and controller is not None else controller
+        if (native is None or type(native).__name__ != 'OperationalSpaceController' or
+                type(native).__module__ != 'isaaclab.controllers.operational_space'):
             raise ValueError('Chunk velocity feedforward requires the native IsaacLab OperationalSpaceController')
         if not getattr(self.robot, 'is_fixed_base', False):
             raise ValueError('Chunk velocity feedforward currently requires a fixed robot base')
         self.velocity_controller = VelocityTargetOSC(controller)
         term._osc = self.velocity_controller
+
+    def enable_stable_osc(self, max_inertia_condition=1e4):
+        """Wrap the supported native OSC without modifying its installation."""
+        from .stable_osc import StableOSC
+        term = self.env.action_manager.get_term('arm_action')
+        controller = getattr(term, '_osc', None)
+        if self.stable_controller is not None and (controller is self.stable_controller or
+                (controller is self.velocity_controller and controller.controller is self.stable_controller)):
+            if self.stable_controller.max_inertia_condition != max_inertia_condition:
+                raise ValueError('Stable OSC is already installed with a different condition limit')
+            return
+        native = controller.controller if controller is self.velocity_controller and controller is not None else controller
+        if (native is None or type(native).__name__ != 'OperationalSpaceController' or
+                type(native).__module__ != 'isaaclab.controllers.operational_space'
+                or not getattr(self.robot, 'is_fixed_base', False)):
+            raise ValueError('Stable OSC requires the native fixed-base OperationalSpaceController')
+        ids = term._joint_ids
+        limits = self.robot.data.joint_effort_limits[0, ids]
+        self.stable_controller = StableOSC(native, limits, max_inertia_condition)
+        if controller is self.velocity_controller and controller is not None:
+            controller.controller = self.stable_controller
+        else:
+            term._osc = self.stable_controller
+
+    def osc_diagnostics(self):
+        return self.stable_controller.diagnostics() if self.stable_controller is not None else None
 
     def _numpy(self, value):
         return self.ref.tensor_to_numpy(value, np.float32)

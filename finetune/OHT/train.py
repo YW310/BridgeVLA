@@ -74,7 +74,10 @@ def main(argv=None):
         if chunk_enabled:
             from .chunk_normalization import resolve_training_normalization
             resolve_training_normalization(config, dataset)
-        print(json.dumps(dict(valid=True, mode=config["mode"], samples=dataset.validate_all(), training_plan=plan)))
+        result = dict(valid=True, mode=config["mode"], samples=dataset.validate_all(), training_plan=plan)
+        if chunk_enabled:
+            result['joint_encoding'] = settings['joint_encoding']
+        print(json.dumps(result))
         return 0
     import tqdm
     import torch
@@ -120,6 +123,7 @@ def main(argv=None):
                 temporal_kernel_size=settings['temporal_kernel_size'],
                 second_difference_weight=settings['second_difference_weight'],
                 state_conditioning=settings['state_conditioning'],
+                joint_encoding=settings['joint_encoding'],
                 proprio_normalization=settings['proprio_normalization'],
                 key_condition_gate=settings['key_condition_gate'],
                 spatial_key_token=settings['spatial_key_token'],

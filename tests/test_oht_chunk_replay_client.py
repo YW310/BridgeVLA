@@ -47,7 +47,7 @@ def test_native_chunk_replay_consumes_each_tick_once_including_tail(trajectory,t
     env,state=replay_simulator(monkeypatch,trajectory,position_scale=.01)
     output=tmp_path/'chunks'
     options=command(trajectory,output,'--no-visualize','--replay-targets','chunk',
-        '--chunk-execute-horizon','4','--log-interval','0')
+        '--chunk-execute-horizon','4','--log-interval','0','--no-chunk-stable-osc')
     index=options.index('--replay-data-config')
     del options[index:index+2]
     options.extend(['--replay-contract',str(folder)])

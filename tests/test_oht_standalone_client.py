@@ -212,7 +212,7 @@ def test_client_chunk_ensemble_is_opt_in_and_preserves_raw_predictions(fixture, 
     with TestClient(fixture.app()) as server:
         monkeypatch.setattr(runner, 'BridgeVLAClient', lambda *args: ChunkClient(Opener(server)))
         assert runner.main(['--env-id', 'OHT-test', '--ee-link', 'tool', '--task', raw['task'], '--episodes', '1',
-            '--max-steps', '2', '--output', str(output), '--headless',
+            '--max-steps', '2', '--output', str(output), '--headless', '--no-chunk-stable-osc',
             *(['--chunk-temporal-ensemble'] if enabled else [])]) == 0
     record = json.loads((output / 'episode_0000.json').read_text(encoding='utf-8'))
     run = json.loads((output / 'run.json').read_text(encoding='utf-8'))

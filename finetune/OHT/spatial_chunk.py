@@ -99,6 +99,9 @@ class SpatialChunkDecoder(nn.Module):
         chunk_scale(settings, 'action_position_scale')
         self.is_flow = settings['decoder_type'] == 'flow_matching'
         self.direct_state = settings.get('state_conditioning', False)
+        # The absent setting means the exact legacy scalar representation.
+        # Checkpoint-bound opt-in prevents reinterpreting trained state weights.
+        self.joint_encoding = settings.get('joint_encoding', 'scalar')
         self.spatial_key_token = settings.get('spatial_key_token', False)
         self.delta_pose = settings.get('prediction_representation', 'relative_pose') == 'delta_pose'
         normalized = settings.get('proprio_normalization', 'none') != 'none'
@@ -110,7 +113,8 @@ class SpatialChunkDecoder(nn.Module):
         self.register_parameter('key_gate_logit', nn.Parameter(torch.tensor(math.log(gate / (1 - gate))))
                                 if settings.get('key_condition_gate', False) else None)
         dim = settings['hidden_dim']
-        self.visual, self.state, self.goal = nn.Linear(feature_dim, dim), nn.Linear(14, dim), nn.Linear(8, dim)
+        state_dim = 20 if self.joint_encoding == 'sin_cos' else 14
+        self.visual, self.state, self.goal = nn.Linear(feature_dim, dim), nn.Linear(state_dim, dim), nn.Linear(8, dim)
         self.scale_embedding = nn.Parameter(torch.zeros(2, dim))
         self.view_embedding = nn.Embedding(num_views, dim)
         self.queries = nn.Parameter(torch.randn(settings['horizon'], dim) * .02)
@@ -131,25 +135,22 @@ class SpatialChunkDecoder(nn.Module):
             with torch.no_grad():
                 self.head.bias[3:9] = torch.tensor([1., 0., 0., 0., 1., 0.])
 
-    def memory(self, coarse, fine, state, goal, coarse_xyz, fine_xyz, coarse_valid, fine_valid):
-        features, positions, validity = [], [], []
-        scale, dtype = chunk_scale(self.settings, 'geometry_scale'), self.visual.weight.dtype
-        for index, (tokens, xyz, valid) in enumerate(((coarse, coarse_xyz, coarse_valid),
-                                                     (fine, fine_xyz, fine_valid))):
-            if xyz.shape != (*tokens.shape[:2], 3) or valid.shape != tokens.shape[:2] or valid.dtype != torch.bool:
-                raise ValueError('Spatial chunk tokens require aligned XYZ and boolean validity')
-            if tokens.shape[1] % self.num_views:
-                raise ValueError('Spatial chunk tokens must retain complete view/patch ordering')
-            if not torch.isfinite(xyz[valid]).all() or not torch.isfinite(tokens[valid]).all():
-                raise ValueError('Valid spatial chunk tokens must be finite')
-            xyz = torch.where(valid[..., None], xyz, state[:, None, :3])
-            tokens = torch.where(valid[..., None], tokens, 0.)
-            views = torch.arange(self.num_views, device=tokens.device).repeat_interleave(tokens.shape[1] // self.num_views)
-            features.append(self.visual(tokens.to(dtype)) + self.scale_embedding[index] + self.view_embedding(views)[None])
-            positions.append(to_local(xyz, state) / scale)
-            validity.append(valid)
+    def state_features(self, state):
+        """Encode present measurements identically in training and deployment.
+
+        Periodic features identify q and q+2*pi without selecting an angle
+        branch. These features do not encode winding. Raw state remains
+        untouched for FK, world decoding and execution joint-limit checks.
+        """
         local_state = state.clone()
         local_state[:, :7] = state.new_tensor([0., 0., 0., 0., 0., 0., 1.])
+        if self.joint_encoding == 'sin_cos':
+            joints, opening = state[:, 7:13], state[:, 13:14]
+            if self.proprio_center is not None:
+                opening = (opening - self.proprio_center[6:7]) / self.proprio_scale[6:7]
+            # Normalize neither the angles before sin/cos nor their outputs:
+            # statistics must not change the physical 2*pi period.
+            return torch.cat((local_state[:, :7], joints.sin(), joints.cos(), opening), -1)
         if self.proprio_center is not None:
             # OHT's six revolute joints can be reported on different 2*pi
             # branches by the simulator and recorded demonstrations. Align
@@ -174,6 +175,26 @@ class SpatialChunkDecoder(nn.Module):
                     self._joint_branch_reported = True
             proprio = torch.cat((aligned, state[:, 13:]), -1)
             local_state[:, 7:] = (proprio - self.proprio_center) / self.proprio_scale
+        return local_state
+
+    def memory(self, coarse, fine, state, goal, coarse_xyz, fine_xyz, coarse_valid, fine_valid):
+        features, positions, validity = [], [], []
+        scale, dtype = chunk_scale(self.settings, 'geometry_scale'), self.visual.weight.dtype
+        for index, (tokens, xyz, valid) in enumerate(((coarse, coarse_xyz, coarse_valid),
+                                                     (fine, fine_xyz, fine_valid))):
+            if xyz.shape != (*tokens.shape[:2], 3) or valid.shape != tokens.shape[:2] or valid.dtype != torch.bool:
+                raise ValueError('Spatial chunk tokens require aligned XYZ and boolean validity')
+            if tokens.shape[1] % self.num_views:
+                raise ValueError('Spatial chunk tokens must retain complete view/patch ordering')
+            if not torch.isfinite(xyz[valid]).all() or not torch.isfinite(tokens[valid]).all():
+                raise ValueError('Valid spatial chunk tokens must be finite')
+            xyz = torch.where(valid[..., None], xyz, state[:, None, :3])
+            tokens = torch.where(valid[..., None], tokens, 0.)
+            views = torch.arange(self.num_views, device=tokens.device).repeat_interleave(tokens.shape[1] // self.num_views)
+            features.append(self.visual(tokens.to(dtype)) + self.scale_embedding[index] + self.view_embedding(views)[None])
+            positions.append(to_local(xyz, state) / scale)
+            validity.append(valid)
+        local_state = self.state_features(state)
         relative_goal = self.goal_condition(state, goal)
         state_token = self.state(local_state.to(dtype))
         goal_token = self.goal(relative_goal.to(dtype))
