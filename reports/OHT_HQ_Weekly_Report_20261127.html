@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OHT Weekly Report | November 23–27, 2026</title>
+  <style>
+    body {
+      max-width: 760px;
+      margin: 40px auto;
+      padding: 0 24px;
+      color: #202733;
+      background: #fff;
+      font: 15px/1.6 Arial, sans-serif;
+    }
+    header { padding-bottom: 16px; border-bottom: 2px solid #16354b; }
+    header p { margin: 0; color: #4a5563; }
+    h1, h2 { color: #16354b; line-height: 1.25; }
+    h1 { margin: 4px 0 0; font-size: 34px; }
+    h2 { margin: 28px 0 12px; font-size: 22px; }
+    p { margin: 0 0 12px; }
+    ol { margin: 0; padding-left: 22px; }
+    li + li { margin-top: 6px; }
+    table { width: 100%; margin: 12px 0; border-collapse: collapse; }
+    caption { padding-bottom: 6px; text-align: left; font-weight: bold; }
+    th, td { padding: 7px 9px; border: 1px solid #d6dbe3; text-align: left; }
+    thead th { background: #eff3f8; }
+    td { font-variant-numeric: tabular-nums; }
+    @media (max-width: 480px) {
+      body { margin: 24px auto; padding: 0 16px; }
+      h1 { font-size: 28px; }
+      th, td { padding: 6px; font-size: 13px; }
+    }
+    @media print {
+      body { max-width: none; margin: 0; padding: 0; font-size: 11pt; }
+      h1, h2 { break-after: avoid; }
+      table, li { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <p>HQ Weekly Report · November 23–27, 2026</p>
+      <h1>OHT wheel assembly data processing and training</h1>
+    </header>
+
+    <h2>Data processing</h2>
+    <p>The real-robot wheel assembly archive contains 248 successful recordings
+      from manual collection, augmentation and DAgger. We converted and validated
+      <strong>20 recordings and 5,676 samples</strong> as a V4 replay pilot,
+      with 2,897 training, 1,358 validation and 1,421 test samples.</p>
+    <ol>
+      <li>Matched RGB and native depth by capture index for the two fixed cameras.
+        Registered RGB to the depth grid where needed, converted depth to meters
+        and transformed both point clouds into the UR robot base frame. Each
+        robot observation uses camera frames captured at or before its timestamp
+        and at most 150 ms earlier.</li>
+      <li>Paired images with measured joint angles, tool center point (TCP) poses
+        and gripper opening. Built action labels from the original robot timestamps,
+        with up to 16 future steps at nominal 20 ms intervals. Each labeled
+        keypoint targets the next measured gripper transition. Sampling retains
+        valid frames at gripper transitions.</li>
+      <li>Kept related recordings and exact duplicates in the same split. Checked
+        that all 83 explicit replay and DAgger source links stayed within a split,
+        and traced 2,343 pilot action labels back to the raw robot measurements.</li>
+    </ol>
+
+    <h2>Training and model error</h2>
+    <p>The validated replay ran through V4 fine-tuning, checkpoint reload and
+      offline inference. We reused the simulation encoder and trained the keypoint
+      output layers and a newly initialized action-chunk decoder with sine and
+      cosine joint features. The pilot completed eight optimizer updates on a
+      16 GB RTX 5080 with 9.45 GiB of peak PyTorch reserved memory.</p>
+    <p>We evaluated the saved checkpoint on 120 validation and 144 test observations,
+      sampling 24 per recording. The first four steps cover a nominal 80 ms and
+      all 16 cover 320 ms. The baseline holds the current TCP position.</p>
+    <table>
+      <caption>Offline mean TCP position error (mm)</caption>
+      <thead>
+        <tr>
+          <th scope="col">Split</th>
+          <th scope="col">4-step model</th>
+          <th scope="col">4-step baseline</th>
+          <th scope="col">16-step model</th>
+          <th scope="col">16-step baseline</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><th scope="row">Validation</th><td>4.26</td><td>3.31</td><td>14.80</td><td>11.56</td></tr>
+        <tr><th scope="row">Test</th><td>4.30</td><td>3.40</td><td>14.67</td><td>11.64</td></tr>
+      </tbody>
+    </table>
+    <p>The four training observations used in the final optimizer update
+      averaged 1.78 mm over the first four steps and 5.93 mm over all 16.</p>
+    <p>On the test set, the keypoint head averaged 0.76 m of position error,
+      with 61 of 104 labeled predictions outside the workspace. The first
+      four steps contained zero gripper transitions in the evaluation samples.</p>
+
+    <h2>Next steps</h2>
+    <p>Five of six pilot test recordings share an assistance reference with
+      training recordings. Group recordings by these references and complete
+      the full replay before a longer fine-tune. Recheck prediction error and
+      gripper transitions before physical-robot closed-loop evaluation.</p>
+  </main>
+</body>
+</html>
