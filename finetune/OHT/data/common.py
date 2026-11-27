@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 
 TASKS = ("assemble_left", "assemble_right", "disassemble_left", "disassemble_right")
+REAL_TASK = "assemble_wheel"
+REAL_LINEAGE_VERSION = 2
 CAMERAS = ("global_left", "global_right", "local_left", "local_right", "wrist")
 GOALS = {
     "assemble_left": "Assemble the left wheel onto the OHT axle from the workbench",

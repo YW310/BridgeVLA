@@ -1,0 +1,6 @@
+extends: oht_chunk_v4_delta_state_tcp_guided_periodic_8x40.yaml
+exp_id: oht-real-wheel-chunk-v4-periodic
+# The real export has already mapped each recording's measured width to open01.
+required_gripper_calibration:
+  open: 1.0
+  close: 0.0

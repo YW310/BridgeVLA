@@ -43,6 +43,18 @@ def test_signed_axes_tolerance_and_gripper_statistics():
     assert result['gripper_accuracy'] == .5 and result['gripper_errors'] == 1
 
 
+def test_chunk_gripper_change_accuracy_uses_only_changes_from_observed_state():
+    held = dict(translation_m=.01, rotation_degrees=1., stationary_translation_m=.02,
+                stationary_rotation_degrees=2., gripper_correct=True, stationary_gripper_correct=True)
+    changed = dict(held, gripper_correct=False, stationary_gripper_correct=False)
+    metrics = chunk_eval.summarize_motion([held, held, changed])
+    assert metrics['gripper_accuracy'] == pytest.approx(2 / 3)
+    assert metrics['stationary_gripper_accuracy'] == pytest.approx(2 / 3)
+    assert metrics['gripper_change_samples'] == 1
+    assert metrics['gripper_change_accuracy'] == 0.
+    assert chunk_eval.summarize_motion([held])['gripper_change_accuracy'] is None
+
+
 def metadata():
     return [dict(id=f'{task}/{episode:06d}/{frame:06d}', task=task, episode_index=episode,
                  frame=frame, target_frame=frame + 1, timestamp=frame * .1, episode_length=5)
@@ -60,6 +72,20 @@ def test_selection_uses_source_episode_and_limit_keeps_full_expected_population(
         select_indices(metadata(), episode_indices=[2, 999])
     with pytest.raises(ValueError, match='nonnegative'):
         select_indices(metadata(), episode_indices=[-1])
+
+
+def test_evenly_spaced_selection_gives_each_episode_coverage():
+    indices, expected = select_indices(metadata(), tasks=['assemble_left'], samples_per_episode=1)
+    assert indices == [1, 4]
+    assert {row['episode_index'] for row in expected} == {2, 7}
+    assert len(expected) == 6
+    indices, _ = select_indices(metadata(), samples_per_episode=4)
+    assert indices == list(range(12))
+    shuffled = list(reversed(metadata()))
+    indices, _ = select_indices(shuffled, samples_per_episode=3)
+    assert [shuffled[index]['frame'] for index in indices] == [0, 1, 2] * 4
+    with pytest.raises(ValueError, match='either'):
+        select_indices(metadata(), limit=1, samples_per_episode=1)
 
 
 def test_episode_complete_flags_and_equal_episode_macro_not_frame_weighted():
@@ -89,7 +115,7 @@ def test_timeline_selects_latest_source_not_smallest_error():
 class FakeDataset:
     def __init__(self, *args, **kwargs):
         self.samples = metadata()
-        self.contract = dict(sha256='fixture', chunk=dict(action_dt=.1))
+        self.contract = dict(sha256='fixture', chunk=dict(action_dt=.1), data_config=dict(cameras={}))
 
     def __len__(self):
         return len(self.samples)
@@ -102,7 +128,9 @@ class FakeDataset:
         actions[:, 0] = .01 * (frame + np.arange(1, 4))
         valid = frame + np.arange(1, 4) < meta['episode_length']
         frames = frame + np.arange(1, 4)
-        return dict(goal='assemble wheel', tcp_pose=target.copy(), action=target,
+        return dict(goal='assemble wheel', tcp_pose=target[:7].copy(), action=target,
+                    low_dim_state=np.zeros(4, np.float32), joint_positions=np.zeros(6, np.float32),
+                    gripper_open01=np.asarray(0., dtype=np.float32),
                     action_chunk=actions, action_valid=valid, action_frames=frames,
                     action_timestamps=frames * .1, key_valid=np.asarray(frame != 2),
                     key_action=target.copy(), key_frame=np.asarray(frame + 1))
@@ -124,11 +152,13 @@ class FakePolicy:
             prediction = sample['action'].copy()
             prediction[0] += .01
             return prediction
-        actions = sample['action_chunk'].copy()
-        actions[:, 0] += np.array([.003, .02, .04])
+        assert set(sample) == {'tcp_pose', 'low_dim_state', 'joint_positions', 'gripper_open01'}
+        key = np.r_[sample['tcp_pose'], 1.].astype(np.float32)
+        actions = np.tile(key, (3, 1))
+        actions[:, 0] = .01 * (frame + np.arange(1, 4)) + [.003, .02, .04]
         # Padding deliberately has a large error and must never enter reports.
-        actions[~sample['action_valid'], 0] += 100
-        return dict(actions=actions, key_action=sample['key_action'].copy())
+        actions[frame + np.arange(1, 4) >= 5, 0] += 100
+        return dict(actions=actions, key_action=key)
 
 
 def test_single_action_full_episode_and_partial_coverage(monkeypatch):
@@ -158,11 +188,25 @@ def test_chunk_episode_excludes_padding_and_separates_overlapping_forecasts(monk
     assert episode['key_goals']['samples'] == 2
     assert result['per_offset']['3']['samples'] == 2
     assert result['all_actions']['statistics']['translation_m']['max'] == pytest.approx(.04)
+    assert result['all_actions']['stationary_gripper_accuracy'] == 0.
+    assert result['all_actions']['gripper_change_samples'] == 8
+    assert result['all_actions']['gripper_change_accuracy'] == 1.
     # Target frame 4 has no offset-1 forecast in replay; retain its offset-2 forecast.
     assert [row['offset'] for row in episode['timeline_predictions']] == [1, 1, 1, 2]
     assert result['timeline_actions']['translation_m_mean'] == pytest.approx((.003 * 3 + .02) / 4)
     assert len(result['per_episode']) == 1
     json.dumps(result, allow_nan=False)
+
+
+def test_chunk_evenly_spaced_sampled_episodes_keep_full_expected_coverage(monkeypatch):
+    monkeypatch.setattr(chunk_eval, 'OHTChunkDataset', FakeDataset)
+    result = evaluation.open_loop(FakePolicy(chunk=True), 'fixture', tasks=['assemble_left'],
+                                  samples_per_episode=1)
+    assert result['samples_per_episode'] == 1
+    assert result['episode_coverage']['evaluated_episodes'] == 2
+    assert result['episode_coverage']['complete_episodes'] == 0
+    assert result['episode_coverage']['expected_samples'] == 6
+    assert [row['frame'] for row in result['predictions']] == [1, 1]
 
 
 @pytest.mark.parametrize('mode', ['joint', 'relative_joint', 'relative_eef'])

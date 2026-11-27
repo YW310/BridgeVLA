@@ -8,6 +8,7 @@ from zipfile import BadZipFile
 
 import numpy as np
 
+from .chunk_actions import SCHEMA as CHUNK_SCHEMA
 from .common import SCHEMA, digest, inside
 from .geometry import array, transform_matrix, validate_intrinsics
 from .observation import validate_data_config
@@ -64,7 +65,13 @@ def load_geometry_diagnostic(root, *, sample_id=None, observation_path=None,
         raise ValueError("Direct --observation inspection requires --allow-incomplete")
     if data_profile is not None and observation_path is None:
         raise ValueError("--data-profile is only used with --observation")
-    contract = _diagnostic_contract(root) if allow_incomplete else load_contract(root)
+    if allow_incomplete:
+        contract = _diagnostic_contract(root)
+    elif json.loads((root / "contract.json").read_text(encoding="utf-8")).get("schema") == CHUNK_SCHEMA:
+        from .chunk_dataset import load_chunk_contract
+        contract = load_chunk_contract(root)
+    else:
+        contract = load_contract(root)
     report = dict(completion_checked=not allow_incomplete, index_checksum_verified=False,
                   observation_checksum_verified=False, metadata_source="sample_index")
     if observation_path is None:

@@ -12,7 +12,7 @@ from finetune.OHT.cli import main
 from finetune.OHT.data.audit import audit
 from finetune.OHT.data.chunk_dataset import OHTChunkDataset, collate_chunk, load_chunk_contract
 from finetune.OHT.data.chunk_replay import build
-from finetune.OHT.data.common import digest, file_digest, read_jsonl, write_json
+from finetune.OHT.data.common import REAL_TASK, digest, file_digest, read_jsonl, write_json
 from finetune.OHT.data.replay import load_contract
 
 
@@ -38,6 +38,42 @@ def rebind_index(root, rows):
     complete.update(index_sha256=contract['index_sha256'], contract_sha256=contract['sha256'])
     write_json(root / 'contract.json', contract)
     write_json(root / 'complete.json', complete)
+
+
+def test_real_replay_requires_bound_source_lineage(chunk_fixture, tmp_path):
+    # The real-data reader must catch an old split even when all index hashes match.
+    rows = []
+    for split in ('train', 'val', 'test'):
+        row = next(row for row in read_jsonl(chunk_fixture.root / 'samples.jsonl') if row['split'] == split)
+        index = len(rows)
+        rows.append(dict(row, task=REAL_TASK, episode_index=index, group=f'group-{index}',
+                         id=f"{REAL_TASK}/{index:06d}/{row['frame']:06d}"))
+    contract = load_chunk_contract(chunk_fixture.root)
+    contract['real_source'] = {}
+    write_json(tmp_path / 'contract.json', contract)
+    write_json(tmp_path / 'complete.json', {'samples': len(rows)})
+    rebind_index(tmp_path, rows)
+    with pytest.raises(ValueError, match='predates'):
+        load_chunk_contract(tmp_path)
+
+    manifest = dict(lineage_version=2, episodes=[
+        dict(episode_index=i, source_episode=str(i), source_parent=str(i), source_root=str(i),
+             split=row['split'], group=row['group']) for i, row in enumerate(rows)])
+    contract['real_source']['lineage_version'] = 2
+    def bind_manifest():
+        write_json(tmp_path / 'source_manifest.json', manifest)
+        contract['audit_manifest_sha256'] = digest(manifest)
+        write_json(tmp_path / 'contract.json', contract)
+        rebind_index(tmp_path, rows)
+    bind_manifest()
+    assert load_chunk_contract(tmp_path)['audit_manifest_sha256'] == digest(manifest)
+    manifest['episodes'][1].update(source_parent='0', source_root='0')
+    write_json(tmp_path / 'source_manifest.json', manifest)
+    with pytest.raises(ValueError, match='checksum'):
+        load_chunk_contract(tmp_path)
+    bind_manifest()
+    with pytest.raises(ValueError, match='crosses split'):
+        load_chunk_contract(tmp_path)
 
 
 def test_v4_raw_rebuild_has_real_future_targets_and_retains_post_key_tail(chunk_fixture):

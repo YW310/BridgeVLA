@@ -32,6 +32,8 @@ def test_full_single_key_episode_covers_index_and_keeps_old_means(replay_fixture
 def test_full_v4_episode_timeline_matches_real_valid_source_frames(chunk_fixture):
     data = OHTChunkDataset(chunk_fixture.root, 'val')
     task, episode = data.samples[0]['task'], data.samples[0]['episode_index']
+    expected = {row['frame']: data[i] for i, row in enumerate(data.samples)
+                if row['task'] == task and row['episode_index'] == episode}
 
     class PolicyFixture:
         contract = data.contract
@@ -42,11 +44,13 @@ def test_full_v4_episode_timeline_matches_real_valid_source_frames(chunk_fixture
 
         def act(self, sample, goal, frame):
             # Known-error CPU fixture, not a deployable policy or measured score.
-            actions = sample['action_chunk'].copy()
+            assert not {'action_chunk', 'action_valid', 'key_action', 'key_valid'} & set(sample)
+            reference = expected[frame]
+            actions = reference['action_chunk'].copy()
             actions[:, 0] += .01
             actions[:, 3:7] *= -1  # q and -q must have identical SO(3) errors.
-            actions[~sample['action_valid'], 0] += 100
-            return dict(actions=actions, key_action=sample['key_action'])
+            actions[~reference['action_valid'], 0] += 100
+            return dict(actions=actions, key_action=reference['key_action'])
 
     result = open_loop(PolicyFixture(), chunk_fixture.root, tasks=[task], episode_indices=[episode])
     selected = [j for j, row in enumerate(data.samples)

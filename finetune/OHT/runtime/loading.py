@@ -1,7 +1,7 @@
 """Checkpoint-bound inference; online external predictor must match training."""
 from ..data.common import SCHEMA, digest, read_config
 from ..data.observation import validate_data_config
-from ..model import build_agent, load_weights
+from ..model import build_agent, load_weights, read_checkpoint
 from .policy import Policy
 from .predicted_wrapper import load_predictor, PredictedObjectWrapper
 
@@ -15,7 +15,7 @@ def load_policy(path, device="cuda:0", pretrain_path=None, predictor=None, prove
     if not torch.cuda.is_available() or not str(device).startswith("cuda"):
         raise RuntimeError("BridgeVLA inference requires CUDA and its point-renderer extension")
     report("read_checkpoint", checkpoint=path, device=device)
-    checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+    checkpoint = read_checkpoint(path)
     report("validate_contract")
     config, contract = checkpoint["config"], checkpoint["oht_contract"]
     contents = dict(contract)

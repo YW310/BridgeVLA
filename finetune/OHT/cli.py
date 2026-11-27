@@ -68,6 +68,13 @@ def main(argv=None):
     p.add_argument('--gripper-open', type=float, help='Explicit nominal physical open endpoint; requires --gripper-close')
     p.add_argument('--gripper-close', type=float, help='Explicit nominal physical close endpoint; requires --gripper-open')
     _visualization_arguments(p)
+    p = sub.add_parser("build-real", help="Build V4 from the real OHT compact RGB-D wheel-assembly export")
+    p.add_argument("--root", required=True, help="Export root containing conversion_report.json")
+    p.add_argument("--output", required=True, help="New replay directory")
+    p.add_argument("--sample-stride", type=int, default=10, help="Robot rows between observation anchors")
+    p.add_argument("--seed", type=int, default=0, help="Seed for group-preserving train/val/test splits")
+    p.add_argument("--workers", type=int, default=1, help="Parallel episode builders")
+    p.add_argument("--episodes-per-split", type=int, help="Use only this many episodes from each split for smoke tests")
     p = sub.add_parser("validate")
     p.add_argument("--replay", required=True)
     p.add_argument("--mode", choices=("baseline", "role_queries", "predicted_external"), default="baseline")
@@ -151,6 +158,11 @@ def main(argv=None):
                       object_cloud_config=read_config(args.object_cloud_config) if args.object_cloud_config else None,
                       **extra)
         print(f"Built {count} OHT transitions")
+    elif args.command == "build-real":
+        from .data.real_replay import build as build_real
+        result = build_real(args.root, args.output, sample_stride=args.sample_stride, seed=args.seed,
+                            workers=args.workers, episodes_per_split=args.episodes_per_split)
+        print(json.dumps(result))
     elif args.command == "validate":
         if args.workers < 1:
             parser.error("--workers must be a positive integer")

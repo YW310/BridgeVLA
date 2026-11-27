@@ -17,11 +17,12 @@ from .evaluation_statistics import episode_reports, select_indices, summarize_er
 
 
 def open_loop(policy, replay, split="val", limit=None, *, progress=None, visualizer=None,
-              tasks=None, episode_indices=None):
+              tasks=None, episode_indices=None, samples_per_episode=None):
     if getattr(policy, 'chunk_settings', None) is not None:
         from .chunk_eval import open_loop_chunk
         return open_loop_chunk(policy, replay, split, limit, progress=progress, visualizer=visualizer,
-                               tasks=tasks, episode_indices=episode_indices)
+                               tasks=tasks, episode_indices=episode_indices,
+                               samples_per_episode=samples_per_episode)
     def report(stage, **details):
         if progress is not None:
             progress.update(stage, **details)
@@ -33,7 +34,8 @@ def open_loop(policy, replay, split="val", limit=None, *, progress=None, visuali
     data = OHTDataset(replay, split, "baseline", action_config=options)
     if policy.contract["sha256"] != data.contract["sha256"]:
         raise ValueError("Checkpoint/evaluation replay mismatch")
-    indices, selected = select_indices(data.samples, tasks, episode_indices, limit)
+    indices, selected = select_indices(data.samples, tasks, episode_indices, limit,
+                                       samples_per_episode=samples_per_episode)
     total = len(indices)
     report("samples_ready", completed=0, total=total, split=split)
     rows, episode = [], None
@@ -91,6 +93,8 @@ def open_loop(policy, replay, split="val", limit=None, *, progress=None, visuali
                 per_task=per_task, all_samples=summarize_errors(rows), predictions=rows,
                 note="Pose errors do not measure closed-loop task success.")
     result.update(episode_reports(rows, selected))
+    if samples_per_episode is not None:
+        result['samples_per_episode'] = samples_per_episode
     if visualizer is not None:
         report("write_visualization_index")
         result["visualization"] = visualizer.finish()
@@ -148,7 +152,10 @@ def main(argv=None):
     p.add_argument("--checkpoint", required=True)
     p.add_argument("--replay", required=True)
     p.add_argument("--split", choices=["val", "test"], default="val")
-    p.add_argument("--limit", type=int)
+    selection = p.add_mutually_exclusive_group()
+    selection.add_argument("--limit", type=int)
+    selection.add_argument("--samples-per-episode", type=int,
+                           help="Evaluate evenly spaced observations per selected episode, after filtering")
     p.add_argument("--task", action="append", dest="tasks",
                    help="Restrict to a task; repeat to select multiple tasks")
     p.add_argument("--episode-index", action="append", type=int, dest="episode_indices",
@@ -194,6 +201,8 @@ def main(argv=None):
     if args.kind == "open-loop":
         if args.limit is not None and args.limit < 1:
             raise ValueError("--limit must be positive")
+        if args.samples_per_episode is not None and args.samples_per_episode < 1:
+            raise ValueError("--samples-per-episode must be positive")
         if args.episode_indices is not None and any(index < 0 for index in args.episode_indices):
             raise ValueError("--episode-index must be nonnegative")
         if args.visualize_every < 0:
@@ -210,7 +219,8 @@ def main(argv=None):
             policy = load_policy(args.checkpoint, args.device, args.pretrain_path,
                                  args.predictor, args.predictor_provenance, progress=progress)
             result = open_loop(policy, args.replay, args.split, args.limit, progress=progress, visualizer=visualizer,
-                               tasks=args.tasks, episode_indices=args.episode_indices)
+                               tasks=args.tasks, episode_indices=args.episode_indices,
+                               samples_per_episode=args.samples_per_episode)
             progress.update("hash_checkpoint", checkpoint=args.checkpoint)
             result["checkpoint_sha256"] = file_digest(args.checkpoint)
             progress.update("write_report", output=args.output)

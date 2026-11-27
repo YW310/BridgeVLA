@@ -5,10 +5,39 @@ from pathlib import Path
 import numpy as np
 
 from .chunk_actions import SCHEMA, chunk_options, validate_chunk_targets
-from .common import TASKS, digest, file_digest, inside, read_jsonl
+from .common import REAL_LINEAGE_VERSION, REAL_TASK, TASKS, digest, file_digest, inside, read_jsonl
 from .dataset import OHTDataset, collate
 from .observation import validate_data_config, validate_observation
 from .source_config import sample_data_config
+
+
+def _validate_real_lineage(root, contract, episodes):
+    if contract.get('real_source', {}).get('lineage_version') != REAL_LINEAGE_VERSION:
+        raise ValueError('Real OHT replay predates complete replay-source grouping. Rebuild its episode splits.')
+    manifest = json.loads((root / 'source_manifest.json').read_text(encoding='utf-8'))
+    if (manifest.get('lineage_version') != REAL_LINEAGE_VERSION
+            or digest(manifest) != contract.get('audit_manifest_sha256')):
+        raise ValueError('Real OHT source manifest version or checksum mismatch')
+    expected, roots, sources = {}, {}, {}
+    for entry in manifest['episodes']:
+        index = entry['episode_index']
+        source, parent, origin = (entry[field] for field in ('source_episode', 'source_parent', 'source_root'))
+        split, group = entry['split'], entry['group']
+        if (type(index) is not int or index < 0 or index in expected
+                or any(not isinstance(value, str) or not value for value in (source, parent, origin, group))
+                or source in sources
+                or split not in ('train', 'val', 'test')):
+            raise ValueError('Invalid real OHT episode provenance')
+        if roots.setdefault(origin, (split, group)) != (split, group):
+            raise ValueError('Real OHT source lineage crosses split or group')
+        expected[index] = split, group
+        sources[source] = parent, origin
+    for parent, origin in sources.values():
+        if parent in sources and sources[parent][1] != origin:
+            raise ValueError('Real OHT parent and child report different source roots')
+    for (task, index), (split, _, _, group) in episodes.items():
+        if task != REAL_TASK or expected.get(index) != (split, group):
+            raise ValueError('Real OHT replay index differs from source episode split or group')
 
 
 def load_chunk_contract(root):
@@ -46,7 +75,7 @@ def load_chunk_contract(root):
     for row in rows:
         sample_data_config(contract, row)
         split = row.get('split')
-        if split not in ('train', 'val', 'test') or row.get('task') not in TASKS:
+        if split not in ('train', 'val', 'test') or row.get('task') not in (*TASKS, REAL_TASK):
             raise ValueError('Invalid V4 replay task or split')
         if any(type(row.get(name)) is not int for name in ('frame', 'target_frame', 'episode_index', 'episode_length')):
             raise ValueError('Invalid V4 frame/episode integer metadata')
@@ -77,6 +106,8 @@ def load_chunk_contract(root):
         metadata = split, length, row['data_profile'], group
         if episodes.setdefault(identity, metadata) != metadata:
             raise ValueError('V4 episode metadata or split is inconsistent')
+    if 'real_source' in contract or any(task == REAL_TASK for task, _ in episodes):
+        _validate_real_lineage(root, contract, episodes)
     return contract
 
 

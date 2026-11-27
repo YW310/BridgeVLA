@@ -7,6 +7,7 @@ from .data.common import write_json
 from .data.geometry import rotation_error
 from .chunk_visualization import path_panel, scene_background
 from .runtime.chunk_protocol import chunk_spec, validate_prediction
+from .runtime.predicted_wrapper import observation_fields
 from .evaluation_statistics import episode_reports, select_indices, summarize_errors
 
 
@@ -20,19 +21,30 @@ def summarize_motion(rows):
             result['stationary_' + name + '_mean'] = baseline
             result[name + '_skill_vs_stationary'] = (
                 1 - result[name + '_mean'] / baseline if baseline > 1e-8 else None)
+    if not rows or 'stationary_gripper_correct' in rows[0]:
+        held = [row['stationary_gripper_correct'] for row in rows]
+        changed = [row['gripper_correct'] for row, correct in zip(rows, held) if not correct]
+        result['stationary_gripper_accuracy'] = float(np.mean(held)) if held else None
+        result['gripper_change_samples'] = len(changed)
+        result['gripper_change_accuracy'] = float(np.mean(changed)) if changed else None
     return result
 
 
 def open_loop_chunk(policy, replay, split='val', limit=None, *, progress=None, visualizer=None,
-                    tasks=None, episode_indices=None):
+                    tasks=None, episode_indices=None, samples_per_episode=None):
     data = OHTChunkDataset(replay, split)
     if policy.contract['sha256'] != data.contract['sha256']:
         raise ValueError('Chunk checkpoint/evaluation replay mismatch')
     if limit is not None and limit < 1:
         raise ValueError('limit must be positive')
-    indices, selected = select_indices(data.samples, tasks, episode_indices, limit)
+    indices, selected = select_indices(data.samples, tasks, episode_indices, limit,
+                                       samples_per_episode=samples_per_episode)
     total = len(indices)
+    if progress is not None:
+        progress.update('samples_ready', completed=0, total=total, split=split)
     spec = chunk_spec(policy.chunk_settings, policy.contract)
+    fields = observation_fields(data.contract['data_config']['cameras'])
+    fields.update(('tcp_pose', 'joint_positions', 'gripper_open01'))
     rows, pictures, last_episode = [], [], None
     for index, data_index in enumerate(indices):
         sample, meta = data[data_index], data.samples[data_index]
@@ -42,12 +54,16 @@ def open_loop_chunk(policy, replay, split='val', limit=None, *, progress=None, v
             last_episode = episode
         captured = []
         due = visualizer is not None and visualizer.due(index)
+        observation = {name: sample[name].copy() for name in fields}
+        if progress is not None:
+            progress.update('chunk_predict', emit=index == 0, completed=index, total=total, sample=meta['id'])
         started = perf_counter()
-        prediction = validate_prediction(policy.act(sample, sample['goal'], meta['frame'],
+        prediction = validate_prediction(policy.act(observation, sample['goal'], meta['frame'],
             **({'visualization_callback': captured.append} if due else {})), spec)
         latency = perf_counter() - started
         actions = prediction['actions']
         target, valid = sample['action_chunk'][:len(actions)], sample['action_valid'][:len(actions)]
+        current_gripper = sample['low_dim_state'][0]
         offsets = []
         for j in np.flatnonzero(valid):
             offsets.append(dict(offset=int(j + 1), target_frame=int(sample['action_frames'][j]),
@@ -57,7 +73,8 @@ def open_loop_chunk(policy, replay, split='val', limit=None, *, progress=None, v
                                 rotation_degrees=float(np.rad2deg(rotation_error(actions[j, 3:7], target[j, 3:7]))),
                                 stationary_translation_m=float(np.linalg.norm(sample['tcp_pose'][:3] - target[j, :3])),
                                 stationary_rotation_degrees=float(np.rad2deg(rotation_error(sample['tcp_pose'][3:7], target[j, 3:7]))),
-                                gripper_correct=bool(actions[j, 7] == target[j, 7])))
+                                gripper_correct=bool(actions[j, 7] == target[j, 7]),
+                                stationary_gripper_correct=bool(current_gripper == target[j, 7])))
         key_metrics = None
         if sample['key_valid']:
             key, reference = prediction['key_action'], sample['key_action']
@@ -66,6 +83,7 @@ def open_loop_chunk(policy, replay, split='val', limit=None, *, progress=None, v
                 stationary_translation_m=float(np.linalg.norm(sample['tcp_pose'][:3] - reference[:3])),
                 stationary_rotation_degrees=float(np.rad2deg(rotation_error(sample['tcp_pose'][3:7], reference[3:7]))),
                 gripper_correct=bool(key[7] == reference[7]), target_frame=int(sample['key_frame']),
+                stationary_gripper_correct=bool(current_gripper == reference[7]),
                 translation_error_xyz_m=(key[:3] - reference[:3]).tolist())
         rows.append(dict(id=meta['id'], task=meta['task'], episode_index=meta['episode_index'],
                          frame=meta['frame'], timestamp=meta['timestamp'], latency_seconds=latency,
@@ -85,7 +103,8 @@ def open_loop_chunk(policy, replay, split='val', limit=None, *, progress=None, v
                     _montage(stage, name, False).save(folder / f'{name}.png')
             pictures.append(dict(id=meta['id'], chunk=f'{folder.name}/chunk.png', arrays=f'{folder.name}/chunk.npz'))
         if progress is not None:
-            progress.update('chunk_sample_done', completed=index + 1, total=total, sample=meta['id'])
+            progress.update('chunk_sample_done', emit=index == 0 or index + 1 == total,
+                            completed=index + 1, total=total, sample=meta['id'])
 
     summarize = summarize_motion
     result = dict(kind='open_loop_chunk_errors', split=split, samples=total, chunk_spec=spec,
@@ -102,6 +121,8 @@ def open_loop_chunk(policy, replay, split='val', limit=None, *, progress=None, v
         latency_seconds_mean=float(np.mean([row['latency_seconds'] for row in rows])), predictions=rows,
         note='Observed future errors do not measure closed-loop task success.')
     result.update(episode_reports(rows, selected, chunk=True, execute_horizon=spec['execute_horizon']))
+    if samples_per_episode is not None:
+        result['samples_per_episode'] = samples_per_episode
     if pictures:
         write_json(visualizer.root / 'index.json', pictures)
         (visualizer.root / 'index.html').write_text('<!doctype html><meta charset="utf-8"><title>Chunk predictions</title>' +

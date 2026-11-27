@@ -60,10 +60,15 @@ def summarize_errors(rows):
     return result
 
 
-def select_indices(samples, tasks=None, episode_indices=None, limit=None):
+def select_indices(samples, tasks=None, episode_indices=None, limit=None, *, samples_per_episode=None):
     """Filter the split before applying limit; retain the full selection for coverage."""
     if limit is not None and (type(limit) is not int or limit < 1):
         raise ValueError('limit must be positive')
+    if samples_per_episode is not None:
+        if type(samples_per_episode) is not int or samples_per_episode < 1:
+            raise ValueError('samples_per_episode must be positive')
+        if limit is not None:
+            raise ValueError('Choose either limit or samples_per_episode')
     if episode_indices is not None and any(type(index) is not int or index < 0 for index in episode_indices):
         raise ValueError('episode indices must be nonnegative integers')
     tasks = set(tasks) if tasks is not None else None
@@ -77,7 +82,19 @@ def select_indices(samples, tasks=None, episode_indices=None, limit=None):
         raise ValueError('Some selected tasks have no matching episodes in this split')
     if episodes is not None and episodes - {samples[index]['episode_index'] for index in selected}:
         raise ValueError('Some selected episode indices are missing in this split')
-    return selected if limit is None else selected[:limit], [samples[index] for index in selected]
+    expected = [samples[index] for index in selected]
+    if samples_per_episode is None:
+        return selected if limit is None else selected[:limit], expected
+    by_episode = defaultdict(list)
+    for index, row in zip(selected, expected):
+        by_episode[row['task'], row['episode_index']].append(index)
+    chosen = []
+    for indices in by_episode.values():
+        indices.sort(key=lambda index: samples[index]['frame'])
+        count = min(samples_per_episode, len(indices))
+        # Take the centre of each equally sized bin in observation order.
+        chosen.extend(indices[(2 * i + 1) * len(indices) // (2 * count)] for i in range(count))
+    return chosen, expected
 
 
 def timeline_actions(rows):

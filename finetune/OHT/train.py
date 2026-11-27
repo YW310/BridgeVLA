@@ -9,7 +9,7 @@ from .config import load
 from .data.common import write_json
 from .data.dataset import OHTDataset, collate, to_device
 from .data.sampling import TaskBalancedSampler
-from .model import build_agent, load_weights, model_state, resume_fingerprint
+from .model import build_agent, load_weights, model_state, read_checkpoint, resume_fingerprint
 from .action_modes import resolve_action
 from .training_log import TensorBoardLogger, summary_writer_class
 from .training_plan import resolve_training_plan, epoch_metrics
@@ -146,7 +146,7 @@ def main(argv=None):
     if args.init_checkpoint:
         load_weights(agent, args.init_checkpoint, initialize=True)
     if args.resume:
-        checkpoint = torch.load(args.resume, map_location="cpu", weights_only=False)
+        checkpoint = read_checkpoint(args.resume)
         if checkpoint.get("oht_resume_fingerprint") != fingerprint:
             raise ValueError("Resume configuration/replay/role cache/world-size mismatch")
         saved_rng_states = checkpoint.get("rng_states")
@@ -157,6 +157,7 @@ def main(argv=None):
                 if torch.is_tensor(value):
                     state[key] = value.to(device)
         step = int(checkpoint["optimizer_step"])
+        del checkpoint
     if step >= target_steps:
         raise ValueError("Checkpoint already reached the requested training budget; increase optimizer_steps or epochs/max_optimizer_steps")
     sampler.start = step * accumulation * config["batch_size"]

@@ -14,7 +14,7 @@ from tests.test_oht_migration import replay_fixture  # noqa: F401
 from tests.test_oht_training_log import cpu_training, scalars  # noqa: F401
 from finetune.OHT import train
 from finetune.OHT.config import load
-from finetune.OHT.model import build_agent, resume_fingerprint
+from finetune.OHT.model import build_agent, read_checkpoint, resume_fingerprint
 from finetune.OHT.training_plan import resolve_training_plan, epoch_metrics
 from finetune.OHT.data.common import read_config
 from finetune.OHT.data.replay import load_contract
@@ -233,3 +233,11 @@ def test_full_model_applies_freeze_optimizer_and_render_settings(replay_fixture,
     assert captured["rend_three_views"] is True and captured["inp_pre_con"] is False
     assert captured["efficient"] is True and "checkpointing" not in captured
     assert agent._transform_augmentation is True and agent.collision_loss_weight == 0
+
+
+@pytest.mark.parametrize("zip_format", [True, False])
+def test_read_checkpoint_supports_current_and_legacy_archives(tmp_path, zip_format):
+    path = tmp_path / "model.pth"
+    value = torch.tensor([1., 2.])
+    torch.save({"model_state": {"w": value}}, path, _use_new_zipfile_serialization=zip_format)
+    torch.testing.assert_close(read_checkpoint(path)["model_state"]["w"], value)

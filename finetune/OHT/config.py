@@ -32,7 +32,8 @@ def load(path, visited=None):
         raise ValueError("Vector actions require transform_augmentation=false: robot states cannot be independently augmented")
     validate_training_settings(config)
     visualization_settings(config)
-    for name in ('freeze_vision_tower', 'freeze_multimodal_projector', 'freeze_language_model'):
+    for name in ('freeze_vision_tower', 'freeze_multimodal_projector', 'freeze_language_model',
+                 'keypoint_output_layers_only'):
         if name in config and type(config[name]) is not bool:
             raise ValueError(f'{name} must be boolean')
     prefix = config.get('freeze_gemma_prefix_layers', 0)

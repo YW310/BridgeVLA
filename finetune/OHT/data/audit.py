@@ -2,7 +2,7 @@
 import json
 import sys
 from time import perf_counter
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 from .common import CAMERAS, TASKS, digest, inside, write_json
 from .reader import discover, inspect_episode
@@ -27,8 +27,8 @@ def split_records(records, seed=0, fractions=(0.8, 0.1, 0.1), groups=None):
             parent[find(trajectory)] = find("scene:" + str(scene))
     for record in records:
         members[find("trajectory:" + record["trajectory_hash"])].append(record)
-    counts = {task: [0, 0, 0] for task in TASKS}
-    totals = {task: sum(r["task"] == task for r in records) for task in TASKS}
+    totals = Counter(row["task"] for row in records)
+    counts = {task: [0, 0, 0] for task in totals}
     output = []
     for key in sorted(members, key=lambda key: digest([seed, key])):
         rows = members[key]

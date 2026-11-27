@@ -74,6 +74,16 @@ def build_agent(config, contract, device, pretrain_path=None, training=True, dis
                 parameter.requires_grad = False
         if "lm_head" in name or "embed_tokens" in name:
             parameter.requires_grad = False
+    if config.get("keypoint_output_layers_only"):
+        output_layers = ("mvt1.up0.net_out.4.", "mvt1.up0.net_mask.2.",
+                         "mvt1.feat_fc_ex_rot.4.", "mvt1.feat_fc_x.4.", "mvt1.feat_fc_y.4.", "mvt1.feat_fc_z.4.")
+        parameter_names = tuple(name for name, _ in backbone.named_parameters())
+        if (mode != "baseline" or action["mode"] != "eef"
+                or any(not any(name.startswith(layer) for name in parameter_names) for layer in output_layers)):
+            raise ValueError("keypoint_output_layers_only requires the baseline EEF convex-upsample and rotation heads")
+        for name, parameter in backbone.named_parameters():
+            if not name.startswith(output_layers):
+                parameter.requires_grad_(False)
     if config.get("adapter_only"):
         if not assisted:
             raise ValueError("adapter_only requires object assistance")
@@ -119,10 +129,21 @@ def model_state(agent):
     return agent._net_mod.state_dict()
 
 
-def load_weights(agent, checkpoint, initialize=False):
+def read_checkpoint(path):
+    """Map modern Torch archives so weight-only consumers don't read optimizer tensors."""
+    import os
+    import zipfile
     import torch
+    mmap = False
+    if isinstance(path, (str, bytes, os.PathLike)):
+        path = os.fsdecode(path)
+        mmap = zipfile.is_zipfile(path)
+    return torch.load(path, map_location="cpu", weights_only=False, mmap=mmap)
+
+
+def load_weights(agent, checkpoint, initialize=False):
     if isinstance(checkpoint, (str, bytes)) or hasattr(checkpoint, "__fspath__"):
-        checkpoint = torch.load(checkpoint, map_location="cpu", weights_only=False)
+        checkpoint = read_checkpoint(checkpoint)
     if getattr(agent, 'is_chunk_agent', False):
         from .chunk_model import load_chunk_weights
         return load_chunk_weights(agent, checkpoint, initialize)

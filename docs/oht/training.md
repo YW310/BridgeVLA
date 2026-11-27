@@ -705,7 +705,7 @@ python -u -m finetune.OHT.eval open-loop \
 
 先检查少量样本可加 `--limit 8 --visualize-every 1`，正式去掉 limit；默认每 50 样本保存图，0 关闭。报告/图片用新路径，默认图目录为 `<报告名>_visualizations/`。V4 `index.html/sample_*/chunk.png/npz` 展示轨迹及可用 coarse/refine 图，JSON 按未来 offset 统计误差、有效数与 key 指标。
 
-完整 episode 误差统计使用同一入口，不加 `--limit`；可选 `--task assemble_left --episode-index 7` 筛选，编号必须存在于指定 val/test split，两项均可重复传入。单关键点使用其原 replay；V4 chunk 使用 `replay-source-v4`，入口按 checkpoint 自动区分：
+快速比较 checkpoint 时可用 `--samples-per-episode 16` 在每个选中 episode 内等距取可用观测，抽样与动作标签无关，并与 `--limit` 互斥。完整 episode 统计可省略这两个参数；可选 `--task assemble_left --episode-index 7` 筛选，编号必须存在于指定 val/test split，两项均可重复传入。单关键点使用其原 replay；V4 chunk 使用 `replay-source-v4`，入口按 checkpoint 自动区分：
 
 ```bash
 python -u -m finetune.OHT.eval open-loop \
@@ -720,6 +720,8 @@ python -u -m finetune.OHT.eval open-loop \
 `per_episode["task/000007"]` 含覆盖率、帧范围及完整性；`episode_coverage` 以选中 split 的 replay 索引为分母，limit 截断和未运行 episode 不会算完整。**完整指该 episode 所有可用 replay 观测，非原始视频全部帧**；被构建时跳过的窗口或 stride 未采样帧不会补出。`episode_macro` 对完整 episode 等权，旧全局均值仍按样本/预测项加权。
 
 V4 每个 episode 分开保存 `all_actions`、`per_offset`、`key_goals` 和 `executed_prefix_forecasts`（offset ≤模型 execute_horizon 的预测，非实际执行）。重叠 chunk 另外提供 `timeline_actions` / `timeline_predictions`：同一目标帧固定选最近一次真实观测发出的预测，不选误差最小者、不平均、不补缺失帧；无效 padding 排除。它是 teacher-forced 时间轴，**不是把预测动作执行一整集后的累计漂移**。详细逐 episode / 逐帧结果保存在 JSON，终端不展开 `per_episode`。
+
+V4 汇总的 `stationary_gripper_accuracy` 表示始终保持当前夹爪开闭状态的准确率。`gripper_change_accuracy` 只按目标开闭状态与当前状态不同的有效预测项计算，同时查看 `gripper_change_samples`；分母为零时准确率为 `null`。
 
 PNG 热图逐视图拉伸，不能用颜色比较置信度。采样计时含诊断载荷采集、图片写盘在外；`--progress-interval 5` 调心跳，`--quiet` 关闭。首次推理可能构建反投影缓存，结合后续速度和 GPU 指标判断，不以心跳证明 GPU 正在计算。
 

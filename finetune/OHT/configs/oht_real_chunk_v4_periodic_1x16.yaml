@@ -1,0 +1,12 @@
+extends: oht_real_chunk_v4_periodic_8x40.yaml
+exp_id: oht-real-wheel-chunk-v4-periodic-1x16
+# Keep key and chunk supervision, adapting only the key output projections and chunk decoder.
+keypoint_output_layers_only: true
+batch_size: 1
+global_batch_size: 4
+num_workers: 2
+epochs: null
+optimizer_steps: 1000
+checkpoint_interval: 250
+train_visualization:
+  enabled: false

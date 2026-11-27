@@ -19,6 +19,7 @@ MAX_PREVIEW_POINTS = 200_000
 LOCAL_HALF_EXTENT = 0.20  # metres; diagnostic cube, not the model's stage-two crop
 CAMERA_COLORS = dict(zip(CAMERAS, ((255, 85, 85), (85, 230, 130), (80, 150, 255),
                                   (255, 200, 65), (190, 100, 255))))
+CAMERA_COLORS.update(camera_0=(255, 85, 85), camera_2=(80, 150, 255))
 OBJECT_COLORS = ((255, 145, 40), (80, 180, 255), (190, 240, 60), (195, 125, 250),
                  (255, 105, 110), (80, 220, 170), (245, 220, 130), (180, 180, 255))
 OBJECT_OVERLAP = (255, 255, 255)

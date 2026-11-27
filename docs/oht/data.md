@@ -6,6 +6,45 @@
 
 导航：[准备数据](#数据准备) · [契约与划分](#数据契约与划分) · [标注与对象](#标注与对象点云) · [几何诊断](#几何与可视化诊断) · [单关键点](#单关键点数据) · [迁移边界](#迁移边界)。
 
+## 真机装轮数据
+
+`build-real` 将 `oht_raw248_rgbd_compact_20261113` 导出转换为 `assemble_wheel` 的 V4 replay。以 UR Base 为策略坐标系，使用固定相机 `camera_0` 和 `camera_2`，按各自的 capture index 读取 RGB-D。RealSense 颜色通过采集内参和 depth-to-color 变换配准到深度网格。腕部相机需要每帧法兰位姿或已确认的法兰到 TCP 偏移。[RealSense SDK 投影实现](https://raw.githubusercontent.com/realsenseai/librealsense/master/src/rs.cpp#L4068)
+
+监督使用 T58 选段对应的实测 TCP 和夹爪状态。动作保留机器人原始时间戳，以 20 ms 为名义步长，每个 chunk 最多 16 步。默认每 10 个机器人行采样一帧观测，并保留有效的夹爪状态切换帧。构建器沿所有录像的 `replay.source.episode` 和 `dagger.source.episode` 追溯来源。同一来源链以及完全重复的轨迹归入同一 split，其中也包括标为 `manual` 的回放采集。真机 replay 的 `source_manifest.json` 和契约记录 `lineage_version: 2`。早期 pilot 的来源链跨集合，需要更新划分后再评估。
+
+```bash
+conda activate bridgevla
+RAW=/common-data-4t/dataset/robot_data/oht_raw248_rgbd_compact_20261113
+REPLAY=logs/oht-real-v4/replay-source-v4
+python -m finetune.OHT.cli build-real --root "$RAW" --output "$REPLAY" --workers 8
+
+export CONFIG=finetune/OHT/configs/oht_real_chunk_v4_periodic_8x40.yaml
+INIT=finetune/OHT/runs/oht_chunk_v4_delta_state_tcp_guided_8x40/model_epoch_30.pth
+RUN=finetune/OHT/runs/oht-real-wheel-v4-periodic
+bash finetune/OHT/train_chunk_repair.sh "$REPLAY" "$RUN" "$INIT" --check-only
+
+# 在具备 8×40 GB CUDA、PaliGemma 权重和 point-renderer 的训练机上运行
+GPUS_PER_NODE=8 bash finetune/OHT/train_chunk_repair.sh "$REPLAY" "$RUN" "$INIT"
+```
+
+真机配置使用已归一化的实测夹爪开合比例（0 闭，1 开）。从上面的仿真 checkpoint 初始化时，复用编码器并重新初始化周期关节输入的 chunk decoder。小规模检查可在 `build-real` 中添加 `--episodes-per-split 1` 并使用独立输出目录。
+
+### 16 GB 单卡训练
+
+单卡配置使用 batch 1 和 4 次梯度累积，更新 key head 的输出层和整个 chunk decoder。真实数据的 key 与 chunk 监督均参与优化。配置的初始预算为 1,000 次优化器更新。
+
+```bash
+python -m finetune.OHT.train \
+  --config finetune/OHT/configs/oht_real_chunk_v4_periodic_1x16.yaml \
+  --replay "$REPLAY" --init-checkpoint "$INIT" --data-checksum once \
+  --output finetune/OHT/runs/oht-real-wheel-v4-periodic-1x16
+
+python -m finetune.OHT.eval open-loop \
+  --checkpoint finetune/OHT/runs/oht-real-wheel-v4-periodic-1x16/model_last.pth \
+  --replay "$REPLAY" --split val --samples-per-episode 24 --visualize-every 0 \
+  --output logs/oht-real-v4/val-open-loop.json
+```
+
 ## 数据准备
 
 仅做数据处理与 CPU 预览时安装：
