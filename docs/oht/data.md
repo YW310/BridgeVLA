@@ -4,46 +4,43 @@
 
 当前主线是 **原始 RGB-D → V4 实测轨迹缓存 → 训练**。所有命令从 BridgeVLA 仓库根目录执行，替换示例路径后运行；输出目录使用新名字，不覆盖既有数据。
 
-导航：[准备数据](#数据准备) · [契约与划分](#数据契约与划分) · [标注与对象](#标注与对象点云) · [几何诊断](#几何与可视化诊断) · [单关键点](#单关键点数据) · [迁移边界](#迁移边界)。
+导航：[真机装轮](#真机装轮数据) · [准备数据](#数据准备) · [契约与划分](#数据契约与划分) · [标注与对象](#标注与对象点云) · [几何诊断](#几何与可视化诊断) · [单关键点](#单关键点数据) · [迁移边界](#迁移边界)。
 
 ## 真机装轮数据
 
-`build-real` 将 `oht_raw248_rgbd_compact_20261113` 导出转换为 `assemble_wheel` 的 V4 replay。以 UR Base 为策略坐标系，使用固定相机 `camera_0` 和 `camera_2`，按各自的 capture index 读取 RGB-D。RealSense 颜色通过采集内参和 depth-to-color 变换配准到深度网格。腕部相机需要每帧法兰位姿或已确认的法兰到 TCP 偏移。[RealSense SDK 投影实现](https://raw.githubusercontent.com/realsenseai/librealsense/master/src/rs.cpp#L4068)
+`build-real` 将 `oht_raw248_rgbd_compact_20261113` 导出转换为 `assemble_wheel` 的 V4 replay。源包有 248 段成功录像，包括 190 段手动采集、41 段增广和 17 段 DAgger。转换复用 V4 的观测格式、动作窗口构建和数据校验。
 
-监督使用 T58 选段对应的实测 TCP 和夹爪状态。动作保留机器人原始时间戳，以 20 ms 为名义步长，每个 chunk 最多 16 步。默认每 10 个机器人行采样一帧观测，并保留有效的夹爪状态切换帧。构建器沿所有录像的 `replay.source.episode` 和 `dagger.source.episode` 追溯来源。同一来源链以及完全重复的轨迹归入同一 split，其中也包括标为 `manual` 的回放采集。真机 replay 的 `source_manifest.json` 和契约记录 `lineage_version: 2`。早期 pilot 的来源链跨集合，需要更新划分后再评估。
+### 观测与监督
+
+- 两路输入是固定相机 `camera_0` 和 `camera_2`。按各自的 `capture_index` 读取同一捕获序号的 RGB 和原生 16 位深度，用采集标定中的系数换算成米。RealSense 的 RGB 配准到深度网格，ZED 使用已对齐的数据。两路输出尺寸均为 120×160，点云转换到 UR Base。观测需要两路相机均已在当前机器人时刻前取到帧，且各自的观测年龄在 0–150 ms 内。相机通过主机时钟关联。腕部相机到 UR Base 的变换还需要逐帧法兰位姿，或实测 TCP 位姿与已确认的法兰到 TCP 偏移。[RealSense SDK 投影实现](https://raw.githubusercontent.com/realsenseai/librealsense/master/src/rs.cpp#L4068)
+- T58 sidecar 的 `source_row` 和 `next_source_row` 确定连续的原始采集时段。V4 在该时段用原始时钟和相邻机器人行构建实测 TCP、关节和夹爪监督。TCP 位置单位为米，姿态转换为 xyzw。chunk 的名义步长为 20 ms，最多 16 步。每步间隔和从观测到目标的累计偏差都须落在配置的 ±10 ms 容差内。默认每 10 个机器人行取一个观测，另加入有效的夹爪开闭切换帧。
+- 夹爪当前开度沿用源包逐集标定后的 `open01`，0 表示闭合，1 表示打开。未来二值开闭标签由实测开度按现有因果滞回规则生成。T58 sidecar 的训练目标和压缩时钟仅用于与原流程对照。在 292,652 个明确取值为 0 或 1 的 T58 夹爪目标中，23,003 个（7.86%）与同一 `next_source_row` 的实测二值状态不同。
+- key 监督是当前观测之后同一有效状态段内的下一次实测开闭切换。没有后续切换的有效窗口仍提供 chunk 监督。20 段 pilot 的 3,938 个有 key 标签的观测共指向 38 个切换事件，目标距离观测的中位时间为 10.96 秒。
+- DAgger 选段包含历史 policy 执行段和人工接管段，构建器按实测状态生成标签。pilot 的两段 DAgger 录像中，训练集第 197 集的 303 个窗口有 217 个未来动作全部来自历史 policy 执行段，测试集第 205 集为 204/310。当前训练因此是混合行为模仿，若要单独估计专家接管的效果，需从采集端 `control_source` 区分监督来源。
+
+### 划分与核验范围
+
+当前 `lineage_version: 2` 按 `replay.source.episode` 和 `dagger.source.episode` 的传递来源分组，并合并 `raw_index_sha256` 相同的记录。源包中 83 条显式父子关系均位于同一集合。默认种子 0 的全量规划为 train/val/test 各 198/25/25 段。读取器会拒绝早期使用旧划分的真机 replay。
+
+按原始 Parquet 控制来源和采集元数据核对，在 T58 选段内实际用于 `trajectory_assist` 或 `trajectory_align` 的 7 个辅助参考 SHA 都能追溯到包内录像。其中 4 个 SHA 出现在多个集合，156 条助控录像到参考源录像的关系有 89 条跨集合。当前 pilot 的 6 段测试录像中，有 5 段用过训练集中也出现的参考。
+
+现有划分下的报告适用于不同录像的离线比较。要验证未见辅助参考上的泛化，需将实际使用同一参考的录像及其参考源录像纳入同一组。这个规则会将 248 段归并为 9 组，最大的三组有 108、78 和 38 段。应显式分配这些组，并审查留出集的助控覆盖。
+
+本机已完整校验 `logs/oht-real-v4-20261127/pilot-lineage-replay` 的 20 段、5,676 个样本，train/val/test 样本分别为 2,897/1,358/1,421。对全量 672,764 行实测 TCP 的旋转向量和四元数逐行核对，并从 pilot 回查了 2,343 个未来动作。全量 RGB-D replay 构建尚未完成。审计明细保存在本机 `logs/oht-real-v4-20261127/lineage-check/`，其中 `raw-comparison.json` 和 `t58-gripper-comparison.json` 记录标签核对，`full-lineage-audit.json`、`assist-reference-audit.json` 和 `assist-grouping-study.json` 记录划分与辅助来源。
+
+两台固定相机在全部录像中的设备序列号一致，采集内参和深度单位随各集读取。固定外参采用源包的统一标定批次。该批次两台固定相机各有 2 次同会话留出采集，位置残差中位数分别为 4.07 mm 和 1.55 mm。14 段录像早于该批次创建，档案也缺少逐集安装位置的验收记录。跨日期的 UR Base 绝对定位精度仍待独立确认。原始证据位于数据包的 `README_zh-CN.txt` 第 5 节及 `assemble_wheel/lerobot_dataset/calibration/oht_profile/output/cam{1,2}_report.json`。
+
+### 构建与校验
 
 ```bash
 conda activate bridgevla
 RAW=/common-data-4t/dataset/robot_data/oht_raw248_rgbd_compact_20261113
 REPLAY=logs/oht-real-v4/replay-source-v4
 python -m finetune.OHT.cli build-real --root "$RAW" --output "$REPLAY" --workers 8
-
-export CONFIG=finetune/OHT/configs/oht_real_chunk_v4_periodic_8x40.yaml
-INIT=finetune/OHT/runs/oht_chunk_v4_delta_state_tcp_guided_8x40/model_epoch_30.pth
-RUN=finetune/OHT/runs/oht-real-wheel-v4-periodic
-bash finetune/OHT/train_chunk_repair.sh "$REPLAY" "$RUN" "$INIT" --check-only
-
-# 在具备 8×40 GB CUDA、PaliGemma 权重和 point-renderer 的训练机上运行
-GPUS_PER_NODE=8 bash finetune/OHT/train_chunk_repair.sh "$REPLAY" "$RUN" "$INIT"
+python -m finetune.OHT.cli validate --replay "$REPLAY" --workers 4
 ```
 
-真机配置使用已归一化的实测夹爪开合比例（0 闭，1 开）。从上面的仿真 checkpoint 初始化时，复用编码器并重新初始化周期关节输入的 chunk decoder。小规模检查可在 `build-real` 中添加 `--episodes-per-split 1` 并使用独立输出目录。
-
-### 16 GB 单卡训练
-
-单卡配置使用 batch 1 和 4 次梯度累积，更新 key head 的输出层和整个 chunk decoder。真实数据的 key 与 chunk 监督均参与优化。配置的初始预算为 1,000 次优化器更新。
-
-```bash
-python -m finetune.OHT.train \
-  --config finetune/OHT/configs/oht_real_chunk_v4_periodic_1x16.yaml \
-  --replay "$REPLAY" --init-checkpoint "$INIT" --data-checksum once \
-  --output finetune/OHT/runs/oht-real-wheel-v4-periodic-1x16
-
-python -m finetune.OHT.eval open-loop \
-  --checkpoint finetune/OHT/runs/oht-real-wheel-v4-periodic-1x16/model_last.pth \
-  --replay "$REPLAY" --split val --samples-per-episode 24 --visualize-every 0 \
-  --output logs/oht-real-v4/val-open-loop.json
-```
+小规模检查可给 `build-real` 添加 `--episodes-per-split 1`，并使用新的输出目录。使用已有 replay 时，确认 `complete.json` 存在且三集合校验通过。本机 `logs/oht-real-v4-20261127/replay-source-v4` 是中止后留下的目录。训练配置、短测和 open-loop 入口见[真机装轮训练与评估](training.md#真机装轮训练与评估)。
 
 ## 数据准备
 

@@ -1,6 +1,6 @@
 # OHT
 
-当前流程：**V4 数据 → 关键目标 + 连续 EEF chunk → 离线评估 → IsaacLab**。
+OHT 复用 V4 数据格式训练关键目标和连续 EEF chunk。仿真使用 IsaacLab 执行。真机装轮已完成数据 pilot 和单卡离线短测，见[真机装轮数据](../../docs/oht/data.md#真机装轮数据)和[训练结果](../../docs/oht/training.md#2026-11-27-单卡短测)。
 
 OHT 说明统一维护在以下三份文档：
 

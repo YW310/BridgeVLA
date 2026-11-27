@@ -8,6 +8,49 @@
 
 基于当前结果的后续研究动机、候选方向与实验门槛统一见[设计讨论](../design/role-relation-prior.md#研究动机与候选方向)；本页维护已实现模型与运行方法。
 
+## 真机装轮训练与评估
+
+真机 `assemble_wheel` 复用 V4 联合关键目标与 EEF chunk 训练。周期关节编码使用 `sin_cos`。从下列仿真 checkpoint 初始化时会加载 encoder，并重新初始化周期关节输入的 chunk decoder。真机夹爪使用源包测量端点归一化后的 `open01`。相机、标签和划分约定见[真机装轮数据](data.md#真机装轮数据)。
+
+### 训练入口
+
+| 配置 | 训练设置 |
+| --- | --- |
+| [16 GB 单卡](../../finetune/OHT/configs/oht_real_chunk_v4_periodic_1x16.yaml) | batch 1，累积 4 个 microbatch。更新 key head 的输出层和整个 chunk decoder，配置预算 1,000 次优化器更新 |
+| [8×40 GB](../../finetune/OHT/configs/oht_real_chunk_v4_periodic_8x40.yaml) | 继承原周期编码联合训练设置和冻结范围。使用 `train_chunk_repair.sh`，通过 `CONFIG` 显式选用真机预设 |
+
+```bash
+# REPLAY 指向已完成并校验通过的真机 V4 replay
+REPLAY=logs/oht-real-v4-20261127/pilot-lineage-replay
+INIT=finetune/OHT/runs/oht_chunk_v4_delta_state_tcp_guided_8x40/model_epoch_30.pth
+RUN=finetune/OHT/runs/oht-real-wheel-v4-periodic-1x16
+CONFIG=finetune/OHT/configs/oht_real_chunk_v4_periodic_1x16.yaml
+
+python -m finetune.OHT.cli validate --replay "$REPLAY" --workers 4
+python -m finetune.OHT.train --config "$CONFIG" --replay "$REPLAY" --validate-only
+python -m finetune.OHT.train --config "$CONFIG" --replay "$REPLAY" \
+  --init-checkpoint "$INIT" --data-checksum once --output "$RUN"
+
+python -m finetune.OHT.eval open-loop --checkpoint "$RUN/model_last.pth" \
+  --replay "$REPLAY" --split val --samples-per-episode 24 --visualize-every 0 \
+  --output "$RUN/val-open-loop.json"
+```
+
+只跑短测时，可在同一配置目录中新建 YAML，继承 `oht_real_chunk_v4_periodic_1x16.yaml` 并覆写 `optimizer_steps: 8`。八卡入口使用 `CONFIG=finetune/OHT/configs/oht_real_chunk_v4_periodic_8x40.yaml GPUS_PER_NODE=8 bash finetune/OHT/train_chunk_repair.sh "$REPLAY" "$RUN" "$INIT"`，可附加 `--check-only` 做 CPU 预检。短测或换卡应使用自己的新输出目录。评估 replay 须与 checkpoint 的契约一致，重分组后训练和比较都应使用新契约。
+
+### 2026-11-27 单卡短测
+
+在 RTX 5080 上用修正版 pilot 训练了 8 次优化器更新，每次累积 4 个真实观测。key 输出层和 decoder 均得到更新，PyTorch 峰值预留显存为 9.45 GiB。这个结果覆盖 16 GB 单卡的短训和权重重载。正式预算和八卡训练仍待实测。
+
+同一个第 8 步 checkpoint 在 val/test 的每段录像中等距抽样 24 个观测。H4 对应名义 80 ms，表中误差对前 4 个有效动作步取平均。基线对每个动作步均保持当前 TCP 位置。
+
+| split | 录像数 / 抽样观测数 | H4 平均位置误差 | 保持当前位姿 | 有标注的 key 预测越出工作区 |
+| --- | ---: | ---: | ---: | ---: |
+| val | 5 / 120 | 4.26 mm | 3.31 mm | 45 / 86 |
+| test | 6 / 144 | 4.30 mm | 3.40 mm | 61 / 104 |
+
+两组的 H4 位置误差均高于保持基线，测试集 key 平均位置误差为 0.76 m。两组的 H4 抽样均未包含目标开闭状态与当前状态不同的预测项。完整 16 步覆盖名义 320 ms，val/test 分别有 3/19 个此类预测项。pilot 的留出录像仍共享部分采集时的辅助参考，实机闭环成功率尚未测量。报告、训练日志和轨迹图位于本机 `logs/oht-real-v4-20261127/lineage-check/`。
+
 ## 2026-11-25：周期关节编码与训练入口修复
 
 ### 新实验使用连续的周期关节特征
@@ -728,8 +771,9 @@ PNG 热图逐视图拉伸，不能用颜色比较置信度。采样计时含诊�
 离线误差不等于闭环成功率；闭环、模型/GT 回放、任务评分与自定义工厂见 [runtime.md](runtime.md)。原生客户端默认 `--score none` 不报成功率，实际成绩须有真实初始化、成功条件和完整 cases，失败保留分母。
 
 open-loop 每次从记录的真实当前观测预测，上一预测不会改变下一输入；closed-loop 的下一观测则来自
-实际执行后的状态，跟踪偏差、接触和预测误差都可能改变后续条件。默认 K=16、dt=1/60 只覆盖约
-0.267 秒，短片段位置误差小不能单独证明任务会持续推进；应同时查看前 H 项误差、运动方向及
+实际执行后的状态，跟踪偏差、接触和预测误差都可能改变后续条件。以 replay 契约中的 `action_dt` 计算窗口。
+仿真 60 Hz replay 的 K=16 覆盖约 0.267 秒，真机装轮的 K=16 覆盖名义 0.320 秒。
+判断动作是否持续推进时，应同时查看前 H 项误差、运动方向及
 保持当前 TCP 的对照。离线准确而在线来回摆动时，优先核对同状态下的 RGB-D/本体输入、实际跟踪
 及相邻 chunk 的同时间预测变化。[可选时间对齐融合](runtime.md#v4-chunk) 用于减轻重规划抖动，不能替代这些核对。
 
